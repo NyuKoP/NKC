@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>채팅앱</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app">
+      <aside class="sidebar">
+        <div class="sidebar__header">
+          <h1>채팅앱</h1>
+          <p>완전 익명 로컬 채팅 UI</p>
+          <div class="app__status" role="status" aria-live="polite">
+            <span class="app__status-dot" aria-hidden="true"></span>
+            세션 ID: <span id="session-id">생성 중...</span>
+          </div>
+        </div>
+        <p class="app__note">
+          메시지는 브라우저에 저장하지 않으며 메타데이터를 기록하지 않습니다.
+        </p>
+        <nav class="sidebar__list" aria-label="대화 상대">
+          <button class="sidebar__item is-active" type="button" data-contact="alpha">
+            <span class="sidebar__name">알파 팀</span>
+            <span class="sidebar__preview">새로운 아이디어 공유</span>
+          </button>
+          <button class="sidebar__item" type="button" data-contact="bravo">
+            <span class="sidebar__name">브라보</span>
+            <span class="sidebar__preview">오늘 회의 정리</span>
+          </button>
+          <button class="sidebar__item" type="button" data-contact="charlie">
+            <span class="sidebar__name">찰리</span>
+            <span class="sidebar__preview">프로젝트 일정 체크</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="chat-panel">
+        <header class="chat-panel__header">
+          <div>
+            <h2 id="conversation-title">알파 팀</h2>
+            <p>로컬 임시 세션 · 오프라인</p>
+          </div>
+          <button class="app__clear" type="button" id="clear-btn">대화 지우기</button>
+        </header>
+
+        <section class="app__chat" id="chat" aria-live="polite"></section>
+
+        <form class="app__composer" id="composer">
+          <label class="sr-only" for="message">메시지</label>
+          <div class="app__composer-field">
+            <textarea
+              id="message"
+              name="message"
+              rows="2"
+              placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)"
+              autocomplete="off"
+            ></textarea>
+            <div class="app__composer-meta">
+              <span id="char-count">0 / 240</span>
+              <span>브라우저에 저장하지 않음</span>
+            </div>
+          </div>
+          <button type="submit">보내기</button>
+        </form>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
