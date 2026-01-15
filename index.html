@@ -3,68 +3,159 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>채팅앱</title>
+    <title>Session 스타일 메신저</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
     <div class="app">
-      <aside class="sidebar">
-        <div class="sidebar__header">
-          <h1>채팅앱</h1>
-          <p>완전 익명 로컬 채팅 UI</p>
-          <div class="app__status" role="status" aria-live="polite">
-            <span class="app__status-dot" aria-hidden="true"></span>
-            세션 ID: <span id="session-id">생성 중...</span>
+      <main class="auth" id="auth">
+        <div class="auth__card">
+          <header class="auth__header">
+            <h1>Session UI</h1>
+            <p>로컬 데모 인증으로 시작하세요.</p>
+          </header>
+
+          <div class="tabs" role="tablist">
+            <button class="tabs__button is-active" type="button" data-auth-tab="login">
+              Login
+            </button>
+            <button class="tabs__button" type="button" data-auth-tab="signup">Sign up</button>
           </div>
+
+          <section class="auth__panel" id="login-panel">
+            <form id="login-form">
+              <label>
+                이메일
+                <input type="email" name="email" placeholder="you@example.com" required />
+              </label>
+              <label>
+                비밀번호
+                <input type="password" name="password" placeholder="6자 이상" required />
+              </label>
+              <p class="form__error" id="login-error"></p>
+              <button class="btn btn--primary" type="submit">로그인</button>
+            </form>
+          </section>
+
+          <section class="auth__panel is-hidden" id="signup-panel">
+            <form id="signup-form">
+              <label>
+                사용자 이름
+                <input type="text" name="username" placeholder="닉네임" required />
+              </label>
+              <label>
+                이메일
+                <input type="email" name="email" placeholder="you@example.com" required />
+              </label>
+              <label>
+                비밀번호
+                <input type="password" name="password" placeholder="6자 이상" required />
+              </label>
+              <p class="form__error" id="signup-error"></p>
+              <button class="btn btn--primary" type="submit">회원가입</button>
+            </form>
+          </section>
         </div>
-        <p class="app__note">
-          메시지는 브라우저에 저장하지 않으며 메타데이터를 기록하지 않습니다.
-        </p>
-        <nav class="sidebar__list" aria-label="대화 상대">
-          <button class="sidebar__item is-active" type="button" data-contact="alpha">
-            <span class="sidebar__name">알파 팀</span>
-            <span class="sidebar__preview">새로운 아이디어 공유</span>
-          </button>
-          <button class="sidebar__item" type="button" data-contact="bravo">
-            <span class="sidebar__name">브라보</span>
-            <span class="sidebar__preview">오늘 회의 정리</span>
-          </button>
-          <button class="sidebar__item" type="button" data-contact="charlie">
-            <span class="sidebar__name">찰리</span>
-            <span class="sidebar__preview">프로젝트 일정 체크</span>
-          </button>
-        </nav>
-      </aside>
+      </main>
 
-      <main class="chat-panel">
-        <header class="chat-panel__header">
-          <div>
-            <h2 id="conversation-title">알파 팀</h2>
-            <p>로컬 임시 세션 · 오프라인</p>
+      <main class="main is-hidden" id="main">
+        <aside class="sidebar">
+          <div class="profile">
+            <div class="avatar" id="profile-avatar" aria-hidden="true"></div>
+            <div>
+              <h2 id="profile-name">익명</h2>
+              <p id="profile-status">상태 메시지를 설정해 보세요.</p>
+            </div>
+            <button class="icon-btn" type="button" id="settings-open" aria-label="설정">
+              ⚙
+            </button>
           </div>
-          <button class="app__clear" type="button" id="clear-btn">대화 지우기</button>
-        </header>
 
-        <section class="app__chat" id="chat" aria-live="polite"></section>
+          <div class="segment">
+            <button class="segment__btn is-active" type="button" data-tab="friends">
+              Friends
+            </button>
+            <button class="segment__btn" type="button" data-tab="chats">Chats</button>
+          </div>
 
-        <form class="app__composer" id="composer">
-          <label class="sr-only" for="message">메시지</label>
-          <div class="app__composer-field">
+          <section class="list" id="friends-list"></section>
+          <section class="list is-hidden" id="chats-list"></section>
+        </aside>
+
+        <section class="chat">
+          <header class="chat__header">
+            <div>
+              <h3 id="chat-title">대화</h3>
+              <p id="chat-subtitle">로컬 세션 · 오프라인</p>
+            </div>
+            <button class="icon-btn" type="button" aria-label="메뉴">⋯</button>
+          </header>
+
+          <div class="chat__timeline" id="chat-timeline"></div>
+
+          <form class="chat__composer" id="chat-form">
             <textarea
-              id="message"
-              name="message"
+              id="chat-input"
               rows="2"
               placeholder="메시지를 입력하세요 (Enter 전송, Shift+Enter 줄바꿈)"
-              autocomplete="off"
             ></textarea>
-            <div class="app__composer-meta">
+            <div class="composer__meta">
               <span id="char-count">0 / 240</span>
-              <span>브라우저에 저장하지 않음</span>
+              <button class="btn btn--primary" type="submit">보내기</button>
             </div>
-          </div>
-          <button type="submit">보내기</button>
-        </form>
+          </form>
+        </section>
       </main>
+    </div>
+
+    <div class="modal is-hidden" id="settings-modal" aria-hidden="true">
+      <div class="modal__overlay" data-close="true"></div>
+      <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <header class="modal__header">
+          <h2 id="settings-title">프로필 & 설정</h2>
+          <button class="icon-btn" type="button" data-close="true" aria-label="닫기">
+            ✕
+          </button>
+        </header>
+
+        <form id="settings-form" class="settings">
+          <section>
+            <h3>아바타 선택</h3>
+            <div class="avatar-grid" id="avatar-grid"></div>
+          </section>
+
+          <section>
+            <h3>프로필</h3>
+            <label>
+              사용자 이름 (2~20자)
+              <input type="text" name="username" required minlength="2" maxlength="20" />
+            </label>
+            <label>
+              상태 메시지 (0~60자)
+              <input type="text" name="status" maxlength="60" />
+            </label>
+          </section>
+
+          <section>
+            <h3>테마</h3>
+            <div class="theme-toggle">
+              <label>
+                <input type="radio" name="theme" value="light" />
+                Light
+              </label>
+              <label>
+                <input type="radio" name="theme" value="dark" />
+                Dark
+              </label>
+            </div>
+          </section>
+
+          <div class="settings__actions">
+            <button class="btn" type="button" id="logout-btn">로그아웃</button>
+            <button class="btn btn--primary" type="submit">저장</button>
+          </div>
+        </form>
+      </div>
     </div>
 
     <script src="app.js"></script>
