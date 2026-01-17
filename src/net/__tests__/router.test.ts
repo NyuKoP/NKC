@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { __testResetRouter } from "../router";
 
 type OutboxRecord = {
   id: string;
@@ -29,6 +30,10 @@ const createTransport = (sendImpl?: () => Promise<void>) => {
 describe("router", () => {
   beforeEach(() => {
     vi.resetModules();
+  });
+
+  afterEach(() => {
+    __testResetRouter();
   });
 
   it("blocks direct P2P when onionRouter mode is active", async () => {
@@ -65,6 +70,11 @@ describe("router", () => {
           selfOnionEnabled: true,
           selfOnionMinRelays: 5,
           allowRemoteProxy: false,
+          onionEnabled: false,
+          onionSelectedNetwork: "tor",
+          tor: { installed: true, status: "ready", version: "1.0.0" },
+          lokinet: { installed: false, status: "idle" },
+          lastUpdateCheckAtMs: undefined,
         },
         transports: { directP2P: directTransport as any },
       }
@@ -125,6 +135,11 @@ describe("router", () => {
           selfOnionEnabled: true,
           selfOnionMinRelays: 5,
           allowRemoteProxy: false,
+          onionEnabled: false,
+          onionSelectedNetwork: "tor",
+          tor: { installed: true, status: "ready", version: "1.0.0" },
+          lokinet: { installed: false, status: "idle" },
+          lastUpdateCheckAtMs: undefined,
         },
         routeController: routeController as any,
         transports: {
@@ -145,5 +160,57 @@ describe("router", () => {
     if (selfOrder !== undefined && onionOrder !== undefined) {
       expect(selfOrder).toBeLessThan(onionOrder);
     }
+  });
+
+  it("blocks selfOnion when onion router is enabled", async () => {
+    const store = new Map<string, OutboxRecord>();
+    vi.doMock("../../storage/outboxStore", () => {
+      return {
+        putOutbox: async (record: OutboxRecord) => {
+          store.set(record.id, record);
+        },
+        deleteOutbox: async (id: string) => {
+          store.delete(id);
+        },
+        deleteExpiredOutbox: async () => 0,
+      };
+    });
+
+    const router = await import("../router");
+    const selfOnionTransport = createTransport();
+    const onionRouterTransport = createTransport();
+    const result = await router.sendCiphertext(
+      {
+        convId: "c1",
+        messageId: "m3",
+        ciphertext: "enc",
+        priority: "high",
+      },
+      {
+        resolveTransport: () => "selfOnion",
+        config: {
+          mode: "auto",
+          onionProxyEnabled: true,
+          onionProxyUrl: "socks5://127.0.0.1:9050",
+          webrtcRelayOnly: true,
+          disableLinkPreview: true,
+          selfOnionEnabled: true,
+          selfOnionMinRelays: 5,
+          allowRemoteProxy: false,
+          onionEnabled: true,
+          onionSelectedNetwork: "tor",
+          tor: { installed: true, status: "ready", version: "1.0.0" },
+          lokinet: { installed: false, status: "idle" },
+          lastUpdateCheckAtMs: undefined,
+        },
+        transports: { selfOnion: selfOnionTransport as any, onionRouter: onionRouterTransport as any },
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.transport).toBe("onionRouter");
+    expect(selfOnionTransport.send).not.toHaveBeenCalled();
+    expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
+    expect(store.size).toBe(1);
   });
 });

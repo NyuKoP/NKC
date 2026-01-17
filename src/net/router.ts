@@ -73,14 +73,20 @@ export const resolveTransport = (
   config: NetConfig,
   controller: RouteController = defaultRouteController
 ): TransportKind => {
+  if (config.onionEnabled) return "onionRouter";
   if (config.mode === "directP2P") return "directP2P";
   if (config.mode === "onionRouter") return "onionRouter";
   if (config.mode === "selfOnion") return "selfOnion";
   return controller.decideTransport(config);
 };
 
+export const __testResetRouter = () => {
+  transportCache.clear();
+  transportStarted.clear();
+};
+
 const warnOnionRouterGuards = (config: NetConfig) => {
-  if (config.mode !== "onionRouter") return;
+  if (config.mode !== "onionRouter" && !config.onionEnabled) return;
   if (!config.disableLinkPreview || !config.webrtcRelayOnly) {
     console.warn("[net] Onion router guards should be enabled.");
   }
@@ -106,11 +112,26 @@ export const sendCiphertext = async (
   };
 
   warnOnionRouterGuards(config);
+  const resolve = deps.resolveTransport ?? resolveTransport;
+  const chosen = resolve(config, controller);
+  if (config.mode === "onionRouter" && chosen === "directP2P") {
+    await putOutbox(record);
+    controller.reportSendFail(chosen);
+    return {
+      ok: false,
+      transport: chosen,
+      error: "Direct P2P blocked in onion router mode",
+    };
+  }
+
   await enqueueOutgoing(record);
 
   const attemptSend = async (kind: TransportKind) => {
-    if (config.mode === "onionRouter" && kind === "directP2P") {
+    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "directP2P") {
       throw new Error("Direct P2P blocked in onion router mode");
+    }
+    if (config.onionEnabled && kind === "selfOnion") {
+      throw new Error("Self-onion blocked while onion router is enabled");
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
     await ensureStarted(kind, transport);
@@ -122,8 +143,6 @@ export const sendCiphertext = async (
     return kind;
   };
 
-  const resolve = deps.resolveTransport ?? resolveTransport;
-  const chosen = resolve(config, controller);
   try {
     const used = await attemptSend(chosen);
     return { ok: true, transport: used };

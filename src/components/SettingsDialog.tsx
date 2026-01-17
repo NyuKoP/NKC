@@ -13,7 +13,17 @@ import type { UserProfile } from "../db/repo";
 import { defaultPrivacyPrefs, getPrivacyPrefs, setPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
 import { useNetConfigStore } from "../net/netConfigStore";
+import type { OnionComponentState, OnionNetwork } from "../net/netConfig";
 import { applyProxyConfig, checkProxyHealth } from "../net/proxyControl";
+import {
+  applyOnionUpdate,
+  checkOnionUpdates,
+  getOnionStatus,
+  installOnion,
+  onOnionProgress,
+  setOnionMode,
+  uninstallOnion,
+} from "../net/onionControl";
 
 const themeOptions = [
   { value: "dark", label: "다크" },
@@ -80,9 +90,26 @@ export default function SettingsDialog({
   const setProxy = useNetConfigStore((state) => state.setProxy);
   const setRelayOnly = useNetConfigStore((state) => state.setRelayOnly);
   const setDisableLinkPreview = useNetConfigStore((state) => state.setDisableLinkPreview);
+  const setOnionEnabled = useNetConfigStore((state) => state.setOnionEnabled);
+  const setOnionNetwork = useNetConfigStore((state) => state.setOnionNetwork);
+  const setComponentState = useNetConfigStore((state) => state.setComponentState);
+  const setLastUpdateCheckAt = useNetConfigStore((state) => state.setLastUpdateCheckAt);
   const isOnionRouterMode = netConfig.mode === "onionRouter";
   const isAutoMode = netConfig.mode === "auto";
   const [proxyStatus, setProxyStatus] = useState<"idle" | "ok" | "fail">("idle");
+  const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
+  const [onionNetworkDraft, setOnionNetworkDraft] = useState<OnionNetwork>(
+    netConfig.onionSelectedNetwork
+  );
+  const [onionStatus, setOnionStatus] = useState<{
+    tor: OnionComponentState;
+    lokinet: OnionComponentState;
+    runtimeStatus: "idle" | "starting" | "running" | "failed";
+  } | null>(null);
+  const [onionError, setOnionError] = useState("");
+  const [onionSaveMessage, setOnionSaveMessage] = useState("");
+  const torState = netConfig.tor;
+  const lokinetState = netConfig.lokinet;
   const proxyStatusLabel =
     proxyStatus === "ok"
       ? "Proxy: 연결됨"
@@ -98,6 +125,11 @@ export default function SettingsDialog({
     setStatusDraft(user.status);
     setProfileEditing(false);
   }, [user]);
+
+  useEffect(() => {
+    setOnionEnabledDraft(netConfig.onionEnabled);
+    setOnionNetworkDraft(netConfig.onionSelectedNetwork);
+  }, [netConfig.onionEnabled, netConfig.onionSelectedNetwork]);
 
   useEffect(() => {
     if (pinEnabled) {
@@ -122,9 +154,45 @@ export default function SettingsDialog({
   }, [saveMessage]);
 
   useEffect(() => {
+    if (!onionSaveMessage) return;
+    const timer = window.setTimeout(() => setOnionSaveMessage(""), 2000);
+    return () => window.clearTimeout(timer);
+  }, [onionSaveMessage]);
+
+  useEffect(() => {
     if (!netConfig.disableLinkPreview || !privacyPrefs.linkPreviews) return;
     void updatePrivacy({ ...privacyPrefs, linkPreviews: false });
   }, [netConfig.disableLinkPreview, privacyPrefs]);
+
+  useEffect(() => {
+    if (view !== "network") return;
+    let cancelled = false;
+    const syncStatus = async () => {
+      try {
+        const status = await getOnionStatus();
+        if (cancelled) return;
+        setOnionStatus({
+          tor: status.components.tor,
+          lokinet: status.components.lokinet,
+          runtimeStatus: status.runtime.status,
+        });
+        setComponentState("tor", status.components.tor);
+        setComponentState("lokinet", status.components.lokinet);
+      } catch (error) {
+        if (!cancelled) {
+          setOnionError("Onion 상태를 불러오지 못했습니다.");
+        }
+      }
+    };
+    void syncStatus();
+    const unsubscribe = onOnionProgress((payload) => {
+      setComponentState(payload.network, payload.status);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [view, setComponentState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -205,6 +273,36 @@ export default function SettingsDialog({
     } catch (error) {
       console.error("Failed to save profile", error);
     }
+  };
+
+  const compareVersions = (a?: string, b?: string) => {
+    if (!a || !b) return 0;
+    const aParts = a.replace(/^v/i, "").split(".").map(Number);
+    const bParts = b.replace(/^v/i, "").split(".").map(Number);
+    const len = Math.max(aParts.length, bParts.length);
+    for (let i = 0; i < len; i += 1) {
+      const aVal = aParts[i] ?? 0;
+      const bVal = bParts[i] ?? 0;
+      if (aVal > bVal) return 1;
+      if (aVal < bVal) return -1;
+    }
+    return 0;
+  };
+
+  const buildComponentLabel = (state: OnionComponentState) => {
+    if (state.error === "PINNED_HASH_MISSING") {
+      return "Verified hash missing";
+    }
+    if (state.status === "downloading" || state.status === "installing") {
+      return "설치 중";
+    }
+    if (state.status === "failed") {
+      return "실패";
+    }
+    if (state.installed && state.version) {
+      return `설치됨 (v${state.version})`;
+    }
+    return "미설치";
   };
 
   const settingsMenu = [
@@ -479,6 +577,199 @@ export default function SettingsDialog({
                         updatePrivacy({ ...privacyPrefs, linkPreviews: event.target.checked })
                       }
                     />
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="grid gap-4 text-sm">
+                  <div className="flex items-center justify-between">
+                    <div className="text-sm font-semibold text-nkc-text">Onion Router (익명)</div>
+                    <div className="text-xs text-nkc-muted">
+                      {onionStatus?.runtimeStatus === "running"
+                        ? "연결됨"
+                        : onionStatus?.runtimeStatus === "starting"
+                          ? "시작 중"
+                          : onionStatus?.runtimeStatus === "failed"
+                            ? "실패"
+                            : "대기"}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <div className="text-xs text-nkc-muted">구성요소</div>
+                    <div className="grid gap-2">
+                      {([
+                        ["tor", "Tor", torState],
+                        ["lokinet", "Lokinet", lokinetState],
+                      ] as const).map(([key, label, state]) => {
+                        const hasUpdate =
+                          state.installed &&
+                          state.latest &&
+                          state.version &&
+                          compareVersions(state.latest, state.version) > 0;
+                        const isBusy = state.status === "downloading" || state.status === "installing";
+                        const isPinnedMissing = state.error === "PINNED_HASH_MISSING";
+                        return (
+                          <div
+                            key={key}
+                            className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs"
+                          >
+                            <div>
+                              <div className="text-nkc-text">{label}</div>
+                              <div className="text-[11px] text-nkc-muted">
+                                {buildComponentLabel(state)}
+                                {state.latest && state.version && compareVersions(state.latest, state.version) > 0
+                                  ? ` · 최신 v${state.latest}`
+                                  : ""}
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <button
+                                type="button"
+                                disabled={isBusy || isPinnedMissing}
+                                title={isPinnedMissing ? "Verified hash missing" : undefined}
+                                onClick={async () => {
+                                  setOnionError("");
+                                  try {
+                                    if (hasUpdate) {
+                                      await applyOnionUpdate(key);
+                                    } else {
+                                      await installOnion(key);
+                                    }
+                                  } catch (error) {
+                                    setOnionError("설치 또는 업데이트에 실패했습니다.");
+                                  }
+                                }}
+                                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                              >
+                                {hasUpdate ? "업데이트 적용" : "설치"}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={isBusy}
+                                onClick={async () => {
+                                  setOnionError("");
+                                  try {
+                                    await uninstallOnion(key);
+                                  } catch (error) {
+                                    setOnionError("제거에 실패했습니다.");
+                                  }
+                                }}
+                                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                              >
+                                제거
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          setOnionError("");
+                          try {
+                            const status = await checkOnionUpdates();
+                            setComponentState("tor", status.components.tor);
+                            setComponentState("lokinet", status.components.lokinet);
+                            setOnionStatus({
+                              tor: status.components.tor,
+                              lokinet: status.components.lokinet,
+                              runtimeStatus: status.runtime.status,
+                            });
+                            setLastUpdateCheckAt(Date.now());
+                          } catch (error) {
+                            setOnionError("업데이트 확인에 실패했습니다.");
+                          }
+                        }}
+                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                      >
+                        업데이트 확인
+                      </button>
+                      {netConfig.lastUpdateCheckAtMs ? (
+                        <span className="text-[11px] text-nkc-muted">
+                          {new Date(netConfig.lastUpdateCheckAtMs).toLocaleString()}
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <div className="text-xs text-nkc-muted">사용</div>
+                    <label className="flex items-center justify-between text-sm">
+                      <span>Onion Router (익명) 사용</span>
+                      <input
+                        type="checkbox"
+                        checked={onionEnabledDraft}
+                        onChange={(event) => setOnionEnabledDraft(event.target.checked)}
+                      />
+                    </label>
+                    <div className="grid gap-2">
+                      <label className="flex items-center justify-between text-sm">
+                        <span>Tor</span>
+                        <input
+                          type="radio"
+                          name="onion-network"
+                          checked={onionNetworkDraft === "tor"}
+                          onChange={() => setOnionNetworkDraft("tor")}
+                          disabled={!torState.installed}
+                        />
+                      </label>
+                      <label className="flex items-center justify-between text-sm">
+                        <span>Lokinet</span>
+                        <input
+                          type="radio"
+                          name="onion-network"
+                          checked={onionNetworkDraft === "lokinet"}
+                          onChange={() => setOnionNetworkDraft("lokinet")}
+                          disabled={!lokinetState.installed}
+                        />
+                      </label>
+                    </div>
+                    <div className="text-xs text-nkc-muted leading-relaxed">
+                      <p>설치된 Tor/Lokinet을 로컬에서 실행해 SOCKS 프록시로 연결합니다.</p>
+                      <p>Onion 사용 시 direct P2P는 차단되며, 연결 상태에 따라 전송이 지연될 수 있습니다.</p>
+                    </div>
+                    {onionEnabledDraft &&
+                    !(onionNetworkDraft === "tor" ? torState.installed : lokinetState.installed) ? (
+                      <div className="text-xs text-red-300">
+                        선택한 네트워크가 설치되지 않았습니다.
+                      </div>
+                    ) : null}
+                    {onionError ? <div className="text-xs text-red-300">{onionError}</div> : null}
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={
+                          onionEnabledDraft &&
+                          !(onionNetworkDraft === "tor" ? torState.installed : lokinetState.installed)
+                        }
+                        onClick={async () => {
+                          setOnionError("");
+                          try {
+                            await setOnionMode(onionEnabledDraft, onionNetworkDraft);
+                            setOnionEnabled(onionEnabledDraft);
+                            setOnionNetwork(onionNetworkDraft);
+                            if (onionEnabledDraft) {
+                              setMode("onionRouter");
+                            } else if (netConfig.mode === "onionRouter") {
+                              setMode("auto");
+                            }
+                            setOnionSaveMessage("저장되었습니다.");
+                          } catch (error) {
+                            setOnionError("Onion 설정을 저장할 수 없습니다.");
+                          }
+                        }}
+                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                      >
+                        저장
+                      </button>
+                      {onionSaveMessage ? (
+                        <span className="text-xs text-nkc-muted">{onionSaveMessage}</span>
+                      ) : null}
+                    </div>
                   </div>
                 </div>
               </section>

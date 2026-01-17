@@ -1,6 +1,14 @@
 import { app, BrowserWindow, ipcMain, net, session } from "electron";
-import path from "node:path";
+import fs from "node:fs/promises";
+import path from "path";
 import { fileURLToPath } from "node:url";
+import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
+import { installTor } from "./main/onion/install/installTor";
+import { installLokinet } from "./main/onion/install/installLokinet";
+import { readCurrentPointer } from "./main/onion/install/swapperRollback";
+import { OnionRuntime } from "./main/onion/runtime/onionRuntime";
+import { checkUpdates } from "./main/onion/update/checkUpdates";
+import { PinnedHashMissingError } from "./main/onion/errors";
 
 type ProxyApplyPayload = {
   proxyUrl: string;
@@ -57,6 +65,269 @@ export const registerProxyIpc = () => {
   });
 };
 
+type OnionStatusPayload = {
+  components: {
+    tor: OnionComponentState;
+    lokinet: OnionComponentState;
+  };
+  runtime: ReturnType<OnionRuntime["getStatus"]>;
+};
+
+const onionRuntime = new OnionRuntime();
+const onionComponentCache: Record<OnionNetwork, OnionComponentState> = {
+  tor: { installed: false, status: "idle" },
+  lokinet: { installed: false, status: "idle" },
+};
+
+const refreshComponentState = async (userDataDir: string, network: OnionNetwork) => {
+  const pointer = await readCurrentPointer(userDataDir, network);
+  return {
+    ...onionComponentCache[network],
+    installed: Boolean(pointer),
+    version: pointer?.version,
+  };
+};
+
+const emitOnionProgress = (
+  event: Electron.IpcMainInvokeEvent,
+  network: OnionNetwork,
+  status: OnionComponentState
+) => {
+  event.sender.send("onion:progress", { network, status });
+};
+
+const registerOnionIpc = () => {
+  ipcMain.handle("onion:status", async () => {
+    const userDataDir = app.getPath("userData");
+    return {
+      components: {
+        tor: await refreshComponentState(userDataDir, "tor"),
+        lokinet: await refreshComponentState(userDataDir, "lokinet"),
+      },
+      runtime: onionRuntime.getStatus(),
+    } satisfies OnionStatusPayload;
+  });
+
+  ipcMain.handle("onion:checkUpdates", async () => {
+    const userDataDir = app.getPath("userData");
+    const torUpdate = await checkUpdates("tor");
+    const lokinetUpdate = await checkUpdates("lokinet");
+    const torState = await refreshComponentState(userDataDir, "tor");
+    const lokinetState = await refreshComponentState(userDataDir, "lokinet");
+    const torHasVerifiedUpdate =
+      Boolean(torUpdate.version && torUpdate.sha256 && torUpdate.downloadUrl);
+    const lokinetHasVerifiedUpdate =
+      Boolean(lokinetUpdate.version && lokinetUpdate.sha256 && lokinetUpdate.downloadUrl);
+    onionComponentCache.tor = {
+      ...torState,
+      latest: torHasVerifiedUpdate ? torUpdate.version ?? undefined : undefined,
+      error: torUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : undefined,
+    };
+    onionComponentCache.lokinet = {
+      ...lokinetState,
+      latest: lokinetHasVerifiedUpdate ? lokinetUpdate.version ?? undefined : undefined,
+      error:
+        lokinetUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : undefined,
+    };
+    return {
+      components: {
+        tor: onionComponentCache.tor,
+        lokinet: onionComponentCache.lokinet,
+      },
+      runtime: onionRuntime.getStatus(),
+    } satisfies OnionStatusPayload;
+  });
+
+  ipcMain.handle("onion:install", async (event, payload: { network: OnionNetwork }) => {
+    const userDataDir = app.getPath("userData");
+    const network = payload.network;
+    try {
+      const updates = await checkUpdates(network);
+      if (updates.errorCode === "PINNED_HASH_MISSING") {
+        throw new PinnedHashMissingError(
+          `Missing pinned hash for ${network} ${updates.assetName ?? updates.version ?? "unknown"}`
+        );
+      }
+      if (!updates.version || !updates.sha256 || !updates.downloadUrl || !updates.assetName) {
+        throw new Error("No verified release available");
+      }
+      onionComponentCache[network] = { ...onionComponentCache[network], status: "downloading" };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+      const install =
+        network === "tor"
+          ? installTor(
+              userDataDir,
+              updates.version,
+              (progress) => {
+              onionComponentCache[network] = {
+                ...onionComponentCache[network],
+                status: progress.step === "download" ? "downloading" : "installing",
+              };
+              emitOnionProgress(event, network, onionComponentCache[network]);
+              },
+              updates.downloadUrl ?? undefined,
+              updates.assetName ?? undefined
+            )
+          : installLokinet(
+              userDataDir,
+              updates.version,
+              (progress) => {
+              onionComponentCache[network] = {
+                ...onionComponentCache[network],
+                status: progress.step === "download" ? "downloading" : "installing",
+              };
+              emitOnionProgress(event, network, onionComponentCache[network]);
+              },
+              updates.downloadUrl ?? undefined,
+              updates.assetName ?? undefined
+            );
+      const result = await install;
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        installed: true,
+        status: "ready",
+        version: result.version,
+        error: undefined,
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+    } catch (error) {
+      if (error instanceof PinnedHashMissingError) {
+        console.warn("Pinned hash missing for install", error.details);
+      } else {
+        console.error("Onion install failed", error);
+      }
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        status: "failed",
+        error:
+          error instanceof PinnedHashMissingError
+            ? error.code
+            : error instanceof Error
+              ? error.message
+              : String(error),
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+      throw error;
+    }
+  });
+
+  ipcMain.handle("onion:applyUpdate", async (event, payload: { network: OnionNetwork }) => {
+    const network = payload.network;
+    const state = onionComponentCache[network];
+    if (!state.latest) {
+      throw new Error("No update available");
+    }
+    const updateInfo = await checkUpdates(network);
+    if (updateInfo.errorCode === "PINNED_HASH_MISSING") {
+      throw new PinnedHashMissingError(
+        `Missing pinned hash for ${network} ${updateInfo.assetName ?? updateInfo.version ?? "unknown"}`
+      );
+    }
+    if (!updateInfo.version || !updateInfo.sha256 || !updateInfo.downloadUrl || !updateInfo.assetName) {
+      throw new Error("No verified release available");
+    }
+    const updateVersion = updateInfo.version ?? state.latest;
+    if (!updateVersion) {
+      throw new Error("No verified release available");
+    }
+    const userDataDir = app.getPath("userData");
+    try {
+      const install =
+        network === "tor"
+          ? installTor(
+              userDataDir,
+              updateVersion,
+              (progress) => {
+                onionComponentCache[network] = {
+                  ...onionComponentCache[network],
+                  status: progress.step === "download" ? "downloading" : "installing",
+                };
+                emitOnionProgress(event, network, onionComponentCache[network]);
+              },
+              updateInfo.downloadUrl ?? undefined,
+              updateInfo.assetName ?? undefined
+            )
+          : installLokinet(
+              userDataDir,
+              updateVersion,
+              (progress) => {
+                onionComponentCache[network] = {
+                  ...onionComponentCache[network],
+                  status: progress.step === "download" ? "downloading" : "installing",
+                };
+                emitOnionProgress(event, network, onionComponentCache[network]);
+              },
+              updateInfo.downloadUrl ?? undefined,
+              updateInfo.assetName ?? undefined
+            );
+      const result = await install;
+      const runtime = onionRuntime.getStatus();
+      if (runtime.status === "running" && runtime.network === network) {
+        try {
+          await onionRuntime.start(userDataDir, network);
+        } catch (error) {
+          await result.rollback();
+          await onionRuntime.start(userDataDir, network);
+          throw error;
+        }
+      }
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        installed: true,
+        status: "ready",
+        version: result.version,
+        error: undefined,
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+    } catch (error) {
+      if (error instanceof PinnedHashMissingError) {
+        console.warn("Pinned hash missing for update", error.details);
+      } else {
+        console.error("Onion update failed", error);
+      }
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        status: "failed",
+        error:
+          error instanceof PinnedHashMissingError
+            ? error.code
+            : error instanceof Error
+              ? error.message
+              : String(error),
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+      throw error;
+    }
+  });
+
+  ipcMain.handle("onion:uninstall", async (_event, payload: { network: OnionNetwork }) => {
+    const network = payload.network;
+    await onionRuntime.stop();
+    const userDataDir = app.getPath("userData");
+    const componentRoot = path.join(userDataDir, "onion", "components", network);
+    await fs.rm(componentRoot, { recursive: true, force: true });
+    onionComponentCache[network] = { installed: false, status: "idle" };
+  });
+
+  ipcMain.handle(
+    "onion:setMode",
+    async (_event, payload: { enabled: boolean; network: OnionNetwork }) => {
+      const userDataDir = app.getPath("userData");
+      if (!payload.enabled) {
+        await onionRuntime.stop();
+        return;
+      }
+      await onionRuntime.start(userDataDir, payload.network);
+    }
+  );
+};
+
+if (process.env.VITE_DEV_SERVER_URL) {
+  const devUserData = path.join(app.getPath("localAppData"), "test-dev");
+  app.setPath("userData", devUserData);
+  app.setPath("cache", path.join(devUserData, "Cache"));
+}
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
 
@@ -82,6 +353,7 @@ export const createMainWindow = () => {
 
 app.whenReady().then(() => {
   registerProxyIpc();
+  registerOnionIpc();
   createMainWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

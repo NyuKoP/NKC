@@ -21,6 +21,11 @@ const baseConfig: NetConfig = {
   selfOnionEnabled: true,
   selfOnionMinRelays: 5,
   allowRemoteProxy: false,
+  onionEnabled: true,
+  onionSelectedNetwork: "tor",
+  tor: { installed: true, status: "ready", version: "1.0.0" },
+  lokinet: { installed: false, status: "idle" },
+  lastUpdateCheckAtMs: undefined,
 };
 
 describe("onionProxyDetect", () => {
