@@ -1,65 +1,39 @@
-import { useEffect, useMemo, useState } from "react";
-import { Download, Eye, EyeOff, KeyRound, Upload } from "lucide-react";
-import { generateRecoveryKey } from "../crypto/vault";
-import { useAppStore } from "../app/store";
+import { useEffect, useState } from "react";
+import { Upload } from "lucide-react";
 
 type OnboardingProps = {
-  onCreate: (recoveryKey: string, displayName: string) => Promise<void>;
+  onCreate: (displayName: string) => Promise<void>;
   onImport: (recoveryKey: string, displayName: string) => Promise<void>;
+  defaultTab?: "create" | "import";
+  errorMessage?: string;
 };
 
-export default function Onboarding({ onCreate, onImport }: OnboardingProps) {
-  const [tab, setTab] = useState<"create" | "import">("create");
-  const recoveryKey = useAppStore((state) => state.ui.onboardingRecoveryKey);
-  const setRecoveryKey = useAppStore((state) => state.setOnboardingRecoveryKey);
-  const setMode = useAppStore((state) => state.setMode);
-  const setSession = useAppStore((state) => state.setSession);
-  const setData = useAppStore((state) => state.setData);
+export default function Onboarding({
+  onCreate,
+  onImport,
+  defaultTab = "create",
+  errorMessage,
+}: OnboardingProps) {
+  const [tab, setTab] = useState<"create" | "import">(defaultTab);
   const [displayName, setDisplayName] = useState("");
   const [importKey, setImportKey] = useState("");
   const [confirmed, setConfirmed] = useState(false);
-  const [masked, setMasked] = useState(true);
+  const [busy, setBusy] = useState<"create" | "import" | null>(null);
+  const [localError, setLocalError] = useState("");
 
-  useEffect(() => {
-    if (tab === "create" && !recoveryKey) {
-      generateRecoveryKey().then(setRecoveryKey);
-    }
-  }, [recoveryKey, setRecoveryKey, tab]);
-
-  useEffect(() => {
-    setMasked(true);
-  }, [tab]);
-
-  const maskedValue = useMemo(() => {
-    if (!recoveryKey) return "";
-    return "●".repeat(recoveryKey.length);
-  }, [recoveryKey]);
-
-  const handleCopy = async () => {
-    if (!recoveryKey) return;
-    await navigator.clipboard.writeText(recoveryKey);
+  const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+  const logClick = (mode: "create" | "import", disabled: boolean) => {
+    if (!isDev) return;
+    console.log("Onboarding button clicked", { mode, disabled });
   };
 
-  const handleDownload = () => {
-    if (!recoveryKey) return;
-    const blob = new Blob([recoveryKey], { type: "text/plain" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "nkc-recovery-key.txt";
-    link.click();
-    URL.revokeObjectURL(url);
-  };
+  useEffect(() => {
+    setTab(defaultTab);
+  }, [defaultTab]);
 
   const handleUpload = async (file: File) => {
     const text = await file.text();
     setImportKey(text.trim());
-  };
-
-  const handleTestEnter = () => {
-    setSession({ unlocked: false, vkInMemory: false });
-    setData({ user: null, friends: [], convs: [], messagesByConv: {} });
-    setMode("app");
   };
 
   return (
@@ -69,7 +43,7 @@ export default function Onboarding({ onCreate, onImport }: OnboardingProps) {
           <div>
             <h1 className="text-xl font-semibold">NKC 시작하기</h1>
             <p className="mt-2 text-sm text-nkc-muted">
-              복구키로만 로컬 금고를 열 수 있습니다. 절대 잃지 마세요.
+              복구키는 복구 화면에서만 생성됩니다. 설정 후 바로 저장하세요.
             </p>
           </div>
           <span className="rounded-full bg-nkc-panelMuted px-3 py-1 text-xs font-semibold text-nkc-accent">
@@ -98,60 +72,8 @@ export default function Onboarding({ onCreate, onImport }: OnboardingProps) {
 
         {tab === "create" ? (
           <div className="mt-6 space-y-4">
-            <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <h3 className="text-sm font-semibold text-nkc-text">내 복구키</h3>
-                  <p className="mt-1 text-xs text-nkc-muted">
-                    이 키는 저장소 접근을 복구하는 유일한 방법입니다.
-                  </p>
-                </div>
-                <KeyRound className="text-nkc-accent" size={18} />
-              </div>
-              <div className="mt-3 flex flex-col gap-2 rounded-nkc border border-dashed border-nkc-border bg-nkc-panel px-3 py-2">
-                <input
-                  value={masked ? maskedValue : recoveryKey}
-                  readOnly
-                  autoComplete="off"
-                  aria-label="복구키"
-                  className="w-full bg-transparent text-sm font-semibold text-nkc-text focus:outline-none"
-                />
-                <button
-                  type="button"
-                  onClick={() => setMasked((value) => !value)}
-                  aria-label={masked ? "복구키 보기" : "복구키 숨기기"}
-                  className="inline-flex w-fit items-center gap-1 rounded-nkc border border-nkc-border px-3 py-1 text-xs font-medium text-nkc-text hover:bg-nkc-panelMuted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nkc-accent focus-visible:ring-offset-2 focus-visible:ring-offset-nkc-panel"
-                >
-                  {masked ? <Eye size={14} /> : <EyeOff size={14} />}
-                  {masked ? "복구키 보기" : "복구키 숨기기"}
-                </button>
-              </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <button
-                  onClick={handleCopy}
-                  className="rounded-nkc border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!recoveryKey}
-                >
-                  복사
-                </button>
-                <button
-                  onClick={handleDownload}
-                  className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!recoveryKey}
-                >
-                  <Download size={14} />
-                  txt 저장
-                </button>
-                <button
-                  onClick={async () => {
-                    setRecoveryKey(await generateRecoveryKey());
-                    setMasked(true);
-                  }}
-                  className="rounded-nkc border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-panel"
-                >
-                  새 키 생성
-                </button>
-              </div>
+            <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-xs text-nkc-muted">
+              복구키는 설정 완료 후 복구키 화면에서 생성합니다.
             </div>
 
             <label className="text-sm">
@@ -168,24 +90,45 @@ export default function Onboarding({ onCreate, onImport }: OnboardingProps) {
               <input
                 type="checkbox"
                 checked={confirmed}
-                onChange={(event) => setConfirmed(event.target.checked)}
+                onChange={(event) => {
+                  setConfirmed(event.target.checked);
+                  setLocalError("");
+                }}
               />
-              복구키를 안전한 곳에 저장했습니다.
+              복구키를 별도로 저장해야 함을 확인했습니다.
             </label>
 
             <button
-              onClick={() => onCreate(recoveryKey, displayName.trim() || "NKC 사용자")}
+              onClick={async () => {
+                const disabled = !confirmed || busy === "create";
+                logClick("create", disabled);
+                if (!confirmed) {
+                  setLocalError("체크박스를 확인해주세요.");
+                  return;
+                }
+                setLocalError("");
+                setBusy("create");
+                try {
+                  await onCreate(displayName.trim() || "NKC 사용자");
+                } catch (error) {
+                  console.error("Onboarding create failed", error);
+                  setLocalError("계정 생성에 실패했습니다.");
+                } finally {
+                  setBusy(null);
+                }
+              }}
               className="w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!confirmed || !recoveryKey}
+              disabled={!confirmed || busy === "create"}
             >
-              이 키로 시작하기
+              {busy === "create" ? "처리 중..." : "계속하기"}
             </button>
-            <button
-              onClick={handleTestEnter}
-              className="w-full rounded-nkc border border-nkc-border px-4 py-2 text-xs text-nkc-muted hover:bg-nkc-panel"
-            >
-              테스트 채팅 바로가기
-            </button>
+            {!confirmed ? (
+              <div className="text-xs text-nkc-muted">체크박스를 확인해주세요.</div>
+            ) : null}
+            {localError ? <div className="text-xs text-red-300">{localError}</div> : null}
+            {errorMessage ? (
+              <div className="text-xs text-red-300">{errorMessage}</div>
+            ) : null}
           </div>
         ) : (
           <div className="mt-6 space-y-4">
@@ -193,7 +136,10 @@ export default function Onboarding({ onCreate, onImport }: OnboardingProps) {
               복구키 입력
               <textarea
                 value={importKey}
-                onChange={(event) => setImportKey(event.target.value)}
+                onChange={(event) => {
+                  setImportKey(event.target.value);
+                  setLocalError("");
+                }}
                 className="mt-2 h-24 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
                 placeholder="NKC-XXXX-XXXX-XXXX-XXXX"
               />
@@ -201,7 +147,7 @@ export default function Onboarding({ onCreate, onImport }: OnboardingProps) {
 
             <label className="flex cursor-pointer items-center gap-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
               <Upload size={14} />
-              텍스트 파일 가져오기
+              txt 파일 가져오기
               <input
                 type="file"
                 accept=".txt"
@@ -223,11 +169,33 @@ export default function Onboarding({ onCreate, onImport }: OnboardingProps) {
             </label>
 
             <button
-              onClick={() => onImport(importKey, displayName.trim() || "NKC 사용자")}
-              className="w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg"
+              onClick={async () => {
+                const disabled = !importKey.trim() || busy === "import";
+                logClick("import", disabled);
+                if (!importKey.trim()) {
+                  setLocalError("복구키를 입력해주세요.");
+                  return;
+                }
+                setLocalError("");
+                setBusy("import");
+                try {
+                  await onImport(importKey.trim(), displayName.trim() || "NKC 사용자");
+                } catch (error) {
+                  console.error("Onboarding import failed", error);
+                  setLocalError("복구키로 잠금 해제에 실패했습니다.");
+                } finally {
+                  setBusy(null);
+                }
+              }}
+              className="w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={busy === "import"}
             >
-              복구키로 잠금 해제
+              {busy === "import" ? "처리 중..." : "복구키로 잠금 해제"}
             </button>
+            {!importKey.trim() ? (
+              <div className="text-xs text-nkc-muted">복구키를 입력해주세요.</div>
+            ) : null}
+            {localError ? <div className="text-xs text-red-300">{localError}</div> : null}
           </div>
         )}
       </div>

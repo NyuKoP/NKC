@@ -30,7 +30,6 @@ export type AppState = {
     search: string;
     toast: Toast[];
     confirm: ConfirmState;
-    onboardingRecoveryKey: string;
   };
   session: {
     unlocked: boolean;
@@ -48,7 +47,6 @@ export type AppState = {
   setListMode: (mode: ListMode) => void;
   setSearch: (value: string) => void;
   setSession: (value: Partial<AppState["session"]>) => void;
-  setOnboardingRecoveryKey: (value: string) => void;
   setData: (payload: {
     user: UserProfile | null;
     friends: UserProfile[];
@@ -71,7 +69,6 @@ export const useAppStore = create<AppState>((set) => ({
     search: "",
     toast: [],
     confirm: null,
-    onboardingRecoveryKey: "",
   },
   session: {
     unlocked: false,
@@ -96,8 +93,6 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({ ui: { ...state.ui, search: value } })),
   setSession: (value) =>
     set((state) => ({ session: { ...state.session, ...value } })),
-  setOnboardingRecoveryKey: (value) =>
-    set((state) => ({ ui: { ...state.ui, onboardingRecoveryKey: value } })),
   setData: ({ user, friends, convs, messagesByConv }) =>
     set({ userProfile: user, friends, convs, messagesByConv }),
   addToast: (toast) =>

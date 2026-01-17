@@ -1,0 +1,34 @@
+import { getSecureStore } from "./secureStore";
+
+export type PrivacyPreferences = {
+  readReceipts: boolean;
+  typingIndicator: boolean;
+  linkPreviews: boolean;
+};
+
+const PREF_KEY = "nkc_privacy_prefs_v1";
+
+export const defaultPrivacyPrefs: PrivacyPreferences = {
+  readReceipts: true,
+  typingIndicator: true,
+  linkPreviews: true,
+};
+
+export const getPrivacyPrefs = async () => {
+  const store = getSecureStore();
+  const raw = await store.get(PREF_KEY);
+  if (!raw) return defaultPrivacyPrefs;
+  try {
+    const parsed = JSON.parse(raw) as Partial<PrivacyPreferences>;
+    return { ...defaultPrivacyPrefs, ...parsed };
+  } catch (error) {
+    console.error("Failed to read privacy prefs", error);
+    await store.remove(PREF_KEY);
+    return defaultPrivacyPrefs;
+  }
+};
+
+export const setPrivacyPrefs = async (prefs: PrivacyPreferences) => {
+  const store = getSecureStore();
+  await store.set(PREF_KEY, JSON.stringify({ ...prefs, updatedAt: Date.now() }));
+};
