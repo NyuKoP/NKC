@@ -3,40 +3,54 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import electron from "vite-plugin-electron";
 
+const electronBuild = {
+  outDir: "dist-electron",
+  sourcemap: true,
+  emptyOutDir: false,
+  rollupOptions: {
+    external: ["electron"],
+    output: {
+      format: "cjs" as const,
+      entryFileNames: "[name].js",
+    },
+  },
+} satisfies import("vite").BuildOptions;
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
     react(),
-    electron({
-      entry: "src/main.ts",
-      onstart({ startup }) {
-        void startup(["."]);
-      },
-      vite: {
-        build: {
-          outDir: "dist-electron",
-          sourcemap: true,
-          rollupOptions: {
-            external: ["electron"],
-          },
-        },
-      },
-      preload: {
-        input: {
-          preload: "src/preload.ts",
+
+    electron([
+      // =========================
+      // main process
+      // =========================
+      {
+        entry: "src/main.ts",
+        onstart({ startup }) {
+          void startup(["."]);
         },
         vite: {
           build: {
-            outDir: "dist-electron",
-            sourcemap: true,
-            rollupOptions: {
-              external: ["electron"],
-            },
+            ...electronBuild,
           },
         },
       },
-    }),
+
+      // =========================
+      // preload process
+      // =========================
+      {
+        entry: "src/preload.ts",
+        vite: {
+          build: {
+            ...electronBuild,
+          },
+        },
+      },
+    ]),
   ],
+
   resolve: {
     alias: {
       "libsodium-wrappers-sumo": path.resolve(
@@ -49,7 +63,8 @@ export default defineConfig({
       ),
     },
   },
+
   optimizeDeps: {
     include: ["libsodium-wrappers-sumo", "libsodium-sumo"],
   },
-})
+});

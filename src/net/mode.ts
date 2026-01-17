@@ -1,3 +1,3 @@
-export type NetworkMode = "auto" | "selfOnion" | "onionRouter" | "directP2P";
+export type NetworkMode = "selfOnion" | "onionRouter" | "directP2P";
 
-export const DEFAULT_MODE: NetworkMode = "auto";
+export const DEFAULT_MODE: NetworkMode = "selfOnion";
