@@ -35,9 +35,10 @@ const persistConfig = (config: NetConfig) => {
 };
 
 export const enforceRules = (config: NetConfig): NetConfig => {
-  if (config.mode === "onionRouter") {
+  if (config.mode === "onionRouter" || config.onionEnabled) {
     return {
       ...config,
+      mode: "onionRouter",
       onionProxyEnabled: true,
       webrtcRelayOnly: true,
       disableLinkPreview: true,
@@ -54,6 +55,13 @@ type NetConfigState = {
   setDisableLinkPreview: (value: boolean) => void;
   setSelfOnionEnabled: (value: boolean) => void;
   setSelfOnionMinRelays: (value: number) => void;
+  setOnionEnabled: (value: boolean) => void;
+  setOnionNetwork: (value: NetConfig["onionSelectedNetwork"]) => void;
+  setComponentState: (
+    network: NetConfig["onionSelectedNetwork"],
+    state: Partial<NetConfig["tor"]>
+  ) => void;
+  setLastUpdateCheckAt: (value: number | undefined) => void;
   setConfig: (next: NetConfig) => void;
 };
 
@@ -90,6 +98,30 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
   },
   setSelfOnionMinRelays: (value) => {
     const next = enforceRules({ ...get().config, selfOnionMinRelays: value });
+    persistConfig(next);
+    set({ config: next });
+  },
+  setOnionEnabled: (value) => {
+    const next = enforceRules({ ...get().config, onionEnabled: value });
+    persistConfig(next);
+    set({ config: next });
+  },
+  setOnionNetwork: (value) => {
+    const next = enforceRules({ ...get().config, onionSelectedNetwork: value });
+    persistConfig(next);
+    set({ config: next });
+  },
+  setComponentState: (network, state) => {
+    const current = get().config;
+    const next = enforceRules({
+      ...current,
+      [network]: { ...current[network], ...state },
+    });
+    persistConfig(next);
+    set({ config: next });
+  },
+  setLastUpdateCheckAt: (value) => {
+    const next = enforceRules({ ...get().config, lastUpdateCheckAtMs: value });
     persistConfig(next);
     set({ config: next });
   },
