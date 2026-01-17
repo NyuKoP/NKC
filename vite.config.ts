@@ -9,6 +9,9 @@ export default defineConfig({
     react(),
     electron({
       entry: "src/main.ts",
+      onstart({ startup }) {
+        void startup(["."]);
+      },
       vite: {
         build: {
           outDir: "dist-electron",
