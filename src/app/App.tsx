@@ -591,6 +591,12 @@ export default function App() {
     });
   };
 
+  const handleTogglePin = (convId: string) => {
+    const target = convs.find((conv) => conv.id === convId);
+    if (!target) return;
+    updateConversation(convId, { pinned: !target.pinned });
+  };
+
   const handleMute = (convId: string) => {
     const target = convs.find((conv) => conv.id === convId);
     updateConversation(convId, { muted: !target?.muted });
@@ -604,6 +610,7 @@ export default function App() {
   const handleFriendChat = async (friendId: string) => {
     try {
       await handleSelectFriend(friendId);
+      setListMode("chats");
     } catch (error) {
       console.error("Failed to open chat", error);
       addToast({ message: "채팅 열기에 실패했습니다." });
@@ -613,6 +620,7 @@ export default function App() {
   const handleFriendViewProfile = async (friendId: string) => {
     try {
       await handleSelectFriend(friendId);
+      setListMode("chats");
       setRightTab("about");
       setRightPanelOpen(true);
     } catch (error) {
@@ -731,6 +739,10 @@ export default function App() {
     }
   };
 
+  const handleCreateGroup = () => {
+    addToast({ message: "그룹 만들기는 준비 중입니다." });
+  };
+
   const handleAddFriend = async (rawId: string) => {
     const trimmed = rawId.trim();
     if (!trimmed) {
@@ -817,6 +829,7 @@ export default function App() {
         onSearch={setSearch}
         onSelectConv={handleSelectConv}
         onAddFriend={() => setFriendAddOpen(true)}
+        onCreateGroup={handleCreateGroup}
         onFriendChat={handleFriendChat}
         onFriendViewProfile={handleFriendViewProfile}
         onFriendToggleFavorite={handleFriendToggleFavorite}
@@ -828,6 +841,7 @@ export default function App() {
         onLock={handleLock}
         onHide={handleHide}
         onDelete={handleDelete}
+        onTogglePin={handleTogglePin}
         onMute={handleMute}
         onBlock={handleBlock}
       />

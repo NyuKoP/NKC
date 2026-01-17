@@ -6,9 +6,23 @@ type OverflowMenuProps = {
   onDelete: () => void;
   onBlock: () => void;
   onMute: () => void;
+  onTogglePin: () => void;
+  muted: boolean;
+  pinned: boolean;
 };
 
-export default function OverflowMenu({ onHide, onDelete, onBlock, onMute }: OverflowMenuProps) {
+export default function OverflowMenu({
+  onHide,
+  onDelete,
+  onBlock,
+  onMute,
+  onTogglePin,
+  muted,
+  pinned,
+}: OverflowMenuProps) {
+  const muteLabel = muted ? "음소거 해제" : "음소거";
+  const pinLabel = pinned ? "고정 해제" : "고정";
+
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -22,6 +36,12 @@ export default function OverflowMenu({ onHide, onDelete, onBlock, onMute }: Over
           className="min-w-[160px] rounded-nkc border border-nkc-border bg-nkc-panel p-2 text-sm shadow-soft"
         >
           <DropdownMenu.Item
+            onSelect={onTogglePin}
+            className="cursor-pointer rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
+          >
+            {pinLabel}
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
             onSelect={onHide}
             className="cursor-pointer rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
           >
@@ -31,7 +51,7 @@ export default function OverflowMenu({ onHide, onDelete, onBlock, onMute }: Over
             onSelect={onMute}
             className="cursor-pointer rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
           >
-            음소거
+            {muteLabel}
           </DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={onBlock}

@@ -7,7 +7,6 @@ type SessionRecord = {
   expiresAt: number;
   mask_b64: string;
   key_b64: string;
-  keyId_b64?: string;
 };
 
 const SESSION_KEY = "nkc_session_v1";
@@ -36,18 +35,10 @@ const randomBytes = (length: number) => {
   return bytes;
 };
 
-const computeKeyId = async (vaultKey: Uint8Array) => {
-  if (!globalThis.crypto?.subtle) return null;
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", vaultKey);
-  const short = new Uint8Array(digest).slice(0, 16);
-  return toB64(short);
-};
-
 export const setSession = async (vaultKey: Uint8Array, ttlMs = DEFAULT_TTL_MS) => {
   const store = getSecureStore();
   const mask = randomBytes(vaultKey.length);
   const masked = xorBytes(vaultKey, mask);
-  const keyId = await computeKeyId(vaultKey);
   const record: SessionRecord = {
     v: 1,
     scope: "vault",
@@ -55,7 +46,6 @@ export const setSession = async (vaultKey: Uint8Array, ttlMs = DEFAULT_TTL_MS) =
     expiresAt: Date.now() + ttlMs,
     mask_b64: toB64(mask),
     key_b64: toB64(masked),
-    keyId_b64: keyId ?? undefined,
   };
   await store.set(SESSION_KEY, JSON.stringify(record));
 };
@@ -80,11 +70,7 @@ export const getSession = async () => {
       await store.remove(SESSION_KEY);
       return null;
     }
-    return {
-      vaultKey: xorBytes(masked, mask),
-      expiresAt: record.expiresAt,
-      keyId: record.keyId_b64 ?? null,
-    };
+    return { vaultKey: xorBytes(masked, mask), expiresAt: record.expiresAt };
   } catch (error) {
     console.error("Failed to read session", error);
     await store.remove(SESSION_KEY);

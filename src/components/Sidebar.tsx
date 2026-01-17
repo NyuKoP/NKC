@@ -21,6 +21,7 @@ type SidebarProps = {
   onSearch: (value: string) => void;
   onSelectConv: (id: string) => void;
   onAddFriend: () => void;
+  onCreateGroup: () => void;
   onFriendChat: (id: string) => void;
   onFriendViewProfile: (id: string) => void;
   onFriendToggleFavorite: (id: string) => void;
@@ -34,6 +35,7 @@ type SidebarProps = {
   onDelete: (id: string) => void;
   onMute: (id: string) => void;
   onBlock: (id: string) => void;
+  onTogglePin: (id: string) => void;
 };
 
 export default function Sidebar({
@@ -47,6 +49,7 @@ export default function Sidebar({
   onSearch,
   onSelectConv,
   onAddFriend,
+  onCreateGroup,
   onFriendChat,
   onFriendViewProfile,
   onFriendToggleFavorite,
@@ -60,6 +63,7 @@ export default function Sidebar({
   onDelete,
   onMute,
   onBlock,
+  onTogglePin,
 }: SidebarProps) {
   const searchLower = search.trim().toLowerCase();
   const friendMap = new Map(friends.map((friend) => [friend.id, friend]));
@@ -86,6 +90,8 @@ export default function Sidebar({
       }
       return a.isFavorite ? -1 : 1;
     });
+  const favoriteFriends = visibleFriends.filter((friend) => friend.isFavorite);
+  const regularFriends = visibleFriends.filter((friend) => !friend.isFavorite);
 
   return (
     <aside className="flex h-full w-[320px] flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft">
@@ -165,7 +171,10 @@ export default function Sidebar({
           >
             친구 추가
           </button>
-          <button className="rounded-nkc border border-nkc-border px-3 py-2 text-left hover:bg-nkc-panelMuted">
+          <button
+            onClick={onCreateGroup}
+            className="rounded-nkc border border-nkc-border px-3 py-2 text-left hover:bg-nkc-panelMuted"
+          >
             그룹 만들기
           </button>
         </div>
@@ -187,6 +196,7 @@ export default function Sidebar({
                       onSelect={() => onSelectConv(conv.id)}
                       onHide={() => onHide(conv.id)}
                       onDelete={() => onDelete(conv.id)}
+                      onTogglePin={() => onTogglePin(conv.id)}
                       onMute={() => onMute(conv.id)}
                       onBlock={() => onBlock(conv.id)}
                     />
@@ -209,61 +219,102 @@ export default function Sidebar({
                       onSelect={() => onSelectConv(conv.id)}
                       onHide={() => onHide(conv.id)}
                       onDelete={() => onDelete(conv.id)}
+                      onTogglePin={() => onTogglePin(conv.id)}
                       onMute={() => onMute(conv.id)}
                       onBlock={() => onBlock(conv.id)}
                     />
                   ))
                 ) : (
                   <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
-                    아직 대화가 없습니다.
+                    ?勳 ?€?旉? ?嗢姷?堧嫟.
                   </div>
                 )}
               </div>
             </section>
           </div>
         ) : (
-          <section className="space-y-3">
-            <h2 className="text-xs uppercase tracking-widest text-nkc-muted">Friends</h2>
-            <div className="space-y-2">
-              {visibleFriends.length ? (
-                visibleFriends.map((friend) => (
-                  <button
-                    key={friend.id}
-                    onClick={() => onFriendChat(friend.id)}
-                    className="flex w-full items-start gap-3 rounded-nkc border border-transparent px-3 py-3.5 text-left hover:bg-nkc-panelMuted"
-                  >
-                    <Avatar name={friend.displayName} avatarRef={friend.avatarRef} size={42} />
-                    <div className="min-w-0 flex-1">
-                      <div className="text-sm font-semibold text-nkc-text line-clamp-1">
-                        {friend.displayName}
+          <div className="space-y-5">
+            {favoriteFriends.length ? (
+              <section className="space-y-3">
+                <h2 className="text-xs uppercase tracking-widest text-nkc-muted">즐겨찾기</h2>
+                <div className="space-y-2">
+                  {favoriteFriends.map((friend) => (
+                    <button
+                      key={friend.id}
+                      onClick={() => onFriendChat(friend.id)}
+                      className="flex w-full items-start gap-3 rounded-nkc border border-transparent px-3 py-3.5 text-left hover:bg-nkc-panelMuted"
+                    >
+                      <Avatar name={friend.displayName} avatarRef={friend.avatarRef} size={42} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-semibold text-nkc-text line-clamp-1">
+                          {friend.displayName}
+                        </div>
+                        <div className="text-xs text-nkc-muted line-clamp-1">{friend.status}</div>
                       </div>
-                      <div className="text-xs text-nkc-muted line-clamp-1">{friend.status}</div>
-                    </div>
-                    <div className="flex items-start gap-2">
-                      {friend.isFavorite ? (
-                        <span className="text-[11px] text-nkc-muted">즐겨찾기</span>
-                      ) : (
-                        <span className="text-[11px] text-nkc-muted">친구</span>
-                      )}
-                      <FriendOverflowMenu
-                        isFavorite={friend.isFavorite}
-                        onChat={() => onFriendChat(friend.id)}
-                        onViewProfile={() => onFriendViewProfile(friend.id)}
-                        onToggleFavorite={() => onFriendToggleFavorite(friend.id)}
-                        onHide={() => onFriendHide(friend.id)}
-                        onDelete={() => onFriendDelete(friend.id)}
-                        onBlock={() => onFriendBlock(friend.id)}
-                      />
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
-                  표시할 친구가 없습니다.
+                      <div className="flex items-start gap-2">
+                        {friend.isFavorite ? (
+                          <span className="text-[11px] text-nkc-muted">즐겨찾기</span>
+                        ) : (
+                          <span className="text-[11px] text-nkc-muted">친구</span>
+                        )}
+                        <FriendOverflowMenu
+                          isFavorite={friend.isFavorite}
+                          onChat={() => onFriendChat(friend.id)}
+                          onViewProfile={() => onFriendViewProfile(friend.id)}
+                          onToggleFavorite={() => onFriendToggleFavorite(friend.id)}
+                          onHide={() => onFriendHide(friend.id)}
+                          onDelete={() => onFriendDelete(friend.id)}
+                          onBlock={() => onFriendBlock(friend.id)}
+                        />
+                      </div>
+                    </button>
+                  ))}
                 </div>
-              )}
-            </div>
-          </section>
+              </section>
+            ) : null}
+            <section className="space-y-3">
+              <h2 className="text-xs uppercase tracking-widest text-nkc-muted">친구</h2>
+              <div className="space-y-2">
+                {regularFriends.length ? (
+                  regularFriends.map((friend) => (
+                    <button
+                      key={friend.id}
+                      onClick={() => onFriendChat(friend.id)}
+                      className="flex w-full items-start gap-3 rounded-nkc border border-transparent px-3 py-3.5 text-left hover:bg-nkc-panelMuted"
+                    >
+                      <Avatar name={friend.displayName} avatarRef={friend.avatarRef} size={42} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-semibold text-nkc-text line-clamp-1">
+                          {friend.displayName}
+                        </div>
+                        <div className="text-xs text-nkc-muted line-clamp-1">{friend.status}</div>
+                      </div>
+                      <div className="flex items-start gap-2">
+                        {friend.isFavorite ? (
+                          <span className="text-[11px] text-nkc-muted">즐겨찾기</span>
+                        ) : (
+                          <span className="text-[11px] text-nkc-muted">친구</span>
+                        )}
+                        <FriendOverflowMenu
+                          isFavorite={friend.isFavorite}
+                          onChat={() => onFriendChat(friend.id)}
+                          onViewProfile={() => onFriendViewProfile(friend.id)}
+                          onToggleFavorite={() => onFriendToggleFavorite(friend.id)}
+                          onHide={() => onFriendHide(friend.id)}
+                          onDelete={() => onFriendDelete(friend.id)}
+                          onBlock={() => onFriendBlock(friend.id)}
+                        />
+                      </div>
+                    </button>
+                  ))
+                ) : (
+                  <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
+                    표시할 친구가 없습니다.
+                  </div>
+                )}
+              </div>
+            </section>
+          </div>
         )}
       </div>
     </aside>
@@ -279,6 +330,7 @@ type ConversationRowProps = {
   onDelete: () => void;
   onMute: () => void;
   onBlock: () => void;
+  onTogglePin: () => void;
 };
 
 function ConversationRow({
@@ -290,6 +342,7 @@ function ConversationRow({
   onDelete,
   onMute,
   onBlock,
+  onTogglePin,
 }: ConversationRowProps) {
   return (
     <div
@@ -336,7 +389,15 @@ function ConversationRow({
         onClick={(event) => event.stopPropagation()}
         onKeyDown={(event) => event.stopPropagation()}
       >
-        <OverflowMenu onHide={onHide} onDelete={onDelete} onMute={onMute} onBlock={onBlock} />
+        <OverflowMenu
+          onHide={onHide}
+          onDelete={onDelete}
+          onMute={onMute}
+          onBlock={onBlock}
+          onTogglePin={onTogglePin}
+          muted={conv.muted}
+          pinned={conv.pinned}
+        />
       </div>
     </div>
   );
