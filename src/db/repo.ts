@@ -1,4 +1,4 @@
-import { db } from "./schema";
+import { db, ensureDbOpen, resetDb } from "./schema";
 import type { EncryptedRecord, MediaChunkRecord, MessageRecord } from "./schema";
 import {
   chunkBuffer,
@@ -9,7 +9,6 @@ import {
   deriveVk,
   encodeBinaryEnvelope,
   encryptJsonRecord,
-  initSodium,
   type VaultHeader,
 } from "../crypto/vault";
 import { clearVaultKey, getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
@@ -30,6 +29,11 @@ export type UserProfile = {
   theme: "dark" | "light";
   avatarRef?: AvatarRef;
   kind: "user" | "friend";
+  friendId?: string;
+  friendStatus?: "normal" | "hidden" | "blocked";
+  isFavorite?: boolean;
+  createdAt?: number;
+  updatedAt?: number;
 };
 
 export type Conversation = {
@@ -54,6 +58,7 @@ export type Message = {
 };
 
 const VAULT_META_KEY = "vault_header_v2";
+const VAULT_KEY_ID_KEY = "vault_key_id_v1";
 const MEDIA_CHUNK_SIZE = 256 * 1024;
 
 const requireVaultKey = () => {
@@ -62,7 +67,40 @@ const requireVaultKey = () => {
   return vk;
 };
 
+const toB64 = (bytes: Uint8Array) =>
+  btoa(String.fromCharCode(...Array.from(bytes)));
+
+const computeVaultKeyId = async (vk: Uint8Array) => {
+  if (!globalThis.crypto?.subtle) return null;
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", vk);
+  return toB64(new Uint8Array(digest).slice(0, 16));
+};
+
+export const getVaultKeyId = async () => {
+  await ensureDbOpen();
+  const record = await db.meta.get(VAULT_KEY_ID_KEY);
+  return record?.value || null;
+};
+
+export const setVaultKeyId = async (vk: Uint8Array) => {
+  await ensureDbOpen();
+  const keyId = await computeVaultKeyId(vk);
+  if (!keyId) return null;
+  await db.meta.put({ key: VAULT_KEY_ID_KEY, value: keyId });
+  return keyId;
+};
+
+export const verifyVaultKeyId = async (vk: Uint8Array) => {
+  await ensureDbOpen();
+  const stored = await getVaultKeyId();
+  if (!stored) return true;
+  const current = await computeVaultKeyId(vk);
+  if (!current) return true;
+  return stored === current;
+};
+
 export const getVaultHeader = async (): Promise<VaultHeader | null> => {
+  await ensureDbOpen();
   const record = await db.meta.get(VAULT_META_KEY);
   if (!record) return null;
   try {
@@ -74,6 +112,7 @@ export const getVaultHeader = async (): Promise<VaultHeader | null> => {
 };
 
 export const ensureVaultHeader = async (): Promise<VaultHeader> => {
+  await ensureDbOpen();
   const existing = await getVaultHeader();
   if (existing) return existing;
   const header = await createVaultHeader();
@@ -82,12 +121,23 @@ export const ensureVaultHeader = async (): Promise<VaultHeader> => {
 };
 
 export const unlockVault = async (recoveryKey: string) => {
-  await initSodium();
   const header = await ensureVaultHeader();
   const mkm = await deriveMkm(recoveryKey, header);
   const vk = await deriveVk(mkm);
   setVaultKey(vk);
+  await setVaultKeyId(vk);
   return header;
+};
+
+export const bootstrapVault = async () => {
+  await ensureVaultHeader();
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error("Secure random generator is unavailable.");
+  }
+  const vk = new Uint8Array(32);
+  globalThis.crypto.getRandomValues(vk);
+  setVaultKey(vk);
+  await setVaultKeyId(vk);
 };
 
 export const lockVault = () => {
@@ -95,6 +145,7 @@ export const lockVault = () => {
 };
 
 export const saveProfile = async (profile: UserProfile) => {
+  await ensureDbOpen();
   const vk = requireVaultKey();
   const enc_b64 = await encryptJsonRecord(vk, profile.id, "profile", profile);
   const record: EncryptedRecord = {
@@ -105,7 +156,14 @@ export const saveProfile = async (profile: UserProfile) => {
   await db.profiles.put(record);
 };
 
+export const deleteProfile = async (profileId: string) => {
+  await ensureDbOpen();
+  requireVaultKey();
+  await db.profiles.delete(profileId);
+};
+
 export const listProfiles = async () => {
+  await ensureDbOpen();
   const vk = requireVaultKey();
   const records = await db.profiles.toArray();
   const profiles = await Promise.all(
@@ -117,6 +175,7 @@ export const listProfiles = async () => {
 };
 
 export const saveConversation = async (conversation: Conversation) => {
+  await ensureDbOpen();
   const vk = requireVaultKey();
   const enc_b64 = await encryptJsonRecord(
     vk,
@@ -132,6 +191,7 @@ export const saveConversation = async (conversation: Conversation) => {
 };
 
 export const listConversations = async () => {
+  await ensureDbOpen();
   const vk = requireVaultKey();
   const records = await db.conversations.toArray();
   const conversations = await Promise.all(
@@ -143,6 +203,7 @@ export const listConversations = async () => {
 };
 
 export const saveMessage = async (message: Message) => {
+  await ensureDbOpen();
   const vk = requireVaultKey();
   const enc_b64 = await encryptJsonRecord(vk, message.id, "message", message);
   const record: MessageRecord = {
@@ -155,6 +216,7 @@ export const saveMessage = async (message: Message) => {
 };
 
 export const listMessagesByConv = async (convId: string) => {
+  await ensureDbOpen();
   const vk = requireVaultKey();
   const records = await db.messages.where("convId").equals(convId).sortBy("ts");
   const messages = await Promise.all(
@@ -166,6 +228,7 @@ export const listMessagesByConv = async (convId: string) => {
 };
 
 export const saveProfilePhoto = async (ownerId: string, file: File) => {
+  await ensureDbOpen();
   const vk = requireVaultKey();
   await db.mediaChunks
     .where("ownerId")
@@ -213,6 +276,7 @@ export const saveProfilePhoto = async (ownerId: string, file: File) => {
 };
 
 export const loadProfilePhoto = async (avatarRef?: AvatarRef) => {
+  await ensureDbOpen();
   if (!avatarRef) return null;
   const vk = requireVaultKey();
   const chunks = await db.mediaChunks
@@ -233,6 +297,8 @@ export const loadProfilePhoto = async (avatarRef?: AvatarRef) => {
 };
 
 export const seedVaultData = async (user: UserProfile) => {
+  await ensureDbOpen();
+  const now = Date.now();
   const friends: UserProfile[] = [
     {
       id: createId(),
@@ -240,6 +306,10 @@ export const seedVaultData = async (user: UserProfile) => {
       status: "NKC 테스트 중",
       theme: "dark",
       kind: "friend",
+      friendStatus: "normal",
+      isFavorite: false,
+      createdAt: now,
+      updatedAt: now,
     },
     {
       id: createId(),
@@ -247,6 +317,10 @@ export const seedVaultData = async (user: UserProfile) => {
       status: "온라인",
       theme: "dark",
       kind: "friend",
+      friendStatus: "normal",
+      isFavorite: false,
+      createdAt: now,
+      updatedAt: now,
     },
     {
       id: createId(),
@@ -254,6 +328,10 @@ export const seedVaultData = async (user: UserProfile) => {
       status: "업무 중",
       theme: "dark",
       kind: "friend",
+      friendStatus: "normal",
+      isFavorite: false,
+      createdAt: now,
+      updatedAt: now,
     },
     {
       id: createId(),
@@ -261,6 +339,10 @@ export const seedVaultData = async (user: UserProfile) => {
       status: "자리 비움",
       theme: "dark",
       kind: "friend",
+      friendStatus: "normal",
+      isFavorite: false,
+      createdAt: now,
+      updatedAt: now,
     },
   ];
 
@@ -333,6 +415,7 @@ export const rotateVaultKeys = async (
   newRecoveryKey: string,
   onProgress?: (value: number) => void
 ) => {
+  await ensureDbOpen();
   const oldVk = requireVaultKey();
   const newHeader = await createVaultHeader();
   const newMkm = await deriveMkm(newRecoveryKey, newHeader);
@@ -412,9 +495,14 @@ export const rotateVaultKeys = async (
 
   await db.meta.put({ key: VAULT_META_KEY, value: JSON.stringify(newHeader) });
   setVaultKey(newVk);
+  await setVaultKeyId(newVk);
+};
+
+export const resetVaultStorage = async () => {
+  clearVaultKey();
+  await resetDb();
 };
 
 export const wipeVault = async () => {
-  clearVaultKey();
-  await db.delete();
+  await resetVaultStorage();
 };
