@@ -13,8 +13,6 @@ export class RouteController {
   decideTransport(config: NetConfig): "selfOnion" | "onionRouter" | "directP2P" {
     if (config.mode === "directP2P") return "directP2P";
     if (config.mode === "onionRouter") return "onionRouter";
-    if (config.mode === "selfOnion") return "selfOnion";
-
     if (!config.selfOnionEnabled) return "onionRouter";
     const now = Date.now();
     if (this.fallbackUntil > now) return "onionRouter";

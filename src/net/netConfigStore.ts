@@ -13,6 +13,12 @@ const getStorage = () => {
   return undefined;
 };
 
+const migrateMode = (mode?: NetworkMode): NetworkMode => {
+  if (!mode) return DEFAULT_NET_CONFIG.mode;
+  if (mode === "selfOnion" || mode === "onionRouter" || mode === "directP2P") return mode;
+  return DEFAULT_NET_CONFIG.mode;
+};
+
 const loadStoredConfig = (): NetConfig => {
   const storage = getStorage();
   if (!storage) return DEFAULT_NET_CONFIG;
@@ -20,7 +26,8 @@ const loadStoredConfig = (): NetConfig => {
   if (!raw) return DEFAULT_NET_CONFIG;
   try {
     const parsed = JSON.parse(raw) as Partial<NetConfig>;
-    return { ...DEFAULT_NET_CONFIG, ...parsed };
+    const migratedMode = migrateMode(parsed.mode as NetworkMode | undefined);
+    return { ...DEFAULT_NET_CONFIG, ...parsed, mode: migratedMode };
   } catch (error) {
     console.error("Failed to read net config", error);
     storage.removeItem(STORAGE_KEY);
@@ -68,7 +75,11 @@ type NetConfigState = {
 export const useNetConfigStore = create<NetConfigState>((set, get) => ({
   config: enforceRules(loadStoredConfig()),
   setMode: (mode) => {
-    const next = enforceRules({ ...get().config, mode });
+    const next = enforceRules({
+      ...get().config,
+      mode,
+      onionEnabled: mode === "onionRouter" ? get().config.onionEnabled : false,
+    });
     persistConfig(next);
     set({ config: next });
   },

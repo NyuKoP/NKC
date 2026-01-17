@@ -86,7 +86,7 @@ describe("router", () => {
     expect(store.size).toBe(1);
   });
 
-  it("retries onionRouter once after selfOnion failure in auto mode", async () => {
+  it("retries onionRouter once after selfOnion failure in built-in onion mode", async () => {
     const store = new Map<string, OutboxRecord>();
     vi.doMock("../../storage/outboxStore", () => {
       return {
@@ -127,7 +127,7 @@ describe("router", () => {
       },
       {
         config: {
-          mode: "auto",
+          mode: "selfOnion",
           onionProxyEnabled: true,
           onionProxyUrl: "socks5://127.0.0.1:9050",
           webrtcRelayOnly: false,
@@ -189,7 +189,7 @@ describe("router", () => {
       {
         resolveTransport: () => "selfOnion",
         config: {
-          mode: "auto",
+          mode: "selfOnion",
           onionProxyEnabled: true,
           onionProxyUrl: "socks5://127.0.0.1:9050",
           webrtcRelayOnly: true,

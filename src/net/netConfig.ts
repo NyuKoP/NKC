@@ -30,7 +30,7 @@ export interface NetConfig {
 
 // Higher anonymity can increase latency; faster modes can expose IPs.
 export const DEFAULT_NET_CONFIG: NetConfig = {
-  mode: "auto",
+  mode: "selfOnion",
   onionProxyEnabled: false,
   onionProxyUrl: "http://127.0.0.1:8080",
   webrtcRelayOnly: false,

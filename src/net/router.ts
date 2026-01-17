@@ -76,7 +76,6 @@ export const resolveTransport = (
   if (config.onionEnabled) return "onionRouter";
   if (config.mode === "directP2P") return "directP2P";
   if (config.mode === "onionRouter") return "onionRouter";
-  if (config.mode === "selfOnion") return "selfOnion";
   return controller.decideTransport(config);
 };
 
@@ -148,7 +147,7 @@ export const sendCiphertext = async (
     return { ok: true, transport: used };
   } catch (error) {
     controller.reportSendFail(chosen);
-    if (config.mode === "auto" && chosen === "selfOnion") {
+    if (config.mode === "selfOnion" && chosen === "selfOnion") {
       try {
         const used = await attemptSend("onionRouter");
         return { ok: true, transport: used };
