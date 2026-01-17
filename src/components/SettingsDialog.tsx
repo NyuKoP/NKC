@@ -62,11 +62,17 @@ export default function SettingsDialog({
   const [privacyPrefs, setPrivacyPrefsState] = useState(defaultPrivacyPrefs);
   const [saveMessage, setSaveMessage] = useState("");
   const [view, setView] = useState<SettingsView>("main");
+  const [profileEditing, setProfileEditing] = useState(false);
+  const [displayNameDraft, setDisplayNameDraft] = useState(user.displayName);
+  const [statusDraft, setStatusDraft] = useState(user.status);
 
   useEffect(() => {
     setDisplayName(user.displayName);
     setStatus(user.status);
     setTheme(user.theme);
+    setDisplayNameDraft(user.displayName);
+    setStatusDraft(user.status);
+    setProfileEditing(false);
   }, [user]);
 
   useEffect(() => {
@@ -97,6 +103,34 @@ export default function SettingsDialog({
       await setPrivacyPrefs(next);
     } catch (error) {
       console.error("Failed to save privacy prefs", error);
+    }
+  };
+
+  const startProfileEdit = () => {
+    setDisplayNameDraft(displayName);
+    setStatusDraft(status);
+    setProfileEditing(true);
+  };
+
+  const cancelProfileEdit = () => {
+    setDisplayNameDraft(user.displayName);
+    setStatusDraft(user.status);
+    setProfileEditing(false);
+  };
+
+  const saveProfileEdit = async () => {
+    try {
+      await onSaveProfile({
+        displayName: displayNameDraft,
+        status: statusDraft,
+        theme,
+      });
+      setDisplayName(displayNameDraft);
+      setStatus(statusDraft);
+      setProfileEditing(false);
+      setSaveMessage("저장했습니다");
+    } catch (error) {
+      console.error("Failed to save profile", error);
     }
   };
 
@@ -155,41 +189,78 @@ export default function SettingsDialog({
           {view === "main" ? (
             <div className="mt-6 grid gap-6">
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="mt-2 grid gap-4 md:grid-cols-[auto,1fr]">
-                  <div className="flex flex-col items-center gap-3">
-                    <Avatar name={user.id} avatarRef={user.avatarRef} size={64} />
-                    <label className="cursor-pointer rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel">
-                      사진 업로드
-                      <input
-                        type="file"
-                        accept="image/*"
-                        className="hidden"
-                        onChange={(event) =>
-                          event.target.files?.[0] && onUploadPhoto(event.target.files[0])
-                        }
-                      />
-                    </label>
-                  </div>
-                  <div className="grid gap-4">
-                    <label className="text-sm">
-                      표시 이름
-                      <input
-                        value={displayName}
-                        onChange={(event) => setDisplayName(event.target.value)}
-                        className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-                      />
-                    </label>
-                    <label className="text-sm">
-                      상태 메시지
-                      <input
-                        value={status}
-                        onChange={(event) => setStatus(event.target.value)}
-                        className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-                      />
-                    </label>
+                <div className="flex items-start gap-4">
+                  <Avatar name={user.id} avatarRef={user.avatarRef} size={64} />
+                  <div className="min-w-0 flex-1">
+                    {!profileEditing ? (
+                      <>
+                        <div className="truncate text-sm font-semibold text-nkc-text">
+                          {displayNameDraft}
+                        </div>
+                        <div className="mt-1 truncate text-xs text-nkc-muted">
+                          {statusDraft ? statusDraft : "상태 메시지가 없습니다."}
+                        </div>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={startProfileEdit}
+                            className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                          >
+                            편집
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <label className="text-sm">
+                          표시 이름
+                          <input
+                            value={displayNameDraft}
+                            onChange={(event) => setDisplayNameDraft(event.target.value)}
+                            className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+                          />
+                        </label>
+                        <label className="mt-3 text-sm">
+                          상태 메시지
+                          <input
+                            value={statusDraft}
+                            onChange={(event) => setStatusDraft(event.target.value)}
+                            className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+                          />
+                        </label>
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          <label className="cursor-pointer rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel">
+                            사진 업로드
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={(event) =>
+                                event.target.files?.[0] && onUploadPhoto(event.target.files[0])
+                              }
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={saveProfileEdit}
+                            className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg"
+                          >
+                            저장
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelProfileEdit}
+                            className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                          >
+                            취소
+                          </button>
+                        </div>
+                      </>
+                    )}
                   </div>
                 </div>
               </section>
+
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
                 <div className="flex flex-col">
                   {settingsMenu.map((item, index) => {
@@ -498,7 +569,6 @@ export default function SettingsDialog({
               ) : null}
             </>
           ) : null}
-
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
