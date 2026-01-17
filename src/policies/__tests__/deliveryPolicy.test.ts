@@ -18,9 +18,9 @@ vi.mock("../../storage/outboxStore", () => {
     putOutbox: async (record: OutboxRecord) => {
       store.set(record.id, record);
     },
-    deleteOutbox: async (id: string) => {
+    deleteOutbox: vi.fn(async (id: string) => {
       store.delete(id);
-    },
+    }),
     deleteExpiredOutbox: async (now = Date.now()) => {
       let count = 0;
       for (const record of Array.from(store.values())) {
@@ -35,10 +35,12 @@ vi.mock("../../storage/outboxStore", () => {
 });
 
 import { enqueueOutgoing, onAckReceived, sweepExpired } from "../deliveryPolicy";
+import * as outboxStore from "../../storage/outboxStore";
 
 describe("deliveryPolicy", () => {
   beforeEach(() => {
     store.clear();
+    vi.clearAllMocks();
   });
 
   it("enqueues outgoing messages", async () => {
@@ -67,6 +69,7 @@ describe("deliveryPolicy", () => {
     await onAckReceived("m1");
     await onAckReceived("m1");
     expect(store.has("m1")).toBe(false);
+    expect(vi.mocked(outboxStore.deleteOutbox)).toHaveBeenCalledTimes(2);
   });
 
   it("sweeps expired records", async () => {
@@ -88,9 +91,29 @@ describe("deliveryPolicy", () => {
       attempts: 0,
       status: "pending",
     });
+    store.set("m3", {
+      id: "m3",
+      convId: "c1",
+      ciphertext: "enc",
+      createdAtMs: 1,
+      expiresAtMs: 0,
+      attempts: 0,
+      status: "acked",
+    });
+    store.set("m4", {
+      id: "m4",
+      convId: "c1",
+      ciphertext: "enc",
+      createdAtMs: 1,
+      expiresAtMs: 10,
+      attempts: 0,
+      status: "pending",
+    });
     const removed = await sweepExpired(10);
-    expect(removed).toBe(1);
+    expect(removed).toBe(2);
     expect(store.has("m1")).toBe(false);
     expect(store.has("m2")).toBe(true);
+    expect(store.has("m3")).toBe(true);
+    expect(store.has("m4")).toBe(false);
   });
 });

@@ -72,6 +72,8 @@ describe("router", () => {
 
     expect(result.ok).toBe(false);
     expect(result.error).toMatch("Direct P2P blocked");
+    expect(directTransport.send).not.toHaveBeenCalled();
+    expect(store.size).toBe(1);
   });
 
   it("retries onionRouter once after selfOnion failure in auto mode", async () => {
@@ -137,5 +139,11 @@ describe("router", () => {
     expect(selfOnionTransport.send).toHaveBeenCalledTimes(1);
     expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
     expect(reported).toContain("selfOnion");
+    expect(store.has("m2")).toBe(true);
+    const selfOrder = selfOnionTransport.send.mock.invocationCallOrder?.[0];
+    const onionOrder = onionRouterTransport.send.mock.invocationCallOrder?.[0];
+    if (selfOrder !== undefined && onionOrder !== undefined) {
+      expect(selfOrder).toBeLessThan(onionOrder);
+    }
   });
 });
