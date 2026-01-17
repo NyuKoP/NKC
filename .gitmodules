@@ -1,0 +1,6 @@
+[submodule "submodules/ref-briar"]
+	path = submodules/ref-briar
+	url = https://github.com/briar/briar
+[submodule "submodules/ref-lokinet"]
+	path = submodules/ref-lokinet
+	url = https://github.com/oxen-io/lokinet

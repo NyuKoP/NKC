@@ -1,9 +1,18 @@
 import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronLeft, KeyRound, Lock, Palette, ShieldAlert, Users } from "lucide-react";
+import {
+  ChevronLeft,
+  Globe,
+  KeyRound,
+  Lock,
+  Palette,
+  ShieldAlert,
+  Users,
+} from "lucide-react";
 import type { UserProfile } from "../db/repo";
 import { defaultPrivacyPrefs, getPrivacyPrefs, setPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
+import { useNetConfigStore } from "../net/netConfigStore";
 
 const themeOptions = [
   { value: "dark", label: "다크" },
@@ -33,7 +42,7 @@ type SettingsDialogProps = {
   onWipe: () => void;
 };
 
-type SettingsView = "main" | "privacy" | "theme" | "friends" | "danger";
+type SettingsView = "main" | "privacy" | "theme" | "friends" | "danger" | "network";
 
 export default function SettingsDialog({
   open,
@@ -65,6 +74,13 @@ export default function SettingsDialog({
   const [profileEditing, setProfileEditing] = useState(false);
   const [displayNameDraft, setDisplayNameDraft] = useState(user.displayName);
   const [statusDraft, setStatusDraft] = useState(user.status);
+  const netConfig = useNetConfigStore((state) => state.config);
+  const setMode = useNetConfigStore((state) => state.setMode);
+  const setProxy = useNetConfigStore((state) => state.setProxy);
+  const setRelayOnly = useNetConfigStore((state) => state.setRelayOnly);
+  const setDisableLinkPreview = useNetConfigStore((state) => state.setDisableLinkPreview);
+  const isOnionRouterMode = netConfig.mode === "onionRouter";
+  const isAutoMode = netConfig.mode === "auto";
 
   useEffect(() => {
     setDisplayName(user.displayName);
@@ -146,6 +162,12 @@ export default function SettingsDialog({
       label: "테마",
       icon: Palette,
       onClick: () => setView("theme"),
+    },
+    {
+      key: "network",
+      label: "????",
+      icon: Globe,
+      onClick: () => setView("network"),
     },
     {
       key: "privacy",
@@ -448,6 +470,119 @@ export default function SettingsDialog({
               {saveMessage ? (
                 <div className="text-right text-xs text-nkc-muted">{saveMessage}</div>
               ) : null}
+            </div>
+          ) : null}
+
+                    {view === "network" ? (
+            <div className="mt-6 grid gap-6">
+              {renderSubHeader("????")}
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="grid gap-4 text-sm">
+                  <div>
+                    <div className="text-sm font-semibold text-nkc-text">?? ??</div>
+                    <div className="mt-3 grid gap-2">
+                      <label className="flex items-center justify-between text-sm">
+                        <span>Auto (??)</span>
+                        <input
+                          type="radio"
+                          name="network-mode"
+                          checked={netConfig.mode === "auto"}
+                          onChange={() => setMode("auto")}
+                        />
+                      </label>
+                      <label className="flex items-center justify-between text-sm">
+                        <span>Self-Onion (??)</span>
+                        <input
+                          type="radio"
+                          name="network-mode"
+                          checked={netConfig.mode === "selfOnion"}
+                          onChange={() => setMode("selfOnion")}
+                        />
+                      </label>
+                      <label className="flex items-center justify-between text-sm">
+                        <span>Onion Router (??)</span>
+                        <input
+                          type="radio"
+                          name="network-mode"
+                          checked={netConfig.mode === "onionRouter"}
+                          onChange={() => setMode("onionRouter")}
+                        />
+                      </label>
+                      <label className="flex items-center justify-between text-sm">
+                        <span>Direct P2P (??)</span>
+                        <input
+                          type="radio"
+                          name="network-mode"
+                          checked={netConfig.mode === "directP2P"}
+                          onChange={() => setMode("directP2P")}
+                        />
+                      </label>
+                    </div>
+                  </div>
+                  <div className="text-xs text-nkc-muted leading-relaxed">
+                    <p>Self-Onion? ??? ? ??? ???? ?????.</p>
+                    <p>??? ???? Onion Router? ?? ??? ? ????.</p>
+                    <p>?? ?? ??? IP ??? ???? ??? ? ? ????.</p>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
+                <div className="flex flex-col">
+                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+                    <div>
+                      <div className="text-sm font-medium text-nkc-text">Onion ??? ??</div>
+                      <div className="text-xs text-nkc-muted">Lokinet ?? ???? ??</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={netConfig.onionProxyEnabled}
+                      disabled={isOnionRouterMode}
+                      onChange={(event) => setProxy(event.target.checked)}
+                    />
+                  </div>
+                  <div className="border-b border-nkc-border px-4 py-3">
+                    <label className="text-sm">
+                      Onion ??? URL
+                      <input
+                        value={netConfig.onionProxyUrl}
+                        onChange={(event) => setProxy(netConfig.onionProxyEnabled, event.target.value)}
+                        disabled={isOnionRouterMode}
+                        className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+                      />
+                    </label>
+                    {isAutoMode ? (
+                      <div className="mt-2 text-xs text-nkc-muted">
+                        Auto ??? ?? ? ???? ???? ?? ? ????.
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+                    <div>
+                      <div className="text-sm font-medium text-nkc-text">WebRTC ?? ??</div>
+                      <div className="text-xs text-nkc-muted">???? ??</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={netConfig.webrtcRelayOnly}
+                      disabled={isOnionRouterMode}
+                      onChange={(event) => setRelayOnly(event.target.checked)}
+                    />
+                  </div>
+                  <div className="flex items-center justify-between gap-4 px-4 py-3">
+                    <div>
+                      <div className="text-sm font-medium text-nkc-text">?? ???? ??</div>
+                      <div className="text-xs text-nkc-muted">?? ?? ??</div>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={netConfig.disableLinkPreview}
+                      disabled={isOnionRouterMode}
+                      onChange={(event) => setDisableLinkPreview(event.target.checked)}
+                    />
+                  </div>
+                </div>
+              </section>
             </div>
           ) : null}
 
