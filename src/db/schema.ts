@@ -42,4 +42,45 @@ export class NKCVaultDB extends Dexie {
   }
 }
 
-export const db = new NKCVaultDB();
+export let db = new NKCVaultDB();
+
+const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+
+const logDb = (message: string, detail?: Record<string, unknown>) => {
+  if (!isDev) return;
+  if (detail) {
+    console.debug(`[db] ${message}`, detail);
+  } else {
+    console.debug(`[db] ${message}`);
+  }
+};
+
+let resetPromise: Promise<void> | null = null;
+
+export const ensureDbOpen = async () => {
+  if (resetPromise) {
+    await resetPromise;
+  }
+  if (!db.isOpen()) {
+    logDb("open");
+    await db.open();
+    logDb("open:ready");
+  }
+  return db;
+};
+
+export const resetDb = async () => {
+  if (resetPromise) return resetPromise;
+  resetPromise = (async () => {
+    logDb("delete:start");
+    await db.delete();
+    logDb("delete:done");
+    db = new NKCVaultDB();
+    logDb("open");
+    await db.open();
+    logDb("open:ready");
+  })().finally(() => {
+    resetPromise = null;
+  });
+  return resetPromise;
+};

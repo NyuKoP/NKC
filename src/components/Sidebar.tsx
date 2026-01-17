@@ -1,6 +1,7 @@
 import { Filter, Lock, Search, Settings } from "lucide-react";
 import type { Conversation, UserProfile } from "../db/repo";
 import OverflowMenu from "./OverflowMenu";
+import FriendOverflowMenu from "./FriendOverflowMenu";
 import Avatar from "./Avatar";
 
 const formatTime = (ts: number) =>
@@ -13,12 +14,19 @@ type SidebarProps = {
   convs: Conversation[];
   friends: UserProfile[];
   userId: string | null;
+  userProfile: UserProfile | null;
   selectedConvId: string | null;
   listMode: "chats" | "friends";
   search: string;
   onSearch: (value: string) => void;
   onSelectConv: (id: string) => void;
-  onSelectFriend: (id: string) => void;
+  onAddFriend: () => void;
+  onFriendChat: (id: string) => void;
+  onFriendViewProfile: (id: string) => void;
+  onFriendToggleFavorite: (id: string) => void;
+  onFriendHide: (id: string) => void;
+  onFriendDelete: (id: string) => void;
+  onFriendBlock: (id: string) => void;
   onListModeChange: (mode: "chats" | "friends") => void;
   onSettings: () => void;
   onLock: () => void;
@@ -32,12 +40,19 @@ export default function Sidebar({
   convs,
   friends,
   userId,
+  userProfile,
   selectedConvId,
   listMode,
   search,
   onSearch,
   onSelectConv,
-  onSelectFriend,
+  onAddFriend,
+  onFriendChat,
+  onFriendViewProfile,
+  onFriendToggleFavorite,
+  onFriendHide,
+  onFriendDelete,
+  onFriendBlock,
   onListModeChange,
   onSettings,
   onLock,
@@ -60,15 +75,40 @@ export default function Sidebar({
 
   const pinned = visibleConvs.filter((conv) => conv.pinned);
   const regular = visibleConvs.filter((conv) => !conv.pinned);
-  const visibleFriends = friends.filter((friend) =>
-    searchLower ? friend.displayName.toLowerCase().includes(searchLower) : true
-  );
+  const visibleFriends = friends
+    .filter((friend) => friend.friendStatus !== "hidden" && friend.friendStatus !== "blocked")
+    .filter((friend) =>
+      searchLower ? friend.displayName.toLowerCase().includes(searchLower) : true
+    )
+    .sort((a, b) => {
+      if (a.isFavorite === b.isFavorite) {
+        return a.displayName.localeCompare(b.displayName);
+      }
+      return a.isFavorite ? -1 : 1;
+    });
 
   return (
     <aside className="flex h-full w-[320px] flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft">
       <div className="border-b border-nkc-border p-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-lg font-semibold">NKC</h1>
+          <button
+            onClick={onSettings}
+            className="flex items-center gap-3 rounded-nkc border border-transparent px-2 py-1 text-left hover:bg-nkc-panelMuted"
+          >
+            <Avatar
+              name={userProfile?.displayName || "NKC"}
+              avatarRef={userProfile?.avatarRef}
+              size={36}
+            />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-nkc-text line-clamp-1">
+                {userProfile?.displayName || "NKC"}
+              </div>
+              <div className="text-xs text-nkc-muted line-clamp-1">
+                {userProfile?.status || "로컬 상태"}
+              </div>
+            </div>
+          </button>
           <div className="flex items-center gap-2">
             <button
               onClick={onSettings}
@@ -119,8 +159,11 @@ export default function Sidebar({
           <Filter size={14} />
         </div>
         <div className="grid gap-2 text-xs text-nkc-muted">
-          <button className="rounded-nkc border border-nkc-border px-3 py-2 text-left hover:bg-nkc-panelMuted">
-            새로운 메시지
+          <button
+            onClick={onAddFriend}
+            className="rounded-nkc border border-nkc-border px-3 py-2 text-left hover:bg-nkc-panelMuted"
+          >
+            친구 추가
           </button>
           <button className="rounded-nkc border border-nkc-border px-3 py-2 text-left hover:bg-nkc-panelMuted">
             그룹 만들기
@@ -186,7 +229,7 @@ export default function Sidebar({
                 visibleFriends.map((friend) => (
                   <button
                     key={friend.id}
-                    onClick={() => onSelectFriend(friend.id)}
+                    onClick={() => onFriendChat(friend.id)}
                     className="flex w-full items-start gap-3 rounded-nkc border border-transparent px-3 py-3.5 text-left hover:bg-nkc-panelMuted"
                   >
                     <Avatar name={friend.displayName} avatarRef={friend.avatarRef} size={42} />
@@ -196,7 +239,22 @@ export default function Sidebar({
                       </div>
                       <div className="text-xs text-nkc-muted line-clamp-1">{friend.status}</div>
                     </div>
-                    <span className="text-[11px] text-nkc-muted">친구</span>
+                    <div className="flex items-start gap-2">
+                      {friend.isFavorite ? (
+                        <span className="text-[11px] text-nkc-muted">즐겨찾기</span>
+                      ) : (
+                        <span className="text-[11px] text-nkc-muted">친구</span>
+                      )}
+                      <FriendOverflowMenu
+                        isFavorite={friend.isFavorite}
+                        onChat={() => onFriendChat(friend.id)}
+                        onViewProfile={() => onFriendViewProfile(friend.id)}
+                        onToggleFavorite={() => onFriendToggleFavorite(friend.id)}
+                        onHide={() => onFriendHide(friend.id)}
+                        onDelete={() => onFriendDelete(friend.id)}
+                        onBlock={() => onFriendBlock(friend.id)}
+                      />
+                    </div>
                   </button>
                 ))
               ) : (
@@ -234,8 +292,16 @@ function ConversationRow({
   onBlock,
 }: ConversationRowProps) {
   return (
-    <button
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onSelect}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onSelect();
+        }
+      }}
       className={`flex w-full items-start gap-3 rounded-nkc border px-3 py-3.5 text-left transition ${
         active
           ? "border-nkc-accent/40 bg-nkc-panelMuted"
@@ -265,9 +331,13 @@ function ConversationRow({
           {conv.blocked ? <span>차단</span> : null}
         </div>
       </div>
-      <div className="pt-1">
+      <div
+        className="pt-1"
+        onClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => event.stopPropagation()}
+      >
         <OverflowMenu onHide={onHide} onDelete={onDelete} onMute={onMute} onBlock={onBlock} />
       </div>
-    </button>
+    </div>
   );
 }
