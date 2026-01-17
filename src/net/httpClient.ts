@@ -1,19 +1,31 @@
+import { useNetConfigStore } from "./netConfigStore";
+import { checkProxyHealth } from "./proxyControl";
+
 export type HttpClient = {
-  request: (url: string, init?: RequestInit) => Promise<Response>;
+  request: (url: string, init?: RequestInit, options?: RequestOptions) => Promise<Response>;
+  healthCheck: () => Promise<{ ok: boolean; message: string }>;
 };
 
-type HttpClientOptions = {
-  proxyEnabled?: boolean;
-  proxyUrl?: string;
+type RequestOptions = {
+  kind?: "default" | "linkPreview";
 };
 
-// Proxy handling is stubbed for now; Electron networking can wire this later.
-export const createHttpClient = ({ proxyEnabled, proxyUrl }: HttpClientOptions = {}): HttpClient => {
-  const baseProxyUrl = proxyEnabled && proxyUrl ? proxyUrl : "";
+export const createHttpClient = (): HttpClient => {
   return {
-    request: (url, init) => {
-      const finalUrl = baseProxyUrl ? new URL(url, baseProxyUrl).toString() : url;
-      return fetch(finalUrl, init);
+    async request(url, init, options) {
+      const config = useNetConfigStore.getState().config;
+      if (config.mode === "onionRouter" && !config.onionProxyEnabled) {
+        console.warn("[net] Onion router mode requires proxy.");
+        throw new Error("Onion proxy required");
+      }
+      if (options?.kind === "linkPreview" && config.disableLinkPreview) {
+        console.warn("[net] Link preview blocked by privacy settings.");
+        throw new Error("Link preview disabled");
+      }
+      return fetch(url, init);
+    },
+    async healthCheck() {
+      return checkProxyHealth();
     },
   };
 };

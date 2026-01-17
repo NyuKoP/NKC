@@ -1,10 +1,39 @@
 import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import electron from "vite-plugin-electron";
 
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    electron({
+      entry: "src/main.ts",
+      vite: {
+        build: {
+          outDir: "dist-electron",
+          sourcemap: true,
+          rollupOptions: {
+            external: ["electron"],
+          },
+        },
+      },
+      preload: {
+        input: {
+          preload: "src/preload.ts",
+        },
+        vite: {
+          build: {
+            outDir: "dist-electron",
+            sourcemap: true,
+            rollupOptions: {
+              external: ["electron"],
+            },
+          },
+        },
+      },
+    }),
+  ],
   resolve: {
     alias: {
       "libsodium-wrappers-sumo": path.resolve(

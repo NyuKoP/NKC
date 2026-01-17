@@ -5,23 +5,33 @@ import type { NetworkMode } from "./mode";
 
 const STORAGE_KEY = "netConfig.v1";
 
+const getStorage = () => {
+  if (typeof window !== "undefined") return window.localStorage;
+  if (typeof globalThis !== "undefined") {
+    return (globalThis as { localStorage?: Storage }).localStorage;
+  }
+  return undefined;
+};
+
 const loadStoredConfig = (): NetConfig => {
-  if (typeof window === "undefined") return DEFAULT_NET_CONFIG;
-  const raw = window.localStorage.getItem(STORAGE_KEY);
+  const storage = getStorage();
+  if (!storage) return DEFAULT_NET_CONFIG;
+  const raw = storage.getItem(STORAGE_KEY);
   if (!raw) return DEFAULT_NET_CONFIG;
   try {
     const parsed = JSON.parse(raw) as Partial<NetConfig>;
     return { ...DEFAULT_NET_CONFIG, ...parsed };
   } catch (error) {
     console.error("Failed to read net config", error);
-    window.localStorage.removeItem(STORAGE_KEY);
+    storage.removeItem(STORAGE_KEY);
     return DEFAULT_NET_CONFIG;
   }
 };
 
 const persistConfig = (config: NetConfig) => {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+  const storage = getStorage();
+  if (!storage) return;
+  storage.setItem(STORAGE_KEY, JSON.stringify(config));
 };
 
 export const enforceRules = (config: NetConfig): NetConfig => {

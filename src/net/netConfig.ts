@@ -8,6 +8,7 @@ export interface NetConfig {
   disableLinkPreview: boolean;
   selfOnionEnabled: boolean;
   selfOnionMinRelays: number;
+  allowRemoteProxy: boolean;
 }
 
 // Higher anonymity can increase latency; faster modes can expose IPs.
@@ -19,4 +20,5 @@ export const DEFAULT_NET_CONFIG: NetConfig = {
   disableLinkPreview: false,
   selfOnionEnabled: true,
   selfOnionMinRelays: 5,
+  allowRemoteProxy: false,
 };
