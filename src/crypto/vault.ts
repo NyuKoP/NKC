@@ -1,8 +1,4 @@
-type SodiumModule = typeof import("libsodium-wrappers-sumo");
-
-let sodiumInstance: SodiumModule | null = null;
-
-const ready = { promise: null as Promise<void> | null };
+import { getSodium } from "../security/sodium";
 
 export type VaultHeader = {
   v: 2;
@@ -24,60 +20,67 @@ const DOMAIN_VRK = "NKC|VAULTv2|VRK";
 const DOMAIN_VK = "NKC|VAULTv2|VK";
 const DOMAIN_REC = "NKC|REC";
 
-export const initSodium = async () => {
-  if (!sodiumInstance) {
-    const mod = (await import("libsodium-wrappers-sumo")) as SodiumModule;
-    sodiumInstance = (mod as unknown as { default?: SodiumModule }).default ?? mod;
+const textEncoder = new TextEncoder();
+const textDecoder = new TextDecoder();
+
+const toB64 = (sodium: Awaited<ReturnType<typeof getSodium>>, bytes: Uint8Array) =>
+  sodium.to_base64(bytes, sodium.base64_variants.ORIGINAL);
+
+const fromB64 = (sodium: Awaited<ReturnType<typeof getSodium>>, value: string) =>
+  sodium.from_base64(value, sodium.base64_variants.ORIGINAL);
+
+const toBytes = (value: string) => textEncoder.encode(value);
+
+const fromBytes = (bytes: Uint8Array) => textDecoder.decode(bytes);
+
+const concatBytes = (chunks: Array<Uint8Array | ArrayBuffer>) => {
+  const normalized = chunks.map((chunk) =>
+    chunk instanceof Uint8Array ? chunk : new Uint8Array(chunk)
+  );
+  const total = normalized.reduce((sum, chunk) => sum + chunk.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of normalized) {
+    out.set(chunk, offset);
+    offset += chunk.length;
   }
-  if (!ready.promise) {
-    ready.promise = sodiumInstance.ready;
-  }
-  await ready.promise;
-  return sodiumInstance;
+  return out;
 };
 
-const toB64 = (bytes: Uint8Array) =>
-  sodiumInstance!.to_base64(bytes, sodiumInstance!.base64_variants.ORIGINAL);
+const LEGACY_PREFIX = "NKC";
+const LEGACY_LENGTH = 19;
+const HEX_KEY_LENGTH = 64;
+const HEX_REGEX = /^[0-9a-fA-F]+$/;
 
-const fromB64 = (value: string) =>
-  sodiumInstance!.from_base64(value, sodiumInstance!.base64_variants.ORIGINAL);
-
-const toBytes = (value: string) => sodiumInstance!.from_string(value);
-
-const concatBytes = (chunks: Uint8Array[]) => sodiumInstance!.concat(chunks);
-
-export const generateRecoveryKey = async () => {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
-  const bytes = new Uint8Array(24);
-  if (!globalThis.crypto?.getRandomValues) {
-    throw new Error("Secure random generator is unavailable.");
-  }
-  globalThis.crypto.getRandomValues(bytes);
-  const chars = Array.from(bytes).map((byte) => alphabet[byte % alphabet.length]);
-  return `NKC-${chars.slice(0, 4).join("")}-${chars
-    .slice(4, 8)
-    .join("")}-${chars.slice(8, 12).join("")}-${chars
-    .slice(12, 16)
-    .join("")}`;
-};
-
-export const normalizeRecoveryKey = (value: string) =>
+const normalizeLegacyKey = (value: string) =>
   value.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
 
+const isHexKey = (value: string) => HEX_REGEX.test(value) && value.length === HEX_KEY_LENGTH;
+
+export const normalizeRecoveryKey = (value: string) => {
+  const trimmed = value.trim();
+  if (isHexKey(trimmed)) {
+    return trimmed.toLowerCase();
+  }
+  return normalizeLegacyKey(trimmed);
+};
+
 export const validateRecoveryKey = (value: string) => {
-  const normalized = normalizeRecoveryKey(value);
-  return normalized.startsWith("NKC") && normalized.length === 19;
+  const trimmed = value.trim();
+  if (isHexKey(trimmed)) return true;
+  const normalized = normalizeLegacyKey(trimmed);
+  return normalized.startsWith(LEGACY_PREFIX) && normalized.length === LEGACY_LENGTH;
 };
 
 export const createVaultHeader = async (): Promise<VaultHeader> => {
-  await initSodium();
-  const salt = sodiumInstance!.randombytes_buf(16);
+  const sodium = await getSodium();
+  const salt = sodium.randombytes_buf(16);
   return {
     v: 2,
     createdAt: Date.now(),
-    salt_b64: toB64(salt),
-    opslimit: sodiumInstance!.crypto_pwhash_OPSLIMIT_MODERATE,
-    memlimit: sodiumInstance!.crypto_pwhash_MEMLIMIT_MODERATE,
+    salt_b64: toB64(sodium, salt),
+    opslimit: sodium.crypto_pwhash_OPSLIMIT_MODERATE,
+    memlimit: sodium.crypto_pwhash_MEMLIMIT_MODERATE,
   };
 };
 
@@ -85,26 +88,85 @@ export const deriveMkm = async (
   recoveryKey: string,
   header: VaultHeader
 ): Promise<Uint8Array> => {
-  await initSodium();
-  const salt = fromB64(header.salt_b64);
-  return sodiumInstance!.crypto_pwhash(
+  const sodium = await getSodium();
+  const salt = fromB64(sodium, header.salt_b64);
+  return sodium.crypto_pwhash(
     32,
     normalizeRecoveryKey(recoveryKey),
     salt,
     header.opslimit,
     header.memlimit,
-    sodiumInstance!.crypto_pwhash_ALG_ARGON2ID13
+    sodium.crypto_pwhash_ALG_ARGON2ID13
   );
 };
 
 export const deriveVrk = async (mkm: Uint8Array) => {
-  await initSodium();
-  return sodiumInstance!.crypto_generichash(32, concatBytes([toBytes(DOMAIN_VRK), mkm]));
+  const sodium = await getSodium();
+  return sodium.crypto_generichash(
+    32,
+    concatBytes([toBytes(DOMAIN_VRK), mkm])
+  );
 };
 
 export const deriveVk = async (mkm: Uint8Array) => {
-  await initSodium();
-  return sodiumInstance!.crypto_generichash(32, concatBytes([toBytes(DOMAIN_VK), mkm]));
+  const sodium = await getSodium();
+  return sodium.crypto_generichash(
+    32,
+    concatBytes([toBytes(DOMAIN_VK), mkm])
+  );
+};
+
+const buildAad = (recordType: string, recordId: string) => ({
+  schema: "NKC" as const,
+  type: recordType,
+  id: recordId,
+});
+
+const buildAadBytes = (recordType: string, recordId: string) =>
+  toBytes(JSON.stringify(buildAad(recordType, recordId)));
+
+const encodeEnvelope = (
+  sodium: Awaited<ReturnType<typeof getSodium>>,
+  envelope: Envelope
+) => toB64(sodium, toBytes(JSON.stringify(envelope)));
+
+const decodeEnvelope = (
+  sodium: Awaited<ReturnType<typeof getSodium>>,
+  enc_b64: string
+) => {
+  const envelopeBytes = fromB64(sodium, enc_b64);
+  return JSON.parse(fromBytes(envelopeBytes)) as Envelope;
+};
+
+const shouldLogVaultDebug = (() => {
+  try {
+    return Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+  } catch {
+    return false;
+  }
+})();
+
+const logVaultRecord = (
+  sodium: Awaited<ReturnType<typeof getSodium>>,
+  phase: "encrypt" | "decrypt",
+  recordType: string,
+  recordId: string,
+  key: Uint8Array,
+  nonce: Uint8Array,
+  aadBytes: Uint8Array,
+  ct: Uint8Array
+) => {
+  if (!shouldLogVaultDebug) return;
+  const keyTag = toB64(sodium, key.slice(0, 6));
+  console.debug(`[vault:${phase}]`, {
+    recordType,
+    recordId,
+    keyLen: key.length,
+    nonceLen: nonce.length,
+    aadLen: aadBytes.length,
+    ctLen: ct.length,
+    keyTag,
+  });
 };
 
 export const deriveRecordKey = async (
@@ -112,8 +174,8 @@ export const deriveRecordKey = async (
   recordId: string,
   recordType: string
 ) => {
-  await initSodium();
-  return sodiumInstance!.crypto_generichash(
+  const sodium = await getSodium();
+  return sodium.crypto_generichash(
     32,
     concatBytes([toBytes(DOMAIN_REC), vk, toBytes(recordId), toBytes(recordType)])
   );
@@ -125,29 +187,30 @@ export const encryptJsonRecord = async <T>(
   recordType: string,
   data: T
 ) => {
-  await initSodium();
+  const sodium = await getSodium();
   const recordKey = await deriveRecordKey(vk, recordId, recordType);
-  const nonce = sodiumInstance!.randombytes_buf(
-    sodiumInstance!.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
+  const nonce = sodium.randombytes_buf(
+    sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
   );
-  const aad = { schema: "NKC" as const, type: recordType, id: recordId };
-  const aadBytes = toBytes(JSON.stringify(aad));
+  const aad = buildAad(recordType, recordId);
+  const aadBytes = buildAadBytes(recordType, recordId);
   const plainBytes = toBytes(JSON.stringify(data));
-  const ct = sodiumInstance!.crypto_aead_xchacha20poly1305_ietf_encrypt(
+  const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
     plainBytes,
     aadBytes,
     null,
     nonce,
     recordKey
   );
+  logVaultRecord(sodium, "encrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
   const envelope: Envelope = {
     v: 2,
     alg: "XCHACHA20POLY1305",
-    nonce_b64: toB64(nonce),
-    ct_b64: toB64(ct),
+    nonce_b64: toB64(sodium, nonce),
+    ct_b64: toB64(sodium, ct),
     aad,
   };
-  return toB64(toBytes(JSON.stringify(envelope)));
+  return encodeEnvelope(sodium, envelope);
 };
 
 export const decryptJsonRecord = async <T>(
@@ -156,22 +219,33 @@ export const decryptJsonRecord = async <T>(
   recordType: string,
   enc_b64: string
 ): Promise<T> => {
-  await initSodium();
-  const envelopeBytes = fromB64(enc_b64);
-  const envelope = JSON.parse(sodiumInstance!.to_string(envelopeBytes)) as Envelope;
+  const sodium = await getSodium();
+  const envelope = decodeEnvelope(sodium, enc_b64);
   if (envelope.v !== 2) throw new Error("Unsupported vault version");
   const recordKey = await deriveRecordKey(vk, recordId, recordType);
-  const nonce = fromB64(envelope.nonce_b64);
-  const ct = fromB64(envelope.ct_b64);
-  const aadBytes = toBytes(JSON.stringify(envelope.aad));
-  const plain = sodiumInstance!.crypto_aead_xchacha20poly1305_ietf_decrypt(
+  const nonce = fromB64(sodium, envelope.nonce_b64);
+  const ct = fromB64(sodium, envelope.ct_b64);
+  const aadBytes = buildAadBytes(recordType, recordId);
+  if (
+    shouldLogVaultDebug &&
+    (envelope.aad?.type !== recordType || envelope.aad?.id !== recordId)
+  ) {
+    console.debug("[vault:decrypt] aad mismatch", {
+      recordType,
+      recordId,
+      envelopeType: envelope.aad?.type,
+      envelopeId: envelope.aad?.id,
+    });
+  }
+  logVaultRecord(sodium, "decrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
+  const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
     null,
     ct,
     aadBytes,
     nonce,
     recordKey
   );
-  return JSON.parse(sodiumInstance!.to_string(plain)) as T;
+  return JSON.parse(fromBytes(plain)) as T;
 };
 
 export const chunkBuffer = (buffer: ArrayBuffer, chunkSize: number) => {
@@ -189,28 +263,29 @@ export const encodeBinaryEnvelope = async (
   recordType: string,
   bytes: Uint8Array
 ) => {
-  await initSodium();
+  const sodium = await getSodium();
   const recordKey = await deriveRecordKey(vk, recordId, recordType);
-  const nonce = sodiumInstance!.randombytes_buf(
-    sodiumInstance!.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
+  const nonce = sodium.randombytes_buf(
+    sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES
   );
-  const aad = { schema: "NKC" as const, type: recordType, id: recordId };
-  const aadBytes = toBytes(JSON.stringify(aad));
-  const ct = sodiumInstance!.crypto_aead_xchacha20poly1305_ietf_encrypt(
+  const aad = buildAad(recordType, recordId);
+  const aadBytes = buildAadBytes(recordType, recordId);
+  const ct = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
     bytes,
     aadBytes,
     null,
     nonce,
     recordKey
   );
+  logVaultRecord(sodium, "encrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
   const envelope: Envelope = {
     v: 2,
     alg: "XCHACHA20POLY1305",
-    nonce_b64: toB64(nonce),
-    ct_b64: toB64(ct),
+    nonce_b64: toB64(sodium, nonce),
+    ct_b64: toB64(sodium, ct),
     aad,
   };
-  return toB64(toBytes(JSON.stringify(envelope)));
+  return encodeEnvelope(sodium, envelope);
 };
 
 export const decodeBinaryEnvelope = async (
@@ -219,14 +294,25 @@ export const decodeBinaryEnvelope = async (
   recordType: string,
   enc_b64: string
 ) => {
-  await initSodium();
-  const envelopeBytes = fromB64(enc_b64);
-  const envelope = JSON.parse(sodiumInstance!.to_string(envelopeBytes)) as Envelope;
+  const sodium = await getSodium();
+  const envelope = decodeEnvelope(sodium, enc_b64);
   const recordKey = await deriveRecordKey(vk, recordId, recordType);
-  const nonce = fromB64(envelope.nonce_b64);
-  const ct = fromB64(envelope.ct_b64);
-  const aadBytes = toBytes(JSON.stringify(envelope.aad));
-  return sodiumInstance!.crypto_aead_xchacha20poly1305_ietf_decrypt(
+  const nonce = fromB64(sodium, envelope.nonce_b64);
+  const ct = fromB64(sodium, envelope.ct_b64);
+  const aadBytes = buildAadBytes(recordType, recordId);
+  if (
+    shouldLogVaultDebug &&
+    (envelope.aad?.type !== recordType || envelope.aad?.id !== recordId)
+  ) {
+    console.debug("[vault:decrypt] aad mismatch", {
+      recordType,
+      recordId,
+      envelopeType: envelope.aad?.type,
+      envelopeId: envelope.aad?.id,
+    });
+  }
+  logVaultRecord(sodium, "decrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
+  return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
     null,
     ct,
     aadBytes,

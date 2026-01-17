@@ -1,26 +1,65 @@
-import { useState } from "react";
-import { Upload } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { wipeVault } from "../db/repo";
+import { clearSession as clearStoredSession } from "../security/session";
+
+type UnlockResult = {
+  ok: boolean;
+  error?: string;
+  retryAfterMs?: number;
+};
 
 type UnlockProps = {
-  onUnlock: (recoveryKey: string) => Promise<void>;
+  onUnlock: (pin: string) => Promise<UnlockResult>;
 };
 
 export default function Unlock({ onUnlock }: UnlockProps) {
-  const [key, setKey] = useState("");
+  const [pin, setPin] = useState("");
+  const [error, setError] = useState("");
+  const [retryAt, setRetryAt] = useState<number | null>(null);
+  const [now, setNow] = useState(Date.now());
+  const [busy, setBusy] = useState(false);
 
-  const handleUpload = async (file: File) => {
-    const text = await file.text();
-    setKey(text.trim());
-  };
+  useEffect(() => {
+    if (!retryAt) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [retryAt]);
+
+  const retrySeconds = useMemo(() => {
+    if (!retryAt) return 0;
+    const diff = retryAt - now;
+    return diff > 0 ? Math.ceil(diff / 1000) : 0;
+  }, [now, retryAt]);
 
   const handleReset = async () => {
     const ok = window.confirm(
       "로컬 금고를 초기화할까요? 복구키 없이는 복구할 수 없습니다."
     );
     if (!ok) return;
+    await clearStoredSession();
     await wipeVault();
     window.location.reload();
+  };
+
+  const handleUnlock = async () => {
+    setError("");
+    setBusy(true);
+    try {
+      const result = await onUnlock(pin);
+      if (!result.ok) {
+        setError(result.error || "PIN이 올바르지 않습니다.");
+        if (result.retryAfterMs) {
+          setRetryAt(Date.now() + result.retryAfterMs);
+        }
+      } else {
+        setRetryAt(null);
+      }
+    } catch (unlockError) {
+      console.error("PIN unlock failed", unlockError);
+      setError("PIN 잠금 해제에 실패했습니다.");
+    } finally {
+      setBusy(false);
+    }
   };
 
   return (
@@ -28,35 +67,34 @@ export default function Unlock({ onUnlock }: UnlockProps) {
       <div className="w-full max-w-md rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
         <h1 className="text-xl font-semibold">NKC 잠금 해제</h1>
         <p className="mt-2 text-sm text-nkc-muted">
-          복구키를 입력해야 로컬 금고를 열 수 있습니다.
+          PIN을 입력해야 로컬 금고를 열 수 있습니다.
         </p>
 
         <label className="mt-6 text-sm">
-          복구키
-          <textarea
-            value={key}
-            onChange={(event) => setKey(event.target.value)}
-            className="mt-2 h-24 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-            placeholder="NKC-XXXX-XXXX-XXXX-XXXX"
+          PIN
+          <input
+            type="password"
+            inputMode="numeric"
+            pattern="\\d*"
+            maxLength={8}
+            value={pin}
+            onChange={(event) => setPin(event.target.value)}
+            className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+            placeholder="4-8자리"
           />
         </label>
 
-        <label className="mt-3 flex cursor-pointer items-center gap-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
-          <Upload size={14} />
-          txt 파일 가져오기
-          <input
-            type="file"
-            accept=".txt"
-            className="hidden"
-            onChange={(event) =>
-              event.target.files?.[0] && handleUpload(event.target.files[0])
-            }
-          />
-        </label>
+        {retrySeconds ? (
+          <div className="mt-2 text-xs text-nkc-muted">
+            잠시 후 다시 시도하세요. ({retrySeconds}s)
+          </div>
+        ) : null}
+        {error ? <div className="mt-2 text-xs text-red-300">{error}</div> : null}
 
         <button
-          onClick={() => onUnlock(key)}
-          className="mt-6 w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg"
+          onClick={handleUnlock}
+          className="mt-6 w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={busy || retrySeconds > 0 || !pin}
         >
           잠금 해제
         </button>

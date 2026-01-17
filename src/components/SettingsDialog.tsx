@@ -1,8 +1,8 @@
 import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { KeyRound, Lock, RefreshCcw, ShieldAlert } from "lucide-react";
+import { KeyRound, Lock, ShieldAlert } from "lucide-react";
 import type { UserProfile } from "../db/repo";
-import { generateRecoveryKey } from "../crypto/vault";
+import { defaultPrivacyPrefs, getPrivacyPrefs, setPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
 
 const themeOptions = [
@@ -21,7 +21,14 @@ type SettingsDialogProps = {
   }) => Promise<void>;
   onUploadPhoto: (file: File) => Promise<void>;
   onLock: () => void;
-  onRotateKey: (newKey: string, onProgress: (value: number) => void) => Promise<void>;
+  pinEnabled: boolean;
+  onSetPin: (pin: string) => Promise<{ ok: boolean; error?: string }>;
+  onDisablePin: () => Promise<void>;
+  onOpenRecovery: () => void;
+  hiddenFriends: UserProfile[];
+  blockedFriends: UserProfile[];
+  onUnhideFriend: (id: string) => Promise<void>;
+  onUnblockFriend: (id: string) => Promise<void>;
   onLogout: () => void;
   onWipe: () => void;
 };
@@ -33,21 +40,52 @@ export default function SettingsDialog({
   onSaveProfile,
   onUploadPhoto,
   onLock,
-  onRotateKey,
+  pinEnabled,
+  onSetPin,
+  onDisablePin,
+  onOpenRecovery,
+  hiddenFriends,
+  blockedFriends,
+  onUnhideFriend,
+  onUnblockFriend,
   onLogout,
   onWipe,
 }: SettingsDialogProps) {
   const [displayName, setDisplayName] = useState(user.displayName);
   const [status, setStatus] = useState(user.status);
   const [theme, setTheme] = useState<"dark" | "light">(user.theme);
-  const [newKey, setNewKey] = useState("");
-  const [rotateProgress, setRotateProgress] = useState(0);
+  const [pinDraft, setPinDraft] = useState("");
+  const [pinPending, setPinPending] = useState(false);
+  const [pinError, setPinError] = useState("");
+  const [privacyPrefs, setPrivacyPrefsState] = useState(defaultPrivacyPrefs);
+  const [saveMessage, setSaveMessage] = useState("");
 
   useEffect(() => {
     setDisplayName(user.displayName);
     setStatus(user.status);
     setTheme(user.theme);
   }, [user]);
+
+  useEffect(() => {
+    if (pinEnabled) {
+      setPinPending(false);
+      setPinDraft("");
+      setPinError("");
+    }
+  }, [pinEnabled]);
+
+  useEffect(() => {
+    if (!open) return;
+    getPrivacyPrefs()
+      .then(setPrivacyPrefsState)
+      .catch((error) => console.error("Failed to load privacy prefs", error));
+  }, [open]);
+
+  useEffect(() => {
+    if (!saveMessage) return;
+    const timer = window.setTimeout(() => setSaveMessage(""), 2000);
+    return () => window.clearTimeout(timer);
+  }, [saveMessage]);
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -100,7 +138,7 @@ export default function SettingsDialog({
 
             <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-nkc-text">보안</h3>
+                <h3 className="text-sm font-semibold text-nkc-text">개인정보 보호</h3>
                 <button
                   onClick={onLock}
                   className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
@@ -108,38 +146,112 @@ export default function SettingsDialog({
                   <Lock size={14} /> 잠금
                 </button>
               </div>
-              <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel p-4 text-xs text-nkc-muted">
-                복구키 변경은 모든 레코드를 재암호화합니다. 작업 중에는 앱을 닫지 마세요.
-              </div>
               <div className="mt-4 grid gap-3">
-                <label className="text-sm">
-                  새 복구키
-                  <textarea
-                    value={newKey}
-                    onChange={(event) => setNewKey(event.target.value)}
-                    placeholder="NKC-XXXX-XXXX-XXXX-XXXX"
-                    className="mt-2 h-20 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+                <label className="flex items-center justify-between text-sm">
+                  <span>PIN 잠금</span>
+                  <input
+                    type="checkbox"
+                    checked={pinEnabled || pinPending}
+                    onChange={async (event) => {
+                      const next = event.target.checked;
+                      setPinError("");
+                      if (!next) {
+                        setPinPending(false);
+                        setPinDraft("");
+                        if (pinEnabled) {
+                          await onDisablePin();
+                        }
+                        return;
+                      }
+                      setPinPending(true);
+                    }}
                   />
                 </label>
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    onClick={async () => setNewKey(await generateRecoveryKey())}
-                    className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-panel"
-                  >
-                    <RefreshCcw size={14} />
-                    새 키 생성
-                  </button>
-                  <button
-                    onClick={() => newKey && onRotateKey(newKey, setRotateProgress)}
-                    className="flex items-center gap-2 rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg"
-                  >
-                    <KeyRound size={14} />
-                    키 회전
-                  </button>
-                </div>
-                {rotateProgress ? (
-                  <div className="text-xs text-nkc-muted">진행률 {rotateProgress}%</div>
+                {pinEnabled || pinPending ? (
+                  <div className="grid gap-2">
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      pattern="\\d*"
+                      maxLength={8}
+                      value={pinDraft}
+                      onChange={(event) => setPinDraft(event.target.value)}
+                      placeholder="4-8자리"
+                      className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm"
+                    />
+                    <button
+                      onClick={async () => {
+                        setPinError("");
+                        const result = await onSetPin(pinDraft);
+                        if (!result.ok) {
+                          setPinError(result.error || "PIN 설정에 실패했습니다.");
+                        }
+                      }}
+                      className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+                      disabled={!pinDraft}
+                    >
+                      PIN 저장
+                    </button>
+                  </div>
                 ) : null}
+                {pinError ? (
+                  <div className="text-xs text-red-300">{pinError}</div>
+                ) : null}
+                <label className="flex items-center justify-between text-sm">
+                  <span>읽음 확인</span>
+                  <input
+                    type="checkbox"
+                    checked={privacyPrefs.readReceipts}
+                    onChange={async (event) => {
+                      const next = { ...privacyPrefs, readReceipts: event.target.checked };
+                      setPrivacyPrefsState(next);
+                      try {
+                        await setPrivacyPrefs(next);
+                      } catch (error) {
+                        console.error("Failed to save read receipts", error);
+                      }
+                    }}
+                  />
+                </label>
+                <label className="flex items-center justify-between text-sm">
+                  <span>입력 중 표시</span>
+                  <input
+                    type="checkbox"
+                    checked={privacyPrefs.typingIndicator}
+                    onChange={async (event) => {
+                      const next = { ...privacyPrefs, typingIndicator: event.target.checked };
+                      setPrivacyPrefsState(next);
+                      try {
+                        await setPrivacyPrefs(next);
+                      } catch (error) {
+                        console.error("Failed to save typing indicator", error);
+                      }
+                    }}
+                  />
+                </label>
+                <label className="flex items-center justify-between text-sm">
+                  <span>링크 미리보기</span>
+                  <input
+                    type="checkbox"
+                    checked={privacyPrefs.linkPreviews}
+                    onChange={async (event) => {
+                      const next = { ...privacyPrefs, linkPreviews: event.target.checked };
+                      setPrivacyPrefsState(next);
+                      try {
+                        await setPrivacyPrefs(next);
+                      } catch (error) {
+                        console.error("Failed to save link previews", error);
+                      }
+                    }}
+                  />
+                </label>
+                <button
+                  onClick={onOpenRecovery}
+                  className="flex w-fit items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                >
+                  <KeyRound size={14} />
+                  복구키 관리
+                </button>
               </div>
             </section>
 
@@ -159,6 +271,62 @@ export default function SettingsDialog({
                     {option.label}
                   </button>
                 ))}
+              </div>
+            </section>
+
+            <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+              <h3 className="text-sm font-semibold text-nkc-text">친구 관리</h3>
+              <div className="mt-4 grid gap-4 text-sm">
+                <div>
+                  <div className="text-xs text-nkc-muted">숨김 목록</div>
+                  {hiddenFriends.length ? (
+                    <div className="mt-2 grid gap-2">
+                      {hiddenFriends.map((friend) => (
+                        <div
+                          key={friend.id}
+                          className="flex items-center justify-between rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs"
+                        >
+                          <span className="text-nkc-text">{friend.displayName}</span>
+                          <button
+                            onClick={() => onUnhideFriend(friend.id)}
+                            className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                          >
+                            표시
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
+                      숨긴 친구가 없습니다.
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <div className="text-xs text-nkc-muted">차단 목록</div>
+                  {blockedFriends.length ? (
+                    <div className="mt-2 grid gap-2">
+                      {blockedFriends.map((friend) => (
+                        <div
+                          key={friend.id}
+                          className="flex items-center justify-between rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs"
+                        >
+                          <span className="text-nkc-text">{friend.displayName}</span>
+                          <button
+                            onClick={() => onUnblockFriend(friend.id)}
+                            className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                          >
+                            차단 해제
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="mt-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
+                      차단한 친구가 없습니다.
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
 
@@ -197,13 +365,21 @@ export default function SettingsDialog({
             </Dialog.Close>
             <button
               onClick={async () => {
-                await onSaveProfile({ displayName, status, theme });
+                try {
+                  await onSaveProfile({ displayName, status, theme });
+                  setSaveMessage("저장했습니다");
+                } catch (error) {
+                  console.error("Failed to save profile", error);
+                }
               }}
               className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg"
             >
               저장
             </button>
           </div>
+          {saveMessage ? (
+            <div className="mt-2 text-right text-xs text-nkc-muted">{saveMessage}</div>
+          ) : null}
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
