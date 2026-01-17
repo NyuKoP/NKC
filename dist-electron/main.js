@@ -1,9 +1,8 @@
 import { session, app, BrowserWindow, ipcMain, net as net$1 } from "electron";
-import fs$1 from "node:fs/promises";
-import path$1 from "path";
-import { fileURLToPath } from "node:url";
+import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
-import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import https from "node:https";
 import { pipeline } from "node:stream/promises";
 import crypto from "node:crypto";
@@ -42,11 +41,11 @@ const downloadFile = async (url, dest, onProgress) => {
     receivedBytes += chunk.length;
     onProgress?.({ receivedBytes, totalBytes });
   });
-  await pipeline(request, fs.createWriteStream(dest));
+  await pipeline(request, fsSync.createWriteStream(dest));
 };
 const hashFile = async (filePath) => {
   const hash = crypto.createHash("sha256");
-  const stream = fs.createReadStream(filePath);
+  const stream = fsSync.createReadStream(filePath);
   return new Promise((resolve, reject) => {
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
@@ -145,13 +144,13 @@ const getComponentRoot = (userDataDir, network) => path.join(userDataDir, "onion
 const getPointerPath = (userDataDir, network) => path.join(getComponentRoot(userDataDir, network), currentFileName);
 const writeJsonAtomic = async (filePath, data) => {
   const tempPath = `${filePath}.tmp`;
-  await fs$1.mkdir(path.dirname(filePath), { recursive: true });
-  await fs$1.writeFile(tempPath, JSON.stringify(data, null, 2));
-  await fs$1.rename(tempPath, filePath);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(tempPath, JSON.stringify(data, null, 2));
+  await fs.rename(tempPath, filePath);
 };
 const readCurrentPointer = async (userDataDir, network) => {
   try {
-    const raw = await fs$1.readFile(getPointerPath(userDataDir, network), "utf8");
+    const raw = await fs.readFile(getPointerPath(userDataDir, network), "utf8");
     return JSON.parse(raw);
   } catch (error) {
     return null;
@@ -223,7 +222,7 @@ const installTor = async (userDataDir, version, onProgress, downloadUrl, assetNa
       `Missing pinned hash for Tor asset ${resolvedAssetName} (${version}).`
     );
   }
-  const tempDir = await fs$1.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
+  const tempDir = await fs.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, resolvedAssetName);
   onProgress?.({ step: "download", message: "Downloading Tor" });
@@ -235,8 +234,8 @@ const installTor = async (userDataDir, version, onProgress, downloadUrl, assetNa
   onProgress?.({ step: "verify", message: "Verifying Tor" });
   await verifySha256(archivePath, hash);
   const installPath = path.join(userDataDir, "onion", "components", network, version);
-  await fs$1.rm(installPath, { recursive: true, force: true });
-  await fs$1.mkdir(installPath, { recursive: true });
+  await fs.rm(installPath, { recursive: true, force: true });
+  await fs.mkdir(installPath, { recursive: true });
   onProgress?.({ step: "unpack", message: "Unpacking Tor" });
   await unpackArchive(archivePath, installPath);
   onProgress?.({ step: "activate", message: "Activating Tor" });
@@ -260,7 +259,7 @@ const installLokinet = async (userDataDir, version, onProgress, downloadUrl, ass
       `Missing pinned hash for Lokinet asset ${assetName} (${version}).`
     );
   }
-  const tempDir = await fs$1.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
+  const tempDir = await fs.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, assetName);
   onProgress?.({ step: "download", message: "Downloading Lokinet" });
@@ -272,8 +271,8 @@ const installLokinet = async (userDataDir, version, onProgress, downloadUrl, ass
   onProgress?.({ step: "verify", message: "Verifying Lokinet" });
   await verifySha256(archivePath, hash);
   const installPath = path.join(userDataDir, "onion", "components", network, version);
-  await fs$1.rm(installPath, { recursive: true, force: true });
-  await fs$1.mkdir(installPath, { recursive: true });
+  await fs.rm(installPath, { recursive: true, force: true });
+  await fs.mkdir(installPath, { recursive: true });
   onProgress?.({ step: "unpack", message: "Unpacking Lokinet" });
   await unpackArchive(archivePath, installPath);
   onProgress?.({ step: "activate", message: "Activating Lokinet" });
@@ -570,6 +569,7 @@ const checkUpdates = async (network) => {
   }
   return checkLokinetUpdates();
 };
+const isDev = !app.isPackaged;
 const isLocalhostProxyUrl = (proxyUrl) => {
   try {
     const parsed = new URL(proxyUrl);
@@ -810,8 +810,8 @@ const registerOnionIpc = () => {
     const network = payload.network;
     await onionRuntime.stop();
     const userDataDir = app.getPath("userData");
-    const componentRoot = path$1.join(userDataDir, "onion", "components", network);
-    await fs$1.rm(componentRoot, { recursive: true, force: true });
+    const componentRoot = path.join(userDataDir, "onion", "components", network);
+    await fs.rm(componentRoot, { recursive: true, force: true });
     onionComponentCache[network] = { installed: false, status: "idle" };
   });
   ipcMain.handle(
@@ -826,33 +826,151 @@ const registerOnionIpc = () => {
     }
   );
 };
-if (process.env.VITE_DEV_SERVER_URL) {
-  const devUserData = path$1.join(app.getPath("localAppData"), "test-dev");
-  app.setPath("userData", devUserData);
-  app.setPath("cache", path$1.join(devUserData, "Cache"));
-}
-const __dirname$1 = path$1.dirname(fileURLToPath(import.meta.url));
+const __dirname$1 = path.dirname(fileURLToPath(import.meta.url));
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
+let mainWindow = null;
+const canReach = async (url, timeoutMs = 1200) => new Promise((resolve) => {
+  try {
+    const request = net$1.request(url);
+    const timeout = setTimeout(() => {
+      try {
+        request.abort();
+      } catch {
+      }
+      resolve(false);
+    }, timeoutMs);
+    request.on("response", (response) => {
+      const ok = Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 400);
+      response.on("data", () => {
+      });
+      response.on("end", () => {
+        clearTimeout(timeout);
+        resolve(ok);
+      });
+    });
+    request.on("error", () => {
+      clearTimeout(timeout);
+      resolve(false);
+    });
+    request.end();
+  } catch (error) {
+    resolve(false);
+  }
+});
 const createMainWindow = () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
+  const preloadPath = path.join(__dirname$1, "preload.js");
+  const preloadExists = fsSync.existsSync(preloadPath);
+  if (isDev && !preloadExists) {
+    console.error("[dev] preload missing at", preloadPath);
+  }
+  const sandboxEnabled = !(isDev && process.env.ELECTRON_DEV_NO_SANDBOX === "1");
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     webPreferences: {
-      preload: path$1.join(__dirname$1, "preload.js"),
+      preload: preloadExists ? preloadPath : void 0,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: sandboxEnabled,
       allowRunningInsecureContent: false
     }
   });
-  if (rendererUrl) {
-    void win.loadURL(rendererUrl);
-  } else {
-    void win.loadFile(path$1.join(__dirname$1, "../dist/index.html"));
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDesc, validatedURL) => {
+    console.error("[main] did-fail-load", errorCode, errorDesc, validatedURL);
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    console.error("[main] render-process-gone", details);
+  });
+  win.webContents.on("unresponsive", () => {
+    console.error("[main] renderer unresponsive");
+  });
+  if (isDev) {
+    win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+      console.log("[renderer]", level, message, sourceId, line);
+    });
   }
+  const loadRenderer = async () => {
+    if (rendererUrl) {
+      console.log("[dev] rendererUrl =", rendererUrl);
+      const ok = await canReach(rendererUrl);
+      if (ok) {
+        console.log("[dev] loadURL =", rendererUrl);
+        void win.loadURL(rendererUrl);
+        return;
+      }
+      console.error("[dev] vite not reachable", rendererUrl);
+    }
+    if (isDev) {
+      const fallbackUrl = "http://localhost:5173/";
+      const ok = await canReach(fallbackUrl);
+      if (ok) {
+        console.log("[dev] loadURL =", fallbackUrl);
+        void win.loadURL(fallbackUrl);
+        return;
+      }
+      const distIndex = path.join(__dirname$1, "../dist/index.html");
+      if (fsSync.existsSync(distIndex)) {
+        console.log("[dev] loadFile =", distIndex);
+        void win.loadFile(distIndex);
+        return;
+      }
+      const html = `<!doctype html><html><head><meta charset="utf-8" /><title>Dev Server Unavailable</title></head><body style="font-family:sans-serif;padding:16px;"><h2>Dev server not reachable</h2><p>Start Vite on http://localhost:5173 and reload.</p></body></html>`;
+      console.log("[dev] loadURL = dev fallback page");
+      void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      return;
+    }
+    void win.loadFile(path.join(__dirname$1, "../dist/index.html"));
+  };
+  void loadRenderer();
+  if (process.env.OPEN_DEV_TOOLS) {
+    win.webContents.openDevTools({ mode: "detach" });
+  }
+  mainWindow = win;
+  win.on("closed", () => {
+    mainWindow = null;
+  });
   return win;
 };
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+  process.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      return;
+    }
+    createMainWindow();
+  });
+}
+if (process.env.VITE_DEV_SERVER_URL) {
+  const temp = app.getPath("temp");
+  const devRoot = path.join(temp, "nkc-electron-dev");
+  const devUserData = path.join(devRoot, "userData");
+  const devCache = path.join(devRoot, "cache");
+  const devSession = path.join(devRoot, "sessionData");
+  const devTemp = path.join(devRoot, "temp");
+  fsSync.mkdirSync(devUserData, { recursive: true });
+  fsSync.mkdirSync(devCache, { recursive: true });
+  fsSync.mkdirSync(devSession, { recursive: true });
+  fsSync.mkdirSync(devTemp, { recursive: true });
+  app.setPath("userData", devUserData);
+  app.setPath("sessionData", devSession);
+  app.setPath("temp", devTemp);
+  console.log("[dev] userData =", app.getPath("userData"), "temp =", app.getPath("temp"));
+}
 app.whenReady().then(() => {
+  if (isDev) {
+    console.log("[main] VITE_DEV_SERVER_URL =", process.env.VITE_DEV_SERVER_URL ?? "");
+  }
   registerProxyIpc();
   registerOnionIpc();
   createMainWindow();
@@ -862,6 +980,9 @@ app.whenReady().then(() => {
     }
   });
 });
+app.on("before-quit", () => console.log("[main] before-quit"));
+app.on("will-quit", () => console.log("[main] will-quit"));
+app.on("quit", (_event, code) => console.log("[main] quit", code));
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
     app.quit();

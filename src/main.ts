@@ -1,6 +1,7 @@
 import { app, BrowserWindow, ipcMain, net, session } from "electron";
 import fs from "node:fs/promises";
-import path from "path";
+import fsSync from "node:fs";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
@@ -20,6 +21,8 @@ type ProxyHealth = {
   ok: boolean;
   message: string;
 };
+
+const isDev = !app.isPackaged;
 
 const isLocalhostProxyUrl = (proxyUrl: string) => {
   try {
@@ -322,36 +325,156 @@ const registerOnionIpc = () => {
   );
 };
 
-if (process.env.VITE_DEV_SERVER_URL) {
-  const devUserData = path.join(app.getPath("localAppData"), "test-dev");
-  app.setPath("userData", devUserData);
-  app.setPath("cache", path.join(devUserData, "Cache"));
-}
-
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
+let mainWindow: BrowserWindow | null = null;
+
+const canReach = async (url: string, timeoutMs = 1200) =>
+  new Promise<boolean>((resolve) => {
+    try {
+      const request = net.request(url);
+      const timeout = setTimeout(() => {
+        try {
+          request.abort();
+        } catch {}
+        resolve(false);
+      }, timeoutMs);
+      request.on("response", (response) => {
+        const ok = Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 400);
+        response.on("data", () => {});
+        response.on("end", () => {
+          clearTimeout(timeout);
+          resolve(ok);
+        });
+      });
+      request.on("error", () => {
+        clearTimeout(timeout);
+        resolve(false);
+      });
+      request.end();
+    } catch (error) {
+      resolve(false);
+    }
+  });
 
 export const createMainWindow = () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
+  const preloadPath = path.join(__dirname, "preload.js");
+  const preloadExists = fsSync.existsSync(preloadPath);
+  if (isDev && !preloadExists) {
+    console.error("[dev] preload missing at", preloadPath);
+  }
+  const sandboxEnabled = !(isDev && process.env.ELECTRON_DEV_NO_SANDBOX === "1");
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: preloadExists ? preloadPath : undefined,
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true,
+      sandbox: sandboxEnabled,
       allowRunningInsecureContent: false,
     },
   });
-  if (rendererUrl) {
-    void win.loadURL(rendererUrl);
-  } else {
-    void win.loadFile(path.join(__dirname, "../dist/index.html"));
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDesc, validatedURL) => {
+    console.error("[main] did-fail-load", errorCode, errorDesc, validatedURL);
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    console.error("[main] render-process-gone", details);
+  });
+  win.webContents.on("unresponsive", () => {
+    console.error("[main] renderer unresponsive");
+  });
+  if (isDev) {
+    win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+      console.log("[renderer]", level, message, sourceId, line);
+    });
   }
+
+  const loadRenderer = async () => {
+    if (rendererUrl) {
+      console.log("[dev] rendererUrl =", rendererUrl);
+      const ok = await canReach(rendererUrl);
+      if (ok) {
+        console.log("[dev] loadURL =", rendererUrl);
+        void win.loadURL(rendererUrl);
+        return;
+      }
+      console.error("[dev] vite not reachable", rendererUrl);
+    }
+    if (isDev) {
+      const fallbackUrl = "http://localhost:5173/";
+      const ok = await canReach(fallbackUrl);
+      if (ok) {
+        console.log("[dev] loadURL =", fallbackUrl);
+        void win.loadURL(fallbackUrl);
+        return;
+      }
+      const distIndex = path.join(__dirname, "../dist/index.html");
+      if (fsSync.existsSync(distIndex)) {
+        console.log("[dev] loadFile =", distIndex);
+        void win.loadFile(distIndex);
+        return;
+      }
+      const html = `<!doctype html><html><head><meta charset="utf-8" /><title>Dev Server Unavailable</title></head><body style="font-family:sans-serif;padding:16px;"><h2>Dev server not reachable</h2><p>Start Vite on http://localhost:5173 and reload.</p></body></html>`;
+      console.log("[dev] loadURL = dev fallback page");
+      void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      return;
+    }
+    void win.loadFile(path.join(__dirname, "../dist/index.html"));
+  };
+  void loadRenderer();
+  if (process.env.OPEN_DEV_TOOLS) {
+    win.webContents.openDevTools({ mode: "detach" });
+  }
+  mainWindow = win;
+  win.on("closed", () => {
+    mainWindow = null;
+  });
   return win;
 };
 
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+  process.exit(0);
+} else {
+  app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      return;
+    }
+    createMainWindow();
+  });
+}
+
+if (process.env.VITE_DEV_SERVER_URL) {
+  const temp = app.getPath("temp");
+  const devRoot = path.join(temp, "nkc-electron-dev");
+  const devUserData = path.join(devRoot, "userData");
+  const devCache = path.join(devRoot, "cache");
+  const devSession = path.join(devRoot, "sessionData");
+  const devTemp = path.join(devRoot, "temp");
+  fsSync.mkdirSync(devUserData, { recursive: true });
+  fsSync.mkdirSync(devCache, { recursive: true });
+  fsSync.mkdirSync(devSession, { recursive: true });
+  fsSync.mkdirSync(devTemp, { recursive: true });
+  app.setPath("userData", devUserData);
+  app.setPath("sessionData", devSession);
+  app.setPath("temp", devTemp);
+  console.log("[dev] userData =", app.getPath("userData"), "temp =", app.getPath("temp"));
+}
+
 app.whenReady().then(() => {
+  if (isDev) {
+    console.log("[main] VITE_DEV_SERVER_URL =", process.env.VITE_DEV_SERVER_URL ?? "");
+  }
   registerProxyIpc();
   registerOnionIpc();
   createMainWindow();
@@ -361,6 +484,10 @@ app.whenReady().then(() => {
     }
   });
 });
+
+app.on("before-quit", () => console.log("[main] before-quit"));
+app.on("will-quit", () => console.log("[main] will-quit"));
+app.on("quit", (_event, code) => console.log("[main] quit", code));
 
 app.on("window-all-closed", () => {
   if (process.platform !== "darwin") {
