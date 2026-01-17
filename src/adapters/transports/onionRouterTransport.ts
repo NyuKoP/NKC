@@ -1,18 +1,21 @@
 import type { HttpClient } from "../../net/httpClient";
+import type { NetConfig } from "../../net/netConfig";
+import { detectLocalOnionProxy } from "../../net/onionProxyDetect";
 import type { Transport, TransportPacket, TransportState } from "./types";
 
 type Handler<T> = (payload: T) => void;
 
 type OnionRouterOptions = {
   httpClient: HttpClient;
-  proxyUrl: string;
+  config: NetConfig;
 };
 
 export const createOnionRouterTransport = ({
   httpClient,
-  proxyUrl,
+  config,
 }: OnionRouterOptions): Transport => {
   let state: TransportState = "idle";
+  let activeProxyUrl: string | null = null;
   const messageHandlers: Array<Handler<TransportPacket>> = [];
   const ackHandlers: Array<Handler<{ id: string; rttMs: number }>> = [];
   const stateHandlers: Array<Handler<TransportState>> = [];
@@ -26,15 +29,23 @@ export const createOnionRouterTransport = ({
     name: "onionRouter",
     async start() {
       emitState("connecting");
-      // TODO: validate proxy reachability.
+      const detected = await detectLocalOnionProxy(config);
+      if (!detected) {
+        emitState("failed");
+        throw new Error("Onion proxy not reachable");
+      }
+      activeProxyUrl = detected;
       emitState("connected");
     },
     async stop() {
       emitState("idle");
     },
     async send(packet: TransportPacket) {
+      if (!activeProxyUrl) {
+        throw new Error("Onion proxy is not ready");
+      }
       // TODO: send to local onion proxy API once defined.
-      await httpClient.request(new URL("/onion/send", proxyUrl).toString(), {
+      await httpClient.request(new URL("/onion/send", activeProxyUrl).toString(), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(packet),

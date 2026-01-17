@@ -13,6 +13,7 @@ import type { UserProfile } from "../db/repo";
 import { defaultPrivacyPrefs, getPrivacyPrefs, setPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
 import { useNetConfigStore } from "../net/netConfigStore";
+import { applyProxyConfig, checkProxyHealth } from "../net/proxyControl";
 
 const themeOptions = [
   { value: "dark", label: "다크" },
@@ -81,6 +82,13 @@ export default function SettingsDialog({
   const setDisableLinkPreview = useNetConfigStore((state) => state.setDisableLinkPreview);
   const isOnionRouterMode = netConfig.mode === "onionRouter";
   const isAutoMode = netConfig.mode === "auto";
+  const [proxyStatus, setProxyStatus] = useState<"idle" | "ok" | "fail">("idle");
+  const proxyStatusLabel =
+    proxyStatus === "ok"
+      ? "Proxy: 연결됨"
+      : proxyStatus === "fail"
+        ? "Proxy: 연결 불가"
+        : "Proxy: 비활성";
 
   useEffect(() => {
     setDisplayName(user.displayName);
@@ -112,6 +120,55 @@ export default function SettingsDialog({
     const timer = window.setTimeout(() => setSaveMessage(""), 2000);
     return () => window.clearTimeout(timer);
   }, [saveMessage]);
+
+  useEffect(() => {
+    if (!netConfig.disableLinkPreview || !privacyPrefs.linkPreviews) return;
+    void updatePrivacy({ ...privacyPrefs, linkPreviews: false });
+  }, [netConfig.disableLinkPreview, privacyPrefs]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const syncProxy = async () => {
+      try {
+        await applyProxyConfig(netConfig);
+        if (netConfig.mode === "onionRouter" && netConfig.onionProxyEnabled) {
+          const status = await checkProxyHealth();
+          if (!cancelled) {
+            setProxyStatus(status.ok ? "ok" : "fail");
+          }
+        } else if (!cancelled) {
+          setProxyStatus("idle");
+        }
+      } catch (error) {
+        if (!cancelled) {
+          setProxyStatus("fail");
+        }
+      }
+    };
+
+    void syncProxy();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    netConfig.mode,
+    netConfig.onionProxyEnabled,
+    netConfig.onionProxyUrl,
+    netConfig.allowRemoteProxy,
+  ]);
+
+  useEffect(() => {
+    if (netConfig.mode !== "onionRouter" || !netConfig.onionProxyEnabled) return;
+    const timer = window.setInterval(async () => {
+      try {
+        const status = await checkProxyHealth();
+        setProxyStatus(status.ok ? "ok" : "fail");
+      } catch (error) {
+        setProxyStatus("fail");
+      }
+    }, 60000);
+    return () => window.clearInterval(timer);
+  }, [netConfig.mode, netConfig.onionProxyEnabled]);
 
   const updatePrivacy = async (next: typeof privacyPrefs) => {
     setPrivacyPrefsState(next);
@@ -165,7 +222,7 @@ export default function SettingsDialog({
     },
     {
       key: "network",
-      label: "????",
+      label: "네트워크",
       icon: Globe,
       onClick: () => setView("network"),
     },
@@ -417,6 +474,7 @@ export default function SettingsDialog({
                     <input
                       type="checkbox"
                       checked={privacyPrefs.linkPreviews}
+                      disabled={netConfig.disableLinkPreview}
                       onChange={(event) =>
                         updatePrivacy({ ...privacyPrefs, linkPreviews: event.target.checked })
                       }
@@ -473,16 +531,16 @@ export default function SettingsDialog({
             </div>
           ) : null}
 
-                    {view === "network" ? (
+          {view === "network" ? (
             <div className="mt-6 grid gap-6">
-              {renderSubHeader("????")}
+              {renderSubHeader("네트워크 / 프라이버시")}
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="grid gap-4 text-sm">
                   <div>
-                    <div className="text-sm font-semibold text-nkc-text">?? ??</div>
+                    <div className="text-sm font-semibold text-nkc-text">연결 방식</div>
                     <div className="mt-3 grid gap-2">
                       <label className="flex items-center justify-between text-sm">
-                        <span>Auto (??)</span>
+                        <span>Auto (권장)</span>
                         <input
                           type="radio"
                           name="network-mode"
@@ -491,7 +549,7 @@ export default function SettingsDialog({
                         />
                       </label>
                       <label className="flex items-center justify-between text-sm">
-                        <span>Self-Onion (??)</span>
+                        <span>Self-Onion (분산)</span>
                         <input
                           type="radio"
                           name="network-mode"
@@ -500,7 +558,7 @@ export default function SettingsDialog({
                         />
                       </label>
                       <label className="flex items-center justify-between text-sm">
-                        <span>Onion Router (??)</span>
+                        <span>Onion Router (익명)</span>
                         <input
                           type="radio"
                           name="network-mode"
@@ -509,7 +567,7 @@ export default function SettingsDialog({
                         />
                       </label>
                       <label className="flex items-center justify-between text-sm">
-                        <span>Direct P2P (??)</span>
+                        <span>Direct P2P (빠름)</span>
                         <input
                           type="radio"
                           name="network-mode"
@@ -520,9 +578,9 @@ export default function SettingsDialog({
                     </div>
                   </div>
                   <div className="text-xs text-nkc-muted leading-relaxed">
-                    <p>Self-Onion? ??? ? ??? ???? ?????.</p>
-                    <p>??? ???? Onion Router? ?? ??? ? ????.</p>
-                    <p>?? ?? ??? IP ??? ???? ??? ? ? ????.</p>
+                    <p>Self-Onion은 가능한 한 분산된 릴레이를 사용합니다.</p>
+                    <p>문제가 감지되면 Onion Router로 자동 전환될 수 있습니다.</p>
+                    <p>익명 우선 모드는 IP 노출을 줄이지만 지연이 늘 수 있습니다.</p>
                   </div>
                 </div>
               </section>
@@ -531,8 +589,10 @@ export default function SettingsDialog({
                 <div className="flex flex-col">
                   <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
                     <div>
-                      <div className="text-sm font-medium text-nkc-text">Onion ??? ??</div>
-                      <div className="text-xs text-nkc-muted">alternateRoute ?? ???? ??</div>
+                      <div className="text-sm font-medium text-nkc-text">Onion 프록시 사용</div>
+                      <div className="text-xs text-nkc-muted">
+                        alternateRoute 로컬 프록시를 경유합니다.
+                      </div>
                     </div>
                     <input
                       type="checkbox"
@@ -543,24 +603,30 @@ export default function SettingsDialog({
                   </div>
                   <div className="border-b border-nkc-border px-4 py-3">
                     <label className="text-sm">
-                      Onion ??? URL
+                      Onion 프록시 URL
                       <input
                         value={netConfig.onionProxyUrl}
-                        onChange={(event) => setProxy(netConfig.onionProxyEnabled, event.target.value)}
-                        disabled={isOnionRouterMode}
+                        onChange={(event) =>
+                          setProxy(netConfig.onionProxyEnabled, event.target.value)
+                        }
+                        placeholder="socks5://127.0.0.1:9050"
                         className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
                       />
                     </label>
+                    <div className="mt-2 text-xs text-nkc-muted">
+                      alternateRoute을 로컬에서 실행하고 프록시 주소를 입력하세요.
+                    </div>
                     {isAutoMode ? (
-                      <div className="mt-2 text-xs text-nkc-muted">
-                        Auto ??? ?? ? ???? ???? ?? ? ????.
+                      <div className="mt-1 text-xs text-nkc-muted">
+                        Auto 모드는 폴백 시 프록시가 자동으로 켜질 수 있습니다.
                       </div>
                     ) : null}
+                    <div className="mt-2 text-xs text-nkc-muted">{proxyStatusLabel}</div>
                   </div>
                   <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
                     <div>
-                      <div className="text-sm font-medium text-nkc-text">WebRTC ?? ??</div>
-                      <div className="text-xs text-nkc-muted">???? ??</div>
+                      <div className="text-sm font-medium text-nkc-text">WebRTC 직통 제한</div>
+                      <div className="text-xs text-nkc-muted">릴레이만 사용</div>
                     </div>
                     <input
                       type="checkbox"
@@ -571,8 +637,8 @@ export default function SettingsDialog({
                   </div>
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
                     <div>
-                      <div className="text-sm font-medium text-nkc-text">?? ???? ??</div>
-                      <div className="text-xs text-nkc-muted">?? ?? ??</div>
+                      <div className="text-sm font-medium text-nkc-text">링크 미리보기 끄기</div>
+                      <div className="text-xs text-nkc-muted">익명 모드 권장</div>
                     </div>
                     <input
                       type="checkbox"

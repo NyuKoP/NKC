@@ -34,7 +34,7 @@ import {
   type Message,
   type UserProfile,
 } from "../db/repo";
-import { validateRecoveryKey } from "../crypto/vault";
+import { encryptJsonRecord, validateRecoveryKey } from "../crypto/vault";
 import { getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
 import { getShareId } from "../security/friendId";
 import {
@@ -44,6 +44,8 @@ import {
 } from "../security/session";
 import { clearPin, clearPinRecord, getPinStatus, setPin as savePin, verifyPin } from "../security/pin";
 import { clearRecoveryConfirmed } from "../security/recoveryKey";
+import { sendCiphertext } from "../net/router";
+import { startOutboxScheduler } from "../net/outboxScheduler";
 
 const buildNameMap = (profiles: UserProfile[]) =>
   profiles.reduce<Record<string, string>>((acc, profile) => {
@@ -80,6 +82,7 @@ export default function App() {
   const [friendAddOpen, setFriendAddOpen] = useState(false);
   const [shareId, setShareId] = useState("");
   const onboardingLockRef = useRef(false);
+  const outboxSchedulerStarted = useRef(false);
 
   const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
   const devLog = (message: string, detail?: Record<string, unknown>) => {
@@ -229,6 +232,12 @@ export default function App() {
     };
   }, [addToast, setMode]);
 
+  useEffect(() => {
+    if (ui.mode !== "app") return;
+    if (outboxSchedulerStarted.current) return;
+    startOutboxScheduler();
+    outboxSchedulerStarted.current = true;
+  }, [ui.mode]);
 
   const handleCreate = async (displayName: string) => {
     if (onboardingLockRef.current) return;
@@ -504,6 +513,8 @@ export default function App() {
     if (!ui.selectedConvId || !userProfile) return;
     const conv = convs.find((item) => item.id === ui.selectedConvId);
     if (!conv) return;
+    const vk = getVaultKey();
+    if (!vk) return;
     const message: Message = {
       id: createId(),
       convId: conv.id,
@@ -511,7 +522,16 @@ export default function App() {
       text,
       ts: Date.now(),
     };
+    const ciphertext = await encryptJsonRecord(vk, message.id, "message", message);
     await saveMessage(message);
+    void sendCiphertext({
+      convId: conv.id,
+      messageId: message.id,
+      ciphertext,
+      priority: "high",
+    }).catch((error) => {
+      console.error("Failed to route message", error);
+    });
     const updatedConv: Conversation = {
       ...conv,
       lastMessage: text,
