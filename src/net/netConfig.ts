@@ -36,7 +36,7 @@ export const DEFAULT_NET_CONFIG: NetConfig = {
   webrtcRelayOnly: false,
   disableLinkPreview: false,
   selfOnionEnabled: true,
-  selfOnionMinRelays: 5,
+  selfOnionMinRelays: 3,
   allowRemoteProxy: false,
   onionEnabled: false,
   onionSelectedNetwork: "tor",

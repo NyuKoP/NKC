@@ -3,6 +3,15 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronLeft, KeyRound, Lock } from "lucide-react";
 import type { UserProfile } from "../db/repo";
 import {
+  clearChatHistory,
+  deleteAllMedia,
+  getVaultUsage,
+  listConversations,
+  listMessagesByConv,
+  listProfiles,
+} from "../db/repo";
+import { useAppStore } from "../app/store";
+import {
   defaultPrivacyPrefs,
   getPrivacyPrefs,
   setPrivacyPrefs,
@@ -14,11 +23,13 @@ import {
   installOnion,
   onOnionProgress,
   setOnionMode,
+  uninstallOnion,
 } from "../net/onionControl";
 import type { OnionStatus } from "../net/onionControl";
 import { useNetConfigStore } from "../net/netConfigStore";
 import { getRouteInfo } from "../net/routeInfo";
 import type { NetworkMode } from "../net/mode";
+import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import Avatar from "./Avatar";
 
 const themeOptions = [
@@ -27,12 +38,20 @@ const themeOptions = [
 ] as const;
 
 const modeOptions: { value: NetworkMode; label: string }[] = [
-  { value: "directP2P", label: "직접 P2P" },
+  { value: "directP2P", label: "Direct P2P" },
   { value: "onionRouter", label: "릴레이 / Onion" },
   { value: "selfOnion", label: "내부 Onion" },
 ];
 
-type SettingsView = "main" | "privacy" | "theme" | "friends" | "danger" | "network";
+type SettingsView =
+  | "main"
+  | "privacy"
+  | "theme"
+  | "friends"
+  | "danger"
+  | "network"
+  | "help"
+  | "storage";
 
 type SettingsDialogProps = {
   open: boolean;
@@ -88,6 +107,7 @@ export default function SettingsDialog({
     setOnionNetwork,
     setComponentState,
     setLastUpdateCheckAt,
+    setSelfOnionMinRelays,
   } = useNetConfigStore();
 
   // profile
@@ -112,8 +132,20 @@ export default function SettingsDialog({
   const [torInstallBusy, setTorInstallBusy] = useState(false);
   const [torCheckBusy, setTorCheckBusy] = useState(false);
   const [torApplyBusy, setTorApplyBusy] = useState(false);
+  const [torUninstallBusy, setTorUninstallBusy] = useState(false);
   const [lokinetInstallBusy, setLokinetInstallBusy] = useState(false);
   const [lokinetStatusBusy, setLokinetStatusBusy] = useState(false);
+  const [lokinetApplyBusy, setLokinetApplyBusy] = useState(false);
+  const [lokinetUninstallBusy, setLokinetUninstallBusy] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState(getConnectionStatus());
+  const [mediaWipeBusy, setMediaWipeBusy] = useState(false);
+  const [chatWipeBusy, setChatWipeBusy] = useState(false);
+  const [vaultUsageBytes, setVaultUsageBytes] = useState(0);
+  const [vaultUsageMaxBytes, setVaultUsageMaxBytes] = useState(50 * 1024 * 1024);
+
+  const setData = useAppStore((state) => state.setData);
+  const setSelectedConv = useAppStore((state) => state.setSelectedConv);
+  const userProfileState = useAppStore((state) => state.userProfile);
 
   // misc
   const [saveMessage, setSaveMessage] = useState("");
@@ -138,6 +170,11 @@ export default function SettingsDialog({
   }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork]);
 
   useEffect(() => {
+    const unsubscribe = onConnectionStatus(setConnectionStatus);
+    return () => unsubscribe();
+  }, []);
+
+  useEffect(() => {
     if (!open) return;
     const refresh = async () => {
       try {
@@ -150,11 +187,39 @@ export default function SettingsDialog({
       }
     };
     void refresh();
+    const interval = window.setInterval(refresh, 2500);
     const unsubscribe = onOnionProgress((payload) => {
       setComponentState(payload.network, payload.status);
+      setOnionStatus((prev) =>
+        prev
+          ? {
+              ...prev,
+              components: { ...prev.components, [payload.network]: payload.status },
+            }
+          : prev
+      );
     });
-    return () => unsubscribe();
+    return () => {
+      window.clearInterval(interval);
+      unsubscribe();
+    };
   }, [open, setComponentState]);
+
+  useEffect(() => {
+    if (!open) return;
+    const refreshUsage = async () => {
+      try {
+        const usage = await getVaultUsage();
+        setVaultUsageBytes(usage.bytes);
+        if (usage.bytes > vaultUsageMaxBytes) {
+          setVaultUsageMaxBytes(Math.max(usage.bytes, 50 * 1024 * 1024));
+        }
+      } catch (error) {
+        console.error("Failed to read vault usage", error);
+      }
+    };
+    void refreshUsage();
+  }, [open, vaultUsageMaxBytes]);
 
   useEffect(() => {
     if (!saveMessage) return;
@@ -201,8 +266,10 @@ export default function SettingsDialog({
   };
 
   const handleApplyUpdate = async (network: "tor" | "lokinet") => {
-    if (torApplyBusy) return;
-    setTorApplyBusy(true);
+    if (network === "tor" && torApplyBusy) return;
+    if (network === "lokinet" && lokinetApplyBusy) return;
+    if (network === "tor") setTorApplyBusy(true);
+    if (network === "lokinet") setLokinetApplyBusy(true);
     try {
       await applyOnionUpdate(network);
       await refreshOnionStatus();
@@ -211,7 +278,8 @@ export default function SettingsDialog({
       console.error("Failed to apply onion update", error);
       setSaveMessage("업데이트 적용 실패");
     } finally {
-      setTorApplyBusy(false);
+      if (network === "tor") setTorApplyBusy(false);
+      if (network === "lokinet") setLokinetApplyBusy(false);
     }
   };
 
@@ -244,10 +312,28 @@ export default function SettingsDialog({
     }
   };
 
+  const handleUninstall = async (network: "tor" | "lokinet") => {
+    if (network === "tor" && torUninstallBusy) return;
+    if (network === "lokinet" && lokinetUninstallBusy) return;
+    if (network === "tor") setTorUninstallBusy(true);
+    if (network === "lokinet") setLokinetUninstallBusy(true);
+    try {
+      await uninstallOnion(network);
+      await refreshOnionStatus();
+      setSaveMessage(network === "tor" ? "Tor 제거 완료" : "Lokinet 제거 완료");
+    } catch (error) {
+      console.error("Failed to uninstall onion component", error);
+      setSaveMessage(network === "tor" ? "Tor 제거 실패" : "Lokinet 제거 실패");
+    } finally {
+      if (network === "tor") setTorUninstallBusy(false);
+      if (network === "lokinet") setLokinetUninstallBusy(false);
+    }
+  };
+
   const handleSaveOnion = async () => {
     try {
       if (netConfig.mode === "onionRouter") {
-        await setOnionMode(onionEnabledDraft, onionNetworkDraft);
+        await setOnionMode(true, onionNetworkDraft);
         setOnionEnabled(onionEnabledDraft);
         setOnionNetwork(onionNetworkDraft);
       } else {
@@ -259,6 +345,38 @@ export default function SettingsDialog({
     } catch (error) {
       console.error("Failed to save onion settings", error);
       setSaveMessage("저장에 실패했습니다.");
+    }
+  };
+
+  const handleStopOnion = async () => {
+    try {
+      await setOnionMode(false, onionNetworkDraft);
+      setSaveMessage("연결 해제됨");
+      await refreshOnionStatus();
+    } catch (error) {
+      console.error("Failed to stop onion runtime", error);
+      setSaveMessage("연결 해제 실패");
+    }
+  };
+
+  const formatBytes = (value: number) => {
+    if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${value} B`;
+  };
+
+  const refreshAppData = async () => {
+    const profiles = await listProfiles();
+    const user = profiles.find((profile) => profile.kind === "user") || null;
+    const friends = profiles.filter((profile) => profile.kind === "friend");
+    const conversations = await listConversations();
+    const messagesBy: Record<string, Awaited<ReturnType<typeof listMessagesByConv>>> = {};
+    for (const conv of conversations) {
+      messagesBy[conv.id] = await listMessagesByConv(conv.id);
+    }
+    setData({ user, friends, convs: conversations, messagesByConv: messagesBy });
+    if (userProfileState && user?.id !== userProfileState.id) {
+      setSelectedConv(null);
     }
   };
 
@@ -342,10 +460,66 @@ export default function SettingsDialog({
           ? "경로: 실패"
           : "경로: 대기"
     : "경로: 확인 필요";
+  const runtimeStateLabel = runtime
+    ? runtime.status === "running"
+      ? "상태: 실행 중"
+      : runtime.status === "starting"
+        ? "상태: 시작 중"
+        : runtime.status === "failed"
+          ? "상태: 실패"
+          : "상태: 대기"
+    : "상태: 확인 필요";
+  const runtimeNetworkLabel = runtime?.network ? `네트워크: ${runtime.network}` : "네트워크: -";
   const runtimeSocksLabel =
     runtime && runtime.status === "running" && runtime.network === "tor" && runtime.socksPort
       ? ` · SOCKS 127.0.0.1:${runtime.socksPort}`
       : "";
+  const runtimeErrorLabel = runtime?.error ? `실패: ${runtime.error}` : "";
+
+  const formatOnionError = (value?: string) => {
+    if (!value) return null;
+    if (value === "PINNED_HASH_MISSING") return "실패: 검증 데이터 없음";
+    const trimmed = value.split("| details=")[0].trim();
+    const match = trimmed.match(/^\[([^\]]+)\]\s*(.*)$/);
+    const code = match?.[1] ?? "";
+    const message = match?.[2] ?? trimmed;
+    const label =
+      code === "DOWNLOAD_FAILED"
+        ? "다운로드 실패"
+        : code === "HASH_MISMATCH"
+          ? "검증 실패"
+          : code === "EXTRACT_FAILED"
+            ? "압축 해제 실패"
+            : code === "PERMISSION_DENIED"
+              ? "권한 부족"
+              : code === "BINARY_MISSING"
+                ? "실행 파일 없음"
+                : code === "FS_ERROR"
+                  ? "파일 시스템 오류"
+                  : code === "PINNED_HASH_MISSING"
+                    ? "검증 데이터 없음"
+                    : code === "UNKNOWN_ERROR"
+                      ? "알 수 없는 오류"
+                      : null;
+    const shortMessage = label ? `${label}${message ? ` · ${message}` : ""}` : message;
+    return `실패: ${shortMessage}`;
+  };
+
+  const selfOnionHopTarget = netConfig.selfOnionMinRelays;
+  const selfOnionHopConnected =
+    connectionStatus.transport === "selfOnion" && connectionStatus.state === "connected"
+      ? selfOnionHopTarget
+      : 0;
+  const selfOnionRouteLabel =
+    connectionStatus.transport === "selfOnion"
+      ? connectionStatus.state === "connected"
+        ? "경로: 연결됨"
+        : connectionStatus.state === "connecting"
+          ? "경로: 연결 중"
+          : connectionStatus.state === "failed"
+            ? "경로: 실패"
+            : "경로: 대기"
+      : "경로: 대기";
 
   const buildComponentLabel = (state: typeof netConfig.tor) => {
     if (state.status === "downloading") return "다운로드 중";
@@ -358,6 +532,25 @@ export default function SettingsDialog({
   const torUpdateAvailable = Boolean(
     netConfig.tor.latest && netConfig.tor.latest !== netConfig.tor.version
   );
+  const lokinetUpdateAvailable = Boolean(
+    netConfig.lokinet.latest && netConfig.lokinet.latest !== netConfig.lokinet.version
+  );
+  const torUpdateStatus = netConfig.lastUpdateCheckAtMs
+    ? netConfig.tor.error === "PINNED_HASH_MISSING"
+      ? "검증 데이터 없음"
+      : torUpdateAvailable
+        ? `업데이트 가능: ${netConfig.tor.latest}`
+        : "최신 상태"
+    : "";
+  const lokinetUpdateStatus = netConfig.lastUpdateCheckAtMs
+    ? netConfig.lokinet.error === "PINNED_HASH_MISSING"
+      ? "검증 데이터 없음"
+      : lokinetUpdateAvailable
+        ? `업데이트 가능: ${netConfig.lokinet.latest}`
+        : "최신 상태"
+    : "";
+  const torErrorLabel = formatOnionError(netConfig.tor.error);
+  const lokinetErrorLabel = formatOnionError(netConfig.lokinet.error);
 
   const canSaveOnion =
     !onionEnabledDraft ||
@@ -471,13 +664,6 @@ export default function SettingsDialog({
                 <div className="flex flex-col">
                   <button
                     type="button"
-                    onClick={() => setView("network")}
-                    className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                  >
-                    네트워크
-                  </button>
-                  <button
-                    type="button"
                     onClick={() => setView("friends")}
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
@@ -485,10 +671,10 @@ export default function SettingsDialog({
                   </button>
                   <button
                     type="button"
-                    onClick={() => setView("theme")}
+                    onClick={() => setView("network")}
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
-                    테마
+                    네트워크 설정
                   </button>
                   <button
                     type="button"
@@ -496,6 +682,32 @@ export default function SettingsDialog({
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
                     보안 / 개인정보
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setView("theme")}
+                    className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
+                  >
+                    테마
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setView("storage")}
+                    className="flex w-full items-center gap-3 border-t border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
+                  >
+                    저장소 관리
+                  </button>
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
+                <div className="flex flex-col">
+                  <button
+                    type="button"
+                    onClick={() => setView("help")}
+                    className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
+                  >
+                    도움말
                   </button>
                   <button
                     type="button"
@@ -604,9 +816,29 @@ export default function SettingsDialog({
                   <span>{routeInfo.description}</span>
                 </div>
                 <div className="mt-3 text-xs text-nkc-muted">{connectionDescription}</div>
+                {netConfig.mode === "selfOnion" ? (
+                  <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-medium text-nkc-text">Hop 설정</div>
+                        <div className="text-xs text-nkc-muted">
+                          hops: {selfOnionHopConnected}/{selfOnionHopTarget} · {selfOnionRouteLabel}
+                        </div>
+                      </div>
+                      <select
+                        value={selfOnionHopTarget}
+                        onChange={(e) => setSelfOnionMinRelays(Number(e.target.value))}
+                        className="rounded-nkc border border-nkc-border bg-nkc-panel px-2 py-1 text-xs text-nkc-text"
+                      >
+                        <option value={3}>3 hops</option>
+                        <option value={4}>4 hops</option>
+                      </select>
+                    </div>
+                  </div>
+                ) : null}
                 {netConfig.mode === "directP2P" ? (
                   <div className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
-                    직접 P2P는 상대에게 IP가 노출될 수 있습니다.
+                    Direct P2P는 상대에게 IP가 노출될 수 있습니다.
                   </div>
                 ) : null}
               </section>
@@ -632,9 +864,17 @@ export default function SettingsDialog({
                   <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                     <div className="flex items-center justify-between gap-4">
                       <div className="text-sm font-semibold text-nkc-text">Onion 네트워크</div>
-                      <div className="text-xs text-nkc-muted">
-                        {runtimeLabel}
-                        {runtimeSocksLabel}
+                      <div className="text-right text-xs text-nkc-muted">
+                        <div>
+                          {runtimeLabel}
+                          {runtimeSocksLabel}
+                        </div>
+                        <div>
+                          {runtimeStateLabel} · {runtimeNetworkLabel}
+                        </div>
+                        {runtimeErrorLabel ? (
+                          <div className="text-red-300">{runtimeErrorLabel}</div>
+                        ) : null}
                       </div>
                     </div>
 
@@ -655,6 +895,12 @@ export default function SettingsDialog({
                           </div>
                         </div>
                         <div className="mt-2 text-xs text-nkc-muted">SOCKS 기반 · 앱 트래픽만</div>
+                        {torUpdateStatus ? (
+                          <div className="mt-2 text-xs text-nkc-muted">{torUpdateStatus}</div>
+                        ) : null}
+                        {torErrorLabel ? (
+                          <div className="mt-2 text-xs text-red-300">{torErrorLabel}</div>
+                        ) : null}
                         <div className="mt-3 flex flex-wrap gap-2">
                           {!netConfig.tor.installed ? (
                             <button
@@ -685,6 +931,23 @@ export default function SettingsDialog({
                                   {torApplyBusy ? "처리 중..." : "업데이트 적용"}
                                 </button>
                               ) : null}
+                              {runtime?.network === "tor" && runtime?.status === "running" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleStopOnion()}
+                                  className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                                >
+                                  연결 해제
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => void handleUninstall("tor")}
+                                disabled={torUninstallBusy}
+                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                              >
+                                {torUninstallBusy ? "처리 중..." : "제거"}
+                              </button>
                             </>
                           )}
                         </div>
@@ -708,6 +971,12 @@ export default function SettingsDialog({
                         <div className="mt-2 text-xs text-nkc-muted">
                           Exit/VPN 기반 · 앱 전용 라우팅
                         </div>
+                        {lokinetUpdateStatus ? (
+                          <div className="mt-2 text-xs text-nkc-muted">{lokinetUpdateStatus}</div>
+                        ) : null}
+                        {lokinetErrorLabel ? (
+                          <div className="mt-2 text-xs text-red-300">{lokinetErrorLabel}</div>
+                        ) : null}
                         <div className="mt-3 flex flex-wrap gap-2">
                           {!netConfig.lokinet.installed ? (
                             <button
@@ -739,6 +1008,35 @@ export default function SettingsDialog({
                           >
                             {lokinetStatusBusy ? "처리 중..." : "상태 확인"}
                           </button>
+                          {runtime?.network === "lokinet" && runtime?.status === "running" ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleStopOnion()}
+                              className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                            >
+                              연결 해제
+                            </button>
+                          ) : null}
+                          {lokinetUpdateAvailable ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleApplyUpdate("lokinet")}
+                              disabled={lokinetApplyBusy}
+                              className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                            >
+                              {lokinetApplyBusy ? "처리 중..." : "업데이트 적용"}
+                            </button>
+                          ) : null}
+                          {netConfig.lokinet.installed ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleUninstall("lokinet")}
+                              disabled={lokinetUninstallBusy}
+                              className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                            >
+                              {lokinetUninstallBusy ? "처리 중..." : "제거"}
+                            </button>
+                          ) : null}
                         </div>
                       </div>
                     </div>
@@ -940,6 +1238,111 @@ export default function SettingsDialog({
                       </div>
                     )}
                   </div>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {/* STORAGE */}
+          {view === "storage" && (
+            <div className="mt-6 grid gap-6">
+              {renderBackHeader("저장소 관리")}
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">저장소 관리</div>
+                <div className="mt-2 text-xs text-nkc-muted">
+                  삭제 후에는 복구할 수 없습니다. 삭제 시 데이터를 암호화로 덮어씌운 뒤
+                  제거합니다.
+                </div>
+                <div className="mt-2 text-xs text-nkc-muted">
+                  다른 기기에는 적용되지 않으며, 각 기기에서 별도로 초기화해야 합니다.
+                </div>
+                <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
+                  <div className="flex items-center justify-between text-xs text-nkc-muted">
+                    <span>저장소 사용량(추정)</span>
+                    <span>
+                      {formatBytes(vaultUsageBytes)} / {formatBytes(vaultUsageMaxBytes)}
+                    </span>
+                  </div>
+                  <div className="mt-2 h-2 w-full rounded-full bg-nkc-border">
+                    <div
+                      className="h-2 rounded-full bg-nkc-accent"
+                      style={{
+                        width: `${Math.min(
+                          100,
+                          Math.round((vaultUsageBytes / vaultUsageMaxBytes) * 100)
+                        )}%`,
+                      }}
+                    />
+                  </div>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (mediaWipeBusy) return;
+                      const ok = window.confirm(
+                        "미디어(사진/첨부파일)를 모두 삭제합니다. 계속할까요?"
+                      );
+                      if (!ok) return;
+                      setMediaWipeBusy(true);
+                      try {
+                        await deleteAllMedia();
+                        await refreshAppData();
+                        const usage = await getVaultUsage();
+                        setVaultUsageBytes(usage.bytes);
+                        setSaveMessage("미디어가 삭제되었습니다.");
+                      } catch (error) {
+                        console.error("Failed to delete media", error);
+                        setSaveMessage("미디어 삭제 실패");
+                      } finally {
+                        setMediaWipeBusy(false);
+                      }
+                    }}
+                    disabled={mediaWipeBusy}
+                    className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                  >
+                    {mediaWipeBusy ? "처리 중..." : "미디어 전부 삭제"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      if (chatWipeBusy) return;
+                      const ok = window.confirm(
+                        "채팅 내역을 초기화합니다. 복구할 수 없습니다. 계속할까요?"
+                      );
+                      if (!ok) return;
+                      setChatWipeBusy(true);
+                      try {
+                        await clearChatHistory();
+                        await refreshAppData();
+                        const usage = await getVaultUsage();
+                        setVaultUsageBytes(usage.bytes);
+                        setSaveMessage("채팅 내역이 초기화되었습니다.");
+                      } catch (error) {
+                        console.error("Failed to clear chat history", error);
+                        setSaveMessage("채팅 내역 초기화 실패");
+                      } finally {
+                        setChatWipeBusy(false);
+                      }
+                    }}
+                    disabled={chatWipeBusy}
+                    className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                  >
+                    {chatWipeBusy ? "처리 중..." : "채팅 내역 초기화"}
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
+
+          {/* HELP */}
+          {view === "help" && (
+            <div className="mt-6 grid gap-6">
+              {renderBackHeader("도움말")}
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm text-nkc-text">준비중입니다.</div>
+                <div className="mt-2 text-xs text-nkc-muted">
+                  도움말 콘텐츠는 추후 업데이트될 예정입니다.
                 </div>
               </section>
             </div>

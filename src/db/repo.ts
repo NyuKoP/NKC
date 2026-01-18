@@ -590,3 +590,170 @@ export const resetVaultStorage = async () => {
 export const wipeVault = async () => {
   await resetVaultStorage();
 };
+
+export type VaultUsage = {
+  bytes: number;
+  breakdown: {
+    profiles: number;
+    conversations: number;
+    messages: number;
+    media: number;
+    outbox: number;
+    meta: number;
+  };
+};
+
+const sizeOfString = (value?: string | null) => (value ? value.length : 0);
+
+export const getVaultUsage = async (): Promise<VaultUsage> => {
+  await ensureDbOpen();
+  const profiles = await db.profiles.toArray();
+  const conversations = await db.conversations.toArray();
+  const messages = await db.messages.toArray();
+  const media = await db.mediaChunks.toArray();
+  const outbox = db.outbox ? await db.outbox.toArray() : [];
+  const meta = await db.meta.toArray();
+
+  const breakdown = {
+    profiles: profiles.reduce((sum, record) => sum + sizeOfString(record.enc_b64), 0),
+    conversations: conversations.reduce((sum, record) => sum + sizeOfString(record.enc_b64), 0),
+    messages: messages.reduce((sum, record) => sum + sizeOfString(record.enc_b64), 0),
+    media: media.reduce((sum, record) => sum + sizeOfString(record.enc_b64), 0),
+    outbox: outbox.reduce((sum, record) => sum + sizeOfString(record.ciphertext), 0),
+    meta: meta.reduce((sum, record) => sum + sizeOfString(record.value), 0),
+  };
+
+  return {
+    bytes:
+      breakdown.profiles +
+      breakdown.conversations +
+      breakdown.messages +
+      breakdown.media +
+      breakdown.outbox +
+      breakdown.meta,
+    breakdown,
+  };
+};
+
+const randomBytes = (length: number) => {
+  if (!globalThis.crypto?.getRandomValues) {
+    return new Uint8Array(length);
+  }
+  const bytes = new Uint8Array(length);
+  globalThis.crypto.getRandomValues(bytes);
+  return bytes;
+};
+
+const secureEraseMessages = async (records: MessageRecord[]) => {
+  if (!records.length) return;
+  const vk = requireVaultKey();
+  const now = Date.now();
+  const sanitized = await Promise.all(
+    records.map(async (record) => {
+      const payload: Message = {
+        id: record.id,
+        convId: record.convId,
+        senderId: "wiped",
+        text: "",
+        ts: 0,
+      };
+      const enc_b64 = await encryptJsonRecord(vk, record.id, "message", payload);
+      return { ...record, enc_b64, ts: 0, updatedAt: now } as MessageRecord & {
+        updatedAt: number;
+      };
+    })
+  );
+  await db.messages.bulkPut(
+    sanitized.map(({ updatedAt: _updatedAt, ...record }) => record)
+  );
+  await db.messages.bulkDelete(records.map((record) => record.id));
+};
+
+const secureEraseMediaChunks = async (records: MediaChunkRecord[]) => {
+  if (!records.length) return;
+  const vk = requireVaultKey();
+  const now = Date.now();
+  const sanitized = await Promise.all(
+    records.map(async (record) => {
+      const enc_b64 = await encodeBinaryEnvelope(
+        vk,
+        record.id,
+        "mediaChunk",
+        randomBytes(32)
+      );
+      return { ...record, enc_b64, updatedAt: now };
+    })
+  );
+  await db.mediaChunks.bulkPut(sanitized);
+  await db.mediaChunks.bulkDelete(records.map((record) => record.id));
+};
+
+export const deleteAllMedia = async () => {
+  await ensureDbOpen();
+  requireVaultKey();
+
+  const profiles = await listProfiles();
+  await Promise.all(
+    profiles.map(async (profile) => {
+      if (!profile.avatarRef) return;
+      await saveProfile({ ...profile, avatarRef: undefined, updatedAt: Date.now() });
+    })
+  );
+
+  const messageRecords = await db.messages.toArray();
+  const updatedMessages = await Promise.all(
+    messageRecords.map(async (record) => {
+      const vk = requireVaultKey();
+      const message = await decryptJsonRecord<Message>(
+        vk,
+        record.id,
+        "message",
+        record.enc_b64
+      );
+      if (!message.media) return null;
+      const updated: Message = { ...message, media: undefined };
+      const enc_b64 = await encryptJsonRecord(vk, record.id, "message", updated);
+      return { ...record, enc_b64 };
+    })
+  );
+  const messageUpdates = updatedMessages.filter(
+    (record): record is MessageRecord => Boolean(record)
+  );
+  if (messageUpdates.length) {
+    await db.messages.bulkPut(messageUpdates);
+  }
+
+  const mediaRecords = await db.mediaChunks.toArray();
+  await secureEraseMediaChunks(mediaRecords);
+};
+
+export const clearChatHistory = async () => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const conversations = await listConversations();
+  await Promise.all(
+    conversations.map(async (conv) => {
+      const updated: Conversation = {
+        ...conv,
+        lastMessage: "",
+        unread: 0,
+        lastTs: 0,
+      };
+      const enc_b64 = await encryptJsonRecord(vk, conv.id, "conv", updated);
+      await db.conversations.put({ id: conv.id, enc_b64, updatedAt: Date.now() });
+    })
+  );
+
+  const messageRecords = await db.messages.toArray();
+  await secureEraseMessages(messageRecords);
+
+  const mediaRecords = await db.mediaChunks
+    .where("ownerType")
+    .equals("message")
+    .toArray();
+  await secureEraseMediaChunks(mediaRecords);
+
+  if (db.outbox) {
+    await db.outbox.clear();
+  }
+};

@@ -81,6 +81,40 @@ const onionComponentCache: Record<OnionNetwork, OnionComponentState> = {
   lokinet: { installed: false, status: "idle" },
 };
 
+const normalizeOnionError = (
+  error: unknown,
+  context: Record<string, unknown>
+) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    error instanceof PinnedHashMissingError
+      ? "PINNED_HASH_MISSING"
+      : message.includes("SHA256 mismatch")
+        ? "HASH_MISMATCH"
+        : message.includes("Download failed") ||
+            message.includes("Too many redirects") ||
+            message.includes("Redirect")
+          ? "DOWNLOAD_FAILED"
+          : message.includes("Unsupported archive format") ||
+              message.includes("tar") ||
+              message.includes("unzip") ||
+              message.includes("Expand-Archive")
+            ? "EXTRACT_FAILED"
+            : message.includes("BINARY_MISSING")
+              ? "BINARY_MISSING"
+              : (() => {
+                  const err = error as { code?: string };
+                  if (err?.code === "EACCES" || err?.code === "EPERM") return "PERMISSION_DENIED";
+                  if (err?.code === "ENOENT") return "FS_ERROR";
+                  return "UNKNOWN_ERROR";
+                })();
+  const details =
+    error && typeof error === "object" && "details" in error
+      ? { ...context, ...(error as { details?: Record<string, unknown> }).details }
+      : context;
+  return { code, message, details };
+};
+
 const refreshComponentState = async (userDataDir: string, network: OnionNetwork) => {
   const pointer = await readCurrentPointer(userDataDir, network);
   return {
@@ -114,6 +148,22 @@ const registerOnionIpc = () => {
     const userDataDir = app.getPath("userData");
     const torUpdate = await checkUpdates("tor");
     const lokinetUpdate = await checkUpdates("lokinet");
+    console.log("[onion] checkUpdates", {
+      tor: {
+        version: torUpdate.version,
+        assetName: torUpdate.assetName,
+        downloadUrl: torUpdate.downloadUrl,
+        sha256: torUpdate.sha256 ? "<present>" : "<missing>",
+        errorCode: torUpdate.errorCode,
+      },
+      lokinet: {
+        version: lokinetUpdate.version,
+        assetName: lokinetUpdate.assetName,
+        downloadUrl: lokinetUpdate.downloadUrl,
+        sha256: lokinetUpdate.sha256 ? "<present>" : "<missing>",
+        errorCode: lokinetUpdate.errorCode,
+      },
+    });
     const torState = await refreshComponentState(userDataDir, "tor");
     const lokinetState = await refreshComponentState(userDataDir, "lokinet");
     const torHasVerifiedUpdate =
@@ -143,8 +193,9 @@ const registerOnionIpc = () => {
   ipcMain.handle("onion:install", async (event, payload: { network: OnionNetwork }) => {
     const userDataDir = app.getPath("userData");
     const network = payload.network;
+    let updates: Awaited<ReturnType<typeof checkUpdates>> | null = null;
     try {
-      const updates = await checkUpdates(network);
+      updates = await checkUpdates(network);
       if (updates.errorCode === "PINNED_HASH_MISSING") {
         throw new PinnedHashMissingError(
           `Missing pinned hash for ${network} ${updates.assetName ?? updates.version ?? "unknown"}`
@@ -193,23 +244,32 @@ const registerOnionIpc = () => {
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
     } catch (error) {
-      if (error instanceof PinnedHashMissingError) {
-        console.warn("Pinned hash missing for install", error.details);
-      } else {
-        console.error("Onion install failed", error);
-      }
+      const context = {
+        network,
+        version: updates?.version,
+        assetName: updates?.assetName,
+        downloadUrl: updates?.downloadUrl,
+        targetDir:
+          updates?.version
+            ? path.join(userDataDir, "onion", "components", network, updates.version)
+            : undefined,
+      };
+      const normalized = normalizeOnionError(error, context);
+      console.error("Onion install failed", {
+        code: normalized.code,
+        message: normalized.message,
+        details: normalized.details,
+      });
       onionComponentCache[network] = {
         ...onionComponentCache[network],
         status: "failed",
-        error:
-          error instanceof PinnedHashMissingError
-            ? error.code
-            : error instanceof Error
-              ? error.message
-              : String(error),
+        error: `[${normalized.code}] ${normalized.message}`,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
-      throw error;
+      const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
+      (wrapped as { code?: string; details?: Record<string, unknown> }).code = normalized.code;
+      (wrapped as { code?: string; details?: Record<string, unknown> }).details = normalized.details;
+      throw wrapped;
     }
   });
 
@@ -282,23 +342,29 @@ const registerOnionIpc = () => {
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
     } catch (error) {
-      if (error instanceof PinnedHashMissingError) {
-        console.warn("Pinned hash missing for update", error.details);
-      } else {
-        console.error("Onion update failed", error);
-      }
+      const context = {
+        network,
+        version: updateVersion,
+        assetName: updateInfo.assetName,
+        downloadUrl: updateInfo.downloadUrl,
+        targetDir: path.join(userDataDir, "onion", "components", network, updateVersion),
+      };
+      const normalized = normalizeOnionError(error, context);
+      console.error("Onion update failed", {
+        code: normalized.code,
+        message: normalized.message,
+        details: normalized.details,
+      });
       onionComponentCache[network] = {
         ...onionComponentCache[network],
         status: "failed",
-        error:
-          error instanceof PinnedHashMissingError
-            ? error.code
-            : error instanceof Error
-              ? error.message
-              : String(error),
+        error: `[${normalized.code}] ${normalized.message}`,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
-      throw error;
+      const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
+      (wrapped as { code?: string; details?: Record<string, unknown> }).code = normalized.code;
+      (wrapped as { code?: string; details?: Record<string, unknown> }).details = normalized.details;
+      throw wrapped;
     }
   });
 

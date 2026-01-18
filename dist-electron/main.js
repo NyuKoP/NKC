@@ -56,7 +56,12 @@ const hashFile = async (filePath) => {
 const verifySha256 = async (filePath, expectedSha256) => {
   const actual = await hashFile(filePath);
   if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-    throw new Error("SHA256 mismatch");
+    const error = new Error(
+      `SHA256 mismatch (expected=${expectedSha256.toLowerCase()}, actual=${actual.toLowerCase()})`
+    );
+    error.expected = expectedSha256;
+    error.actual = actual;
+    throw error;
   }
 };
 const unpackArchive = async (archivePath, destDir) => {
@@ -266,22 +271,51 @@ const installTor = async (userDataDir, version, onProgress, downloadUrl, assetNa
   const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, resolvedAssetName);
-  onProgress?.({ step: "download", message: "Downloading Tor" });
-  await downloadFile(
-    resolvedUrl,
-    archivePath,
-    (progress) => onProgress?.({ step: "download", ...progress })
-  );
-  onProgress?.({ step: "verify", message: "Verifying Tor" });
-  await verifySha256(archivePath, hash);
   const installPath = path.join(userDataDir, "onion", "components", network, version);
-  await fs.rm(installPath, { recursive: true, force: true });
-  await fs.mkdir(installPath, { recursive: true });
-  onProgress?.({ step: "unpack", message: "Unpacking Tor" });
-  await unpackArchive(archivePath, installPath);
-  onProgress?.({ step: "activate", message: "Activating Tor" });
-  const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
-  return { version, installPath, rollback };
+  const details = {
+    network,
+    version,
+    assetName: resolvedAssetName,
+    downloadUrl: resolvedUrl,
+    archivePath,
+    installPath
+  };
+  try {
+    onProgress?.({ step: "download", message: "Downloading Tor" });
+    await downloadFile(
+      resolvedUrl,
+      archivePath,
+      (progress) => onProgress?.({ step: "download", ...progress })
+    );
+    const stat = await fs.stat(archivePath);
+    details.downloadBytes = stat.size;
+    onProgress?.({ step: "verify", message: "Verifying Tor" });
+    await verifySha256(archivePath, hash);
+    details.expectedSha256 = hash;
+    await fs.rm(installPath, { recursive: true, force: true });
+    await fs.mkdir(installPath, { recursive: true });
+    onProgress?.({ step: "unpack", message: "Unpacking Tor" });
+    await unpackArchive(archivePath, installPath);
+    const binaryPath = path.join(installPath, getBinaryPath(network));
+    details.binaryPath = binaryPath;
+    if (!fsSync.existsSync(binaryPath)) {
+      throw new Error(`BINARY_MISSING: ${binaryPath}`);
+    }
+    onProgress?.({ step: "activate", message: "Activating Tor" });
+    const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
+    return { version, installPath, rollback };
+  } catch (error) {
+    if (error && typeof error === "object") {
+      const err = error;
+      if (err.expected) details.expectedSha256 = err.expected;
+      if (err.actual) details.actualSha256 = err.actual;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[onion] Tor install failed", { message, details });
+    const wrapped = new Error(`${message} | details=${JSON.stringify(details)}`);
+    wrapped.details = details;
+    throw wrapped;
+  }
 };
 const resolveDownload = (version, assetNameOverride) => {
   const assetName = assetNameOverride ?? getLokinetAssetName(version);
@@ -304,22 +338,51 @@ const installLokinet = async (userDataDir, version, onProgress, downloadUrl, ass
   const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, assetName);
-  onProgress?.({ step: "download", message: "Downloading Lokinet" });
-  await downloadFile(
-    resolvedUrl,
-    archivePath,
-    (progress) => onProgress?.({ step: "download", ...progress })
-  );
-  onProgress?.({ step: "verify", message: "Verifying Lokinet" });
-  await verifySha256(archivePath, hash);
   const installPath = path.join(userDataDir, "onion", "components", network, version);
-  await fs.rm(installPath, { recursive: true, force: true });
-  await fs.mkdir(installPath, { recursive: true });
-  onProgress?.({ step: "unpack", message: "Unpacking Lokinet" });
-  await unpackArchive(archivePath, installPath);
-  onProgress?.({ step: "activate", message: "Activating Lokinet" });
-  const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
-  return { version, installPath, rollback };
+  const details = {
+    network,
+    version,
+    assetName,
+    downloadUrl: resolvedUrl,
+    archivePath,
+    installPath
+  };
+  onProgress?.({ step: "download", message: "Downloading Lokinet" });
+  try {
+    await downloadFile(
+      resolvedUrl,
+      archivePath,
+      (progress) => onProgress?.({ step: "download", ...progress })
+    );
+    const stat = await fs.stat(archivePath);
+    details.downloadBytes = stat.size;
+    onProgress?.({ step: "verify", message: "Verifying Lokinet" });
+    await verifySha256(archivePath, hash);
+    details.expectedSha256 = hash;
+    await fs.rm(installPath, { recursive: true, force: true });
+    await fs.mkdir(installPath, { recursive: true });
+    onProgress?.({ step: "unpack", message: "Unpacking Lokinet" });
+    await unpackArchive(archivePath, installPath);
+    const binaryPath = path.join(installPath, getBinaryPath(network));
+    details.binaryPath = binaryPath;
+    if (!fsSync.existsSync(binaryPath)) {
+      throw new Error(`BINARY_MISSING: ${binaryPath}`);
+    }
+    onProgress?.({ step: "activate", message: "Activating Lokinet" });
+    const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
+    return { version, installPath, rollback };
+  } catch (error) {
+    if (error && typeof error === "object") {
+      const err = error;
+      if (err.expected) details.expectedSha256 = err.expected;
+      if (err.actual) details.actualSha256 = err.actual;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[onion] Lokinet install failed", { message, details });
+    const wrapped = new Error(`${message} | details=${JSON.stringify(details)}`);
+    wrapped.details = details;
+    throw wrapped;
+  }
 };
 class TorManager {
   process = null;
@@ -383,7 +446,7 @@ const findAvailablePort = async () => {
   }
   throw new Error("No available SOCKS port");
 };
-const waitForPort = async (port, timeoutMs = 1e4) => {
+const waitForPort = async (port, timeoutMs = 3e4) => {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const ok = await new Promise((resolve) => {
@@ -396,7 +459,7 @@ const waitForPort = async (port, timeoutMs = 1e4) => {
     if (ok) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("SOCKS proxy not ready");
+  throw new Error(`SOCKS proxy not ready (port ${port})`);
 };
 class OnionRuntime {
   torManager = new TorManager();
@@ -413,7 +476,11 @@ class OnionRuntime {
       }
       const port = await findAvailablePort();
       const dataDir = path.join(userDataDir, "onion", "runtime", network);
+      await fs.mkdir(dataDir, { recursive: true });
       const binaryPath = path.join(pointer.path, getBinaryPath(network));
+      if (!fsSync.existsSync(binaryPath)) {
+        throw new Error(`BINARY_MISSING: ${binaryPath}`);
+      }
       if (network === "tor") {
         await this.torManager.start(binaryPath, port, dataDir);
       } else {
@@ -656,6 +723,17 @@ const onionComponentCache = {
   tor: { installed: false, status: "idle" },
   lokinet: { installed: false, status: "idle" }
 };
+const normalizeOnionError = (error, context) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error instanceof PinnedHashMissingError ? "PINNED_HASH_MISSING" : message.includes("SHA256 mismatch") ? "HASH_MISMATCH" : message.includes("Download failed") || message.includes("Too many redirects") || message.includes("Redirect") ? "DOWNLOAD_FAILED" : message.includes("Unsupported archive format") || message.includes("tar") || message.includes("unzip") || message.includes("Expand-Archive") ? "EXTRACT_FAILED" : message.includes("BINARY_MISSING") ? "BINARY_MISSING" : (() => {
+    const err = error;
+    if (err?.code === "EACCES" || err?.code === "EPERM") return "PERMISSION_DENIED";
+    if (err?.code === "ENOENT") return "FS_ERROR";
+    return "UNKNOWN_ERROR";
+  })();
+  const details = error && typeof error === "object" && "details" in error ? { ...context, ...error.details } : context;
+  return { code, message, details };
+};
 const refreshComponentState = async (userDataDir, network) => {
   const pointer = await readCurrentPointer(userDataDir, network);
   return {
@@ -682,6 +760,22 @@ const registerOnionIpc = () => {
     const userDataDir = electron.app.getPath("userData");
     const torUpdate = await checkUpdates("tor");
     const lokinetUpdate = await checkUpdates("lokinet");
+    console.log("[onion] checkUpdates", {
+      tor: {
+        version: torUpdate.version,
+        assetName: torUpdate.assetName,
+        downloadUrl: torUpdate.downloadUrl,
+        sha256: torUpdate.sha256 ? "<present>" : "<missing>",
+        errorCode: torUpdate.errorCode
+      },
+      lokinet: {
+        version: lokinetUpdate.version,
+        assetName: lokinetUpdate.assetName,
+        downloadUrl: lokinetUpdate.downloadUrl,
+        sha256: lokinetUpdate.sha256 ? "<present>" : "<missing>",
+        errorCode: lokinetUpdate.errorCode
+      }
+    });
     const torState = await refreshComponentState(userDataDir, "tor");
     const lokinetState = await refreshComponentState(userDataDir, "lokinet");
     const torHasVerifiedUpdate = Boolean(torUpdate.version && torUpdate.sha256 && torUpdate.downloadUrl);
@@ -707,8 +801,9 @@ const registerOnionIpc = () => {
   electron.ipcMain.handle("onion:install", async (event, payload) => {
     const userDataDir = electron.app.getPath("userData");
     const network = payload.network;
+    let updates = null;
     try {
-      const updates = await checkUpdates(network);
+      updates = await checkUpdates(network);
       if (updates.errorCode === "PINNED_HASH_MISSING") {
         throw new PinnedHashMissingError(
           `Missing pinned hash for ${network} ${updates.assetName ?? updates.version ?? "unknown"}`
@@ -754,18 +849,29 @@ const registerOnionIpc = () => {
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
     } catch (error) {
-      if (error instanceof PinnedHashMissingError) {
-        console.warn("Pinned hash missing for install", error.details);
-      } else {
-        console.error("Onion install failed", error);
-      }
+      const context = {
+        network,
+        version: updates?.version,
+        assetName: updates?.assetName,
+        downloadUrl: updates?.downloadUrl,
+        targetDir: updates?.version ? path.join(userDataDir, "onion", "components", network, updates.version) : void 0
+      };
+      const normalized = normalizeOnionError(error, context);
+      console.error("Onion install failed", {
+        code: normalized.code,
+        message: normalized.message,
+        details: normalized.details
+      });
       onionComponentCache[network] = {
         ...onionComponentCache[network],
         status: "failed",
-        error: error instanceof PinnedHashMissingError ? error.code : error instanceof Error ? error.message : String(error)
+        error: `[${normalized.code}] ${normalized.message}`
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
-      throw error;
+      const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
+      wrapped.code = normalized.code;
+      wrapped.details = normalized.details;
+      throw wrapped;
     }
   });
   electron.ipcMain.handle("onion:applyUpdate", async (event, payload) => {
@@ -834,18 +940,29 @@ const registerOnionIpc = () => {
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
     } catch (error) {
-      if (error instanceof PinnedHashMissingError) {
-        console.warn("Pinned hash missing for update", error.details);
-      } else {
-        console.error("Onion update failed", error);
-      }
+      const context = {
+        network,
+        version: updateVersion,
+        assetName: updateInfo.assetName,
+        downloadUrl: updateInfo.downloadUrl,
+        targetDir: path.join(userDataDir, "onion", "components", network, updateVersion)
+      };
+      const normalized = normalizeOnionError(error, context);
+      console.error("Onion update failed", {
+        code: normalized.code,
+        message: normalized.message,
+        details: normalized.details
+      });
       onionComponentCache[network] = {
         ...onionComponentCache[network],
         status: "failed",
-        error: error instanceof PinnedHashMissingError ? error.code : error instanceof Error ? error.message : String(error)
+        error: `[${normalized.code}] ${normalized.message}`
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
-      throw error;
+      const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
+      wrapped.code = normalized.code;
+      wrapped.details = normalized.details;
+      throw wrapped;
     }
   });
   electron.ipcMain.handle("onion:uninstall", async (_event, payload) => {
