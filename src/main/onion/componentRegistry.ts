@@ -12,21 +12,24 @@ export type ComponentDownload = {
 type ComponentRegistryEntry = {
   id: OnionNetwork;
   displayName: string;
-  binaryPath: string;
+  binaryPath: (platform: NodeJS.Platform) => string;
   pinnedSha256: Record<string, string>;
 };
+
+const withExeSuffix = (platform: NodeJS.Platform, basename: string) =>
+  platform === "win32" ? `${basename}.exe` : basename;
 
 const torEntry: ComponentRegistryEntry = {
   id: "tor",
   displayName: "Tor",
-  binaryPath: path.join("Tor", "tor.exe"),
+  binaryPath: (platform) => path.join("Tor", withExeSuffix(platform, "tor")),
   pinnedSha256: pinnedSha256.tor,
 };
 
 const lokinetEntry: ComponentRegistryEntry = {
   id: "lokinet",
   displayName: "Lokinet",
-  binaryPath: "lokinet.exe",
+  binaryPath: (platform) => withExeSuffix(platform, "lokinet"),
   pinnedSha256: pinnedSha256.lokinet,
 };
 
@@ -35,7 +38,8 @@ export const componentRegistry: Record<OnionNetwork, ComponentRegistryEntry> = {
   lokinet: lokinetEntry,
 };
 
-export const getBinaryPath = (network: OnionNetwork) => componentRegistry[network].binaryPath;
+export const getBinaryPath = (network: OnionNetwork, platform: NodeJS.Platform = process.platform) =>
+  componentRegistry[network].binaryPath(platform);
 
 export type PinnedHashLookup = {
   platform?: NodeJS.Platform;
