@@ -4,7 +4,6 @@ import { ChevronLeft, KeyRound, Lock } from "lucide-react";
 import type { UserProfile } from "../db/repo";
 import {
   clearChatHistory,
-  deleteAllMedia,
   getVaultUsage,
   listConversations,
   listMessagesByConv,
@@ -32,15 +31,17 @@ import type { NetworkMode } from "../net/mode";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import Avatar from "./Avatar";
 
-const themeOptions = [
-  { value: "dark", label: "다크" },
-  { value: "light", label: "라이트" },
-] as const;
+type LocalizedLabel = { ko: string; en: string };
 
-const modeOptions: { value: NetworkMode; label: string }[] = [
-  { value: "directP2P", label: "Direct P2P" },
-  { value: "onionRouter", label: "릴레이 / Onion" },
-  { value: "selfOnion", label: "내부 Onion" },
+const themeOptions: { value: "dark" | "light"; label: LocalizedLabel }[] = [
+  { value: "dark", label: { ko: "다크", en: "Dark" } },
+  { value: "light", label: { ko: "라이트", en: "Light" } },
+];
+
+const modeOptions: { value: NetworkMode; label: LocalizedLabel }[] = [
+  { value: "directP2P", label: { ko: "Direct P2P", en: "Direct P2P" } },
+  { value: "onionRouter", label: { ko: "릴레이 / Onion", en: "Relay / Onion" } },
+  { value: "selfOnion", label: { ko: "내부 Onion", en: "Built-in Onion" } },
 ];
 
 type SettingsView =
@@ -138,14 +139,18 @@ export default function SettingsDialog({
   const [lokinetApplyBusy, setLokinetApplyBusy] = useState(false);
   const [lokinetUninstallBusy, setLokinetUninstallBusy] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(getConnectionStatus());
-  const [mediaWipeBusy, setMediaWipeBusy] = useState(false);
   const [chatWipeBusy, setChatWipeBusy] = useState(false);
   const [vaultUsageBytes, setVaultUsageBytes] = useState(0);
   const [vaultUsageMaxBytes, setVaultUsageMaxBytes] = useState(50 * 1024 * 1024);
 
+  const language = useAppStore((state) => state.ui.language);
+  const setLanguage = useAppStore((state) => state.setLanguage);
   const setData = useAppStore((state) => state.setData);
   const setSelectedConv = useAppStore((state) => state.setSelectedConv);
   const userProfileState = useAppStore((state) => state.userProfile);
+
+  const t = (ko: string, en: string) => (language === "en" ? en : ko);
+  const tl = (label: LocalizedLabel) => (language === "en" ? label.en : label.ko);
 
   // misc
   const [saveMessage, setSaveMessage] = useState("");
@@ -171,7 +176,9 @@ export default function SettingsDialog({
 
   useEffect(() => {
     const unsubscribe = onConnectionStatus(setConnectionStatus);
-    return () => unsubscribe();
+    return () => {
+      unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -256,10 +263,10 @@ export default function SettingsDialog({
       setComponentState("tor", status.components.tor);
       setComponentState("lokinet", status.components.lokinet);
       setLastUpdateCheckAt(Date.now());
-      setSaveMessage("업데이트 확인 완료");
+      setSaveMessage(t("업데이트 확인 완료", "Update check complete"));
     } catch (error) {
       console.error("Failed to check onion updates", error);
-      setSaveMessage("업데이트 확인 실패");
+      setSaveMessage(t("업데이트 확인 실패", "Update check failed"));
     } finally {
       setTorCheckBusy(false);
     }
@@ -273,10 +280,10 @@ export default function SettingsDialog({
     try {
       await applyOnionUpdate(network);
       await refreshOnionStatus();
-      setSaveMessage("업데이트 적용 완료");
+      setSaveMessage(t("업데이트 적용 완료", "Update applied"));
     } catch (error) {
       console.error("Failed to apply onion update", error);
-      setSaveMessage("업데이트 적용 실패");
+      setSaveMessage(t("업데이트 적용 실패", "Update failed"));
     } finally {
       if (network === "tor") setTorApplyBusy(false);
       if (network === "lokinet") setLokinetApplyBusy(false);
@@ -302,10 +309,14 @@ export default function SettingsDialog({
           console.error("Failed to check onion updates after install", error);
         }
       }
-      setSaveMessage(network === "tor" ? "Tor 설치 완료" : "Lokinet 설치 완료");
+      setSaveMessage(
+        network === "tor" ? t("Tor 설치 완료", "Tor installed") : t("Lokinet 설치 완료", "Lokinet installed")
+      );
     } catch (error) {
       console.error("Failed to install onion component", error);
-      setSaveMessage(network === "tor" ? "Tor 설치 실패" : "Lokinet 설치 실패");
+      setSaveMessage(
+        network === "tor" ? t("Tor 설치 실패", "Tor install failed") : t("Lokinet 설치 실패", "Lokinet install failed")
+      );
     } finally {
       if (network === "tor") setTorInstallBusy(false);
       if (network === "lokinet") setLokinetInstallBusy(false);
@@ -320,10 +331,14 @@ export default function SettingsDialog({
     try {
       await uninstallOnion(network);
       await refreshOnionStatus();
-      setSaveMessage(network === "tor" ? "Tor 제거 완료" : "Lokinet 제거 완료");
+      setSaveMessage(
+        network === "tor" ? t("Tor 제거 완료", "Tor removed") : t("Lokinet 제거 완료", "Lokinet removed")
+      );
     } catch (error) {
       console.error("Failed to uninstall onion component", error);
-      setSaveMessage(network === "tor" ? "Tor 제거 실패" : "Lokinet 제거 실패");
+      setSaveMessage(
+        network === "tor" ? t("Tor 제거 실패", "Tor remove failed") : t("Lokinet 제거 실패", "Lokinet remove failed")
+      );
     } finally {
       if (network === "tor") setTorUninstallBusy(false);
       if (network === "lokinet") setLokinetUninstallBusy(false);
@@ -341,21 +356,21 @@ export default function SettingsDialog({
         setOnionEnabled(false);
         setOnionNetwork(onionNetworkDraft);
       }
-      setSaveMessage("저장됨");
+      setSaveMessage(t("저장됨", "Saved"));
     } catch (error) {
       console.error("Failed to save onion settings", error);
-      setSaveMessage("저장에 실패했습니다.");
+      setSaveMessage(t("저장에 실패했습니다.", "Save failed."));
     }
   };
 
   const handleStopOnion = async () => {
     try {
       await setOnionMode(false, onionNetworkDraft);
-      setSaveMessage("연결 해제됨");
+      setSaveMessage(t("연결 해제됨", "Disconnected"));
       await refreshOnionStatus();
     } catch (error) {
       console.error("Failed to stop onion runtime", error);
-      setSaveMessage("연결 해제 실패");
+      setSaveMessage(t("연결 해제 실패", "Disconnect failed"));
     }
   };
 
@@ -388,7 +403,7 @@ export default function SettingsDialog({
         className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
       >
         <ChevronLeft size={14} />
-        뒤로
+        {t("뒤로", "Back")}
       </button>
       <span className="text-sm font-semibold text-nkc-text">{title}</span>
       <div className="w-12" />
@@ -417,10 +432,10 @@ export default function SettingsDialog({
       setDisplayName(displayNameDraft.trim() || displayName);
       setStatus(statusDraft);
       setEditing(false);
-      setSaveMessage("저장되었습니다.");
+      setSaveMessage(t("저장되었습니다.", "Saved."));
     } catch (e) {
       console.error("Failed to save profile", e);
-      setSaveMessage("저장에 실패했습니다.");
+      setSaveMessage(t("저장에 실패했습니다.", "Save failed."));
     }
   };
 
@@ -428,16 +443,16 @@ export default function SettingsDialog({
     setPinError("");
     const value = pinDraft.trim();
     if (value.length < 4) {
-      setPinError("PIN은 최소 4자리 이상이어야 합니다.");
+      setPinError(t("PIN은 최소 4자리 이상이어야 합니다.", "PIN must be at least 4 digits."));
       return;
     }
     const result = await onSetPin(value);
     if (!result.ok) {
-      setPinError(result.error || "PIN 설정에 실패했습니다.");
+      setPinError(result.error || t("PIN 설정에 실패했습니다.", "Failed to set PIN."));
       return;
     }
     setPinDraft("");
-    setSaveMessage("PIN이 설정되었습니다.");
+    setSaveMessage(t("PIN이 설정되었습니다.", "PIN set."));
   };
 
   const handleTogglePin = async (next: boolean) => {
@@ -445,7 +460,7 @@ export default function SettingsDialog({
     if (!next) {
       await onDisablePin();
       setPinDraft("");
-      setSaveMessage("PIN이 해제되었습니다.");
+      setSaveMessage(t("PIN이 해제되었습니다.", "PIN disabled."));
     }
   };
 
@@ -453,56 +468,59 @@ export default function SettingsDialog({
   const runtime = onionStatus?.runtime;
   const runtimeLabel = runtime
     ? runtime.status === "running"
-      ? "경로: 연결됨"
+      ? t("경로: 연결됨", "Route: connected")
       : runtime.status === "starting"
-        ? "경로: 시작 중"
+        ? t("경로: 시작 중", "Route: starting")
         : runtime.status === "failed"
-          ? "경로: 실패"
-          : "경로: 대기"
-    : "경로: 확인 필요";
+          ? t("경로: 실패", "Route: failed")
+          : t("경로: 대기", "Route: idle")
+    : t("경로: 확인 필요", "Route: check required");
   const runtimeStateLabel = runtime
     ? runtime.status === "running"
-      ? "상태: 실행 중"
+      ? t("상태: 실행 중", "Status: running")
       : runtime.status === "starting"
-        ? "상태: 시작 중"
+        ? t("상태: 시작 중", "Status: starting")
         : runtime.status === "failed"
-          ? "상태: 실패"
-          : "상태: 대기"
-    : "상태: 확인 필요";
-  const runtimeNetworkLabel = runtime?.network ? `네트워크: ${runtime.network}` : "네트워크: -";
+          ? t("상태: 실패", "Status: failed")
+          : t("상태: 대기", "Status: idle")
+    : t("상태: 확인 필요", "Status: check required");
+  const runtimeNetworkLabel = runtime?.network
+    ? `${t("네트워크", "Network")}: ${runtime.network}`
+    : `${t("네트워크", "Network")}: -`;
   const runtimeSocksLabel =
     runtime && runtime.status === "running" && runtime.network === "tor" && runtime.socksPort
       ? ` · SOCKS 127.0.0.1:${runtime.socksPort}`
       : "";
-  const runtimeErrorLabel = runtime?.error ? `실패: ${runtime.error}` : "";
+  const runtimeErrorLabel = runtime?.error ? `${t("실패", "Failed")}: ${runtime.error}` : "";
 
   const formatOnionError = (value?: string) => {
     if (!value) return null;
-    if (value === "PINNED_HASH_MISSING") return "실패: 검증 데이터 없음";
+    if (value === "PINNED_HASH_MISSING")
+      return t("실패: 검증 데이터 없음", "Failed: missing verification data");
     const trimmed = value.split("| details=")[0].trim();
     const match = trimmed.match(/^\[([^\]]+)\]\s*(.*)$/);
     const code = match?.[1] ?? "";
     const message = match?.[2] ?? trimmed;
     const label =
       code === "DOWNLOAD_FAILED"
-        ? "다운로드 실패"
+        ? t("다운로드 실패", "Download failed")
         : code === "HASH_MISMATCH"
-          ? "검증 실패"
+          ? t("검증 실패", "Hash mismatch")
           : code === "EXTRACT_FAILED"
-            ? "압축 해제 실패"
+            ? t("압축 해제 실패", "Extraction failed")
             : code === "PERMISSION_DENIED"
-              ? "권한 부족"
+              ? t("권한 부족", "Permission denied")
               : code === "BINARY_MISSING"
-                ? "실행 파일 없음"
+                ? t("실행 파일 없음", "Binary missing")
                 : code === "FS_ERROR"
-                  ? "파일 시스템 오류"
+                  ? t("파일 시스템 오류", "File system error")
                   : code === "PINNED_HASH_MISSING"
-                    ? "검증 데이터 없음"
+                    ? t("검증 데이터 없음", "Missing verification data")
                     : code === "UNKNOWN_ERROR"
-                      ? "알 수 없는 오류"
+                      ? t("알 수 없는 오류", "Unknown error")
                       : null;
     const shortMessage = label ? `${label}${message ? ` · ${message}` : ""}` : message;
-    return `실패: ${shortMessage}`;
+    return `${t("실패", "Failed")}: ${shortMessage}`;
   };
 
   const selfOnionHopTarget = netConfig.selfOnionMinRelays;
@@ -513,20 +531,20 @@ export default function SettingsDialog({
   const selfOnionRouteLabel =
     connectionStatus.transport === "selfOnion"
       ? connectionStatus.state === "connected"
-        ? "경로: 연결됨"
+        ? t("경로: 연결됨", "Route: connected")
         : connectionStatus.state === "connecting"
-          ? "경로: 연결 중"
+          ? t("경로: 연결 중", "Route: connecting")
           : connectionStatus.state === "failed"
-            ? "경로: 실패"
-            : "경로: 대기"
-      : "경로: 대기";
+            ? t("경로: 실패", "Route: failed")
+            : t("경로: 대기", "Route: idle")
+      : t("경로: 대기", "Route: idle");
 
   const buildComponentLabel = (state: typeof netConfig.tor) => {
-    if (state.status === "downloading") return "다운로드 중";
-    if (state.status === "installing") return "설치 중";
-    if (state.status === "failed") return "실패";
-    if (state.installed) return "설치됨";
-    return "미설치";
+    if (state.status === "downloading") return t("다운로드 중", "Downloading");
+    if (state.status === "installing") return t("설치 중", "Installing");
+    if (state.status === "failed") return t("실패", "Failed");
+    if (state.installed) return t("설치됨", "Installed");
+    return t("미설치", "Not installed");
   };
 
   const torUpdateAvailable = Boolean(
@@ -537,17 +555,17 @@ export default function SettingsDialog({
   );
   const torUpdateStatus = netConfig.lastUpdateCheckAtMs
     ? netConfig.tor.error === "PINNED_HASH_MISSING"
-      ? "검증 데이터 없음"
+      ? t("검증 데이터 없음", "Missing verification data")
       : torUpdateAvailable
-        ? `업데이트 가능: ${netConfig.tor.latest}`
-        : "최신 상태"
+        ? `${t("업데이트 가능", "Update available")}: ${netConfig.tor.latest}`
+        : t("최신 상태", "Up to date")
     : "";
   const lokinetUpdateStatus = netConfig.lastUpdateCheckAtMs
     ? netConfig.lokinet.error === "PINNED_HASH_MISSING"
-      ? "검증 데이터 없음"
+      ? t("검증 데이터 없음", "Missing verification data")
       : lokinetUpdateAvailable
-        ? `업데이트 가능: ${netConfig.lokinet.latest}`
-        : "최신 상태"
+        ? `${t("업데이트 가능", "Update available")}: ${netConfig.lokinet.latest}`
+        : t("최신 상태", "Up to date")
     : "";
   const torErrorLabel = formatOnionError(netConfig.tor.error);
   const lokinetErrorLabel = formatOnionError(netConfig.lokinet.error);
@@ -558,10 +576,16 @@ export default function SettingsDialog({
 
   const connectionDescription =
     netConfig.mode === "onionRouter"
-      ? "외부 Onion: Tor 또는 Lokinet 경로를 사용합니다."
+      ? t(
+          "외부 Onion: Tor 또는 Lokinet 경로를 사용합니다.",
+          "External Onion: uses a Tor or Lokinet route."
+        )
       : netConfig.mode === "directP2P"
-        ? "Direct P2P: 프록시 없이 직접 연결을 시도합니다."
-        : "내부 Onion: 앱 내부 hop 경로를 사용합니다.";
+        ? t(
+            "Direct P2P: 프록시 없이 직접 연결을 시도합니다.",
+            "Direct P2P: attempts a direct connection without a proxy."
+          )
+        : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -569,7 +593,7 @@ export default function SettingsDialog({
         <Dialog.Overlay className="fixed inset-0 bg-black/60" />
         <Dialog.Content className="fixed left-1/2 top-1/2 h-[80vh] w-[92vw] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
           <Dialog.Title className="text-lg font-semibold text-nkc-text">
-            설정
+            {t("설정", "Settings")}
           </Dialog.Title>
 
           {/* MAIN */}
@@ -585,7 +609,7 @@ export default function SettingsDialog({
                           {displayName}
                         </div>
                         <div className="mt-1 truncate text-xs text-nkc-muted">
-                          {status ? status : "상태 메시지가 없습니다."}
+                          {status ? status : t("상태 메시지가 없습니다.", "No status message.")}
                         </div>
                         <div className="mt-3 flex flex-wrap gap-2">
                           <button
@@ -593,14 +617,14 @@ export default function SettingsDialog({
                             onClick={startEdit}
                             className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
                           >
-                            편집
+                            {t("편집", "Edit")}
                           </button>
                         </div>
                       </>
                     ) : (
                       <>
                         <label className="text-sm text-nkc-text">
-                          표시 이름
+                          {t("표시 이름", "Display name")}
                           <input
                             value={displayNameDraft}
                             onChange={(e) => setDisplayNameDraft(e.target.value)}
@@ -608,7 +632,7 @@ export default function SettingsDialog({
                           />
                         </label>
                         <label className="mt-3 block text-sm text-nkc-text">
-                          상태 메시지
+                          {t("상태 메시지", "Status message")}
                           <input
                             value={statusDraft}
                             onChange={(e) => setStatusDraft(e.target.value)}
@@ -618,7 +642,7 @@ export default function SettingsDialog({
 
                         <div className="mt-3 flex flex-wrap gap-2">
                           <label className="cursor-pointer rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel">
-                            사진 업로드
+                            {t("사진 업로드", "Upload photo")}
                             <input
                               type="file"
                               accept="image/*"
@@ -628,10 +652,10 @@ export default function SettingsDialog({
                                 if (!file) return;
                                 try {
                                   await onUploadPhoto(file);
-                                  setSaveMessage("사진이 업로드되었습니다.");
+                                  setSaveMessage(t("사진이 업로드되었습니다.", "Photo uploaded."));
                                 } catch (err) {
                                   console.error("Upload failed", err);
-                                  setSaveMessage("사진 업로드에 실패했습니다.");
+                                  setSaveMessage(t("사진 업로드에 실패했습니다.", "Photo upload failed."));
                                 } finally {
                                   e.currentTarget.value = "";
                                 }
@@ -644,14 +668,14 @@ export default function SettingsDialog({
                             onClick={saveEdit}
                             className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg"
                           >
-                            저장
+                            {t("저장", "Save")}
                           </button>
                           <button
                             type="button"
                             onClick={cancelEdit}
                             className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
                           >
-                            취소
+                            {t("취소", "Cancel")}
                           </button>
                         </div>
                       </>
@@ -667,35 +691,35 @@ export default function SettingsDialog({
                     onClick={() => setView("friends")}
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
-                    친구 관리
+                    {t("친구 관리", "Friend management")}
                   </button>
                   <button
                     type="button"
                     onClick={() => setView("network")}
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
-                    네트워크 설정
+                    {t("네트워크 설정", "Network settings")}
                   </button>
                   <button
                     type="button"
                     onClick={() => setView("privacy")}
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
-                    보안 / 개인정보
+                    {t("보안 / 개인정보", "Security / Privacy")}
                   </button>
                   <button
                     type="button"
                     onClick={() => setView("theme")}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
-                    테마
+                    {t("테마", "Theme")}
                   </button>
                   <button
                     type="button"
                     onClick={() => setView("storage")}
                     className="flex w-full items-center gap-3 border-t border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
-                    저장소 관리
+                    {t("저장소 관리", "Storage management")}
                   </button>
                 </div>
               </section>
@@ -707,14 +731,14 @@ export default function SettingsDialog({
                     onClick={() => setView("help")}
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
-                    도움말
+                    {t("도움말", "Help")}
                   </button>
                   <button
                     type="button"
                     onClick={() => setView("danger")}
                     className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-red-200 hover:bg-nkc-panel"
                   >
-                    위험 구역
+                    {t("위험 구역", "Danger zone")}
                   </button>
                 </div>
               </section>
@@ -722,7 +746,7 @@ export default function SettingsDialog({
               <div className="flex justify-end gap-2">
                 <Dialog.Close asChild>
                   <button className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panelMuted">
-                    닫기
+                    {t("닫기", "Close")}
                   </button>
                 </Dialog.Close>
               </div>
@@ -736,7 +760,7 @@ export default function SettingsDialog({
           {/* THEME */}
           {view === "theme" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader("테마")}
+              {renderBackHeader(t("테마", "Theme"))}
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="flex flex-wrap gap-3">
                   {themeOptions.map((opt) => (
@@ -750,9 +774,36 @@ export default function SettingsDialog({
                           : "border-nkc-border text-nkc-muted hover:bg-nkc-panel"
                       }`}
                     >
-                      {opt.label}
+                      {tl(opt.label)}
                     </button>
                   ))}
+                </div>
+                <div className="mt-4 text-xs font-semibold text-nkc-text">
+                  {t("언어", "Language")}
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setLanguage("ko")}
+                    className={`rounded-nkc border px-3 py-2 text-xs ${
+                      language === "ko"
+                        ? "border-nkc-accent bg-nkc-panel text-nkc-text"
+                        : "border-nkc-border text-nkc-muted hover:bg-nkc-panel"
+                    }`}
+                  >
+                    {t("한국어", "Korean")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLanguage("en")}
+                    className={`rounded-nkc border px-3 py-2 text-xs ${
+                      language === "en"
+                        ? "border-nkc-accent bg-nkc-panel text-nkc-text"
+                        : "border-nkc-border text-nkc-muted hover:bg-nkc-panel"
+                    }`}
+                  >
+                    English
+                  </button>
                 </div>
               </section>
 
@@ -761,12 +812,12 @@ export default function SettingsDialog({
                   type="button"
                   onClick={async () => {
                     await onSaveProfile({ displayName, status, theme });
-                    setSaveMessage("저장되었습니다.");
+                    setSaveMessage(t("저장되었습니다.", "Saved."));
                     setView("main");
                   }}
                   className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg"
                 >
-                  저장
+                  {t("저장", "Save")}
                 </button>
               </div>
 
@@ -779,10 +830,12 @@ export default function SettingsDialog({
           {/* NETWORK */}
           {view === "network" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader("네트워크")}
+              {renderBackHeader(t("네트워크", "Network"))}
 
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm font-semibold text-nkc-text">연결 방식</div>
+                <div className="text-sm font-semibold text-nkc-text">
+                  {t("연결 방식", "Connection mode")}
+                </div>
                 <div className="mt-3 grid gap-2">
                   {modeOptions.map((opt) => (
                     <label
@@ -797,13 +850,15 @@ export default function SettingsDialog({
                         onChange={() => setMode(opt.value)}
                       />
                       <div>
-                        <div className="text-sm font-medium text-nkc-text">{opt.label}</div>
+                        <div className="text-sm font-medium text-nkc-text">
+                          {tl(opt.label)}
+                        </div>
                         <div className="text-xs text-nkc-muted">
                           {opt.value === "directP2P"
-                            ? "프록시 없이 직접 연결"
+                            ? t("프록시 없이 직접 연결", "Direct connection without proxy")
                             : opt.value === "onionRouter"
-                              ? "외부 Onion 경로(Tor/Lokinet)"
-                              : "내장 Onion 경로(N hops)"}
+                              ? t("외부 Onion 경로(Tor/Lokinet)", "External Onion route (Tor/Lokinet)")
+                              : t("내장 Onion 경로(N hops)", "Built-in Onion route (N hops)")}
                         </div>
                       </div>
                     </label>
@@ -820,7 +875,9 @@ export default function SettingsDialog({
                   <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
                     <div className="flex items-center justify-between gap-3">
                       <div>
-                        <div className="text-sm font-medium text-nkc-text">Hop 설정</div>
+                        <div className="text-sm font-medium text-nkc-text">
+                          {t("Hop 설정", "Hop settings")}
+                        </div>
                         <div className="text-xs text-nkc-muted">
                           hops: {selfOnionHopConnected}/{selfOnionHopTarget} · {selfOnionRouteLabel}
                         </div>
@@ -838,7 +895,10 @@ export default function SettingsDialog({
                 ) : null}
                 {netConfig.mode === "directP2P" ? (
                   <div className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
-                    Direct P2P는 상대에게 IP가 노출될 수 있습니다.
+                    {t(
+                      "Direct P2P는 상대에게 IP가 노출될 수 있습니다.",
+                      "Direct P2P may expose your IP to the peer."
+                    )}
                   </div>
                 ) : null}
               </section>
@@ -848,9 +908,14 @@ export default function SettingsDialog({
                   <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                     <div className="flex items-center justify-between gap-4">
                       <div>
-                        <div className="text-sm font-medium text-nkc-text">IP 보호 모드 사용</div>
+                        <div className="text-sm font-medium text-nkc-text">
+                          {t("IP 보호 모드 사용", "Enable IP protection")}
+                        </div>
                         <div className="text-xs text-nkc-muted">
-                          direct P2P를 차단하고, 실패 시 네트워크를 중지합니다.
+                          {t(
+                            "direct P2P를 차단하고, 실패 시 네트워크를 중지합니다.",
+                            "Blocks direct P2P and stops the network on failure."
+                          )}
                         </div>
                       </div>
                       <input
@@ -863,7 +928,9 @@ export default function SettingsDialog({
 
                   <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                     <div className="flex items-center justify-between gap-4">
-                      <div className="text-sm font-semibold text-nkc-text">Onion 네트워크</div>
+                      <div className="text-sm font-semibold text-nkc-text">
+                        {t("Onion 네트워크", "Onion network")}
+                      </div>
                       <div className="text-right text-xs text-nkc-muted">
                         <div>
                           {runtimeLabel}
@@ -894,7 +961,9 @@ export default function SettingsDialog({
                             {buildComponentLabel(netConfig.tor)}
                           </div>
                         </div>
-                        <div className="mt-2 text-xs text-nkc-muted">SOCKS 기반 · 앱 트래픽만</div>
+                        <div className="mt-2 text-xs text-nkc-muted">
+                          {t("SOCKS 기반 · 앱 트래픽만", "SOCKS-based · app traffic only")}
+                        </div>
                         {torUpdateStatus ? (
                           <div className="mt-2 text-xs text-nkc-muted">{torUpdateStatus}</div>
                         ) : null}
@@ -909,7 +978,9 @@ export default function SettingsDialog({
                               disabled={torInstallBusy}
                               className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                             >
-                              {torInstallBusy ? "처리 중..." : "Tor 다운로드/설치"}
+                              {torInstallBusy
+                                ? t("처리 중...", "Working...")
+                                : t("Tor 다운로드/설치", "Download/Install Tor")}
                             </button>
                           ) : (
                             <>
@@ -919,7 +990,9 @@ export default function SettingsDialog({
                                 disabled={torCheckBusy}
                                 className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                               >
-                                {torCheckBusy ? "처리 중..." : "업데이트 확인"}
+                                {torCheckBusy
+                                  ? t("처리 중...", "Working...")
+                                  : t("업데이트 확인", "Check updates")}
                               </button>
                               {torUpdateAvailable ? (
                                 <button
@@ -928,7 +1001,9 @@ export default function SettingsDialog({
                                   disabled={torApplyBusy}
                                   className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                                 >
-                                  {torApplyBusy ? "처리 중..." : "업데이트 적용"}
+                                  {torApplyBusy
+                                    ? t("처리 중...", "Working...")
+                                    : t("업데이트 적용", "Apply update")}
                                 </button>
                               ) : null}
                               {runtime?.network === "tor" && runtime?.status === "running" ? (
@@ -937,7 +1012,7 @@ export default function SettingsDialog({
                                   onClick={() => void handleStopOnion()}
                                   className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
                                 >
-                                  연결 해제
+                                  {t("연결 해제", "Disconnect")}
                                 </button>
                               ) : null}
                               <button
@@ -946,7 +1021,9 @@ export default function SettingsDialog({
                                 disabled={torUninstallBusy}
                                 className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                               >
-                                {torUninstallBusy ? "처리 중..." : "제거"}
+                                {torUninstallBusy
+                                  ? t("처리 중...", "Working...")
+                                  : t("제거", "Uninstall")}
                               </button>
                             </>
                           )}
@@ -962,14 +1039,17 @@ export default function SettingsDialog({
                               checked={onionNetworkDraft === "lokinet"}
                               onChange={() => setOnionNetworkDraft("lokinet")}
                             />
-                            Lokinet <span className="text-xs text-nkc-muted">⚠ 고급</span>
+                            Lokinet{" "}
+                            <span className="text-xs text-nkc-muted">
+                              {t("⚠ 고급", "⚠ Advanced")}
+                            </span>
                           </label>
                           <div className="text-xs text-nkc-muted">
                             {buildComponentLabel(netConfig.lokinet)}
                           </div>
                         </div>
                         <div className="mt-2 text-xs text-nkc-muted">
-                          Exit/VPN 기반 · 앱 전용 라우팅
+                          {t("Exit/VPN 기반 · 앱 전용 라우팅", "Exit/VPN based · app-only routing")}
                         </div>
                         {lokinetUpdateStatus ? (
                           <div className="mt-2 text-xs text-nkc-muted">{lokinetUpdateStatus}</div>
@@ -985,7 +1065,12 @@ export default function SettingsDialog({
                               disabled={lokinetInstallBusy}
                               className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                             >
-                              {lokinetInstallBusy ? "처리 중..." : "Lokinet 설치(관리자 권한 필요)"}
+                              {lokinetInstallBusy
+                                ? t("처리 중...", "Working...")
+                                : t(
+                                    "Lokinet 설치(관리자 권한 필요)",
+                                    "Install Lokinet (admin required)"
+                                  )}
                             </button>
                           ) : null}
                           <button
@@ -995,10 +1080,10 @@ export default function SettingsDialog({
                               setLokinetStatusBusy(true);
                               try {
                                 await refreshOnionStatus();
-                                setSaveMessage("Lokinet 상태 확인 완료");
+                                setSaveMessage(t("Lokinet 상태 확인 완료", "Lokinet status checked"));
                               } catch (error) {
                                 console.error("Failed to refresh lokinet status", error);
-                                setSaveMessage("Lokinet 상태 확인 실패");
+                                setSaveMessage(t("Lokinet 상태 확인 실패", "Lokinet status check failed"));
                               } finally {
                                 setLokinetStatusBusy(false);
                               }
@@ -1006,7 +1091,9 @@ export default function SettingsDialog({
                             disabled={lokinetStatusBusy}
                             className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                           >
-                            {lokinetStatusBusy ? "처리 중..." : "상태 확인"}
+                            {lokinetStatusBusy
+                              ? t("처리 중...", "Working...")
+                              : t("상태 확인", "Check status")}
                           </button>
                           {runtime?.network === "lokinet" && runtime?.status === "running" ? (
                             <button
@@ -1014,7 +1101,7 @@ export default function SettingsDialog({
                               onClick={() => void handleStopOnion()}
                               className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
                             >
-                              연결 해제
+                              {t("연결 해제", "Disconnect")}
                             </button>
                           ) : null}
                           {lokinetUpdateAvailable ? (
@@ -1024,7 +1111,9 @@ export default function SettingsDialog({
                               disabled={lokinetApplyBusy}
                               className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                             >
-                              {lokinetApplyBusy ? "처리 중..." : "업데이트 적용"}
+                              {lokinetApplyBusy
+                                ? t("처리 중...", "Working...")
+                                : t("업데이트 적용", "Apply update")}
                             </button>
                           ) : null}
                           {netConfig.lokinet.installed ? (
@@ -1034,7 +1123,9 @@ export default function SettingsDialog({
                               disabled={lokinetUninstallBusy}
                               className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                             >
-                              {lokinetUninstallBusy ? "처리 중..." : "제거"}
+                              {lokinetUninstallBusy
+                                ? t("처리 중...", "Working...")
+                                : t("제거", "Uninstall")}
                             </button>
                           ) : null}
                         </div>
@@ -1051,7 +1142,7 @@ export default function SettingsDialog({
                   className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
                   disabled={netConfig.mode === "onionRouter" && onionEnabledDraft && !canSaveOnion}
                 >
-                  저장
+                  {t("저장", "Save")}
                 </button>
               </div>
 
@@ -1064,24 +1155,26 @@ export default function SettingsDialog({
           {/* PRIVACY */}
           {view === "privacy" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader("보안 / 개인정보")}
+              {renderBackHeader(t("보안 / 개인정보", "Security / Privacy"))}
 
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-nkc-text">보안</h3>
+                  <h3 className="text-sm font-semibold text-nkc-text">
+                    {t("보안", "Security")}
+                  </h3>
                   <button
                     type="button"
                     onClick={onLock}
                     className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
                   >
                     <Lock size={14} />
-                    잠그기
+                    {t("잠그기", "Lock")}
                   </button>
                 </div>
 
                 <div className="mt-4 grid gap-3">
                   <label className="flex items-center justify-between text-sm text-nkc-text">
-                    <span>PIN 잠금</span>
+                    <span>{t("PIN 잠금", "PIN lock")}</span>
                     <input
                       type="checkbox"
                       checked={pinEnabled}
@@ -1098,7 +1191,7 @@ export default function SettingsDialog({
                         maxLength={8}
                         value={pinDraft}
                         onChange={(e) => setPinDraft(e.target.value)}
-                        placeholder="4-8자리"
+                        placeholder={t("4-8자리", "4-8 digits")}
                         className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
                       />
                       <button
@@ -1107,7 +1200,7 @@ export default function SettingsDialog({
                         className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                         disabled={!pinDraft}
                       >
-                        PIN 설정
+                        {t("PIN 설정", "Set PIN")}
                       </button>
                     </div>
                   ) : null}
@@ -1122,7 +1215,7 @@ export default function SettingsDialog({
                     className="flex w-fit items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
                   >
                     <KeyRound size={14} />
-                    복구 키 관리
+                    {t("복구 키 관리", "Manage recovery key")}
                   </button>
                 </div>
               </section>
@@ -1131,9 +1224,14 @@ export default function SettingsDialog({
                 <div className="flex flex-col">
                   <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
                     <div>
-                      <div className="text-sm font-medium text-nkc-text">읽음 표시</div>
+                      <div className="text-sm font-medium text-nkc-text">
+                        {t("읽음 표시", "Read receipts")}
+                      </div>
                       <div className="text-xs text-nkc-muted">
-                        상대에게 읽음 상태를 공유합니다.
+                        {t(
+                          "상대에게 읽음 상태를 공유합니다.",
+                          "Share read status with the other person."
+                        )}
                       </div>
                     </div>
                     <input
@@ -1147,9 +1245,14 @@ export default function SettingsDialog({
 
                   <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
                     <div>
-                      <div className="text-sm font-medium text-nkc-text">입력 표시</div>
+                      <div className="text-sm font-medium text-nkc-text">
+                        {t("입력 표시", "Typing indicator")}
+                      </div>
                       <div className="text-xs text-nkc-muted">
-                        상대에게 입력 중 상태를 표시합니다.
+                        {t(
+                          "상대에게 입력 중 상태를 표시합니다.",
+                          "Show typing status to the other person."
+                        )}
                       </div>
                     </div>
                     <input
@@ -1163,8 +1266,12 @@ export default function SettingsDialog({
 
                   <div className="flex items-center justify-between gap-4 px-4 py-3">
                     <div>
-                      <div className="text-sm font-medium text-nkc-text">링크 미리보기</div>
-                      <div className="text-xs text-nkc-muted">링크 카드 표시</div>
+                      <div className="text-sm font-medium text-nkc-text">
+                        {t("링크 미리보기", "Link preview")}
+                      </div>
+                      <div className="text-xs text-nkc-muted">
+                        {t("링크 카드 표시", "Show link card")}
+                      </div>
                     </div>
                     <input
                       type="checkbox"
@@ -1182,11 +1289,13 @@ export default function SettingsDialog({
           {/* FRIENDS */}
           {view === "friends" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader("친구 관리")}
+              {renderBackHeader(t("친구 관리", "Friend management"))}
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="grid gap-4 text-sm">
                   <div>
-                    <div className="text-xs text-nkc-muted">숨김 목록</div>
+                    <div className="text-xs text-nkc-muted">
+                      {t("숨김 목록", "Hidden list")}
+                    </div>
                     {hiddenFriends.length ? (
                       <div className="mt-2 grid gap-2">
                         {hiddenFriends.map((friend) => (
@@ -1200,20 +1309,22 @@ export default function SettingsDialog({
                               onClick={() => void onUnhideFriend(friend.id)}
                               className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
                             >
-                              복원
+                              {t("복원", "Restore")}
                             </button>
                           </div>
                         ))}
                       </div>
                     ) : (
                       <div className="mt-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
-                        숨김 친구가 없습니다.
+                        {t("숨김 친구가 없습니다.", "No hidden friends.")}
                       </div>
                     )}
                   </div>
 
                   <div>
-                    <div className="text-xs text-nkc-muted">차단 목록</div>
+                    <div className="text-xs text-nkc-muted">
+                      {t("차단 목록", "Blocked list")}
+                    </div>
                     {blockedFriends.length ? (
                       <div className="mt-2 grid gap-2">
                         {blockedFriends.map((friend) => (
@@ -1227,14 +1338,14 @@ export default function SettingsDialog({
                               onClick={() => void onUnblockFriend(friend.id)}
                               className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
                             >
-                              차단 해제
+                              {t("차단 해제", "Unblock")}
                             </button>
                           </div>
                         ))}
                       </div>
                     ) : (
                       <div className="mt-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
-                        차단된 친구가 없습니다.
+                        {t("차단된 친구가 없습니다.", "No blocked friends.")}
                       </div>
                     )}
                   </div>
@@ -1246,19 +1357,26 @@ export default function SettingsDialog({
           {/* STORAGE */}
           {view === "storage" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader("저장소 관리")}
+              {renderBackHeader(t("저장소 관리", "Storage management"))}
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm font-semibold text-nkc-text">저장소 관리</div>
-                <div className="mt-2 text-xs text-nkc-muted">
-                  삭제 후에는 복구할 수 없습니다. 삭제 시 데이터를 암호화로 덮어씌운 뒤
-                  제거합니다.
+                <div className="text-sm font-semibold text-nkc-text">
+                  {t("저장소 관리", "Storage management")}
                 </div>
                 <div className="mt-2 text-xs text-nkc-muted">
-                  다른 기기에는 적용되지 않으며, 각 기기에서 별도로 초기화해야 합니다.
+                  {t(
+                    "삭제 후에는 복구할 수 없습니다. 삭제 시 데이터를 암호화로 덮어씌운 뒤 제거합니다.",
+                    "Deletion cannot be undone. Data is overwritten with encryption before removal."
+                  )}
+                </div>
+                <div className="mt-2 text-xs text-nkc-muted">
+                  {t(
+                    "다른 기기에는 적용되지 않으며, 각 기기에서 별도로 초기화해야 합니다.",
+                    "This does not affect other devices; reset each device separately."
+                  )}
                 </div>
                 <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
                   <div className="flex items-center justify-between text-xs text-nkc-muted">
-                    <span>저장소 사용량(추정)</span>
+                    <span>{t("저장소 사용량(추정)", "Storage usage (estimate)")}</span>
                     <span>
                       {formatBytes(vaultUsageBytes)} / {formatBytes(vaultUsageMaxBytes)}
                     </span>
@@ -1279,36 +1397,12 @@ export default function SettingsDialog({
                   <button
                     type="button"
                     onClick={async () => {
-                      if (mediaWipeBusy) return;
-                      const ok = window.confirm(
-                        "미디어(사진/첨부파일)를 모두 삭제합니다. 계속할까요?"
-                      );
-                      if (!ok) return;
-                      setMediaWipeBusy(true);
-                      try {
-                        await deleteAllMedia();
-                        await refreshAppData();
-                        const usage = await getVaultUsage();
-                        setVaultUsageBytes(usage.bytes);
-                        setSaveMessage("미디어가 삭제되었습니다.");
-                      } catch (error) {
-                        console.error("Failed to delete media", error);
-                        setSaveMessage("미디어 삭제 실패");
-                      } finally {
-                        setMediaWipeBusy(false);
-                      }
-                    }}
-                    disabled={mediaWipeBusy}
-                    className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                  >
-                    {mediaWipeBusy ? "처리 중..." : "미디어 전부 삭제"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={async () => {
                       if (chatWipeBusy) return;
                       const ok = window.confirm(
-                        "채팅 내역을 초기화합니다. 복구할 수 없습니다. 계속할까요?"
+                        t(
+                          "채팅 내역을 초기화합니다. 복구할 수 없습니다. 계속할까요?",
+                          "Reset chat history? This cannot be undone."
+                        )
                       );
                       if (!ok) return;
                       setChatWipeBusy(true);
@@ -1317,10 +1411,10 @@ export default function SettingsDialog({
                         await refreshAppData();
                         const usage = await getVaultUsage();
                         setVaultUsageBytes(usage.bytes);
-                        setSaveMessage("채팅 내역이 초기화되었습니다.");
+                        setSaveMessage(t("채팅 내역이 초기화되었습니다.", "Chat history reset."));
                       } catch (error) {
                         console.error("Failed to clear chat history", error);
-                        setSaveMessage("채팅 내역 초기화 실패");
+                        setSaveMessage(t("채팅 내역 초기화 실패", "Chat reset failed"));
                       } finally {
                         setChatWipeBusy(false);
                       }
@@ -1328,7 +1422,7 @@ export default function SettingsDialog({
                     disabled={chatWipeBusy}
                     className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                   >
-                    {chatWipeBusy ? "처리 중..." : "채팅 내역 초기화"}
+                    {chatWipeBusy ? t("처리 중...", "Working...") : t("채팅 내역 초기화", "Reset chat history")}
                   </button>
                 </div>
               </section>
@@ -1338,11 +1432,16 @@ export default function SettingsDialog({
           {/* HELP */}
           {view === "help" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader("도움말")}
+              {renderBackHeader(t("도움말", "Help"))}
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm text-nkc-text">준비중입니다.</div>
+                <div className="text-sm text-nkc-text">
+                  {t("준비중입니다.", "Coming soon.")}
+                </div>
                 <div className="mt-2 text-xs text-nkc-muted">
-                  도움말 콘텐츠는 추후 업데이트될 예정입니다.
+                  {t(
+                    "도움말 콘텐츠는 추후 업데이트될 예정입니다.",
+                    "Help content will be updated later."
+                  )}
                 </div>
               </section>
             </div>
@@ -1351,13 +1450,18 @@ export default function SettingsDialog({
           {/* DANGER */}
           {view === "danger" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader("위험 구역")}
+              {renderBackHeader(t("위험 구역", "Danger zone"))}
               <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-6">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h3 className="text-sm font-semibold text-red-100">위험 구역</h3>
+                    <h3 className="text-sm font-semibold text-red-100">
+                      {t("위험 구역", "Danger zone")}
+                    </h3>
                     <p className="mt-1 text-xs text-red-100/80">
-                      로그아웃 또는 데이터 초기화를 진행합니다.
+                      {t(
+                        "로그아웃 또는 데이터 초기화를 진행합니다.",
+                        "Proceed with logout or data reset."
+                      )}
                     </p>
                   </div>
                 </div>
@@ -1367,14 +1471,14 @@ export default function SettingsDialog({
                     onClick={onLogout}
                     className="rounded-nkc border border-red-400/60 px-3 py-2 text-xs text-red-100 hover:bg-red-500/20"
                   >
-                    로그아웃
+                    {t("로그아웃", "Logout")}
                   </button>
                   <button
                     type="button"
                     onClick={onWipe}
                     className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-red-100 hover:bg-red-500/40"
                   >
-                    데이터 삭제
+                    {t("데이터 삭제", "Delete data")}
                   </button>
                 </div>
               </section>

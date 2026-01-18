@@ -1,12 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Filter, Lock, Search, Settings, UserPlus, Users } from "lucide-react";
 import type { Conversation, UserProfile } from "../db/repo";
+import { useAppStore } from "../app/store";
 import OverflowMenu from "./OverflowMenu";
 import FriendOverflowMenu from "./FriendOverflowMenu";
 import Avatar from "./Avatar";
 
-const formatTime = (ts: number) =>
-  new Intl.DateTimeFormat("ko-KR", {
+const formatTime = (ts: number, locale: string) =>
+  new Intl.DateTimeFormat(locale, {
     hour: "2-digit",
     minute: "2-digit",
   }).format(new Date(ts));
@@ -70,6 +71,9 @@ export default function Sidebar({
   onBlock,
   onTogglePin,
 }: SidebarProps) {
+  const language = useAppStore((state) => state.ui.language);
+  const t = (ko: string, en: string) => (language === "en" ? en : ko);
+  const locale = language === "en" ? "en-US" : "ko-KR";
   const [now, setNow] = useState(() => Date.now());
   const [favoritesOpen, setFavoritesOpen] = useState(true);
   const [friendsOpen, setFriendsOpen] = useState(true);
@@ -102,11 +106,11 @@ export default function Sidebar({
 
   const getActivityLabel = (friend: UserProfile) => {
     const lastSeenAt = getFriendLastSeen(friend.id);
-    if (!lastSeenAt) return "기록 없음";
+    if (!lastSeenAt) return t("기록 없음", "No activity");
     const ageMs = now - lastSeenAt;
     const minutes = Math.max(0, Math.floor(ageMs / (60 * 1000)));
-    if (minutes === 0) return "최근 대화 방금 전";
-    return `최근 대화 ${minutes}분 전`;
+    if (minutes === 0) return t("최근 대화 방금 전", "Last chat just now");
+    return t(`최근 대화 ${minutes}분 전`, `Last chat ${minutes} min ago`);
   };
 
   const visibleConvs = convs
@@ -155,12 +159,12 @@ export default function Sidebar({
   const filterOptions: { value: SidebarProps["listFilter"]; label: string }[] =
     listMode === "chats"
       ? [
-          { value: "all", label: "전체" },
-          { value: "unread", label: "읽지 않음" },
+          { value: "all", label: t("전체", "All") },
+          { value: "unread", label: t("읽지 않음", "Unread") },
         ]
       : [
-          { value: "all", label: "전체" },
-          { value: "favorites", label: "즐겨찾기만 보기" },
+          { value: "all", label: t("전체", "All") },
+          { value: "favorites", label: t("즐겨찾기만 보기", "Favorites only") },
         ];
 
   const resolveConvFriend = (conv: Conversation) => {
@@ -222,7 +226,7 @@ export default function Sidebar({
                 {userProfile?.displayName || "NKC"}
               </div>
               <div className="text-xs text-nkc-muted line-clamp-1">
-                {userProfile?.status || "검색어 없음"}
+                {userProfile?.status || t("검색어 없음", "No status")}
               </div>
             </div>
           </button>
@@ -247,7 +251,7 @@ export default function Sidebar({
           <input
             value={search}
             onChange={(event) => onSearch(event.target.value)}
-            placeholder="검색"
+            placeholder={t("검색", "Search")}
             className="w-full bg-transparent text-sm text-nkc-text placeholder:text-nkc-muted focus:outline-none"
           />
         </div>
@@ -262,7 +266,7 @@ export default function Sidebar({
               listMode === "friends" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
             }`}
           >
-            친구
+            {t("친구", "Friends")}
           </button>
           <button
             onClick={() => {
@@ -273,27 +277,27 @@ export default function Sidebar({
               listMode === "chats" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
             }`}
           >
-            채팅
+            {t("채팅", "Chats")}
           </button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="flex items-center justify-between text-xs font-semibold text-nkc-muted">
-          <span>필터</span>
+          <span>{t("필터", "Filter")}</span>
           <div className="flex items-center gap-2">
             <Filter size={14} />
             <button
               onClick={onAddFriend}
               className="flex h-7 w-7 items-center justify-center rounded-full border border-nkc-border hover:bg-nkc-panelMuted"
-              aria-label="친구 추가"
+              aria-label={t("친구 추가", "Add friend")}
             >
               <UserPlus size={14} />
             </button>
             <button
               onClick={onCreateGroup}
               className="flex h-7 w-7 items-center justify-center rounded-full border border-nkc-border hover:bg-nkc-panelMuted"
-              aria-label="그룹 만들기"
+              aria-label={t("그룹 만들기", "Create group")}
             >
               <Users size={14} />
             </button>
@@ -322,7 +326,7 @@ export default function Sidebar({
                   onClick={() => setPinnedChatsOpen((prev) => !prev)}
                   className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
                 >
-                  <span>고정된 채팅 ({pinned.length})</span>
+                  <span>{t("고정된 채팅", "Pinned chats")} ({pinned.length})</span>
                   <span className="text-nkc-muted">
                     {pinnedChatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   </span>
@@ -353,7 +357,7 @@ export default function Sidebar({
                 onClick={() => setChatsOpen((prev) => !prev)}
                 className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
               >
-                <span>채팅 ({regular.length})</span>
+                <span>{t("채팅", "Chats")} ({regular.length})</span>
                 <span className="text-nkc-muted">
                   {chatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
@@ -378,7 +382,7 @@ export default function Sidebar({
                   </div>
                 ) : (
                   <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
-                    대화가 없습니다.
+                    {t("대화가 없습니다.", "No conversations.")}
                   </div>
                 )
               )}
@@ -392,7 +396,7 @@ export default function Sidebar({
                   onClick={() => setFavoritesOpen((prev) => !prev)}
                   className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
                 >
-                  <span>즐겨찾는 친구 ({favoriteFriends.length})</span>
+                  <span>{t("즐겨찾는 친구", "Favorite friends")} ({favoriteFriends.length})</span>
                   <span className="text-nkc-muted">
                     {favoritesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   </span>
@@ -409,7 +413,7 @@ export default function Sidebar({
                 onClick={() => setFriendsOpen((prev) => !prev)}
                 className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
               >
-                <span>친구 ({regularFriends.length})</span>
+                <span>{t("친구", "Friends")} ({regularFriends.length})</span>
                 <span className="text-nkc-muted">
                   {friendsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
@@ -421,7 +425,7 @@ export default function Sidebar({
                   </div>
                 ) : (
                   <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
-                    표시할 친구가 없습니다.
+                    {t("표시할 친구가 없습니다.", "No friends to show.")}
                   </div>
                 )
               )}
@@ -477,12 +481,12 @@ function ConversationRow({
       <div className="min-w-0 flex-1">
         <div className="flex justify-between">
           <span className="text-sm font-semibold text-nkc-text line-clamp-1">{conv.name}</span>
-          <span className="text-xs text-nkc-muted">{formatTime(conv.lastTs)}</span>
+          <span className="text-xs text-nkc-muted">{formatTime(conv.lastTs, locale)}</span>
         </div>
         <div className="mt-1 text-xs text-nkc-muted line-clamp-2">{conv.lastMessage}</div>
         <div className="mt-2 flex gap-2 text-[11px] text-nkc-muted">
-          {conv.muted && <span>음소거</span>}
-          {conv.blocked && <span>차단됨</span>}
+          {conv.muted && <span>{t("음소거", "Muted")}</span>}
+          {conv.blocked && <span>{t("차단됨", "Blocked")}</span>}
         </div>
       </div>
       <OverflowMenu
@@ -497,3 +501,9 @@ function ConversationRow({
     </div>
   );
 }
+
+
+
+
+
+
