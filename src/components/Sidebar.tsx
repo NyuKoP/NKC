@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight, Filter, Lock, Search, Settings, UserPlus, Users } from "lucide-react";
 import type { Conversation, UserProfile } from "../db/repo";
 import { useAppStore } from "../app/store";
@@ -79,12 +79,22 @@ export default function Sidebar({
   const [friendsOpen, setFriendsOpen] = useState(true);
   const [pinnedChatsOpen, setPinnedChatsOpen] = useState(true);
   const [chatsOpen, setChatsOpen] = useState(true);
+  const friendClickTimerRef = useRef<number | null>(null);
   const searchLower = search.trim().toLowerCase();
   const friendMap = useMemo(() => new Map(friends.map((f) => [f.id, f])), [friends]);
 
   useEffect(() => {
     const timer = setInterval(() => setNow(Date.now()), 30000);
     return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (friendClickTimerRef.current) {
+        window.clearTimeout(friendClickTimerRef.current);
+        friendClickTimerRef.current = null;
+      }
+    };
   }, []);
 
   const convLastByFriend = useMemo(() => {
@@ -173,16 +183,35 @@ export default function Sidebar({
     return fid ? friendMap.get(fid) : undefined;
   };
 
+  const handleFriendClick = (friendId: string) => {
+    if (friendClickTimerRef.current) {
+      window.clearTimeout(friendClickTimerRef.current);
+    }
+    friendClickTimerRef.current = window.setTimeout(() => {
+      onFriendViewProfile(friendId);
+      friendClickTimerRef.current = null;
+    }, 200);
+  };
+
+  const handleFriendDoubleClick = (friendId: string) => {
+    if (friendClickTimerRef.current) {
+      window.clearTimeout(friendClickTimerRef.current);
+      friendClickTimerRef.current = null;
+    }
+    onFriendChat(friendId);
+  };
+
   const renderFriendRow = (friend: UserProfile) => (
     <div
       key={friend.id}
       role="button"
       tabIndex={0}
-      onClick={() => onFriendChat(friend.id)}
+      onClick={() => handleFriendClick(friend.id)}
+      onDoubleClick={() => handleFriendDoubleClick(friend.id)}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onFriendChat(friend.id);
+          onFriendViewProfile(friend.id);
         }
       }}
       className="flex w-full items-start gap-3 rounded-nkc px-3 py-3 hover:bg-nkc-panelMuted"
@@ -339,6 +368,8 @@ export default function Sidebar({
                         conv={conv}
                         friend={resolveConvFriend(conv)}
                         active={selectedConvId === conv.id}
+                        locale={locale}
+                        t={t}
                         onSelect={() => onSelectConv(conv.id)}
                         onHide={() => onHide(conv.id)}
                         onDelete={() => onDelete(conv.id)}
@@ -371,6 +402,8 @@ export default function Sidebar({
                         conv={conv}
                         friend={resolveConvFriend(conv)}
                         active={selectedConvId === conv.id}
+                        locale={locale}
+                        t={t}
                         onSelect={() => onSelectConv(conv.id)}
                         onHide={() => onHide(conv.id)}
                         onDelete={() => onDelete(conv.id)}
@@ -441,6 +474,8 @@ type ConversationRowProps = {
   conv: Conversation;
   friend?: UserProfile;
   active: boolean;
+  locale: string;
+  t: (ko: string, en: string) => string;
   onSelect: () => void;
   onHide: () => void;
   onDelete: () => void;
@@ -453,6 +488,8 @@ function ConversationRow({
   conv,
   friend,
   active,
+  locale,
+  t,
   onSelect,
   onHide,
   onDelete,

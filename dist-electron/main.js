@@ -119,23 +119,24 @@ const pinnedSha256 = {
     [makePinnedKey({ platform: "linux", arch: "x64", version: "0.9.14", filename: "alternateRoute-linux-amd64-v0.9.14.tar.xz" })]: "4097f96779a007abf35f37a46394eb5af39debd27244c190ce6867caf7a5115d"
   }
 };
+const withExeSuffix = (platform, basename) => platform === "win32" ? `${basename}.exe` : basename;
 const torEntry = {
   id: "tor",
   displayName: "Tor",
-  binaryPath: path.join("Tor", "tor.exe"),
+  binaryPath: (platform) => path.join("Tor", withExeSuffix(platform, "tor")),
   pinnedSha256: pinnedSha256.tor
 };
 const alternateRouteEntry = {
   id: "alternateRoute",
   displayName: "alternateRoute",
-  binaryPath: "alternateRoute.exe",
+  binaryPath: (platform) => withExeSuffix(platform, "alternateRoute"),
   pinnedSha256: pinnedSha256.alternateRoute
 };
 const componentRegistry = {
   tor: torEntry,
   alternateRoute: alternateRouteEntry
 };
-const getBinaryPath = (network) => componentRegistry[network].binaryPath;
+const getBinaryPath = (network, platform = process.platform) => componentRegistry[network].binaryPath(platform);
 const getPinnedSha256 = (network, lookup) => {
   const key = makePinnedKey({
     platform: lookup.platform ?? process.platform,

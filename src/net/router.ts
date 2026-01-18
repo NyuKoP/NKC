@@ -32,7 +32,7 @@ type SendDeps = {
 const defaultRouteController = createRouteController();
 const defaultHttpClient = createHttpClient();
 const transportCache = new Map<TransportKind, Transport>();
-const transportStarted = new Set<TransportKind>();
+let transportStarted = new WeakSet<Transport>();
 
 const attachHandlers = (
   transport: Transport,
@@ -71,10 +71,10 @@ const getTransport = (
   return transport;
 };
 
-const ensureStarted = async (kind: TransportKind, transport: Transport) => {
-  if (transportStarted.has(kind)) return;
+const ensureStarted = async (transport: Transport) => {
+  if (transportStarted.has(transport)) return;
   await transport.start();
-  transportStarted.add(kind);
+  transportStarted.add(transport);
 };
 
 export const resolveTransport = (
@@ -89,7 +89,7 @@ export const resolveTransport = (
 
 export const __testResetRouter = () => {
   transportCache.clear();
-  transportStarted.clear();
+  transportStarted = new WeakSet<Transport>();
 };
 
 const warnOnionRouterGuards = (config: NetConfig) => {
@@ -141,7 +141,7 @@ export const sendCiphertext = async (
       throw new Error("Self-onion blocked while onion router is enabled");
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
-    await ensureStarted(kind, transport);
+    await ensureStarted(transport);
     record.attempts += 1;
     record.lastAttemptAtMs = Date.now();
     await putOutbox(record);
