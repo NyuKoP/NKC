@@ -261,9 +261,7 @@ const installTor = async (userDataDir, version, onProgress, downloadUrl, assetNa
       `Missing pinned hash for Tor asset ${resolvedAssetName} (${version}).`
     );
   }
-  const baseOnionDir = path.join(userDataDir, "onion");
-  await fs.mkdir(baseOnionDir, { recursive: true });
-  const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
+  const tempDir = await fs.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, resolvedAssetName);
   onProgress?.({ step: "download", message: "Downloading Tor" });
@@ -299,9 +297,7 @@ const installLokinet = async (userDataDir, version, onProgress, downloadUrl, ass
       `Missing pinned hash for Lokinet asset ${assetName} (${version}).`
     );
   }
-  const baseOnionDir = path.join(userDataDir, "onion");
-  await fs.mkdir(baseOnionDir, { recursive: true });
-  const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
+  const tempDir = await fs.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, assetName);
   onProgress?.({ step: "download", message: "Downloading Lokinet" });
@@ -904,7 +900,7 @@ const createMainWindow = () => {
     mainWindow.focus();
     return mainWindow;
   }
-  const preloadPath = path.join(__dirname, "preload.js");
+  const preloadPath = path.join(__dirname, "preload.cjs");
   const preloadExists = fsSync.existsSync(preloadPath);
   if (isDev && !preloadExists) {
     console.error("[dev] preload missing at", preloadPath);
@@ -930,33 +926,9 @@ const createMainWindow = () => {
   win.webContents.on("unresponsive", () => {
     console.error("[main] renderer unresponsive");
   });
-  const safeLog = (...args) => {
-    if (!process.stdout || !process.stdout.writable) return;
-    try {
-      console.log(...args);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-      if (code === "EPIPE" || message.includes("EPIPE")) {
-        return;
-      }
-      throw error;
-    }
-  };
-  const ignorePipeError = (error) => {
-    const message = error instanceof Error ? error.message : String(error);
-    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
-    if (code === "EPIPE" || message.includes("EPIPE")) {
-      return;
-    }
-    throw error;
-  };
-  process.stdout?.on("error", ignorePipeError);
-  process.stderr?.on("error", ignorePipeError);
   if (isDev) {
     win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-      if (win.webContents.isDestroyed()) return;
-      safeLog("[renderer]", level, message, sourceId, line);
+      console.log("[renderer]", level, message, sourceId, line);
     });
   }
   const loadRenderer = async () => {
@@ -1055,4 +1027,4 @@ electron.app.on("window-all-closed", () => {
 });
 exports.createMainWindow = createMainWindow;
 exports.registerProxyIpc = registerProxyIpc;
-//# sourceMappingURL=main.js.map
+//# sourceMappingURL=main.cjs.map

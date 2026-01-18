@@ -22,6 +22,16 @@ export type AvatarRef = {
   chunkSize: number;
 };
 
+export type MediaRef = {
+  ownerType: "message";
+  ownerId: string;
+  mime: string;
+  total: number;
+  chunkSize: number;
+  name: string;
+  size: number;
+};
+
 export type UserProfile = {
   id: string;
   displayName: string;
@@ -38,6 +48,7 @@ export type UserProfile = {
 
 export type Conversation = {
   id: string;
+  type?: "direct" | "group";
   name: string;
   pinned: boolean;
   unread: number;
@@ -55,6 +66,7 @@ export type Message = {
   senderId: string;
   text: string;
   ts: number;
+  media?: MediaRef;
 };
 
 const VAULT_META_KEY = "vault_header_v2";
@@ -72,7 +84,8 @@ const toB64 = (bytes: Uint8Array) =>
 
 const computeVaultKeyId = async (vk: Uint8Array) => {
   if (!globalThis.crypto?.subtle) return null;
-  const digest = await globalThis.crypto.subtle.digest("SHA-256", vk);
+  const vkBytes = new Uint8Array(vk);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", vkBytes);
   return toB64(new Uint8Array(digest).slice(0, 16));
 };
 
@@ -293,6 +306,77 @@ export const loadProfilePhoto = async (avatarRef?: AvatarRef) => {
     )
   );
   const blob = new Blob(decrypted, { type: avatarRef.mime });
+  return blob;
+};
+
+export const saveMessageMedia = async (messageId: string, file: File) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  await db.mediaChunks
+    .where("ownerId")
+    .equals(messageId)
+    .and((chunk) => chunk.ownerType === "message")
+    .delete();
+
+  const buffer = await file.arrayBuffer();
+  const chunks = chunkBuffer(buffer, MEDIA_CHUNK_SIZE);
+  const total = chunks.length;
+  const now = Date.now();
+  const records: MediaChunkRecord[] = [];
+
+  for (let idx = 0; idx < chunks.length; idx += 1) {
+    const chunkId = `${messageId}:${idx}`;
+    const enc_b64 = await encodeBinaryEnvelope(
+      vk,
+      chunkId,
+      "mediaChunk",
+      chunks[idx]
+    );
+    records.push({
+      id: chunkId,
+      ownerType: "message",
+      ownerId: messageId,
+      idx,
+      enc_b64,
+      mime: file.type || "application/octet-stream",
+      total,
+      updatedAt: now,
+    });
+  }
+
+  await db.mediaChunks.bulkPut(records);
+
+  const mediaRef: MediaRef = {
+    ownerType: "message",
+    ownerId: messageId,
+    mime: file.type || "application/octet-stream",
+    total,
+    chunkSize: MEDIA_CHUNK_SIZE,
+    name: file.name,
+    size: file.size,
+  };
+
+  return mediaRef;
+};
+
+export const loadMessageMedia = async (mediaRef?: MediaRef) => {
+  await ensureDbOpen();
+  if (!mediaRef) return null;
+  const vk = requireVaultKey();
+  const chunks = await db.mediaChunks
+    .where("ownerId")
+    .equals(mediaRef.ownerId)
+    .and((chunk) => chunk.ownerType === "message")
+    .sortBy("idx");
+
+  if (!chunks.length) return null;
+
+  const decrypted = await Promise.all(
+    chunks.map((chunk) =>
+      decodeBinaryEnvelope(vk, chunk.id, "mediaChunk", chunk.enc_b64)
+    )
+  );
+  const blob = new Blob(decrypted, { type: mediaRef.mime });
   return blob;
 };
 

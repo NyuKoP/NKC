@@ -5,6 +5,7 @@ import Onboarding from "../components/Onboarding";
 import Unlock from "../components/Unlock";
 import Recovery from "../components/Recovery";
 import FriendAddDialog from "../components/FriendAddDialog";
+import GroupCreateDialog from "../components/GroupCreateDialog";
 import Sidebar from "../components/Sidebar";
 import ChatView from "../components/ChatView";
 import RightPanel from "../components/RightPanel";
@@ -25,6 +26,7 @@ import {
   deleteProfile,
   saveConversation,
   saveMessage,
+  saveMessageMedia,
   saveProfile,
   saveProfilePhoto,
   seedVaultData,
@@ -46,6 +48,8 @@ import { clearPin, clearPinRecord, getPinStatus, setPin as savePin, verifyPin } 
 import { clearRecoveryConfirmed } from "../security/recoveryKey";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
+import { onConnectionStatus } from "../net/connectionStatus";
+import { syncGroupCreate } from "../sync/groupSync";
 
 const buildNameMap = (profiles: UserProfile[]) =>
   profiles.reduce<Record<string, string>>((acc, profile) => {
@@ -65,6 +69,7 @@ export default function App() {
   const setRightPanelOpen = useAppStore((state) => state.setRightPanelOpen);
   const setRightTab = useAppStore((state) => state.setRightTab);
   const setListMode = useAppStore((state) => state.setListMode);
+  const setListFilter = useAppStore((state) => state.setListFilter);
   const setSearch = useAppStore((state) => state.setSearch);
   const setSessionState = useAppStore((state) => state.setSession);
   const setData = useAppStore((state) => state.setData);
@@ -74,29 +79,41 @@ export default function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
+
   const [pinEnabled, setPinEnabled] = useState(false);
   const [defaultTab, setDefaultTab] = useState<"create" | "import">("create");
   const [pinNeedsReset, setPinNeedsReset] = useState(false);
   const wasHiddenRef = useRef(false);
+
   const [onboardingError, setOnboardingError] = useState("");
   const [friendAddOpen, setFriendAddOpen] = useState(false);
+  const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [shareId, setShareId] = useState("");
+
   const onboardingLockRef = useRef(false);
   const outboxSchedulerStarted = useRef(false);
+
+  const connectionToastShown = useRef(false);
+  const connectionToastKey = "nkc.sessionConnectedToastShown";
 
   const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
   const devLog = (message: string, detail?: Record<string, unknown>) => {
     if (!isDev) return;
-    if (detail) {
-      console.debug(`[app] ${message}`, detail);
-    } else {
-      console.debug(`[app] ${message}`);
-    }
+    if (detail) console.debug(`[app] ${message}`, detail);
+    else console.debug(`[app] ${message}`);
   };
 
   const settingsOpen = location.pathname === "/settings";
 
+  const clearConnectionToastGuard = () => {
+    connectionToastShown.current = false;
+    if (typeof window !== "undefined") {
+      window.sessionStorage.removeItem(connectionToastKey);
+    }
+  };
+
   const resetAppState = () => {
+    clearConnectionToastGuard();
     setSessionState({ unlocked: false, vkInMemory: false });
     setData({ user: null, friends: [], convs: [], messagesByConv: {} });
     setSelectedConv(null);
@@ -124,69 +141,73 @@ export default function App() {
   const hydrateVault = async () => {
     try {
       devLog("hydrate:start");
+
       const vk = getVaultKey();
       if (vk) {
         const keyOk = await withTimeout(verifyVaultKeyId(vk), "verifyVaultKeyId");
-        if (!keyOk) {
-          throw new Error("Vault key mismatch");
-        }
+        if (!keyOk) throw new Error("Vault key mismatch");
       }
+
       const profiles = await withTimeout(listProfiles(), "listProfiles");
       const user = profiles.find((profile) => profile.kind === "user") || null;
       const friendProfiles = profiles.filter((profile) => profile.kind === "friend");
+
       const conversations = await withTimeout(listConversations(), "listConversations");
       const messagesBy: Record<string, Message[]> = {};
+
       for (const conv of conversations) {
-        messagesBy[conv.id] = await withTimeout(
-          listMessagesByConv(conv.id),
-          "listMessagesByConv"
-        );
+        messagesBy[conv.id] = await withTimeout(listMessagesByConv(conv.id), "listMessagesByConv");
       }
+
       setData({
         user,
         friends: friendProfiles,
         convs: conversations,
         messagesByConv: messagesBy,
       });
+
       setSessionState({ unlocked: true, vkInMemory: true });
       setMode("app");
+
       devLog("hydrate:done", { profiles: profiles.length, convs: conversations.length });
     } catch (error) {
       console.error("Failed to hydrate vault", error);
-      const message =
-        error instanceof Error ? error.message : String(error);
-      if (
-        message.includes("ciphertext") ||
-        message.includes("decrypted") ||
-        message.includes("Vault key mismatch")
-      ) {
+
+      const message = error instanceof Error ? error.message : String(error);
+
+      if (message.includes("ciphertext") || message.includes("decrypted") || message.includes("Vault key mismatch")) {
         try {
           await withTimeout(resetVaultStorage(), "resetVaultStorage");
         } catch (resetError) {
           console.error("Failed to reset vault storage", resetError);
         }
       }
+
       await clearStoredSession();
       lockVault();
       resetAppState();
+
       const pinStatus = await getPinStatus();
       setPinEnabled(pinStatus.enabled);
       setPinNeedsReset(pinStatus.needsReset);
+
       if (pinStatus.enabled && !pinStatus.needsReset) {
         setMode("locked");
       } else {
         if (pinStatus.needsReset) {
-          addToast({ message: "PIN을 다시 설정해야 합니다. 복구키로 잠금 해제하세요." });
+          addToast({ message: "PIN을 다시 설정해야 해요. 복구키로 잠금을 해제해 주세요." });
         }
         setDefaultTab("import");
         setMode("onboarding");
       }
-      addToast({ message: "세션이 만료되었습니다. 다시 확인해주세요." });
+
+      addToast({ message: "세션이 만료되었습니다. 다시 로그인해 주세요." });
     }
   };
 
   useEffect(() => {
     let cancelled = false;
+
     const boot = async () => {
       try {
         const header = await getVaultHeader();
@@ -214,19 +235,20 @@ export default function App() {
           setMode("locked");
         } else {
           if (pinStatus.needsReset) {
-            addToast({ message: "PIN을 다시 설정해야 합니다. 복구키로 잠금 해제하세요." });
+            addToast({ message: "PIN을 다시 설정해야 해요. 복구키로 잠금을 해제해 주세요." });
           }
           setDefaultTab("import");
           setMode("onboarding");
         }
       } catch (error) {
         console.error("Boot failed", error);
-        addToast({ message: "저장소 초기화에 실패했습니다." });
+        addToast({ message: "앱 초기화에 실패했습니다." });
         setMode("onboarding");
       }
     };
 
-    boot();
+    void boot();
+
     return () => {
       cancelled = true;
     };
@@ -239,43 +261,81 @@ export default function App() {
     outboxSchedulerStarted.current = true;
   }, [ui.mode]);
 
+  // ✅ cleanup 타입 문제(EffectCallback) + unsubscribe 타입 방어
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      connectionToastShown.current = window.sessionStorage.getItem(connectionToastKey) === "1";
+    }
+
+    let prevConnected = false;
+
+    const unsubscribe = onConnectionStatus((status) => {
+      const connected = status.state === "connected";
+
+      if (!connected || prevConnected) {
+        prevConnected = connected;
+        return;
+      }
+      if (ui.mode !== "app") {
+        prevConnected = connected;
+        return;
+      }
+      if (connectionToastShown.current) {
+        prevConnected = connected;
+        return;
+      }
+
+      addToast({ message: "세션이 연결되었습니다." });
+      connectionToastShown.current = true;
+
+      if (typeof window !== "undefined") {
+        window.sessionStorage.setItem(connectionToastKey, "1");
+      }
+
+      prevConnected = connected;
+    });
+
+    return () => {
+      try {
+        if (typeof unsubscribe === "function") unsubscribe();
+      } catch (e) {
+        console.error("Failed to unsubscribe connection status", e);
+      }
+    };
+  }, [addToast, connectionToastKey, ui.mode]);
+
   const handleCreate = async (displayName: string) => {
     if (onboardingLockRef.current) return;
     onboardingLockRef.current = true;
+
     try {
       setOnboardingError("");
-      console.log("Onboarding:create:start");
+      devLog("onboarding:create:start");
+
       await withTimeout(clearStoredSession(), "clearStoredSession");
-      console.log("Onboarding:create:bootstrap:begin");
       await withTimeout(resetVaultStorage(), "resetVaultStorage");
       await withTimeout(bootstrapVault(), "bootstrapVault");
-      console.log("Onboarding:create:bootstrap:end");
+
       const vk = getVaultKey();
       if (!vk) throw new Error("Vault key missing after bootstrap.");
+
       const now = Date.now();
       const user: UserProfile = {
         id: createId(),
         displayName,
-        status: "NKC에서 온라인",
+        status: "NKC에서 안녕하세요",
         theme: "dark",
         kind: "user",
         createdAt: now,
         updatedAt: now,
       };
-      console.log("Onboarding:create:seed:begin");
+
       await withTimeout(seedVaultData(user), "seedVaultData");
-      console.log("Onboarding:create:seed:end");
       await withTimeout(setStoredSession(vk), "setStoredSession");
-      console.log("Onboarding:create:transition:begin");
-      console.log("Onboarding:create:hydrate:begin");
       await withTimeout(hydrateVault(), "hydrateVault");
-      console.log("Onboarding:create:hydrate:end");
-      console.log("Onboarding:create:transition:end");
     } catch (error) {
       console.error("Vault bootstrap failed", error);
-      setOnboardingError(
-        error instanceof Error ? error.message : "금고 초기화에 실패했습니다."
-      );
+      setOnboardingError(error instanceof Error ? error.message : "금고 초기화에 실패했습니다.");
       lockVault();
       addToast({ message: "금고 초기화에 실패했습니다." });
     } finally {
@@ -286,29 +346,28 @@ export default function App() {
   const handleImport = async (recoveryKey: string, displayName: string) => {
     if (onboardingLockRef.current) return;
     onboardingLockRef.current = true;
+
     if (!validateRecoveryKey(recoveryKey)) {
-      addToast({
-        message:
-          "지원하는 복구키 형식: NKC-XXXX-XXXX-XXXX-XXXX 또는 64자리 HEX",
-      });
+      addToast({ message: "유효하지 않은 복구키 형식입니다. (예: NKC-XXXX-XXXX-XXXX-XXXX 또는 64자리 HEX)" });
       onboardingLockRef.current = false;
       return;
     }
+
     try {
-      console.log("Onboarding:import:start");
-      console.log("Onboarding:import:unlock:begin");
+      devLog("onboarding:import:start");
+
       await withTimeout(unlockVault(recoveryKey), "unlockVault");
-      console.log("Onboarding:import:unlock:end");
+
       const vk = getVaultKey();
       if (!vk) throw new Error("Vault key missing after unlock.");
-      console.log("Onboarding:import:seed:begin");
+
       const profiles = await withTimeout(listProfiles(), "listProfiles");
       if (!profiles.length) {
         const now = Date.now();
         const user: UserProfile = {
           id: createId(),
           displayName: displayName || "NKC 사용자",
-          status: "NKC에서 온라인",
+          status: "NKC에서 안녕하세요",
           theme: "dark",
           kind: "user",
           createdAt: now,
@@ -316,17 +375,13 @@ export default function App() {
         };
         await withTimeout(seedVaultData(user), "seedVaultData");
       }
-      console.log("Onboarding:import:seed:end");
+
       await withTimeout(setStoredSession(vk), "setStoredSession");
-      console.log("Onboarding:import:transition:begin");
-      console.log("Onboarding:import:hydrate:begin");
       await withTimeout(hydrateVault(), "hydrateVault");
-      console.log("Onboarding:import:hydrate:end");
-      console.log("Onboarding:import:transition:end");
     } catch (error) {
       console.error("Recovery import failed", error);
       lockVault();
-      addToast({ message: "복구키가 일치하지 않습니다." });
+      addToast({ message: "복구키로 가져오기에 실패했습니다." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -334,6 +389,7 @@ export default function App() {
 
   const handlePinUnlock = async (pin: string) => {
     const result = await verifyPin(pin);
+
     if (!result.ok) {
       if (result.reason === "not_set") {
         await clearPinRecord();
@@ -342,20 +398,16 @@ export default function App() {
         setDefaultTab("import");
         setMode("onboarding");
         navigate("/");
-        return {
-          ok: false,
-          error: "PIN을 다시 설정해야 합니다. 복구키로 잠금 해제하세요.",
-        };
+        return { ok: false, error: "PIN을 다시 설정해야 해요. 복구키로 잠금을 해제해 주세요." };
       }
+
       return {
         ok: false,
-        error:
-          result.reason === "locked"
-            ? "잠시 후 다시 시도하세요."
-            : "PIN이 올바르지 않습니다.",
+        error: result.reason === "locked" ? "잠시 후 다시 시도해 주세요." : "PIN이 올바르지 않습니다.",
         retryAfterMs: result.retryAfterMs,
       };
     }
+
     try {
       setVaultKey(result.vaultKey);
       await setStoredSession(result.vaultKey);
@@ -374,12 +426,13 @@ export default function App() {
   const handleLock = async () => {
     if (!pinEnabled || pinNeedsReset) {
       if (pinNeedsReset) {
-        addToast({ message: "PIN을 다시 설정해야 잠금할 수 있습니다." });
+        addToast({ message: "PIN을 다시 설정해야 잠금을 사용할 수 있어요." });
         return;
       }
-      addToast({ message: "PIN을 설정해야 잠금할 수 있습니다." });
+      addToast({ message: "PIN 설정 후 잠금을 사용할 수 있어요." });
       return;
     }
+
     try {
       await clearStoredSession();
       lockVault();
@@ -394,6 +447,7 @@ export default function App() {
 
   useEffect(() => {
     if (!pinEnabled || pinNeedsReset || ui.mode !== "app") return;
+
     const handleVisibility = () => {
       if (document.visibilityState === "hidden") {
         wasHiddenRef.current = true;
@@ -404,6 +458,7 @@ export default function App() {
         void handleLock();
       }
     };
+
     document.addEventListener("visibilitychange", handleVisibility);
     return () => document.removeEventListener("visibilitychange", handleVisibility);
   }, [pinEnabled, pinNeedsReset, ui.mode]);
@@ -413,15 +468,17 @@ export default function App() {
       await clearStoredSession();
       lockVault();
       resetAppState();
+
       const pinStatus = await getPinStatus();
       setPinEnabled(pinStatus.enabled);
       setPinNeedsReset(pinStatus.needsReset);
+
       if (pinStatus.enabled && !pinStatus.needsReset) {
         setMode("locked");
         navigate("/unlock");
       } else {
         if (pinStatus.needsReset) {
-          addToast({ message: "PIN을 다시 설정해야 합니다. 복구키로 잠금 해제하세요." });
+          addToast({ message: "PIN을 다시 설정해야 해요. 복구키로 잠금을 해제해 주세요." });
         }
         setDefaultTab("import");
         setMode("onboarding");
@@ -439,11 +496,11 @@ export default function App() {
       setPinEnabled(true);
       setPinNeedsReset(false);
       addToast({ message: "PIN이 설정되었습니다." });
-      return { ok: true };
+      return { ok: true as const };
     } catch (error) {
       console.error("Failed to set PIN", error);
       return {
-        ok: false,
+        ok: false as const,
         error: error instanceof Error ? error.message : "PIN 설정에 실패했습니다.",
       };
     }
@@ -464,22 +521,20 @@ export default function App() {
   const handleGenerateRecoveryKey = async (newKey: string) => {
     try {
       if (!validateRecoveryKey(newKey)) {
-        addToast({
-          message:
-            "지원하는 복구키 형식: NKC-XXXX-XXXX-XXXX-XXXX 또는 64자리 HEX",
-        });
+        addToast({ message: "유효하지 않은 복구키 형식입니다. (예: NKC-XXXX-XXXX-XXXX-XXXX 또는 64자리 HEX)" });
         return;
       }
+
       await rotateVaultKeys(newKey, () => {});
       const vk = getVaultKey();
-      if (vk) {
-        await setStoredSession(vk);
-      }
+      if (vk) await setStoredSession(vk);
+
       await clearPinRecord();
       setPinEnabled(true);
       setPinNeedsReset(true);
+
       await clearRecoveryConfirmed();
-      addToast({ message: "복구키가 변경되었습니다. PIN을 다시 설정해주세요." });
+      addToast({ message: "복구키가 변경되었습니다. PIN을 다시 설정해 주세요." });
     } catch (error) {
       console.error("Failed to rotate recovery key", error);
       addToast({ message: "복구키 변경에 실패했습니다." });
@@ -487,17 +542,15 @@ export default function App() {
     }
   };
 
-  const handleSaveProfile = async (payload: {
-    displayName: string;
-    status: string;
-    theme: "dark" | "light";
-  }) => {
+  const handleSaveProfile = async (payload: { displayName: string; status: string; theme: "dark" | "light" }) => {
     if (!userProfile) return;
+
     const updated: UserProfile = {
       ...userProfile,
       ...payload,
       updatedAt: Date.now(),
     };
+
     await saveProfile(updated);
     await hydrateVault();
   };
@@ -513,8 +566,10 @@ export default function App() {
     if (!ui.selectedConvId || !userProfile) return;
     const conv = convs.find((item) => item.id === ui.selectedConvId);
     if (!conv) return;
+
     const vk = getVaultKey();
     if (!vk) return;
+
     const message: Message = {
       id: createId(),
       convId: conv.id,
@@ -522,8 +577,11 @@ export default function App() {
       text,
       ts: Date.now(),
     };
+
     const ciphertext = await encryptJsonRecord(vk, message.id, "message", message);
+
     await saveMessage(message);
+
     void sendCiphertext({
       convId: conv.id,
       messageId: message.id,
@@ -532,49 +590,105 @@ export default function App() {
     }).catch((error) => {
       console.error("Failed to route message", error);
     });
+
     const updatedConv: Conversation = {
       ...conv,
       lastMessage: text,
       lastTs: message.ts,
       unread: 0,
     };
+
     await saveConversation(updatedConv);
     await hydrateVault();
   };
 
-  const handleSelectConv = (convId: string) => {
-    setSelectedConv(convId);
+  const handleSendMedia = async (file: File) => {
+    if (!ui.selectedConvId || !userProfile) return;
+    const conv = convs.find((item) => item.id === ui.selectedConvId);
+    if (!conv) return;
+
+    const vk = getVaultKey();
+    if (!vk) return;
+
+    const messageId = createId();
+    const media = await saveMessageMedia(messageId, file);
+    const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
+
+    const message: Message = {
+      id: messageId,
+      convId: conv.id,
+      senderId: userProfile.id,
+      text: label,
+      ts: Date.now(),
+      media,
+    };
+
+    const ciphertext = await encryptJsonRecord(vk, message.id, "message", message);
+
+    await saveMessage(message);
+
+    void sendCiphertext({
+      convId: conv.id,
+      messageId: message.id,
+      ciphertext,
+      priority: "high",
+    }).catch((error) => {
+      console.error("Failed to route message", error);
+    });
+
+    const updatedConv: Conversation = {
+      ...conv,
+      lastMessage: label,
+      lastTs: message.ts,
+      unread: 0,
+    };
+
+    await saveConversation(updatedConv);
+    await hydrateVault();
   };
 
+  const findDirectConvWithFriend = (friendId: string) =>
+    convs.find(
+      (conv) => !(conv.type === "group" || conv.participants.length > 2) && conv.participants.includes(friendId)
+    );
+
   const handleSelectFriend = async (friendId: string) => {
-    const existing = convs.find((conv) => conv.participants.includes(friendId));
+    const existing = findDirectConvWithFriend(friendId);
     if (existing) {
       setSelectedConv(existing.id);
       setMode("app");
       return;
     }
+
     if (!userProfile) return;
+
     const friend = friends.find((item) => item.id === friendId);
+
+    const now = Date.now();
     const newConv: Conversation = {
       id: createId(),
-      name: friend?.displayName || "새 대화",
+      type: "direct",
+      name: friend?.displayName || "새 채팅",
       pinned: friend?.isFavorite ?? false,
       unread: 0,
       hidden: false,
       muted: false,
       blocked: false,
-      lastTs: Date.now(),
-      lastMessage: "대화를 시작합니다.",
+      lastTs: now,
+      lastMessage: "채팅을 시작해요.",
       participants: [userProfile.id, friendId],
     };
+
     await saveConversation(newConv);
+
     await saveMessage({
       id: createId(),
       convId: newConv.id,
       senderId: userProfile.id,
-      text: "대화를 시작합니다.",
-      ts: Date.now(),
+      text: "채팅을 시작해요.",
+      ts: now,
     });
+
     await hydrateVault();
     setSelectedConv(newConv.id);
   };
@@ -587,25 +701,37 @@ export default function App() {
     await hydrateVault();
   };
 
+  const handleSelectConv = (convId: string) => {
+    setSelectedConv(convId);
+    const target = convs.find((conv) => conv.id === convId);
+    if (target && target.unread > 0) {
+      void updateConversation(convId, { unread: 0 });
+    }
+  };
+
   const handleHide = (convId: string) => {
-    updateConversation(convId, { hidden: true });
+    void updateConversation(convId, { hidden: true });
     addToast({
-      message: "대화를 숨겼어요.",
+      message: "채팅을 숨겼어요.",
       actionLabel: "Undo",
-      onAction: () => updateConversation(convId, { hidden: false }),
+      onAction: () => {
+        void updateConversation(convId, { hidden: false });
+      },
     });
   };
 
   const handleDelete = (convId: string) => {
     setConfirm({
-      title: "대화를 삭제할까요?",
-      message: "삭제하면 복구가 제한됩니다.",
+      title: "채팅을 삭제할까요?",
+      message: "삭제하면 복구할 수 없어요.",
       onConfirm: async () => {
         await updateConversation(convId, { hidden: true });
         addToast({
-          message: "대화를 삭제했어요.",
+          message: "채팅이 삭제되었습니다.",
           actionLabel: "Undo",
-          onAction: () => updateConversation(convId, { hidden: false }),
+          onAction: () => {
+            void updateConversation(convId, { hidden: false });
+          },
         });
       },
     });
@@ -614,23 +740,26 @@ export default function App() {
   const handleTogglePin = (convId: string) => {
     const target = convs.find((conv) => conv.id === convId);
     if (!target) return;
-    updateConversation(convId, { pinned: !target.pinned });
+    void updateConversation(convId, { pinned: !target.pinned });
   };
 
   const handleMute = (convId: string) => {
     const target = convs.find((conv) => conv.id === convId);
-    updateConversation(convId, { muted: !target?.muted });
+    if (!target) return;
+    void updateConversation(convId, { muted: !target.muted });
   };
 
   const handleBlock = (convId: string) => {
     const target = convs.find((conv) => conv.id === convId);
-    updateConversation(convId, { blocked: !target?.blocked });
+    if (!target) return;
+    void updateConversation(convId, { blocked: !target.blocked });
   };
 
   const handleFriendChat = async (friendId: string) => {
     try {
       await handleSelectFriend(friendId);
       setListMode("chats");
+      setListFilter("all");
     } catch (error) {
       console.error("Failed to open chat", error);
       addToast({ message: "채팅 열기에 실패했습니다." });
@@ -641,6 +770,7 @@ export default function App() {
     try {
       await handleSelectFriend(friendId);
       setListMode("chats");
+      setListFilter("all");
       setRightTab("about");
       setRightPanelOpen(true);
     } catch (error) {
@@ -652,11 +782,13 @@ export default function App() {
   const updateFriend = async (friendId: string, updates: Partial<UserProfile>) => {
     const target = friends.find((friend) => friend.id === friendId);
     if (!target) return;
+
     const updated: UserProfile = {
       ...target,
       ...updates,
       updatedAt: Date.now(),
     };
+
     try {
       await saveProfile(updated);
       await hydrateVault();
@@ -669,10 +801,12 @@ export default function App() {
   const handleFriendToggleFavorite = async (friendId: string) => {
     const target = friends.find((friend) => friend.id === friendId);
     if (!target) return;
+
     const nextFavorite = !target.isFavorite;
+
     try {
       await updateFriend(friendId, { isFavorite: nextFavorite });
-      const existing = convs.find((conv) => conv.participants.includes(friendId));
+      const existing = findDirectConvWithFriend(friendId);
       if (existing) {
         await updateConversation(existing.id, { pinned: nextFavorite });
       }
@@ -685,7 +819,7 @@ export default function App() {
   const handleFriendHide = (friendId: string) => {
     setConfirm({
       title: "친구를 숨길까요?",
-      message: "숨긴 친구는 친구 관리에서 다시 표시할 수 있습니다.",
+      message: "숨긴 친구는 친구 관리에서 다시 표시할 수 있어요.",
       onConfirm: async () => {
         await updateFriend(friendId, { friendStatus: "hidden" });
       },
@@ -695,11 +829,11 @@ export default function App() {
   const handleFriendBlock = (friendId: string) => {
     setConfirm({
       title: "친구를 차단할까요?",
-      message: "차단하면 대화가 숨겨집니다.",
+      message: "차단하면 채팅이 숨겨집니다.",
       onConfirm: async () => {
         try {
           await updateFriend(friendId, { friendStatus: "blocked" });
-          const existing = convs.find((conv) => conv.participants.includes(friendId));
+          const existing = findDirectConvWithFriend(friendId);
           if (existing) {
             await updateConversation(existing.id, { hidden: true, blocked: true });
           }
@@ -714,10 +848,10 @@ export default function App() {
   const handleFriendDelete = (friendId: string) => {
     setConfirm({
       title: "친구를 삭제할까요?",
-      message: "삭제 후에는 다시 추가해야 합니다.",
+      message: "삭제 후에는 다시 추가해야 해요.",
       onConfirm: async () => {
         try {
-          const existing = convs.find((conv) => conv.participants.includes(friendId));
+          const existing = findDirectConvWithFriend(friendId);
           if (existing) {
             await updateConversation(existing.id, { hidden: true });
           }
@@ -738,7 +872,7 @@ export default function App() {
   const handleFriendUnblock = async (friendId: string) => {
     try {
       await updateFriend(friendId, { friendStatus: "normal" });
-      const existing = convs.find((conv) => conv.participants.includes(friendId));
+      const existing = findDirectConvWithFriend(friendId);
       if (existing) {
         await updateConversation(existing.id, { blocked: false, hidden: false });
       }
@@ -760,26 +894,77 @@ export default function App() {
   };
 
   const handleCreateGroup = () => {
-    addToast({ message: "그룹 만들기는 준비 중입니다." });
+    setGroupCreateOpen(true);
+  };
+
+  const handleSubmitGroup = async (payload: { name: string; memberIds: string[] }) => {
+    if (!userProfile) return { ok: false as const, error: "User profile missing." };
+
+    const members = Array.from(new Set(payload.memberIds)).filter((id) => id && id !== userProfile.id);
+    if (!members.length) return { ok: false as const, error: "Select at least one friend." };
+
+    try {
+      const now = Date.now();
+      const convId = createId();
+
+      const conv: Conversation = {
+        id: convId,
+        type: "group",
+        name: payload.name,
+        pinned: false,
+        unread: 0,
+        hidden: false,
+        muted: false,
+        blocked: false,
+        lastTs: now,
+        lastMessage: "Group created",
+        participants: [userProfile.id, ...members],
+      };
+
+      await saveConversation(conv);
+
+      await saveMessage({
+        id: createId(),
+        convId: conv.id,
+        senderId: userProfile.id,
+        text: "Group created",
+        ts: now,
+      });
+
+      await syncGroupCreate({ id: conv.id, name: conv.name, memberIds: conv.participants });
+      await hydrateVault();
+
+      setSelectedConv(conv.id);
+      setListMode("chats");
+      setListFilter("all");
+
+      return { ok: true as const };
+    } catch (error) {
+      console.error("Failed to create group", error);
+      return { ok: false as const, error: "Failed to create group." };
+    }
   };
 
   const handleAddFriend = async (rawId: string) => {
     const trimmed = rawId.trim();
+
     if (!trimmed) {
-      return { ok: false, error: "친구 ID를 입력하세요." };
+      return { ok: false as const, error: "친구 ID를 입력해 주세요." };
     }
     if (!trimmed.startsWith("NKC-")) {
-      return { ok: false, error: "유효한 친구 ID를 입력하세요." };
+      return { ok: false as const, error: "유효한 친구 ID를 입력해 주세요." };
     }
     if (trimmed === shareId) {
-      return { ok: false, error: "내 ID는 추가할 수 없습니다." };
+      return { ok: false as const, error: "내 ID는 추가할 수 없습니다." };
     }
     if (friends.some((friend) => friend.friendId === trimmed)) {
-      return { ok: false, error: "이미 추가된 친구입니다." };
+      return { ok: false as const, error: "이미 추가된 친구입니다." };
     }
+
     try {
       const now = Date.now();
       const short = trimmed.replace(/[^a-zA-Z0-9]/g, "").slice(0, 6);
+
       const friend: UserProfile = {
         id: createId(),
         friendId: trimmed,
@@ -792,33 +977,40 @@ export default function App() {
         createdAt: now,
         updatedAt: now,
       };
+
       await saveProfile(friend);
       await hydrateVault();
-      console.log("Friend:add:success", friend.id);
-      return { ok: true };
+      devLog("friend:add:success", { id: friend.id });
+
+      return { ok: true as const };
     } catch (error) {
       console.error("Friend:add failed", error);
-      return { ok: false, error: "친구 추가에 실패했습니다." };
+      return { ok: false as const, error: "친구 추가에 실패했습니다." };
     }
   };
 
-  const currentConversation = ui.selectedConvId
-    ? convs.find((conv) => conv.id === ui.selectedConvId) || null
-    : null;
-  const currentMessages = currentConversation
-    ? messagesByConv[currentConversation.id] || []
-    : [];
+  const currentConversation = ui.selectedConvId ? convs.find((conv) => conv.id === ui.selectedConvId) || null : null;
+  const currentMessages = currentConversation ? messagesByConv[currentConversation.id] || [] : [];
 
   const nameMap = useMemo(
     () => buildNameMap([...(friends || []), ...(userProfile ? [userProfile] : [])]),
     [friends, userProfile]
   );
 
+  const profilesById = useMemo(() => {
+    const map: Record<string, UserProfile> = {};
+    friends.forEach((friend) => {
+      map[friend.id] = friend;
+    });
+    if (userProfile) {
+      map[userProfile.id] = userProfile;
+    }
+    return map;
+  }, [friends, userProfile]);
+
   const partnerProfile = useMemo(() => {
     if (!currentConversation) return null;
-    const partnerId = currentConversation.participants.find(
-      (id) => id !== userProfile?.id
-    );
+    const partnerId = currentConversation.participants.find((id) => id !== userProfile?.id);
     return friends.find((friend) => friend.id === partnerId) || null;
   }, [currentConversation, friends, userProfile]);
 
@@ -845,6 +1037,7 @@ export default function App() {
         userProfile={userProfile}
         selectedConvId={ui.selectedConvId}
         listMode={ui.listMode}
+        listFilter={ui.listFilter}
         search={ui.search}
         onSearch={setSearch}
         onSelectConv={handleSelectConv}
@@ -857,6 +1050,7 @@ export default function App() {
         onFriendDelete={handleFriendDelete}
         onFriendBlock={handleFriendBlock}
         onListModeChange={setListMode}
+        onListFilterChange={setListFilter}
         onSettings={() => navigate("/settings")}
         onLock={handleLock}
         onHide={handleHide}
@@ -865,14 +1059,17 @@ export default function App() {
         onMute={handleMute}
         onBlock={handleBlock}
       />
+
       <ChatView
         conversation={currentConversation}
         messages={currentMessages}
         currentUserId={userProfile?.id || null}
         nameMap={nameMap}
+        profilesById={profilesById}
         isComposing={ui.isComposing}
         onComposingChange={setIsComposing}
         onSend={handleSendMessage}
+        onSendMedia={handleSendMedia}
         onBack={() => {
           setSelectedConv(null);
           setRightPanelOpen(false);
@@ -880,6 +1077,7 @@ export default function App() {
         onToggleRight={() => setRightPanelOpen(!ui.rightPanelOpen)}
         rightPanelOpen={ui.rightPanelOpen}
       />
+
       <RightPanel
         open={ui.rightPanelOpen}
         tab={ui.rightTab}
@@ -910,8 +1108,7 @@ export default function App() {
           onLogout={() =>
             setConfirm({
               title: "로그아웃할까요?",
-              message: "세션만 삭제하고 로컬 데이터는 유지됩니다.",
-              // TODO: Offer "keep data vs wipe" choice in the logout flow.
+              message: "세션은 종료되고 로컬 데이터는 유지됩니다.",
               onConfirm: handleLogout,
             })
           }
@@ -938,6 +1135,15 @@ export default function App() {
           onAdd={handleAddFriend}
         />
       ) : null}
+
+      {userProfile ? (
+        <GroupCreateDialog
+          open={groupCreateOpen}
+          onOpenChange={setGroupCreateOpen}
+          friends={friends}
+          onCreate={handleSubmitGroup}
+        />
+      ) : null}
     </div>
   );
 
@@ -946,40 +1152,33 @@ export default function App() {
       <Routes>
         <Route
           path="/unlock"
-          element={
-            ui.mode === "locked" ? <Unlock onUnlock={handlePinUnlock} /> : <Navigate to="/" replace />
-          }
+          element={ui.mode === "locked" ? <Unlock onUnlock={handlePinUnlock} /> : <Navigate to="/" replace />}
         />
         <Route
           path="/recovery"
           element={
             ui.mode === "app" ? (
-              <Recovery
-                onGenerate={handleGenerateRecoveryKey}
-                onDone={() => navigate("/settings")}
-              />
+              <Recovery onGenerate={handleGenerateRecoveryKey} onDone={() => navigate("/settings")} />
             ) : (
               <Navigate to="/unlock" replace />
             )
           }
         />
-        <Route
-          path="/settings"
-          element={ui.mode === "app" ? appShell : <Navigate to="/unlock" replace />}
-        />
-        <Route
-          path="/*"
-          element={ui.mode === "app" ? appShell : <Navigate to="/unlock" replace />}
-        />
+        <Route path="/settings" element={ui.mode === "app" ? appShell : <Navigate to="/unlock" replace />} />
+        <Route path="/*" element={ui.mode === "app" ? appShell : <Navigate to="/unlock" replace />} />
       </Routes>
 
       <ConfirmDialog
         open={Boolean(confirm)}
         title={confirm?.title || ""}
         message={confirm?.message || ""}
-        onConfirm={() => confirm?.onConfirm()}
+        onConfirm={() => {
+          // confirm?.onConfirm() 이 Promise를 반환해도 UI는 void로 처리
+          void confirm?.onConfirm?.();
+        }}
         onClose={() => setConfirm(null)}
       />
+
       <Toasts />
     </>
   );

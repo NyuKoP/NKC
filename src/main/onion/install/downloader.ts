@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import https from "node:https";
+import type { IncomingMessage } from "node:http";
 import { pipeline } from "node:stream/promises";
 
 export type DownloadProgress = {
@@ -7,11 +8,11 @@ export type DownloadProgress = {
   totalBytes: number;
 };
 
-const getResponse = async (url: string, redirects = 0): Promise<https.IncomingMessage> => {
+const getResponse = async (url: string, redirects = 0): Promise<IncomingMessage> => {
   if (redirects > 5) {
     throw new Error("Too many redirects");
   }
-  const response = await new Promise<https.IncomingMessage>((resolve, reject) => {
+  const response = await new Promise<IncomingMessage>((resolve, reject) => {
     const req = https.get(
       url,
       { headers: { "User-Agent": "nkc-onion-installer" } },
@@ -42,7 +43,7 @@ export const downloadFile = async (
 
   const totalBytes = Number(request.headers["content-length"] ?? 0);
   let receivedBytes = 0;
-  request.on("data", (chunk) => {
+  request.on("data", (chunk: Buffer) => {
     receivedBytes += chunk.length;
     onProgress?.({ receivedBytes, totalBytes });
   });

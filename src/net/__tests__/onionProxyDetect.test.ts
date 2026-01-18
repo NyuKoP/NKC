@@ -12,6 +12,10 @@ vi.mock("../proxyControl", () => {
 import { detectLocalOnionProxy } from "../onionProxyDetect";
 import { applyProxyConfig, checkProxyHealth, isLocalhostProxy } from "../proxyControl";
 
+const mockedApplyProxyConfig = vi.mocked(applyProxyConfig);
+const mockedCheckProxyHealth = vi.mocked(checkProxyHealth);
+const mockedIsLocalhostProxy = vi.mocked(isLocalhostProxy);
+
 const baseConfig: NetConfig = {
   mode: "onionRouter",
   onionProxyEnabled: true,
@@ -34,19 +38,19 @@ describe("onionProxyDetect", () => {
   });
 
   it("prefers user-provided proxy URL", async () => {
-    isLocalhostProxy.mockReturnValue(true);
-    checkProxyHealth.mockResolvedValue({ ok: true, message: "ok" });
+    mockedIsLocalhostProxy.mockReturnValue(true);
+    mockedCheckProxyHealth.mockResolvedValue({ ok: true, message: "ok" });
 
     const config = { ...baseConfig, onionProxyUrl: "socks5://127.0.0.1:9050" };
     const result = await detectLocalOnionProxy(config);
 
     expect(result).toBe("socks5://127.0.0.1:9050");
-    expect(applyProxyConfig).toHaveBeenCalled();
+    expect(mockedApplyProxyConfig).toHaveBeenCalled();
   });
 
   it("falls back to well-known localhost candidates", async () => {
-    isLocalhostProxy.mockReturnValue(true);
-    checkProxyHealth
+    mockedIsLocalhostProxy.mockReturnValue(true);
+    mockedCheckProxyHealth
       .mockResolvedValueOnce({ ok: false, message: "nope" })
       .mockResolvedValueOnce({ ok: true, message: "ok" });
 
@@ -57,11 +61,11 @@ describe("onionProxyDetect", () => {
   });
 
   it("rejects remote proxy without opt-in", async () => {
-    isLocalhostProxy.mockReturnValue(false);
+    mockedIsLocalhostProxy.mockReturnValue(false);
     const config = { ...baseConfig, onionProxyUrl: "http://1.2.3.4:9050" };
     const result = await detectLocalOnionProxy(config);
 
     expect(result).toBeNull();
-    expect(applyProxyConfig).not.toHaveBeenCalled();
+    expect(mockedApplyProxyConfig).not.toHaveBeenCalled();
   });
 });

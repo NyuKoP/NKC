@@ -1,5 +1,4 @@
 import { execFile } from "node:child_process";
-import path from "node:path";
 
 export const unpackArchive = async (archivePath: string, destDir: string) => {
   const lowerPath = archivePath.toLowerCase();

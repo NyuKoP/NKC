@@ -5,6 +5,7 @@ import { createId } from "../utils/ids";
 export type UiMode = "locked" | "onboarding" | "app";
 export type RightTab = "about" | "media" | "settings";
 export type ListMode = "chats" | "friends";
+export type ListFilter = "all" | "unread" | "favorites";
 
 export type Toast = {
   id: string;
@@ -27,6 +28,7 @@ export type AppState = {
     rightPanelOpen: boolean;
     rightTab: RightTab;
     listMode: ListMode;
+    listFilter: ListFilter;
     search: string;
     toast: Toast[];
     confirm: ConfirmState;
@@ -45,6 +47,7 @@ export type AppState = {
   setRightPanelOpen: (value: boolean) => void;
   setRightTab: (tab: RightTab) => void;
   setListMode: (mode: ListMode) => void;
+  setListFilter: (value: ListFilter) => void;
   setSearch: (value: string) => void;
   setSession: (value: Partial<AppState["session"]>) => void;
   setData: (payload: {
@@ -65,7 +68,8 @@ export const useAppStore = create<AppState>((set) => ({
     isComposing: false,
     rightPanelOpen: false,
     rightTab: "about",
-    listMode: "chats",
+    listMode: "friends",
+    listFilter: "all",
     search: "",
     toast: [],
     confirm: null,
@@ -89,6 +93,8 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({ ui: { ...state.ui, rightTab: tab } })),
   setListMode: (mode) =>
     set((state) => ({ ui: { ...state.ui, listMode: mode } })),
+  setListFilter: (value) =>
+    set((state) => ({ ui: { ...state.ui, listFilter: value } })),
   setSearch: (value) =>
     set((state) => ({ ui: { ...state.ui, search: value } })),
   setSession: (value) =>

@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { OnionNetwork } from "../../net/netConfig";
+import type { OnionNetwork } from "../../../net/netConfig";
 
 type CurrentPointer = {
   version: string;

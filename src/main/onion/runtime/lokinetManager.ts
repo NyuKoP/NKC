@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 
 type LokinetManagerState = {
   running: boolean;
@@ -7,7 +7,7 @@ type LokinetManagerState = {
 };
 
 export class LokinetManager {
-  private process: ChildProcessWithoutNullStreams | null = null;
+  private process: ChildProcess | null = null;
   private state: LokinetManagerState = { running: false };
 
   async start(binaryPath: string, socksPort: number, dataDir: string) {

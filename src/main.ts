@@ -2,7 +2,6 @@ import { app, BrowserWindow, ipcMain, net, session } from "electron";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
 import { installLokinet } from "./main/onion/install/installLokinet";
@@ -325,7 +324,6 @@ const registerOnionIpc = () => {
   );
 };
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow: BrowserWindow | null = null;
 
@@ -389,9 +387,42 @@ export const createMainWindow = () => {
   win.webContents.on("unresponsive", () => {
     console.error("[main] renderer unresponsive");
   });
+  const safeLog = (...args: unknown[]) => {
+    if (!process.stdout || !process.stdout.writable) return;
+    try {
+      console.log(...args);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code)
+          : "";
+      if (code === "EPIPE" || message.includes("EPIPE")) {
+        return;
+      }
+      throw error;
+    }
+  };
+
+  const ignorePipeError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    const code =
+      error && typeof error === "object" && "code" in error
+        ? String((error as { code?: unknown }).code)
+        : "";
+    if (code === "EPIPE" || message.includes("EPIPE")) {
+      return;
+    }
+    throw error;
+  };
+
+  process.stdout?.on("error", ignorePipeError);
+  process.stderr?.on("error", ignorePipeError);
+
   if (isDev) {
     win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
-      console.log("[renderer]", level, message, sourceId, line);
+      if (win.webContents.isDestroyed()) return;
+      safeLog("[renderer]", level, message, sourceId, line);
     });
   }
 

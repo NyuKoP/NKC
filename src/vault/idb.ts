@@ -18,9 +18,9 @@ export const openDB = (): Promise<IDBDatabase> => {
       resolve(request.result);
     };
 
-    request.onerror = () => {
-      reject(request.error);
-    };
+request.onerror = () => {
+  reject(request.error);
+};
   });
 };
 

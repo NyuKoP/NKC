@@ -3,10 +3,29 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import electron from "vite-plugin-electron";
 
-const electronBuild = {
+const electronMainBuild = {
   outDir: "dist-electron",
   sourcemap: true,
   emptyOutDir: false,
+  lib: {
+    formats: ["cjs"],
+  },
+  rollupOptions: {
+    external: ["electron"],
+    output: {
+      format: "cjs" as const,
+      entryFileNames: "[name].js",
+    },
+  },
+} satisfies import("vite").BuildOptions;
+
+const electronPreloadBuild = {
+  outDir: "dist-electron",
+  sourcemap: true,
+  emptyOutDir: false,
+  lib: {
+    formats: ["cjs"],
+  },
   rollupOptions: {
     external: ["electron"],
     output: {
@@ -28,11 +47,13 @@ export default defineConfig({
       {
         entry: "src/main.ts",
         onstart({ startup }) {
-          void startup(["."]);
+          const env = { ...process.env };
+          delete env.ELECTRON_RUN_AS_NODE;
+          void startup(["."], { env });
         },
         vite: {
           build: {
-            ...electronBuild,
+            ...electronMainBuild,
           },
         },
       },
@@ -44,7 +65,7 @@ export default defineConfig({
         entry: "src/preload.ts",
         vite: {
           build: {
-            ...electronBuild,
+            ...electronPreloadBuild,
           },
         },
       },

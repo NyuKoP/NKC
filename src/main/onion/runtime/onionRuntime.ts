@@ -2,7 +2,7 @@ import net from "node:net";
 import path from "node:path";
 import { session } from "electron";
 import { getBinaryPath } from "../componentRegistry";
-import type { OnionNetwork } from "../../net/netConfig";
+import type { OnionNetwork } from "../../../net/netConfig";
 import { readCurrentPointer } from "../install/swapperRollback";
 import { TorManager } from "./torManager";
 import { LokinetManager } from "./lokinetManager";
