@@ -1,5 +1,7 @@
 import net from "node:net";
 import path from "node:path";
+import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import { session } from "electron";
 import { getBinaryPath } from "../componentRegistry";
 import type { OnionNetwork } from "../../../net/netConfig";
@@ -32,7 +34,7 @@ const findAvailablePort = async () => {
   throw new Error("No available SOCKS port");
 };
 
-const waitForPort = async (port: number, timeoutMs = 10000) => {
+const waitForPort = async (port: number, timeoutMs = 30000) => {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const ok = await new Promise<boolean>((resolve) => {
@@ -45,7 +47,7 @@ const waitForPort = async (port: number, timeoutMs = 10000) => {
     if (ok) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
-  throw new Error("SOCKS proxy not ready");
+  throw new Error(`SOCKS proxy not ready (port ${port})`);
 };
 
 export class OnionRuntime {
@@ -65,7 +67,11 @@ export class OnionRuntime {
 
       const port = await findAvailablePort();
       const dataDir = path.join(userDataDir, "onion", "runtime", network);
+      await fs.mkdir(dataDir, { recursive: true });
       const binaryPath = path.join(pointer.path, getBinaryPath(network));
+      if (!fsSync.existsSync(binaryPath)) {
+        throw new Error(`BINARY_MISSING: ${binaryPath}`);
+      }
 
       if (network === "tor") {
         await this.torManager.start(binaryPath, port, dataDir);

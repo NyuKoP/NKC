@@ -19,6 +19,8 @@ const migrateMode = (mode?: NetworkMode): NetworkMode => {
   return DEFAULT_NET_CONFIG.mode;
 };
 
+const clampSelfOnionRelays = (value: number) => Math.max(3, Math.min(4, value));
+
 const loadStoredConfig = (): NetConfig => {
   const storage = getStorage();
   if (!storage) return DEFAULT_NET_CONFIG;
@@ -27,7 +29,8 @@ const loadStoredConfig = (): NetConfig => {
   try {
     const parsed = JSON.parse(raw) as Partial<NetConfig>;
     const migratedMode = migrateMode(parsed.mode as NetworkMode | undefined);
-    return { ...DEFAULT_NET_CONFIG, ...parsed, mode: migratedMode };
+    const next = { ...DEFAULT_NET_CONFIG, ...parsed, mode: migratedMode };
+    return { ...next, selfOnionMinRelays: clampSelfOnionRelays(next.selfOnionMinRelays) };
   } catch (error) {
     console.error("Failed to read net config", error);
     storage.removeItem(STORAGE_KEY);
@@ -108,7 +111,10 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
     set({ config: next });
   },
   setSelfOnionMinRelays: (value) => {
-    const next = enforceRules({ ...get().config, selfOnionMinRelays: value });
+    const next = enforceRules({
+      ...get().config,
+      selfOnionMinRelays: clampSelfOnionRelays(value),
+    });
     persistConfig(next);
     set({ config: next });
   },
@@ -137,7 +143,10 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
     set({ config: next });
   },
   setConfig: (next) => {
-    const enforced = enforceRules(next);
+    const enforced = enforceRules({
+      ...next,
+      selfOnionMinRelays: clampSelfOnionRelays(next.selfOnionMinRelays),
+    });
     persistConfig(enforced);
     set({ config: enforced });
   },

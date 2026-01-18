@@ -14,6 +14,11 @@ const hashFile = async (filePath: string) => {
 export const verifySha256 = async (filePath: string, expectedSha256: string) => {
   const actual = await hashFile(filePath);
   if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-    throw new Error("SHA256 mismatch");
+    const error = new Error(
+      `SHA256 mismatch (expected=${expectedSha256.toLowerCase()}, actual=${actual.toLowerCase()})`
+    );
+    (error as { expected?: string; actual?: string }).expected = expectedSha256;
+    (error as { expected?: string; actual?: string }).actual = actual;
+    throw error;
   }
 };
