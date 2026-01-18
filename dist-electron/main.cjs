@@ -264,22 +264,26 @@ const installTor = async (userDataDir, version, onProgress, downloadUrl, assetNa
   const tempDir = await fs.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, resolvedAssetName);
-  onProgress?.({ step: "download", message: "Downloading Tor" });
-  await downloadFile(
-    resolvedUrl,
-    archivePath,
-    (progress) => onProgress?.({ step: "download", ...progress })
-  );
-  onProgress?.({ step: "verify", message: "Verifying Tor" });
-  await verifySha256(archivePath, hash);
-  const installPath = path.join(userDataDir, "onion", "components", network, version);
-  await fs.rm(installPath, { recursive: true, force: true });
-  await fs.mkdir(installPath, { recursive: true });
-  onProgress?.({ step: "unpack", message: "Unpacking Tor" });
-  await unpackArchive(archivePath, installPath);
-  onProgress?.({ step: "activate", message: "Activating Tor" });
-  const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
-  return { version, installPath, rollback };
+  try {
+    onProgress?.({ step: "download", message: "Downloading Tor" });
+    await downloadFile(
+      resolvedUrl,
+      archivePath,
+      (progress) => onProgress?.({ step: "download", ...progress })
+    );
+    onProgress?.({ step: "verify", message: "Verifying Tor" });
+    await verifySha256(archivePath, hash);
+    const installPath = path.join(userDataDir, "onion", "components", network, version);
+    await fs.rm(installPath, { recursive: true, force: true });
+    await fs.mkdir(installPath, { recursive: true });
+    onProgress?.({ step: "unpack", message: "Unpacking Tor" });
+    await unpackArchive(archivePath, installPath);
+    onProgress?.({ step: "activate", message: "Activating Tor" });
+    const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
+    return { version, installPath, rollback };
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 };
 const resolveDownload = (version, assetNameOverride) => {
   const assetName = assetNameOverride ?? getalternateRouteAssetName(version);
@@ -287,6 +291,94 @@ const resolveDownload = (version, assetNameOverride) => {
     assetName,
     url: getalternateRouteAssetUrlForName(version, assetName)
   };
+};
+const runInstaller = async (filePath) => {
+  if (process.platform !== "win32") {
+    throw new Error("Installer execution is only supported on Windows");
+  }
+  const escapedPath = filePath.replace(/'/g, "''");
+  const psCommand = `Start-Process -FilePath '${escapedPath}' -ArgumentList '/S' -Verb RunAs -Wait`;
+  await new Promise((resolve, reject) => {
+    node_child_process.execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", psCommand],
+      { windowsHide: true },
+      (error, stdout, stderr) => {
+        if (error) {
+          const wrapped = new Error(`${error.message}\n${stderr || stdout || ""}`.trim());
+          wrapped.details = {
+            filePath,
+            stderr: stderr?.toString?.() ?? String(stderr ?? ""),
+            stdout: stdout?.toString?.() ?? String(stdout ?? ""),
+            code: error.code
+          };
+          reject(wrapped);
+          return;
+        }
+        void stdout;
+        void stderr;
+        resolve();
+      }
+    );
+  });
+};
+const findalternateRouteBinaryWin32 = async () => {
+  const candidates = [];
+  await new Promise((resolve) => {
+    node_child_process.execFile("where.exe", ["alternateRoute.exe"], { windowsHide: true }, (_error, stdout) => {
+      if (stdout) {
+        candidates.push(
+          ...stdout.toString().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+        );
+      }
+      resolve();
+    });
+  });
+  candidates.push(
+    "C:\\\\Program Files\\\\alternateRoute\\\\alternateRoute.exe",
+    "C:\\\\Program Files (x86)\\\\alternateRoute\\\\alternateRoute.exe",
+    "C:\\\\Program Files\\\\alternateRoute\\\\alternateRoute\\\\alternateRoute.exe",
+    "C:\\\\Program Files (x86)\\\\alternateRoute\\\\alternateRoute\\\\alternateRoute.exe"
+  );
+  const ps = async (command) => {
+    return new Promise((resolve) => {
+      node_child_process.execFile(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", command],
+        { windowsHide: true },
+        (_error, stdout) => resolve((stdout ?? "").toString())
+      );
+    });
+  };
+  const installLocationsRaw = await ps(
+    "$paths=@(); " +
+      "$roots=@('HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*','HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*'); " +
+      "foreach($r in $roots){ " +
+      "  Get-ItemProperty $r -ErrorAction SilentlyContinue | " +
+      "    Where-Object { $_.DisplayName -match 'alternateRoute' -or $_.DisplayName -match 'alternateRoute' } | " +
+      "    ForEach-Object { if($_.InstallLocation){$paths+=$_.InstallLocation} } " +
+      "}; " +
+      "$paths | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { $_ }"
+  );
+  for (const line of installLocationsRaw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+    candidates.push(path.join(line, "alternateRoute.exe"));
+    candidates.push(path.join(line, "alternateRoute", "alternateRoute.exe"));
+  }
+  const servicePathRaw = await ps(
+    "(Get-ItemProperty 'HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Services\\\\alternateRoute' -ErrorAction SilentlyContinue).ImagePath"
+  );
+  const servicePath = servicePathRaw.trim().replace(/^\"|\"$/g, "");
+  if (servicePath) {
+    const exePath = servicePath.split(/\\s+/)[0].replace(/^\"|\"$/g, "");
+    candidates.push(exePath);
+    candidates.push(path.join(path.dirname(exePath), "alternateRoute.exe"));
+  }
+  for (const file of candidates) {
+    if (fsSync.existsSync(file)) {
+      return { binaryPath: file, baseDir: path.dirname(file) };
+    }
+  }
+  return null;
 };
 const installalternateRoute = async (userDataDir, version, onProgress, downloadUrl, assetNameOverride) => {
   const network = "alternateRoute";
@@ -300,22 +392,39 @@ const installalternateRoute = async (userDataDir, version, onProgress, downloadU
   const tempDir = await fs.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, assetName);
-  onProgress?.({ step: "download", message: "Downloading alternateRoute" });
-  await downloadFile(
-    resolvedUrl,
-    archivePath,
-    (progress) => onProgress?.({ step: "download", ...progress })
-  );
-  onProgress?.({ step: "verify", message: "Verifying alternateRoute" });
-  await verifySha256(archivePath, hash);
-  const installPath = path.join(userDataDir, "onion", "components", network, version);
-  await fs.rm(installPath, { recursive: true, force: true });
-  await fs.mkdir(installPath, { recursive: true });
-  onProgress?.({ step: "unpack", message: "Unpacking alternateRoute" });
-  await unpackArchive(archivePath, installPath);
-  onProgress?.({ step: "activate", message: "Activating alternateRoute" });
-  const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
-  return { version, installPath, rollback };
+  try {
+    onProgress?.({ step: "download", message: "Downloading alternateRoute" });
+    await downloadFile(
+      resolvedUrl,
+      archivePath,
+      (progress) => onProgress?.({ step: "download", ...progress })
+    );
+    onProgress?.({ step: "verify", message: "Verifying alternateRoute" });
+    await verifySha256(archivePath, hash);
+    if (process.platform === "win32" && assetName.toLowerCase().endsWith(".exe")) {
+      onProgress?.({ step: "activate", message: "Installing alternateRoute (requires admin)" });
+      await runInstaller(archivePath);
+      const found = await findalternateRouteBinaryWin32();
+      if (!found) {
+        throw new Error("BINARY_MISSING: alternateRoute.exe not found after installer");
+      }
+      const rollback = await swapWithRollback(userDataDir, network, {
+        version,
+        path: found.baseDir
+      });
+      return { version, installPath: found.baseDir, rollback };
+    }
+    const installPath = path.join(userDataDir, "onion", "components", network, version);
+    await fs.rm(installPath, { recursive: true, force: true });
+    await fs.mkdir(installPath, { recursive: true });
+    onProgress?.({ step: "unpack", message: "Unpacking alternateRoute" });
+    await unpackArchive(archivePath, installPath);
+    onProgress?.({ step: "activate", message: "Activating alternateRoute" });
+    const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
+    return { version, installPath, rollback };
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
 };
 class TorManager {
   process = null;
@@ -652,6 +761,22 @@ const onionComponentCache = {
   tor: { installed: false, status: "idle" },
   alternateRoute: { installed: false, status: "idle" }
 };
+const pruneComponentVersions = async (userDataDir, network, keep) => {
+  const componentsRoot = path.join(userDataDir, "onion", "components", network);
+  const normalizedRoot = path.resolve(componentsRoot) + path.sep;
+  const normalizedKeep = path.resolve(keep.installPath);
+  if (!normalizedKeep.startsWith(normalizedRoot)) return;
+  try {
+    const entries = await fs.readdir(componentsRoot, { withFileTypes: true });
+    await Promise.all(
+      entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
+        if (entry.name === keep.version) return;
+        await fs.rm(path.join(componentsRoot, entry.name), { recursive: true, force: true });
+      })
+    );
+  } catch {
+  }
+};
 const refreshComponentState = async (userDataDir, network) => {
   const pointer = await readCurrentPointer(userDataDir, network);
   return {
@@ -749,6 +874,10 @@ const registerOnionIpc = () => {
         error: void 0
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
+      await pruneComponentVersions(userDataDir, network, {
+        version: result.version,
+        installPath: result.installPath
+      });
     } catch (error) {
       if (error instanceof PinnedHashMissingError) {
         console.warn("Pinned hash missing for install", error.details);
@@ -829,6 +958,10 @@ const registerOnionIpc = () => {
         error: void 0
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
+      await pruneComponentVersions(userDataDir, network, {
+        version: result.version,
+        installPath: result.installPath
+      });
     } catch (error) {
       if (error instanceof PinnedHashMissingError) {
         console.warn("Pinned hash missing for update", error.details);

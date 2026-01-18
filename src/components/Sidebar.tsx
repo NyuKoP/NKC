@@ -515,10 +515,14 @@ function ConversationRow({
       }`}
     >
       <Avatar name={friend?.displayName || conv.name} avatarRef={friend?.avatarRef} size={40} />
-      <div className="min-w-0 flex-1">
-        <div className="flex justify-between">
-          <span className="text-sm font-semibold text-nkc-text line-clamp-1">{conv.name}</span>
-          <span className="text-xs text-nkc-muted">{formatTime(conv.lastTs, locale)}</span>
+      <div className="min-w-0 flex-1 overflow-hidden">
+        <div className="flex items-center gap-2">
+          <span className="min-w-0 flex-1 truncate text-sm font-semibold text-nkc-text">
+            {conv.name}
+          </span>
+          <span className="shrink-0 text-xs text-nkc-muted">
+            {formatTime(conv.lastTs, locale)}
+          </span>
         </div>
         <div className="mt-1 text-xs text-nkc-muted line-clamp-2">{conv.lastMessage}</div>
         <div className="mt-2 flex gap-2 text-[11px] text-nkc-muted">
@@ -526,15 +530,17 @@ function ConversationRow({
           {conv.blocked && <span>{t("차단됨", "Blocked")}</span>}
         </div>
       </div>
-      <OverflowMenu
-        onHide={onHide}
-        onDelete={onDelete}
-        onMute={onMute}
-        onBlock={onBlock}
-        onTogglePin={onTogglePin}
-        muted={conv.muted}
-        pinned={conv.pinned}
-      />
+      <div className="shrink-0">
+        <OverflowMenu
+          onHide={onHide}
+          onDelete={onDelete}
+          onMute={onMute}
+          onBlock={onBlock}
+          onTogglePin={onTogglePin}
+          muted={conv.muted}
+          pinned={conv.pinned}
+        />
+      </div>
     </div>
   );
 }

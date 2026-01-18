@@ -10,6 +10,11 @@ export type OnionComponentState = {
   latest?: string;
   status: OnionComponentStatus;
   error?: string;
+  detail?: string;
+  progress?: {
+    receivedBytes: number;
+    totalBytes: number;
+  };
 };
 
 export interface NetConfig {

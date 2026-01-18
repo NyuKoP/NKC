@@ -2,28 +2,38 @@ import { execFile } from "node:child_process";
 
 export const unpackArchive = async (archivePath: string, destDir: string) => {
   const lowerPath = archivePath.toLowerCase();
-  if (lowerPath.endsWith(".zip")) {
-    await new Promise<void>((resolve, reject) => {
-      if (process.platform === "win32") {
-        execFile(
-          "powershell",
-          [
-            "-NoProfile",
-            "-Command",
-            `Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${destDir}'`,
-          ],
-          (error) => {
-            if (error) reject(error);
-            else resolve();
-          }
+  const run = async (cmd: string, args: string[]) => {
+    return new Promise<void>((resolve, reject) => {
+      execFile(cmd, args, { windowsHide: true }, (error, stdout, stderr) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        const wrapped = new Error(
+          `${error.message}\ncmd=${cmd} ${args.join(" ")}\n${stderr || stdout || ""}`.trim()
         );
-        return;
-      }
-      execFile("unzip", ["-o", archivePath, "-d", destDir], (error) => {
-        if (error) reject(error);
-        else resolve();
+        (wrapped as { details?: Record<string, unknown> }).details = {
+          cmd,
+          args,
+          stderr: stderr?.toString?.() ?? String(stderr ?? ""),
+          stdout: stdout?.toString?.() ?? String(stdout ?? ""),
+          code: (error as unknown as { code?: string }).code,
+        };
+        reject(wrapped);
       });
     });
+  };
+
+  if (lowerPath.endsWith(".zip")) {
+    if (process.platform === "win32") {
+      await run("powershell", [
+        "-NoProfile",
+        "-Command",
+        `Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${destDir}'`,
+      ]);
+      return;
+    }
+    await run("unzip", ["-o", archivePath, "-d", destDir]);
     return;
   }
   if (
@@ -31,12 +41,12 @@ export const unpackArchive = async (archivePath: string, destDir: string) => {
     lowerPath.endsWith(".tgz") ||
     lowerPath.endsWith(".tar.xz")
   ) {
-    await new Promise<void>((resolve, reject) => {
-      execFile("tar", ["-xf", archivePath, "-C", destDir], (error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
+    await run(process.platform === "win32" ? "tar.exe" : "tar", [
+      "-xf",
+      archivePath,
+      "-C",
+      destDir,
+    ]);
     return;
   }
   throw new Error("Unsupported archive format");
