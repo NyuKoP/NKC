@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 
 type alternateRouteManagerState = {
   running: boolean;
@@ -7,7 +7,7 @@ type alternateRouteManagerState = {
 };
 
 export class alternateRouteManager {
-  private process: ChildProcessWithoutNullStreams | null = null;
+  private process: ChildProcess | null = null;
   private state: alternateRouteManagerState = { running: false };
 
   async start(binaryPath: string, socksPort: number, dataDir: string) {

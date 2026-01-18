@@ -1,5 +1,5 @@
 import https from "node:https";
-import type { OnionNetwork } from "../../net/netConfig";
+import type { OnionNetwork } from "../../../net/netConfig";
 import { getPinnedSha256 } from "../componentRegistry";
 import { getTorAssetName, getTorAssetUrl } from "../assetNaming";
 

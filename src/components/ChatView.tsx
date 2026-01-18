@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowUp, PanelRight } from "lucide-react";
-import type { Conversation, Message } from "../db/repo";
+﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { ArrowLeft, ArrowUp, FileText, PanelRight, Paperclip } from "lucide-react";
+import type { Conversation, MediaRef, Message, UserProfile } from "../db/repo";
+import { loadMessageMedia } from "../db/repo";
+import Avatar from "./Avatar";
 
 const GROUP_WINDOW_MS = 1000 * 60 * 2;
 
@@ -21,9 +23,11 @@ type ChatViewProps = {
   messages: Message[];
   currentUserId: string | null;
   nameMap: Record<string, string>;
+  profilesById: Record<string, UserProfile | undefined>;
   isComposing: boolean;
   onComposingChange: (value: boolean) => void;
   onSend: (text: string) => void;
+  onSendMedia: (file: File) => void;
   onBack: () => void;
   onToggleRight: () => void;
   rightPanelOpen: boolean;
@@ -34,9 +38,11 @@ export default function ChatView({
   messages,
   currentUserId,
   nameMap,
+  profilesById,
   isComposing,
   onComposingChange,
   onSend,
+  onSendMedia,
   onBack,
   onToggleRight,
   rightPanelOpen,
@@ -92,6 +98,14 @@ export default function ChatView({
     setText("");
   };
 
+  const handleMediaSelect = (event: ChangeEvent<HTMLInputElement>) => {
+    if (!conversation) return;
+    const file = event.target.files?.[0];
+    if (!file) return;
+    onSendMedia(file);
+    event.target.value = "";
+  };
+
   return (
     <section className="flex h-full flex-1 flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft">
       <header className="flex items-center justify-between border-b border-nkc-border px-6 py-5">
@@ -107,7 +121,7 @@ export default function ChatView({
               {conversation ? conversation.name : "대화를 선택하세요"}
             </div>
             <div className="text-xs text-nkc-muted line-clamp-1">
-              {conversation ? "마지막 활동 2분 전" : "왼쪽에서 대화를 선택하세요."}
+              {conversation ? "마지막 활동 2분 전" : "왼쪽에서 대화를 선택하세요"}
             </div>
           </div>
         </div>
@@ -128,52 +142,65 @@ export default function ChatView({
       >
         {conversation ? (
           <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 px-8 py-6">
-            {grouped.map((group) => (
-              <div key={group.key} className="space-y-2">
-                {group.dateLabel ? (
-                  <div className="flex justify-center">
-                    <span className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-xs font-medium text-nkc-muted">
-                      {group.dateLabel}
-                    </span>
-                  </div>
-                ) : null}
-                <div
-                  className={`flex gap-3 ${
-                    group.senderId === currentUserId ? "justify-end" : "justify-start"
-                  }`}
-                >
-                  {group.senderId !== currentUserId ? (
-                    <div className="mt-1 h-8 w-8 rounded-full bg-nkc-panelMuted" />
+            {grouped.map((group) => {
+              const senderProfile = profilesById[group.senderId];
+              const senderName = senderProfile?.displayName || group.senderName;
+              return (
+                <div key={group.key} className="space-y-2">
+                  {group.dateLabel ? (
+                    <div className="flex justify-center">
+                      <span className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-xs font-medium text-nkc-muted">
+                        {group.dateLabel}
+                      </span>
+                    </div>
                   ) : null}
-                  <div className="flex max-w-chat flex-col gap-2">
+                  <div
+                    className={`flex gap-3 ${
+                      group.senderId === currentUserId ? "justify-end" : "justify-start"
+                    }`}
+                  >
                     {group.senderId !== currentUserId ? (
-                      <span className="text-xs text-nkc-muted">{group.senderName}</span>
+                      <Avatar
+                        name={senderName}
+                        avatarRef={senderProfile?.avatarRef}
+                        size={32}
+                        className="mt-1"
+                      />
                     ) : null}
-                    {group.messages.map((message) => (
-                      <div
-                        key={message.id}
-                        className={`rounded-nkc border px-4 py-3 text-sm leading-relaxed ${
-                          group.senderId === currentUserId
-                            ? "border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
-                            : "border-nkc-border bg-nkc-panel text-nkc-text"
-                        }`}
-                      >
-                        {message.text}
-                        <div className="mt-2 text-[11px] text-nkc-muted">
-                          {formatTime(message.ts)}
+                    <div className="flex max-w-chat flex-col gap-2">
+                      {group.senderId !== currentUserId ? (
+                        <span className="text-xs text-nkc-muted">{senderName}</span>
+                      ) : null}
+                      {group.messages.map((message) => (
+                        <div
+                          key={message.id}
+                          className={`rounded-nkc border px-4 py-3 text-sm leading-relaxed ${
+                            group.senderId === currentUserId
+                              ? "border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
+                              : "border-nkc-border bg-nkc-panel text-nkc-text"
+                          }`}
+                        >
+                          {message.media ? (
+                            <MediaAttachment media={message.media} />
+                          ) : (
+                            message.text
+                          )}
+                          <div className="mt-2 text-[11px] text-nkc-muted">
+                            {formatTime(message.ts)}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ))}
+                    </div>
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-nkc-muted">
             <div className="text-3xl">💬</div>
             <div className="text-base font-semibold">대화를 선택하세요</div>
-            <div className="text-sm">왼쪽에서 대화를 고르면 메시지가 보입니다.</div>
+            <div className="text-sm">왼쪽에서 대화를 골라 메시지가 표시됩니다.</div>
           </div>
         )}
 
@@ -221,7 +248,22 @@ export default function ChatView({
             maxLength={240}
           />
           <div className="mt-3 flex items-center justify-between text-xs text-nkc-muted">
-            <span>{text.length} / 240</span>
+            <div className="flex items-center gap-3">
+              <label
+                className={`flex h-8 w-8 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panel ${
+                  conversation ? "" : "pointer-events-none opacity-50"
+                }`}
+              >
+                <Paperclip size={14} />
+                <input
+                  type="file"
+                  accept="image/*,video/*,audio/*"
+                  className="hidden"
+                  onChange={handleMediaSelect}
+                />
+              </label>
+              <span>{text.length} / 240</span>
+            </div>
             <button
               type="submit"
               disabled={!conversation || !text.trim()}
@@ -235,6 +277,77 @@ export default function ChatView({
     </section>
   );
 }
+
+type MediaAttachmentProps = {
+  media: MediaRef;
+};
+
+const MediaAttachment = ({ media }: MediaAttachmentProps) => {
+  const [url, setUrl] = useState<string | null>(null);
+  const isImage = media.mime.startsWith("image/");
+
+  useEffect(() => {
+    if (!isImage) {
+      setUrl(null);
+      return;
+    }
+    let active = true;
+    let objectUrl = "";
+
+    const load = async () => {
+      try {
+        const blob = await loadMessageMedia(media);
+        if (!blob || !active) return;
+        objectUrl = URL.createObjectURL(blob);
+        if (active) setUrl(objectUrl);
+      } catch (error) {
+        console.error("Failed to load media", error);
+      }
+    };
+
+    load();
+
+    return () => {
+      active = false;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [isImage, media]);
+
+  if (isImage) {
+    return url ? (
+      <img
+        src={url}
+        alt={media.name}
+        className="max-h-48 w-full rounded-nkc border border-nkc-border object-cover"
+      />
+    ) : (
+      <div className="h-32 w-full rounded-nkc border border-nkc-border bg-nkc-panelMuted" />
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs">
+      <FileText size={14} className="text-nkc-muted" />
+      <div className="min-w-0">
+        <div className="text-nkc-text line-clamp-1">{media.name}</div>
+        <div className="text-[11px] text-nkc-muted">{formatBytes(media.size)}</div>
+      </div>
+    </div>
+  );
+};
+
+const formatBytes = (bytes: number) => {
+  if (!Number.isFinite(bytes)) return "";
+  const units = ["B", "KB", "MB", "GB"];
+  let size = bytes;
+  let unit = 0;
+  while (size >= 1024 && unit < units.length - 1) {
+    size /= 1024;
+    unit += 1;
+  }
+  const digits = size >= 10 || unit === 0 ? 0 : 1;
+  return `${size.toFixed(digits)} ${units[unit]}`;
+};
 
 type GroupedMessage = {
   key: string;
@@ -274,7 +387,7 @@ const groupMessages = (
       senderName:
         message.senderId === currentUserId
           ? "나"
-          : nameMap[message.senderId] || "상대",
+          : nameMap[message.senderId] || "알 수 없음",
       dateLabel: withDate,
       messages: [message],
     });

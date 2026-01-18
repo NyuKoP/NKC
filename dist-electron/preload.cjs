@@ -17,4 +17,4 @@ electron.contextBridge.exposeInMainWorld("onion", {
     return () => electron.ipcRenderer.removeListener("onion:progress", handler);
   }
 });
-//# sourceMappingURL=preload.js.map
+//# sourceMappingURL=preload.cjs.map

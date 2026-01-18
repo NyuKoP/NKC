@@ -10,6 +10,7 @@ import type { Transport, TransportPacket } from "../adapters/transports/types";
 import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { createSelfOnionTransport } from "../adapters/transports/selfOnionTransport";
 import { createOnionRouterTransport } from "../adapters/transports/onionRouterTransport";
+import { updateConnectionStatus } from "./connectionStatus";
 
 export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
 
@@ -33,10 +34,17 @@ const defaultHttpClient = createHttpClient();
 const transportCache = new Map<TransportKind, Transport>();
 const transportStarted = new Set<TransportKind>();
 
-const attachHandlers = (transport: Transport, controller: RouteController) => {
+const attachHandlers = (
+  transport: Transport,
+  controller: RouteController,
+  kind: TransportKind
+) => {
   transport.onAck((messageId, rttMs) => {
     controller.reportAck(messageId, rttMs);
     void onAckReceived(messageId);
+  });
+  transport.onState((state) => {
+    updateConnectionStatus(state, kind);
   });
 };
 
@@ -58,7 +66,7 @@ const getTransport = (
   } else {
     transport = createOnionRouterTransport({ httpClient, config });
   }
-  attachHandlers(transport, controller);
+  attachHandlers(transport, controller, kind);
   transportCache.set(kind, transport);
   return transport;
 };

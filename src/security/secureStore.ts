@@ -42,8 +42,11 @@ export class BrowserStore implements SecureStore {
 
 export class NativeStore implements SecureStore {
   private warned = false;
+  private fallback: SecureStore;
 
-  constructor(private fallback: SecureStore) {}
+  constructor(fallback: SecureStore) {
+    this.fallback = fallback;
+  }
 
   private warn() {
     if (this.warned) return;

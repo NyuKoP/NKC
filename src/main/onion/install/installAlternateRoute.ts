@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { OnionNetwork } from "../../net/netConfig";
+import type { OnionNetwork } from "../../../net/netConfig";
 import { downloadFile } from "./downloader";
 import { verifySha256 } from "./verify";
 import { unpackArchive } from "./unpack";
 import { getPinnedSha256 } from "../componentRegistry";
 import { swapWithRollback } from "./swapperRollback";
 import { PinnedHashMissingError } from "../errors";
+import { getalternateRouteAssetName, getalternateRouteAssetUrlForName } from "../assetNaming";
 
 type InstallProgress = {
   step: "download" | "verify" | "unpack" | "activate";
@@ -21,13 +22,11 @@ type InstallResult = {
   rollback: () => Promise<void>;
 };
 
-const alternateRoute_RELEASE_BASE = "https://github.com/oxen-io/alternateRoute/releases/download";
-
 const resolveDownload = (version: string, assetNameOverride?: string) => {
-  const assetName = assetNameOverride ?? `alternateRoute-win32-${version}.zip`;
+  const assetName = assetNameOverride ?? getalternateRouteAssetName(version);
   return {
     assetName,
-    url: `${alternateRoute_RELEASE_BASE}/v${version}/${assetName}`,
+    url: getalternateRouteAssetUrlForName(version, assetName),
   };
 };
 
@@ -47,7 +46,9 @@ export const installalternateRoute = async (
     );
   }
 
-  const tempDir = await fs.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
+  const baseOnionDir = path.join(userDataDir, "onion");
+  await fs.mkdir(baseOnionDir, { recursive: true });
+  const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, assetName);
   onProgress?.({ step: "download", message: "Downloading alternateRoute" });

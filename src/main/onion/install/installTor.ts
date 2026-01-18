@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { OnionNetwork } from "../../net/netConfig";
+import type { OnionNetwork } from "../../../net/netConfig";
 import { downloadFile } from "./downloader";
 import { verifySha256 } from "./verify";
 import { unpackArchive } from "./unpack";
@@ -47,7 +47,9 @@ export const installTor = async (
     );
   }
 
-  const tempDir = await fs.mkdtemp(path.join(userDataDir, "onion", "tmp-"));
+  const baseOnionDir = path.join(userDataDir, "onion");
+  await fs.mkdir(baseOnionDir, { recursive: true });
+  const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, resolvedAssetName);
   onProgress?.({ step: "download", message: "Downloading Tor" });

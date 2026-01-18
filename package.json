@@ -2,7 +2,7 @@
   "name": "test",
   "private": true,
   "version": "0.0.0",
-  "type": "module",
+  "type": "commonjs",
   "main": "dist-electron/main.js",
   "scripts": {
     "dev": "cross-env VITE_DEV_SERVER_URL=http://localhost:5173 vite dev",

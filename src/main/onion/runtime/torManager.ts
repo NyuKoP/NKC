@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
-import path from "node:path";
-import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 
 type TorManagerState = {
   running: boolean;
@@ -8,7 +7,7 @@ type TorManagerState = {
 };
 
 export class TorManager {
-  private process: ChildProcessWithoutNullStreams | null = null;
+  private process: ChildProcess | null = null;
   private state: TorManagerState = { running: false };
 
   async start(binaryPath: string, socksPort: number, dataDir: string) {

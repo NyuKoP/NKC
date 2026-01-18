@@ -5,11 +5,17 @@ import { applyProxyConfig, checkProxyHealth } from "../proxyControl";
 describe("proxyControl", () => {
   const applyProxy = vi.fn().mockResolvedValue(undefined);
   const checkProxy = vi.fn().mockResolvedValue({ ok: true, message: "ok" });
+  type SecureProxyWindow = {
+    secureProxy: {
+      applyProxy: typeof applyProxy;
+      checkProxy: typeof checkProxy;
+    };
+  };
 
   beforeEach(() => {
-    (globalThis as unknown as { window?: Window }).window = {
+    (globalThis as unknown as { window?: SecureProxyWindow }).window = {
       secureProxy: { applyProxy, checkProxy },
-    } as Window;
+    };
   });
 
   afterEach(() => {
