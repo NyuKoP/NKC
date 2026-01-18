@@ -6,6 +6,7 @@ export type UiMode = "locked" | "onboarding" | "app";
 export type RightTab = "about" | "media" | "settings";
 export type ListMode = "chats" | "friends";
 export type ListFilter = "all" | "unread" | "favorites";
+export type Language = "ko" | "en";
 
 export type Toast = {
   id: string;
@@ -30,6 +31,7 @@ export type AppState = {
     listMode: ListMode;
     listFilter: ListFilter;
     search: string;
+    language: Language;
     toast: Toast[];
     confirm: ConfirmState;
   };
@@ -49,6 +51,7 @@ export type AppState = {
   setListMode: (mode: ListMode) => void;
   setListFilter: (value: ListFilter) => void;
   setSearch: (value: string) => void;
+  setLanguage: (value: Language) => void;
   setSession: (value: Partial<AppState["session"]>) => void;
   setData: (payload: {
     user: UserProfile | null;
@@ -61,6 +64,12 @@ export type AppState = {
   setConfirm: (confirm: ConfirmState) => void;
 };
 
+const getInitialLanguage = (): Language => {
+  if (typeof window === "undefined") return "ko";
+  const value = window.localStorage.getItem("nkc.lang");
+  return value === "en" ? "en" : "ko";
+};
+
 export const useAppStore = create<AppState>((set) => ({
   ui: {
     mode: "onboarding",
@@ -71,6 +80,7 @@ export const useAppStore = create<AppState>((set) => ({
     listMode: "friends",
     listFilter: "all",
     search: "",
+    language: getInitialLanguage(),
     toast: [],
     confirm: null,
   },
@@ -97,6 +107,12 @@ export const useAppStore = create<AppState>((set) => ({
     set((state) => ({ ui: { ...state.ui, listFilter: value } })),
   setSearch: (value) =>
     set((state) => ({ ui: { ...state.ui, search: value } })),
+  setLanguage: (value) => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("nkc.lang", value);
+    }
+    set((state) => ({ ui: { ...state.ui, language: value } }));
+  },
   setSession: (value) =>
     set((state) => ({ session: { ...state.session, ...value } })),
   setData: ({ user, friends, convs, messagesByConv }) =>
