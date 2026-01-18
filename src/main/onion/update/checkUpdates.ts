@@ -86,7 +86,7 @@ const getPlatformMatchers = () => {
   const platformMatchers: RegExp[] = [];
   switch (process.platform) {
     case "win32":
-      platformMatchers.push(/win32/i, /windows/i);
+      platformMatchers.push(/win32/i, /windows/i, /win/i);
       break;
     case "darwin":
       platformMatchers.push(/macos/i, /darwin/i, /osx/i, /mac/i);
@@ -105,10 +105,10 @@ const getPlatformMatchers = () => {
   const archMatchers: RegExp[] = [];
   switch (process.arch) {
     case "x64":
-      archMatchers.push(/x86_64/i, /amd64/i);
+      archMatchers.push(/x86_64/i, /amd64/i, /win64/i, /64bit/i);
       break;
     case "ia32":
-      archMatchers.push(/i686/i, /x86(?!_64)/i);
+      archMatchers.push(/i686/i, /x86(?!_64)/i, /win32/i, /32bit/i);
       break;
     case "arm64":
       archMatchers.push(/arm64/i, /aarch64/i);
@@ -132,6 +132,11 @@ const selectReleaseAsset = (assets: ReleaseAsset[]) => {
     const archMatch = archMatchers.some((pattern) => pattern.test(asset.name));
     return platformMatch && archMatch;
   });
+};
+
+const fetchReleases = async () => {
+  const url = "https://api.github.com/repos/oxen-io/lokinet/releases?per_page=20";
+  return fetchJson<ReleaseResponse[]>(url);
 };
 
 const checkTorUpdates = async (): Promise<UpdateCheckResult> => {
@@ -165,11 +170,29 @@ const checkTorUpdates = async (): Promise<UpdateCheckResult> => {
 const checkLokinetUpdates = async (): Promise<UpdateCheckResult> => {
   const url = "https://api.github.com/repos/oxen-io/lokinet/releases/latest";
   const release = await fetchJson<ReleaseResponse>(url);
-  const version = release.tag_name.replace(/^v/i, "");
-  const asset = selectReleaseAsset(release.assets);
+  let version = release.tag_name.replace(/^v/i, "");
+  let asset = selectReleaseAsset(release.assets);
+
+  if (!asset && process.platform === "win32") {
+    const releases = await fetchReleases();
+    for (const candidate of releases) {
+      const candidateAsset = selectReleaseAsset(candidate.assets);
+      if (candidateAsset) {
+        const candidateVersion = candidate.tag_name.replace(/^v/i, "");
+        const sha256 = getPinnedSha256("lokinet", {
+          version: candidateVersion,
+          assetName: candidateAsset.name,
+        });
+        if (!sha256) continue;
+        version = candidateVersion;
+        asset = candidateAsset;
+        break;
+      }
+    }
+  }
   if (!asset) {
     return {
-      version: null,
+      version,
       assetName: null,
       downloadUrl: null,
       sha256: null,

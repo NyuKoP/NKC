@@ -6,6 +6,7 @@ const fsSync = require("node:fs");
 const path = require("node:path");
 const https = require("node:https");
 const promises = require("node:stream/promises");
+const node_url = require("node:url");
 const crypto = require("node:crypto");
 const node_child_process = require("node:child_process");
 const net = require("node:net");
@@ -27,10 +28,19 @@ const getResponse = async (url, redirects = 0) => {
     if (!redirect) {
       throw new Error("Redirect missing location header");
     }
-    return getResponse(redirect, redirects + 1);
+    const nextUrl = new node_url.URL(redirect, url).toString();
+    return getResponse(nextUrl, redirects + 1);
   }
   if (response.statusCode && response.statusCode >= 400) {
-    throw new Error(`Download failed: ${response.statusCode}`);
+    const status = response.statusCode;
+    const statusMessage = response.statusMessage ?? "";
+    const error = new Error(`Download failed: ${status} ${statusMessage}`.trim());
+    error.details = {
+      url,
+      status,
+      statusMessage
+    };
+    throw error;
   }
   return response;
 };
@@ -66,37 +76,48 @@ const verifySha256 = async (filePath, expectedSha256) => {
 };
 const unpackArchive = async (archivePath, destDir) => {
   const lowerPath = archivePath.toLowerCase();
-  if (lowerPath.endsWith(".zip")) {
-    await new Promise((resolve, reject) => {
-      if (process.platform === "win32") {
-        node_child_process.execFile(
-          "powershell",
-          [
-            "-NoProfile",
-            "-Command",
-            `Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${destDir}'`
-          ],
-          (error) => {
-            if (error) reject(error);
-            else resolve();
-          }
+  const run = async (cmd, args) => {
+    return new Promise((resolve, reject) => {
+      node_child_process.execFile(cmd, args, { windowsHide: true }, (error, stdout, stderr) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        const wrapped = new Error(
+          `${error.message}
+cmd=${cmd} ${args.join(" ")}
+${stderr || stdout || ""}`.trim()
         );
-        return;
-      }
-      node_child_process.execFile("unzip", ["-o", archivePath, "-d", destDir], (error) => {
-        if (error) reject(error);
-        else resolve();
+        wrapped.details = {
+          cmd,
+          args,
+          stderr: stderr?.toString?.() ?? String(stderr ?? ""),
+          stdout: stdout?.toString?.() ?? String(stdout ?? ""),
+          code: error.code
+        };
+        reject(wrapped);
       });
     });
+  };
+  if (lowerPath.endsWith(".zip")) {
+    if (process.platform === "win32") {
+      await run("powershell", [
+        "-NoProfile",
+        "-Command",
+        `Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${destDir}'`
+      ]);
+      return;
+    }
+    await run("unzip", ["-o", archivePath, "-d", destDir]);
     return;
   }
   if (lowerPath.endsWith(".tar.gz") || lowerPath.endsWith(".tgz") || lowerPath.endsWith(".tar.xz")) {
-    await new Promise((resolve, reject) => {
-      node_child_process.execFile("tar", ["-xf", archivePath, "-C", destDir], (error) => {
-        if (error) reject(error);
-        else resolve();
-      });
-    });
+    await run(process.platform === "win32" ? "tar.exe" : "tar", [
+      "-xf",
+      archivePath,
+      "-C",
+      destDir
+    ]);
     return;
   }
   throw new Error("Unsupported archive format");
@@ -116,7 +137,8 @@ const pinnedSha256 = {
     [makePinnedKey({ platform: "win32", arch: "x64", version: "15.0.4", filename: "tor-expert-bundle-windows-x86_64-15.0.4.tar.gz" })]: "cce12f8097b1657b56e22ec54cbed4b57fd5f8ff97cc426c21ebd5cc15173924"
   },
   lokinet: {
-    [makePinnedKey({ platform: "linux", arch: "x64", version: "0.9.14", filename: "lokinet-linux-amd64-v0.9.14.tar.xz" })]: "4097f96779a007abf35f37a46394eb5af39debd27244c190ce6867caf7a5115d"
+    [makePinnedKey({ platform: "linux", arch: "x64", version: "0.9.14", filename: "lokinet-linux-amd64-v0.9.14.tar.xz" })]: "4097f96779a007abf35f37a46394eb5af39debd27244c190ce6867caf7a5115d",
+    [makePinnedKey({ platform: "win32", arch: "x64", version: "0.9.11", filename: "lokinet-0.9.11-win64.exe" })]: "0a4a972e1f2d7d2af7f6aebcd15953d98f4ff53b5e823a7d7aa2953eeea2c8d2"
   }
 };
 const withExeSuffix = (platform, basename) => platform === "win32" ? `${basename}.exe` : basename;
@@ -316,7 +338,91 @@ const installTor = async (userDataDir, version, onProgress, downloadUrl, assetNa
     const wrapped = new Error(`${message} | details=${JSON.stringify(details)}`);
     wrapped.details = details;
     throw wrapped;
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
   }
+};
+const runInstaller = async (filePath) => {
+  if (process.platform !== "win32") {
+    throw new Error("Installer execution is only supported on Windows");
+  }
+  const escapedPath = filePath.replace(/'/g, "''");
+  const psCommand = `Start-Process -FilePath '${escapedPath}' -ArgumentList '/S' -Verb RunAs -Wait`;
+  await new Promise((resolve, reject) => {
+    node_child_process.execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", psCommand],
+      { windowsHide: true },
+      (error, stdout, stderr) => {
+        if (error) {
+          const wrapped = new Error(
+            `${error.message}
+${stderr || stdout || ""}`.trim()
+          );
+          wrapped.details = {
+            filePath,
+            stderr: stderr?.toString?.() ?? String(stderr ?? ""),
+            stdout: stdout?.toString?.() ?? String(stdout ?? ""),
+            code: error.code
+          };
+          reject(wrapped);
+          return;
+        }
+        resolve();
+      }
+    );
+  });
+};
+const findLokinetBinaryWin32 = async () => {
+  const candidates = [];
+  await new Promise((resolve) => {
+    node_child_process.execFile("where.exe", ["lokinet.exe"], { windowsHide: true }, (_error, stdout) => {
+      if (stdout) {
+        candidates.push(
+          ...stdout.toString().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+        );
+      }
+      resolve();
+    });
+  });
+  candidates.push(
+    "C:\\\\Program Files\\\\Lokinet\\\\lokinet.exe",
+    "C:\\\\Program Files (x86)\\\\Lokinet\\\\lokinet.exe",
+    "C:\\\\Program Files\\\\Lokinet\\\\lokinet\\\\lokinet.exe",
+    "C:\\\\Program Files (x86)\\\\Lokinet\\\\lokinet\\\\lokinet.exe"
+  );
+  const ps = async (command) => {
+    return new Promise((resolve) => {
+      node_child_process.execFile(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", command],
+        { windowsHide: true },
+        (_error, stdout) => resolve((stdout ?? "").toString())
+      );
+    });
+  };
+  const installLocationsRaw = await ps(
+    "$paths=@(); $roots=@('HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*','HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*'); foreach($r in $roots){   Get-ItemProperty $r -ErrorAction SilentlyContinue |     Where-Object { $_.DisplayName -match 'Lokinet' -or $_.DisplayName -match 'lokinet' } |     ForEach-Object { if($_.InstallLocation){$paths+=$_.InstallLocation} } }; $paths | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { $_ }"
+  );
+  for (const line of installLocationsRaw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+    candidates.push(path.join(line, "lokinet.exe"));
+    candidates.push(path.join(line, "lokinet", "lokinet.exe"));
+  }
+  const servicePathRaw = await ps(
+    "(Get-ItemProperty 'HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Services\\\\lokinet' -ErrorAction SilentlyContinue).ImagePath"
+  );
+  const servicePath = servicePathRaw.trim().replace(/^\"|\"$/g, "");
+  if (servicePath) {
+    const exePath = servicePath.split(/\s+/)[0].replace(/^\"|\"$/g, "");
+    candidates.push(exePath);
+    candidates.push(path.join(path.dirname(exePath), "lokinet.exe"));
+  }
+  for (const file of candidates) {
+    if (fsSync.existsSync(file)) {
+      return { binaryPath: file, baseDir: path.dirname(file) };
+    }
+  }
+  return null;
 };
 const resolveDownload = (version, assetNameOverride) => {
   const assetName = assetNameOverride ?? getLokinetAssetName(version);
@@ -360,6 +466,20 @@ const installLokinet = async (userDataDir, version, onProgress, downloadUrl, ass
     onProgress?.({ step: "verify", message: "Verifying Lokinet" });
     await verifySha256(archivePath, hash);
     details.expectedSha256 = hash;
+    if (process.platform === "win32" && assetName.toLowerCase().endsWith(".exe")) {
+      onProgress?.({ step: "activate", message: "Installing Lokinet (requires admin)" });
+      await runInstaller(archivePath);
+      const found = await findLokinetBinaryWin32();
+      if (!found) {
+        throw new Error("BINARY_MISSING: lokinet.exe not found after installer");
+      }
+      details.binaryPath = found.binaryPath;
+      const rollback2 = await swapWithRollback(userDataDir, network, {
+        version,
+        path: found.baseDir
+      });
+      return { version, installPath: found.baseDir, rollback: rollback2 };
+    }
     await fs.rm(installPath, { recursive: true, force: true });
     await fs.mkdir(installPath, { recursive: true });
     onProgress?.({ step: "unpack", message: "Unpacking Lokinet" });
@@ -383,6 +503,8 @@ const installLokinet = async (userDataDir, version, onProgress, downloadUrl, ass
     const wrapped = new Error(`${message} | details=${JSON.stringify(details)}`);
     wrapped.details = details;
     throw wrapped;
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
   }
 };
 class TorManager {
@@ -571,7 +693,7 @@ const getPlatformMatchers = () => {
   const platformMatchers = [];
   switch (process.platform) {
     case "win32":
-      platformMatchers.push(/win32/i, /windows/i);
+      platformMatchers.push(/win32/i, /windows/i, /win/i);
       break;
     case "darwin":
       platformMatchers.push(/macos/i, /darwin/i, /osx/i, /mac/i);
@@ -589,10 +711,10 @@ const getPlatformMatchers = () => {
   const archMatchers = [];
   switch (process.arch) {
     case "x64":
-      archMatchers.push(/x86_64/i, /amd64/i);
+      archMatchers.push(/x86_64/i, /amd64/i, /win64/i, /64bit/i);
       break;
     case "ia32":
-      archMatchers.push(/i686/i, /x86(?!_64)/i);
+      archMatchers.push(/i686/i, /x86(?!_64)/i, /win32/i, /32bit/i);
       break;
     case "arm64":
       archMatchers.push(/arm64/i, /aarch64/i);
@@ -614,6 +736,10 @@ const selectReleaseAsset = (assets) => {
     const archMatch = archMatchers.some((pattern) => pattern.test(asset.name));
     return platformMatch && archMatch;
   });
+};
+const fetchReleases = async () => {
+  const url = "https://api.github.com/repos/oxen-io/lokinet/releases?per_page=20";
+  return fetchJson(url);
 };
 const checkTorUpdates = async () => {
   const indexHtml = await fetchText("https://dist.torproject.org/torbrowser/");
@@ -645,11 +771,28 @@ const checkTorUpdates = async () => {
 const checkLokinetUpdates = async () => {
   const url = "https://api.github.com/repos/oxen-io/lokinet/releases/latest";
   const release = await fetchJson(url);
-  const version = release.tag_name.replace(/^v/i, "");
-  const asset = selectReleaseAsset(release.assets);
+  let version = release.tag_name.replace(/^v/i, "");
+  let asset = selectReleaseAsset(release.assets);
+  if (!asset && process.platform === "win32") {
+    const releases = await fetchReleases();
+    for (const candidate of releases) {
+      const candidateAsset = selectReleaseAsset(candidate.assets);
+      if (candidateAsset) {
+        const candidateVersion = candidate.tag_name.replace(/^v/i, "");
+        const sha2562 = getPinnedSha256("lokinet", {
+          version: candidateVersion,
+          assetName: candidateAsset.name
+        });
+        if (!sha2562) continue;
+        version = candidateVersion;
+        asset = candidateAsset;
+        break;
+      }
+    }
+  }
   if (!asset) {
     return {
-      version: null,
+      version,
       assetName: null,
       downloadUrl: null,
       sha256: null,
@@ -724,10 +867,36 @@ const onionComponentCache = {
   tor: { installed: false, status: "idle" },
   lokinet: { installed: false, status: "idle" }
 };
+const pruneComponentVersions = async (userDataDir, network, keep) => {
+  const componentsRoot = path.join(userDataDir, "onion", "components", network);
+  const normalizedRoot = path.resolve(componentsRoot) + path.sep;
+  const normalizedKeep = path.resolve(keep.installPath);
+  if (!normalizedKeep.startsWith(normalizedRoot)) return;
+  try {
+    const entries = await fs.readdir(componentsRoot, { withFileTypes: true });
+    await Promise.all(
+      entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
+        if (entry.name === keep.version) return;
+        await fs.rm(path.join(componentsRoot, entry.name), { recursive: true, force: true });
+      })
+    );
+  } catch {
+  }
+};
+const formatProgress = (receivedBytes, totalBytes) => {
+  if (!receivedBytes && !totalBytes) return "";
+  const total = totalBytes ?? 0;
+  if (total > 0) {
+    return `${Math.round((receivedBytes ?? 0) / 1024 / 1024)} / ${Math.round(total / 1024 / 1024)} MB`;
+  }
+  return `${Math.round((receivedBytes ?? 0) / 1024 / 1024)} MB`;
+};
 const normalizeOnionError = (error, context) => {
   const message = error instanceof Error ? error.message : String(error);
+  const errCode = error && typeof error === "object" && "code" in error ? String(error.code ?? "") : "";
   const code = error instanceof PinnedHashMissingError ? "PINNED_HASH_MISSING" : message.includes("SHA256 mismatch") ? "HASH_MISMATCH" : message.includes("Download failed") || message.includes("Too many redirects") || message.includes("Redirect") ? "DOWNLOAD_FAILED" : message.includes("Unsupported archive format") || message.includes("tar") || message.includes("unzip") || message.includes("Expand-Archive") ? "EXTRACT_FAILED" : message.includes("BINARY_MISSING") ? "BINARY_MISSING" : (() => {
     const err = error;
+    if (errCode === "EACCES" || errCode === "EPERM") return "PERMISSION_DENIED";
     if (err?.code === "EACCES" || err?.code === "EPERM") return "PERMISSION_DENIED";
     if (err?.code === "ENOENT") return "FS_ERROR";
     return "UNKNOWN_ERROR";
@@ -784,12 +953,14 @@ const registerOnionIpc = () => {
     onionComponentCache.tor = {
       ...torState,
       latest: torHasVerifiedUpdate ? torUpdate.version ?? void 0 : void 0,
-      error: torUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : void 0
+      error: torUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : void 0,
+      detail: torUpdate.errorCode === "PINNED_HASH_MISSING" ? `Pinned hash missing for ${torUpdate.assetName ?? torUpdate.version ?? "unknown"}` : void 0
     };
     onionComponentCache.lokinet = {
       ...lokinetState,
       latest: lokinetHasVerifiedUpdate ? lokinetUpdate.version ?? void 0 : void 0,
-      error: lokinetUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : void 0
+      error: lokinetUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : void 0,
+      detail: lokinetUpdate.errorCode === "PINNED_HASH_MISSING" ? `Pinned hash missing for ${lokinetUpdate.assetName ?? lokinetUpdate.version ?? "unknown"}` : void 0
     };
     return {
       components: {
@@ -811,9 +982,22 @@ const registerOnionIpc = () => {
         );
       }
       if (!updates.version || !updates.sha256 || !updates.downloadUrl || !updates.assetName) {
-        throw new Error("No verified release available");
+        const err = new Error("No verified release available");
+        err.details = {
+          network,
+          platform: process.platform,
+          arch: process.arch,
+          update: updates
+        };
+        throw err;
       }
-      onionComponentCache[network] = { ...onionComponentCache[network], status: "downloading" };
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        status: "downloading",
+        error: void 0,
+        detail: "Preparing download",
+        progress: void 0
+      };
       emitOnionProgress(event, network, onionComponentCache[network]);
       const install = network === "tor" ? installTor(
         userDataDir,
@@ -821,7 +1005,12 @@ const registerOnionIpc = () => {
         (progress) => {
           onionComponentCache[network] = {
             ...onionComponentCache[network],
-            status: progress.step === "download" ? "downloading" : "installing"
+            status: progress.step === "download" ? "downloading" : "installing",
+            detail: (progress.message ?? "") + (progress.receivedBytes || progress.totalBytes ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})` : ""),
+            progress: progress.receivedBytes || progress.totalBytes ? {
+              receivedBytes: progress.receivedBytes ?? 0,
+              totalBytes: progress.totalBytes ?? 0
+            } : void 0
           };
           emitOnionProgress(event, network, onionComponentCache[network]);
         },
@@ -833,7 +1022,12 @@ const registerOnionIpc = () => {
         (progress) => {
           onionComponentCache[network] = {
             ...onionComponentCache[network],
-            status: progress.step === "download" ? "downloading" : "installing"
+            status: progress.step === "download" ? "downloading" : "installing",
+            detail: (progress.message ?? "") + (progress.receivedBytes || progress.totalBytes ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})` : ""),
+            progress: progress.receivedBytes || progress.totalBytes ? {
+              receivedBytes: progress.receivedBytes ?? 0,
+              totalBytes: progress.totalBytes ?? 0
+            } : void 0
           };
           emitOnionProgress(event, network, onionComponentCache[network]);
         },
@@ -846,9 +1040,15 @@ const registerOnionIpc = () => {
         installed: true,
         status: "ready",
         version: result.version,
-        error: void 0
+        error: void 0,
+        detail: `Installed ${result.version}`,
+        progress: void 0
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
+      await pruneComponentVersions(userDataDir, network, {
+        version: result.version,
+        installPath: result.installPath
+      });
     } catch (error) {
       const context = {
         network,
@@ -866,7 +1066,9 @@ const registerOnionIpc = () => {
       onionComponentCache[network] = {
         ...onionComponentCache[network],
         status: "failed",
-        error: `[${normalized.code}] ${normalized.message}`
+        error: `[${normalized.code}] ${normalized.message}`,
+        detail: JSON.stringify(normalized.details),
+        progress: void 0
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
       const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
@@ -902,7 +1104,12 @@ const registerOnionIpc = () => {
         (progress) => {
           onionComponentCache[network] = {
             ...onionComponentCache[network],
-            status: progress.step === "download" ? "downloading" : "installing"
+            status: progress.step === "download" ? "downloading" : "installing",
+            detail: (progress.message ?? "") + (progress.receivedBytes || progress.totalBytes ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})` : ""),
+            progress: progress.receivedBytes || progress.totalBytes ? {
+              receivedBytes: progress.receivedBytes ?? 0,
+              totalBytes: progress.totalBytes ?? 0
+            } : void 0
           };
           emitOnionProgress(event, network, onionComponentCache[network]);
         },
@@ -914,7 +1121,12 @@ const registerOnionIpc = () => {
         (progress) => {
           onionComponentCache[network] = {
             ...onionComponentCache[network],
-            status: progress.step === "download" ? "downloading" : "installing"
+            status: progress.step === "download" ? "downloading" : "installing",
+            detail: (progress.message ?? "") + (progress.receivedBytes || progress.totalBytes ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})` : ""),
+            progress: progress.receivedBytes || progress.totalBytes ? {
+              receivedBytes: progress.receivedBytes ?? 0,
+              totalBytes: progress.totalBytes ?? 0
+            } : void 0
           };
           emitOnionProgress(event, network, onionComponentCache[network]);
         },
@@ -937,9 +1149,15 @@ const registerOnionIpc = () => {
         installed: true,
         status: "ready",
         version: result.version,
-        error: void 0
+        error: void 0,
+        detail: `Installed ${result.version}`,
+        progress: void 0
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
+      await pruneComponentVersions(userDataDir, network, {
+        version: result.version,
+        installPath: result.installPath
+      });
     } catch (error) {
       const context = {
         network,
@@ -957,7 +1175,9 @@ const registerOnionIpc = () => {
       onionComponentCache[network] = {
         ...onionComponentCache[network],
         status: "failed",
-        error: `[${normalized.code}] ${normalized.message}`
+        error: `[${normalized.code}] ${normalized.message}`,
+        detail: JSON.stringify(normalized.details),
+        progress: void 0
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
       const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);

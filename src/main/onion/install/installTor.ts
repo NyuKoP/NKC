@@ -99,5 +99,7 @@ export const installTor = async (
     const wrapped = new Error(`${message} | details=${JSON.stringify(details)}`);
     (wrapped as { details?: Record<string, unknown> }).details = details;
     throw wrapped;
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
   }
 };

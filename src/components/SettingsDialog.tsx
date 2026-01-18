@@ -4,6 +4,7 @@ import { ChevronLeft, KeyRound, Lock } from "lucide-react";
 import type { UserProfile } from "../db/repo";
 import {
   clearChatHistory,
+  deleteAllMedia,
   getVaultUsage,
   listConversations,
   listMessagesByConv,
@@ -30,6 +31,7 @@ import { getRouteInfo } from "../net/routeInfo";
 import type { NetworkMode } from "../net/mode";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import Avatar from "./Avatar";
+import ConfirmDialog from "./ConfirmDialog";
 
 type LocalizedLabel = { ko: string; en: string };
 
@@ -140,6 +142,11 @@ export default function SettingsDialog({
   const [lokinetUninstallBusy, setLokinetUninstallBusy] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(getConnectionStatus());
   const [chatWipeBusy, setChatWipeBusy] = useState(false);
+  const [mediaWipeBusy, setMediaWipeBusy] = useState(false);
+  const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
+  const [wipeConfirmType, setWipeConfirmType] = useState<"chat" | "media" | null>(
+    null
+  );
   const [vaultUsageBytes, setVaultUsageBytes] = useState(0);
   const [vaultUsageMaxBytes, setVaultUsageMaxBytes] = useState(50 * 1024 * 1024);
 
@@ -374,6 +381,33 @@ export default function SettingsDialog({
     }
   };
 
+  const handleConnectOnion = async (network: OnionNetwork) => {
+    try {
+      setOnionNetworkDraft(network);
+      setOnionEnabledDraft(true);
+      await setOnionMode(true, network);
+      setOnionEnabled(true);
+      setOnionNetwork(network);
+      setSaveMessage(t("연결 중...", "Connecting..."));
+      await refreshOnionStatus();
+    } catch (error) {
+      console.error("Failed to start onion runtime", error);
+      setSaveMessage(t("연결 실패", "Connect failed"));
+    }
+  };
+
+  const handleDisconnectOnion = async (network: OnionNetwork) => {
+    try {
+      await setOnionMode(false, network);
+      setOnionEnabled(false);
+      setSaveMessage(t("연결 해제됨", "Disconnected"));
+      await refreshOnionStatus();
+    } catch (error) {
+      console.error("Failed to stop onion runtime", error);
+      setSaveMessage(t("연결 해제 실패", "Disconnect failed"));
+    }
+  };
+
   const formatBytes = (value: number) => {
     if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
     if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
@@ -547,6 +581,9 @@ export default function SettingsDialog({
     return t("미설치", "Not installed");
   };
 
+  const isComponentReady = (state: typeof netConfig.tor) =>
+    state.installed && state.status === "ready";
+
   const torUpdateAvailable = Boolean(
     netConfig.tor.latest && netConfig.tor.latest !== netConfig.tor.version
   );
@@ -588,10 +625,11 @@ export default function SettingsDialog({
         : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
 
   return (
-    <Dialog.Root open={open} onOpenChange={onOpenChange}>
-      <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-black/60" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 h-[80vh] w-[92vw] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
+    <>
+      <Dialog.Root open={open} onOpenChange={onOpenChange}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 h-[80vh] w-[92vw] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
           <Dialog.Title className="text-lg font-semibold text-nkc-text">
             {t("설정", "Settings")}
           </Dialog.Title>
@@ -965,10 +1003,19 @@ export default function SettingsDialog({
                           {t("SOCKS 기반 · 앱 트래픽만", "SOCKS-based · app traffic only")}
                         </div>
                         {torUpdateStatus ? (
-                          <div className="mt-2 text-xs text-nkc-muted">{torUpdateStatus}</div>
+                          <div className="mt-2 max-w-full break-words text-xs text-nkc-muted">
+                            {torUpdateStatus}
+                          </div>
+                        ) : null}
+                        {netConfig.tor.detail ? (
+                          <div className="mt-2 max-h-24 max-w-full overflow-auto overflow-x-hidden whitespace-pre-wrap break-all text-[11px] text-nkc-muted">
+                            {netConfig.tor.detail}
+                          </div>
                         ) : null}
                         {torErrorLabel ? (
-                          <div className="mt-2 text-xs text-red-300">{torErrorLabel}</div>
+                          <div className="mt-2 max-w-full break-words text-xs text-red-300">
+                            {torErrorLabel}
+                          </div>
                         ) : null}
                         <div className="mt-3 flex flex-wrap gap-2">
                           {!netConfig.tor.installed ? (
@@ -984,6 +1031,26 @@ export default function SettingsDialog({
                             </button>
                           ) : (
                             <>
+                              {netConfig.tor.installed &&
+                              !(runtime?.network === "tor" && runtime?.status === "running") ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleConnectOnion("tor")}
+                                  disabled={torInstallBusy || !isComponentReady(netConfig.tor)}
+                                  className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                                >
+                                  {t("연결", "Connect")}
+                                </button>
+                              ) : null}
+                              {runtime?.network === "tor" && runtime?.status === "running" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleDisconnectOnion("tor")}
+                                  className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                                >
+                                  {t("연결 해제", "Disconnect")}
+                                </button>
+                              ) : null}
                               <button
                                 type="button"
                                 onClick={() => void handleCheckUpdates()}
@@ -1004,15 +1071,6 @@ export default function SettingsDialog({
                                   {torApplyBusy
                                     ? t("처리 중...", "Working...")
                                     : t("업데이트 적용", "Apply update")}
-                                </button>
-                              ) : null}
-                              {runtime?.network === "tor" && runtime?.status === "running" ? (
-                                <button
-                                  type="button"
-                                  onClick={() => void handleStopOnion()}
-                                  className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
-                                >
-                                  {t("연결 해제", "Disconnect")}
                                 </button>
                               ) : null}
                               <button
@@ -1052,10 +1110,19 @@ export default function SettingsDialog({
                           {t("Exit/VPN 기반 · 앱 전용 라우팅", "Exit/VPN based · app-only routing")}
                         </div>
                         {lokinetUpdateStatus ? (
-                          <div className="mt-2 text-xs text-nkc-muted">{lokinetUpdateStatus}</div>
+                          <div className="mt-2 max-w-full break-words text-xs text-nkc-muted">
+                            {lokinetUpdateStatus}
+                          </div>
+                        ) : null}
+                        {netConfig.lokinet.detail ? (
+                          <div className="mt-2 max-h-24 max-w-full overflow-auto overflow-x-hidden whitespace-pre-wrap break-all text-[11px] text-nkc-muted">
+                            {netConfig.lokinet.detail}
+                          </div>
                         ) : null}
                         {lokinetErrorLabel ? (
-                          <div className="mt-2 text-xs text-red-300">{lokinetErrorLabel}</div>
+                          <div className="mt-2 max-w-full break-words text-xs text-red-300">
+                            {lokinetErrorLabel}
+                          </div>
                         ) : null}
                         <div className="mt-3 flex flex-wrap gap-2">
                           {!netConfig.lokinet.installed ? (
@@ -1071,6 +1138,38 @@ export default function SettingsDialog({
                                     "Lokinet 설치(관리자 권한 필요)",
                                     "Install Lokinet (admin required)"
                                   )}
+                            </button>
+                          ) : null}
+                          {netConfig.lokinet.installed &&
+                          !(runtime?.network === "lokinet" && runtime?.status === "running") ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleConnectOnion("lokinet")}
+                              disabled={lokinetInstallBusy || !isComponentReady(netConfig.lokinet)}
+                              className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                            >
+                              {t("연결", "Connect")}
+                            </button>
+                          ) : null}
+                          {runtime?.network === "lokinet" && runtime?.status === "running" ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleDisconnectOnion("lokinet")}
+                              className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                            >
+                              {t("연결 해제", "Disconnect")}
+                            </button>
+                          ) : null}
+                          {lokinetUpdateAvailable ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleApplyUpdate("lokinet")}
+                              disabled={lokinetApplyBusy}
+                              className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                            >
+                              {lokinetApplyBusy
+                                ? t("처리 중...", "Working...")
+                                : t("업데이트 적용", "Apply update")}
                             </button>
                           ) : null}
                           <button
@@ -1095,27 +1194,6 @@ export default function SettingsDialog({
                               ? t("처리 중...", "Working...")
                               : t("상태 확인", "Check status")}
                           </button>
-                          {runtime?.network === "lokinet" && runtime?.status === "running" ? (
-                            <button
-                              type="button"
-                              onClick={() => void handleStopOnion()}
-                              className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
-                            >
-                              {t("연결 해제", "Disconnect")}
-                            </button>
-                          ) : null}
-                          {lokinetUpdateAvailable ? (
-                            <button
-                              type="button"
-                              onClick={() => void handleApplyUpdate("lokinet")}
-                              disabled={lokinetApplyBusy}
-                              className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
-                            >
-                              {lokinetApplyBusy
-                                ? t("처리 중...", "Working...")
-                                : t("업데이트 적용", "Apply update")}
-                            </button>
-                          ) : null}
                           {netConfig.lokinet.installed ? (
                             <button
                               type="button"
@@ -1396,33 +1474,27 @@ export default function SettingsDialog({
                 <div className="mt-3 flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={async () => {
+                    onClick={() => {
                       if (chatWipeBusy) return;
-                      const ok = window.confirm(
-                        t(
-                          "채팅 내역을 초기화합니다. 복구할 수 없습니다. 계속할까요?",
-                          "Reset chat history? This cannot be undone."
-                        )
-                      );
-                      if (!ok) return;
-                      setChatWipeBusy(true);
-                      try {
-                        await clearChatHistory();
-                        await refreshAppData();
-                        const usage = await getVaultUsage();
-                        setVaultUsageBytes(usage.bytes);
-                        setSaveMessage(t("채팅 내역이 초기화되었습니다.", "Chat history reset."));
-                      } catch (error) {
-                        console.error("Failed to clear chat history", error);
-                        setSaveMessage(t("채팅 내역 초기화 실패", "Chat reset failed"));
-                      } finally {
-                        setChatWipeBusy(false);
-                      }
+                      setWipeConfirmType("chat");
+                      setWipeConfirmOpen(true);
                     }}
                     disabled={chatWipeBusy}
                     className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                   >
                     {chatWipeBusy ? t("처리 중...", "Working...") : t("채팅 내역 초기화", "Reset chat history")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (mediaWipeBusy) return;
+                      setWipeConfirmType("media");
+                      setWipeConfirmOpen(true);
+                    }}
+                    disabled={mediaWipeBusy}
+                    className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                  >
+                    {mediaWipeBusy ? t("처리 중...", "Working...") : t("미디어 초기화", "Reset media")}
                   </button>
                 </div>
               </section>
@@ -1484,8 +1556,67 @@ export default function SettingsDialog({
               </section>
             </div>
           )}
-        </Dialog.Content>
-      </Dialog.Portal>
-    </Dialog.Root>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
+      <ConfirmDialog
+        open={wipeConfirmOpen}
+        title={
+          wipeConfirmType === "media"
+            ? t("미디어 삭제 경고", "Media deletion warning")
+            : t("채팅 삭제 경고", "Chat deletion warning")
+        }
+        message={
+          wipeConfirmType === "media"
+            ? t(
+                "모든 미디어(첨부파일/아바타)를 초기화합니다. 복구할 수 없으며, 잔여 데이터 복구를 어렵게 하기 위해 암호화로 덮어쓴 뒤 제거합니다. 계속할까요?",
+                "This deletes all media (attachments/avatars). It cannot be undone; remaining data is overwritten with encryption before removal. Continue?"
+              )
+            : t(
+                "채팅 내역을 초기화합니다. 복구할 수 없으며, 잔여 데이터 복구를 어렵게 하기 위해 암호화로 덮어쓴 뒤 제거합니다. 계속할까요?",
+                "This resets chat history. It cannot be undone; remaining data is overwritten with encryption before removal. Continue?"
+              )
+        }
+        onClose={() => {
+          setWipeConfirmOpen(false);
+          setWipeConfirmType(null);
+        }}
+        onConfirm={async () => {
+          if (!wipeConfirmType) return;
+          if (wipeConfirmType === "chat") {
+            if (chatWipeBusy) return;
+            setChatWipeBusy(true);
+            try {
+              await clearChatHistory();
+              await refreshAppData();
+              const usage = await getVaultUsage();
+              setVaultUsageBytes(usage.bytes);
+              setSaveMessage(t("채팅 내역이 초기화되었습니다.", "Chat history reset."));
+            } catch (error) {
+              console.error("Failed to clear chat history", error);
+              setSaveMessage(t("채팅 내역 초기화 실패", "Chat reset failed"));
+            } finally {
+              setChatWipeBusy(false);
+            }
+            return;
+          }
+
+          if (mediaWipeBusy) return;
+          setMediaWipeBusy(true);
+          try {
+            await deleteAllMedia();
+            await refreshAppData();
+            const usage = await getVaultUsage();
+            setVaultUsageBytes(usage.bytes);
+            setSaveMessage(t("미디어가 초기화되었습니다.", "Media reset."));
+          } catch (error) {
+            console.error("Failed to delete media", error);
+            setSaveMessage(t("미디어 초기화 실패", "Media reset failed"));
+          } finally {
+            setMediaWipeBusy(false);
+          }
+        }}
+      />
+    </>
   );
 }

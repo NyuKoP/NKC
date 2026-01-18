@@ -23,5 +23,6 @@ export const pinnedSha256 = {
   },
   lokinet: {
     [makePinnedKey({ platform: "linux", arch: "x64", version: "0.9.14", filename: "lokinet-linux-amd64-v0.9.14.tar.xz" })]: "4097f96779a007abf35f37a46394eb5af39debd27244c190ce6867caf7a5115d",
+    [makePinnedKey({ platform: "win32", arch: "x64", version: "0.9.11", filename: "lokinet-0.9.11-win64.exe" })]: "0a4a972e1f2d7d2af7f6aebcd15953d98f4ff53b5e823a7d7aa2953eeea2c8d2",
   },
 } as const;

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import https from "node:https";
 import type { IncomingMessage } from "node:http";
 import { pipeline } from "node:stream/promises";
+import { URL } from "node:url";
 
 export type DownloadProgress = {
   receivedBytes: number;
@@ -26,10 +27,19 @@ const getResponse = async (url: string, redirects = 0): Promise<IncomingMessage>
     if (!redirect) {
       throw new Error("Redirect missing location header");
     }
-    return getResponse(redirect, redirects + 1);
+    const nextUrl = new URL(redirect, url).toString();
+    return getResponse(nextUrl, redirects + 1);
   }
   if (response.statusCode && response.statusCode >= 400) {
-    throw new Error(`Download failed: ${response.statusCode}`);
+    const status = response.statusCode;
+    const statusMessage = response.statusMessage ?? "";
+    const error = new Error(`Download failed: ${status} ${statusMessage}`.trim());
+    (error as { details?: Record<string, unknown> }).details = {
+      url,
+      status,
+      statusMessage,
+    };
+    throw error;
   }
   return response;
 };

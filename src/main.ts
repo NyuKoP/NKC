@@ -81,11 +81,49 @@ const onionComponentCache: Record<OnionNetwork, OnionComponentState> = {
   lokinet: { installed: false, status: "idle" },
 };
 
+const pruneComponentVersions = async (
+  userDataDir: string,
+  network: OnionNetwork,
+  keep: { version: string; installPath: string }
+) => {
+  const componentsRoot = path.join(userDataDir, "onion", "components", network);
+  const normalizedRoot = path.resolve(componentsRoot) + path.sep;
+  const normalizedKeep = path.resolve(keep.installPath);
+  if (!normalizedKeep.startsWith(normalizedRoot)) return;
+
+  try {
+    const entries = await fs.readdir(componentsRoot, { withFileTypes: true });
+    await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          if (entry.name === keep.version) return;
+          await fs.rm(path.join(componentsRoot, entry.name), { recursive: true, force: true });
+        })
+    );
+  } catch {
+    // Best-effort cleanup; ignore.
+  }
+};
+
+const formatProgress = (receivedBytes?: number, totalBytes?: number) => {
+  if (!receivedBytes && !totalBytes) return "";
+  const total = totalBytes ?? 0;
+  if (total > 0) {
+    return `${Math.round((receivedBytes ?? 0) / 1024 / 1024)} / ${Math.round(total / 1024 / 1024)} MB`;
+  }
+  return `${Math.round((receivedBytes ?? 0) / 1024 / 1024)} MB`;
+};
+
 const normalizeOnionError = (
   error: unknown,
   context: Record<string, unknown>
 ) => {
   const message = error instanceof Error ? error.message : String(error);
+  const errCode =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
   const code =
     error instanceof PinnedHashMissingError
       ? "PINNED_HASH_MISSING"
@@ -104,6 +142,7 @@ const normalizeOnionError = (
               ? "BINARY_MISSING"
               : (() => {
                   const err = error as { code?: string };
+                  if (errCode === "EACCES" || errCode === "EPERM") return "PERMISSION_DENIED";
                   if (err?.code === "EACCES" || err?.code === "EPERM") return "PERMISSION_DENIED";
                   if (err?.code === "ENOENT") return "FS_ERROR";
                   return "UNKNOWN_ERROR";
@@ -174,12 +213,20 @@ const registerOnionIpc = () => {
       ...torState,
       latest: torHasVerifiedUpdate ? torUpdate.version ?? undefined : undefined,
       error: torUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : undefined,
+      detail:
+        torUpdate.errorCode === "PINNED_HASH_MISSING"
+          ? `Pinned hash missing for ${torUpdate.assetName ?? torUpdate.version ?? "unknown"}`
+          : undefined,
     };
     onionComponentCache.lokinet = {
       ...lokinetState,
       latest: lokinetHasVerifiedUpdate ? lokinetUpdate.version ?? undefined : undefined,
       error:
         lokinetUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : undefined,
+      detail:
+        lokinetUpdate.errorCode === "PINNED_HASH_MISSING"
+          ? `Pinned hash missing for ${lokinetUpdate.assetName ?? lokinetUpdate.version ?? "unknown"}`
+          : undefined,
     };
     return {
       components: {
@@ -202,9 +249,22 @@ const registerOnionIpc = () => {
         );
       }
       if (!updates.version || !updates.sha256 || !updates.downloadUrl || !updates.assetName) {
-        throw new Error("No verified release available");
+        const err = new Error("No verified release available");
+        (err as { details?: Record<string, unknown> }).details = {
+          network,
+          platform: process.platform,
+          arch: process.arch,
+          update: updates,
+        };
+        throw err;
       }
-      onionComponentCache[network] = { ...onionComponentCache[network], status: "downloading" };
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        status: "downloading",
+        error: undefined,
+        detail: "Preparing download",
+        progress: undefined,
+      };
       emitOnionProgress(event, network, onionComponentCache[network]);
       const install =
         network === "tor"
@@ -212,11 +272,23 @@ const registerOnionIpc = () => {
               userDataDir,
               updates.version,
               (progress) => {
-              onionComponentCache[network] = {
-                ...onionComponentCache[network],
-                status: progress.step === "download" ? "downloading" : "installing",
-              };
-              emitOnionProgress(event, network, onionComponentCache[network]);
+                onionComponentCache[network] = {
+                  ...onionComponentCache[network],
+                  status: progress.step === "download" ? "downloading" : "installing",
+                  detail:
+                    (progress.message ?? "") +
+                    (progress.receivedBytes || progress.totalBytes
+                      ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})`
+                      : ""),
+                  progress:
+                    progress.receivedBytes || progress.totalBytes
+                      ? {
+                          receivedBytes: progress.receivedBytes ?? 0,
+                          totalBytes: progress.totalBytes ?? 0,
+                        }
+                      : undefined,
+                };
+                emitOnionProgress(event, network, onionComponentCache[network]);
               },
               updates.downloadUrl ?? undefined,
               updates.assetName ?? undefined
@@ -225,11 +297,23 @@ const registerOnionIpc = () => {
               userDataDir,
               updates.version,
               (progress) => {
-              onionComponentCache[network] = {
-                ...onionComponentCache[network],
-                status: progress.step === "download" ? "downloading" : "installing",
-              };
-              emitOnionProgress(event, network, onionComponentCache[network]);
+                onionComponentCache[network] = {
+                  ...onionComponentCache[network],
+                  status: progress.step === "download" ? "downloading" : "installing",
+                  detail:
+                    (progress.message ?? "") +
+                    (progress.receivedBytes || progress.totalBytes
+                      ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})`
+                      : ""),
+                  progress:
+                    progress.receivedBytes || progress.totalBytes
+                      ? {
+                          receivedBytes: progress.receivedBytes ?? 0,
+                          totalBytes: progress.totalBytes ?? 0,
+                        }
+                      : undefined,
+                };
+                emitOnionProgress(event, network, onionComponentCache[network]);
               },
               updates.downloadUrl ?? undefined,
               updates.assetName ?? undefined
@@ -241,8 +325,14 @@ const registerOnionIpc = () => {
         status: "ready",
         version: result.version,
         error: undefined,
+        detail: `Installed ${result.version}`,
+        progress: undefined,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
+      await pruneComponentVersions(userDataDir, network, {
+        version: result.version,
+        installPath: result.installPath,
+      });
     } catch (error) {
       const context = {
         network,
@@ -264,6 +354,8 @@ const registerOnionIpc = () => {
         ...onionComponentCache[network],
         status: "failed",
         error: `[${normalized.code}] ${normalized.message}`,
+        detail: JSON.stringify(normalized.details),
+        progress: undefined,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
       const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
@@ -303,6 +395,18 @@ const registerOnionIpc = () => {
                 onionComponentCache[network] = {
                   ...onionComponentCache[network],
                   status: progress.step === "download" ? "downloading" : "installing",
+                  detail:
+                    (progress.message ?? "") +
+                    (progress.receivedBytes || progress.totalBytes
+                      ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})`
+                      : ""),
+                  progress:
+                    progress.receivedBytes || progress.totalBytes
+                      ? {
+                          receivedBytes: progress.receivedBytes ?? 0,
+                          totalBytes: progress.totalBytes ?? 0,
+                        }
+                      : undefined,
                 };
                 emitOnionProgress(event, network, onionComponentCache[network]);
               },
@@ -316,6 +420,18 @@ const registerOnionIpc = () => {
                 onionComponentCache[network] = {
                   ...onionComponentCache[network],
                   status: progress.step === "download" ? "downloading" : "installing",
+                  detail:
+                    (progress.message ?? "") +
+                    (progress.receivedBytes || progress.totalBytes
+                      ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})`
+                      : ""),
+                  progress:
+                    progress.receivedBytes || progress.totalBytes
+                      ? {
+                          receivedBytes: progress.receivedBytes ?? 0,
+                          totalBytes: progress.totalBytes ?? 0,
+                        }
+                      : undefined,
                 };
                 emitOnionProgress(event, network, onionComponentCache[network]);
               },
@@ -339,8 +455,14 @@ const registerOnionIpc = () => {
         status: "ready",
         version: result.version,
         error: undefined,
+        detail: `Installed ${result.version}`,
+        progress: undefined,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
+      await pruneComponentVersions(userDataDir, network, {
+        version: result.version,
+        installPath: result.installPath,
+      });
     } catch (error) {
       const context = {
         network,
@@ -359,6 +481,8 @@ const registerOnionIpc = () => {
         ...onionComponentCache[network],
         status: "failed",
         error: `[${normalized.code}] ${normalized.message}`,
+        detail: JSON.stringify(normalized.details),
+        progress: undefined,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
       const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
