@@ -1,5 +1,6 @@
 import { db, ensureDbOpen, resetDb } from "./schema";
 import type { EncryptedRecord, MediaChunkRecord, MessageRecord } from "./schema";
+import type { Envelope } from "../crypto/box";
 import {
   chunkBuffer,
   createVaultHeader,
@@ -41,6 +42,11 @@ export type UserProfile = {
   avatarRef?: AvatarRef;
   kind: "user" | "friend";
   friendId?: string;
+  identityPub?: string;
+  dhPub?: string;
+  routingHints?: { onionAddr?: string; lokinetAddr?: string };
+  trust?: { pinnedAt: number; status: "trusted" | "blocked" | "changed"; reason?: string };
+  pskHint?: boolean;
   friendStatus?: "normal" | "hidden" | "blocked";
   isFavorite?: boolean;
   createdAt?: number;
@@ -70,8 +76,20 @@ export type Message = {
   media?: MediaRef;
 };
 
+export type MessageEnvelopeRecord = {
+  id: string;
+  convId: string;
+  ts: number;
+  envelope: Envelope;
+};
+
+export type StoredMessageRecord =
+  | { kind: "envelope"; record: MessageEnvelopeRecord }
+  | { kind: "legacy"; record: Message };
+
 const VAULT_META_KEY = "vault_header_v2";
 const VAULT_KEY_ID_KEY = "vault_key_id_v1";
+const TEXT_ENCODING_FIX_KEY = "text_encoding_fix_v1";
 const MEDIA_CHUNK_SIZE = 256 * 1024;
 const MEDIA_DECRYPT_CONCURRENCY = 6;
 const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
@@ -160,6 +178,56 @@ export const getVaultHeader = async (): Promise<VaultHeader | null> => {
     await db.meta.delete(VAULT_META_KEY);
     return null;
   }
+};
+
+const mojibakeMarker = /[ÃÂâêëìíîïðñòóôõöùúûüýþÿ�]/;
+
+const countHangul = (value: string) => (value.match(/[가-힣]/g) ?? []).length;
+
+const repairMojibake = (value: string) => {
+  if (!value || !mojibakeMarker.test(value)) return value;
+  try {
+    const bytes = Uint8Array.from(value, (char) => char.charCodeAt(0));
+    const repaired = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    if (repaired === value) return value;
+    return countHangul(repaired) > countHangul(value) ? repaired : value;
+  } catch {
+    return value;
+  }
+};
+
+export const repairVaultTextEncoding = async () => {
+  await ensureDbOpen();
+  const meta = await db.meta.get(TEXT_ENCODING_FIX_KEY);
+  if (meta?.value === "1") return;
+
+  const vk = requireVaultKey();
+  const profileRecords = await db.profiles.toArray();
+  for (const record of profileRecords) {
+    const profile = await decryptJsonRecord<UserProfile>(vk, record.id, "profile", record.enc_b64);
+    const displayName = repairMojibake(profile.displayName);
+    const status = repairMojibake(profile.status);
+    if (displayName !== profile.displayName || status !== profile.status) {
+      await saveProfile({ ...profile, displayName, status });
+    }
+  }
+
+  const conversationRecords = await db.conversations.toArray();
+  for (const record of conversationRecords) {
+    const conversation = await decryptJsonRecord<Conversation>(
+      vk,
+      record.id,
+      "conv",
+      record.enc_b64
+    );
+    const name = repairMojibake(conversation.name);
+    const lastMessage = repairMojibake(conversation.lastMessage);
+    if (name !== conversation.name || lastMessage !== conversation.lastMessage) {
+      await saveConversation({ ...conversation, name, lastMessage });
+    }
+  }
+
+  await db.meta.put({ key: TEXT_ENCODING_FIX_KEY, value: "1" });
 };
 
 export const ensureVaultHeader = async (): Promise<VaultHeader> => {
@@ -276,6 +344,42 @@ export const listMessagesByConv = async (convId: string) => {
     )
   );
   return messages;
+};
+
+export const saveMessageEnvelope = async (record: MessageEnvelopeRecord) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const enc_b64 = await encryptJsonRecord(vk, record.id, "message", record);
+  const dbRecord: MessageRecord = {
+    id: record.id,
+    convId: record.convId,
+    ts: record.ts,
+    enc_b64,
+  };
+  await db.messages.put(dbRecord);
+};
+
+export const listMessageRecordsByConv = async (convId: string) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const records = await db.messages.where("convId").equals(convId).sortBy("ts");
+  const decoded = await Promise.all(
+    records.map((record) =>
+      decryptJsonRecord<unknown>(vk, record.id, "message", record.enc_b64)
+    )
+  );
+  return decoded.map((value) => {
+    if (
+      value &&
+      typeof value === "object" &&
+      "envelope" in value &&
+      "convId" in value &&
+      "ts" in value
+    ) {
+      return { kind: "envelope", record: value as MessageEnvelopeRecord } as const;
+    }
+    return { kind: "legacy", record: value as Message } as const;
+  });
 };
 
 export const saveProfilePhoto = async (ownerId: string, file: File) => {

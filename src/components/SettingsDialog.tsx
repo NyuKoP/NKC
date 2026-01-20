@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronLeft, KeyRound, Lock } from "lucide-react";
+import { ChevronLeft, KeyRound, Lock, Users } from "lucide-react";
 import type { UserProfile } from "../db/repo";
 import {
   clearChatHistory,
@@ -35,6 +35,14 @@ import type { NetworkMode } from "../net/mode";
 import type { OnionNetwork } from "../net/netConfig";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import { validateProxyUrl } from "../net/proxyControl";
+import {
+  demoteToSecondary,
+  getDeviceRole,
+  getOrCreateDeviceId,
+  getRoleEpoch,
+  promoteToPrimary,
+  type DeviceRole,
+} from "../security/deviceRole";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -59,7 +67,8 @@ type SettingsView =
   | "danger"
   | "network"
   | "help"
-  | "storage";
+  | "storage"
+  | "devices";
 
 type SettingsDialogProps = {
   open: boolean;
@@ -167,6 +176,7 @@ export default function SettingsDialog({
   const setData = useAppStore((state) => state.setData);
   const setSelectedConv = useAppStore((state) => state.setSelectedConv);
   const userProfileState = useAppStore((state) => state.userProfile);
+  const addToast = useAppStore((state) => state.addToast);
 
   const t = (ko: string, en: string) => (language === "en" ? en : ko);
   const tl = (label: LocalizedLabel) => (language === "en" ? label.en : label.ko);
@@ -190,6 +200,13 @@ export default function SettingsDialog({
 
   // misc
   const [saveMessage, setSaveMessage] = useState("");
+  const [deviceInfo, setDeviceInfo] = useState<{
+    deviceId: string;
+    role: DeviceRole;
+    epoch: number;
+  } | null>(null);
+  const [promoteConfirmOpen, setPromoteConfirmOpen] = useState(false);
+  const [demoteConfirmOpen, setDemoteConfirmOpen] = useState(false);
 
   useEffect(() => {
     setDisplayName(user.displayName);
@@ -214,6 +231,14 @@ export default function SettingsDialog({
       .then(setDirectP2PAcked)
       .catch(() => setDirectP2PAcked(false));
   }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork, netConfig.onionProxyUrl]);
+
+  useEffect(() => {
+    if (view !== "devices") return;
+    const deviceId = getOrCreateDeviceId();
+    const role = getDeviceRole();
+    const epoch = getRoleEpoch();
+    setDeviceInfo({ deviceId, role, epoch });
+  }, [view]);
 
   useEffect(() => {
     if (!open) return;
@@ -554,6 +579,7 @@ export default function SettingsDialog({
     }
   };
 
+
   const routeInfo = getRouteInfo(netConfig.mode, netConfig);
   const runtime = onionStatus?.runtime;
   const runtimeLabel = runtime
@@ -797,6 +823,14 @@ export default function SettingsDialog({
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
                     {t("네트워크 설정", "Network settings")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setView("devices")}
+                    className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
+                  >
+                    <Users size={16} className="text-nkc-muted" />
+                    {t("디바이스 / 동기화", "Devices / Sync")}
                   </button>
                   <button
                     type="button"
@@ -1326,6 +1360,101 @@ export default function SettingsDialog({
             </div>
           )}
 
+          {/* DEVICES */}
+          {view === "devices" && (
+            <div className="mt-6 grid gap-6">
+              {renderBackHeader(t("디바이스 / 동기화", "Devices / Sync"))}
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
+                  {t("이 디바이스", "This device")}
+                </div>
+                <div className="mt-4 grid gap-3 text-sm">
+                  <div className="flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-xs text-nkc-muted">
+                        {t("디바이스 ID", "Device ID")}
+                      </div>
+                      <div className="mt-1 font-mono text-sm text-nkc-text">
+                        {deviceInfo ? deviceInfo.deviceId.slice(0, 12) : "-"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const deviceId = deviceInfo?.deviceId ?? getOrCreateDeviceId();
+                        try {
+                          if (!navigator.clipboard) {
+                            throw new Error("Clipboard not available");
+                          }
+                          await navigator.clipboard.writeText(deviceId);
+                          addToast({
+                            message: t(
+                              "디바이스 ID를 복사했습니다.",
+                              "Device ID copied."
+                            ),
+                          });
+                        } catch (error) {
+                          console.error("Failed to copy device id", error);
+                          addToast({
+                            message: t(
+                              "디바이스 ID 복사에 실패했습니다.",
+                              "Failed to copy device ID."
+                            ),
+                          });
+                        }
+                      }}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                    >
+                      {t("복사", "Copy")}
+                    </button>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="text-xs text-nkc-muted">
+                      {t("현재 역할", "Current role")}
+                    </div>
+                    <span
+                      className={`rounded-full border px-2 py-1 text-xs ${
+                        deviceInfo?.role === "secondary"
+                          ? "border-nkc-border text-nkc-muted"
+                          : "border-nkc-accent/40 bg-nkc-panel text-nkc-text"
+                      }`}
+                    >
+                      {deviceInfo?.role === "secondary" ? "Secondary" : "Primary"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="text-xs text-nkc-muted">
+                      {t("역할 에폭", "Role epoch")}
+                    </div>
+                    <div className="text-xs text-nkc-muted">
+                      {deviceInfo?.epoch ?? 0}
+                    </div>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPromoteConfirmOpen(true)}
+                    className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg"
+                  >
+                    {t("이 디바이스를 Primary로 설정", "Set this device as Primary")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDemoteConfirmOpen(true)}
+                    className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel"
+                  >
+                    {t("Secondary로 변경", "Switch to Secondary")}
+                  </button>
+                </div>
+              </section>
+            </div>
+          )}
+
           {/* PRIVACY */}
           {view === "privacy" && (
             <div className="mt-6 grid gap-6">
@@ -1663,6 +1792,44 @@ export default function SettingsDialog({
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
+      <ConfirmDialog
+        open={promoteConfirmOpen}
+        title={t("Primary로 설정", "Set as Primary")}
+        message={t(
+          "서버가 없기 때문에 다른 디바이스도 Primary일 수 있습니다. 나중에 두 디바이스가 다시 연결되면 역할을 정리해야 합니다. 계속할까요?",
+          "Without a server, other devices might also be Primary. When devices reconnect, roles must be reconciled. Continue?"
+        )}
+        onClose={() => setPromoteConfirmOpen(false)}
+        onConfirm={() => {
+          const info = promoteToPrimary();
+          setDeviceInfo(info);
+          addToast({
+            message: t(
+              "이 디바이스가 Primary로 설정되었습니다.",
+              "This device is now Primary."
+            ),
+          });
+        }}
+      />
+      <ConfirmDialog
+        open={demoteConfirmOpen}
+        title={t("Secondary로 변경", "Switch to Secondary")}
+        message={t(
+          "이 디바이스를 Secondary로 전환합니다. 계속할까요?",
+          "This device will switch to Secondary. Continue?"
+        )}
+        onClose={() => setDemoteConfirmOpen(false)}
+        onConfirm={() => {
+          const info = demoteToSecondary();
+          setDeviceInfo(info);
+          addToast({
+            message: t(
+              "이 디바이스가 Secondary로 설정되었습니다.",
+              "This device is now Secondary."
+            ),
+          });
+        }}
+      />
       <ConfirmDialog
         open={wipeConfirmOpen}
         title={
