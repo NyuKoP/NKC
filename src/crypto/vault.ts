@@ -139,12 +139,82 @@ const encodeEnvelope = (
   envelope: Envelope
 ) => toB64(sodium, toBytes(JSON.stringify(envelope)));
 
-const decodeEnvelope = (
+const decodeEnvelopeStrict = (
   sodium: Awaited<ReturnType<typeof getSodium>>,
   enc_b64: string
 ) => {
-  const envelopeBytes = fromB64(sodium, enc_b64);
-  return JSON.parse(fromBytes(envelopeBytes)) as Envelope;
+  let envelopeBytes: Uint8Array;
+  try {
+    envelopeBytes = fromB64(sodium, enc_b64);
+  } catch {
+    throw new Error("Invalid vault envelope encoding");
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fromBytes(envelopeBytes));
+  } catch {
+    throw new Error("Invalid vault envelope encoding");
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Invalid vault envelope");
+  }
+
+  const data = parsed as {
+    v?: number;
+    alg?: string;
+    nonce_b64?: unknown;
+    ct_b64?: unknown;
+    aad?: unknown;
+  };
+
+  if (data.v !== 2) {
+    throw new Error("Unsupported vault version");
+  }
+  if (data.alg !== "XCHACHA20POLY1305") {
+    throw new Error("Unsupported vault algorithm");
+  }
+  if (typeof data.nonce_b64 !== "string" || typeof data.ct_b64 !== "string") {
+    throw new Error("Invalid vault envelope");
+  }
+
+  const aad = data.aad as { schema?: unknown; type?: unknown; id?: unknown };
+  if (
+    !aad ||
+    typeof aad !== "object" ||
+    aad.schema !== "NKC" ||
+    typeof aad.type !== "string" ||
+    typeof aad.id !== "string"
+  ) {
+    throw new Error("Invalid vault envelope");
+  }
+
+  let nonce: Uint8Array;
+  let ct: Uint8Array;
+  try {
+    nonce = fromB64(sodium, data.nonce_b64);
+    ct = fromB64(sodium, data.ct_b64);
+  } catch {
+    throw new Error("Invalid vault envelope encoding");
+  }
+
+  if (nonce.length !== sodium.crypto_aead_xchacha20poly1305_ietf_NPUBBYTES) {
+    throw new Error("Invalid nonce length");
+  }
+  if (ct.length < sodium.crypto_aead_xchacha20poly1305_ietf_ABYTES) {
+    throw new Error("Invalid ciphertext length");
+  }
+
+  const envelope: Envelope = {
+    v: 2,
+    alg: "XCHACHA20POLY1305",
+    nonce_b64: data.nonce_b64,
+    ct_b64: data.ct_b64,
+    aad: { schema: "NKC", type: aad.type, id: aad.id },
+  };
+
+  return { envelope, nonce, ct };
 };
 
 const shouldLogVaultDebug = (() => {
@@ -166,7 +236,6 @@ const logVaultRecord = (
   ct: Uint8Array
 ) => {
   if (!shouldLogVaultDebug) return;
-  const keyTag = toB64(sodium, key.slice(0, 6));
   console.debug(`[vault:${phase}]`, {
     recordType,
     recordId,
@@ -174,7 +243,6 @@ const logVaultRecord = (
     nonceLen: nonce.length,
     aadLen: aadBytes.length,
     ctLen: ct.length,
-    keyTag,
   });
 };
 
@@ -229,22 +297,11 @@ export const decryptJsonRecord = async <T>(
   enc_b64: string
 ): Promise<T> => {
   const sodium = await getSodium();
-  const envelope = decodeEnvelope(sodium, enc_b64);
-  if (envelope.v !== 2) throw new Error("Unsupported vault version");
+  const { envelope, nonce, ct } = decodeEnvelopeStrict(sodium, enc_b64);
   const recordKey = await deriveRecordKey(vk, recordId, recordType);
-  const nonce = fromB64(sodium, envelope.nonce_b64);
-  const ct = fromB64(sodium, envelope.ct_b64);
   const aadBytes = buildAadBytes(recordType, recordId);
-  if (
-    shouldLogVaultDebug &&
-    (envelope.aad?.type !== recordType || envelope.aad?.id !== recordId)
-  ) {
-    console.debug("[vault:decrypt] aad mismatch", {
-      recordType,
-      recordId,
-      envelopeType: envelope.aad?.type,
-      envelopeId: envelope.aad?.id,
-    });
+  if (envelope.aad.type !== recordType || envelope.aad.id !== recordId) {
+    throw new Error("AAD mismatch");
   }
   logVaultRecord(sodium, "decrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
   const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
@@ -304,21 +361,11 @@ export const decodeBinaryEnvelope = async (
   enc_b64: string
 ) => {
   const sodium = await getSodium();
-  const envelope = decodeEnvelope(sodium, enc_b64);
+  const { envelope, nonce, ct } = decodeEnvelopeStrict(sodium, enc_b64);
   const recordKey = await deriveRecordKey(vk, recordId, recordType);
-  const nonce = fromB64(sodium, envelope.nonce_b64);
-  const ct = fromB64(sodium, envelope.ct_b64);
   const aadBytes = buildAadBytes(recordType, recordId);
-  if (
-    shouldLogVaultDebug &&
-    (envelope.aad?.type !== recordType || envelope.aad?.id !== recordId)
-  ) {
-    console.debug("[vault:decrypt] aad mismatch", {
-      recordType,
-      recordId,
-      envelopeType: envelope.aad?.type,
-      envelopeId: envelope.aad?.id,
-    });
+  if (envelope.aad.type !== recordType || envelope.aad.id !== recordId) {
+    throw new Error("AAD mismatch");
   }
   logVaultRecord(sodium, "decrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
   return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
