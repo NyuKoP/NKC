@@ -13,7 +13,9 @@ import {
 import { useAppStore } from "../app/store";
 import {
   defaultPrivacyPrefs,
+  getDirectP2PRiskAck,
   getPrivacyPrefs,
+  setDirectP2PRiskAck,
   setPrivacyPrefs,
 } from "../security/preferences";
 import { isPinAvailable } from "../security/pin";
@@ -30,6 +32,7 @@ import type { OnionStatus } from "../net/onionControl";
 import { useNetConfigStore } from "../net/netConfigStore";
 import { getRouteInfo } from "../net/routeInfo";
 import type { NetworkMode } from "../net/mode";
+import type { OnionNetwork } from "../net/netConfig";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
@@ -134,6 +137,8 @@ export default function SettingsDialog({
   const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
   const [onionNetworkDraft, setOnionNetworkDraft] = useState(netConfig.onionSelectedNetwork);
   const [onionStatus, setOnionStatus] = useState<OnionStatus | null>(null);
+  const [directP2PAcked, setDirectP2PAcked] = useState(false);
+  const [directP2PConfirmOpen, setDirectP2PConfirmOpen] = useState(false);
   const [torInstallBusy, setTorInstallBusy] = useState(false);
   const [torCheckBusy, setTorCheckBusy] = useState(false);
   const [torApplyBusy, setTorApplyBusy] = useState(false);
@@ -181,6 +186,9 @@ export default function SettingsDialog({
     getPrivacyPrefs()
       .then(setPrivacyPrefsState)
       .catch((e) => console.error("Failed to load privacy prefs", e));
+    getDirectP2PRiskAck()
+      .then(setDirectP2PAcked)
+      .catch(() => setDirectP2PAcked(false));
   }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork]);
 
   useEffect(() => {
@@ -404,6 +412,20 @@ export default function SettingsDialog({
       console.error("Failed to stop onion runtime", error);
       setSaveMessage(t("연결 해제 실패", "Disconnect failed"));
     }
+  };
+
+  const handleModeChange = async (next: NetworkMode) => {
+    if (next === "directP2P" && !directP2PAcked) {
+      setDirectP2PConfirmOpen(true);
+      return;
+    }
+    setMode(next);
+  };
+
+  const handleConfirmDirectP2P = async () => {
+    await setDirectP2PRiskAck(true);
+    setDirectP2PAcked(true);
+    setMode("directP2P");
   };
 
   const formatBytes = (value: number) => {
@@ -894,7 +916,7 @@ export default function SettingsDialog({
                         name="network-mode"
                         className="mt-1"
                         checked={netConfig.mode === opt.value}
-                        onChange={() => setMode(opt.value)}
+                        onChange={() => void handleModeChange(opt.value)}
                       />
                       <div>
                         <div className="text-sm font-medium text-nkc-text">
@@ -943,8 +965,8 @@ export default function SettingsDialog({
                 {netConfig.mode === "directP2P" ? (
                   <div className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
                     {t(
-                      "Direct P2P는 상대에게 IP가 노출될 수 있습니다.",
-                      "Direct P2P may expose your IP to the peer."
+                      "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 사용하세요.",
+                      "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
                     )}
                   </div>
                 ) : null}
@@ -1629,11 +1651,23 @@ export default function SettingsDialog({
           } catch (error) {
             console.error("Failed to delete media", error);
             setSaveMessage(t("미디어 초기화 실패", "Media reset failed"));
-          } finally {
-            setMediaWipeBusy(false);
-          }
+            } finally {
+              setMediaWipeBusy(false);
+            }
+          }}
+        />
+      <ConfirmDialog
+        open={directP2PConfirmOpen}
+        title={t("Direct P2P 위험 안내", "Direct P2P risk warning")}
+        message={t(
+          "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 활성화하세요.",
+          "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
+        )}
+        onConfirm={() => {
+          void handleConfirmDirectP2P();
         }}
+        onClose={() => setDirectP2PConfirmOpen(false)}
       />
-    </>
-  );
-}
+      </>
+    );
+  }
