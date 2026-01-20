@@ -29,7 +29,8 @@ export class RouteController {
     this.trackSendEvent("ack");
   }
 
-  reportSendFail(_kind: string) {
+  reportSendFail(kind: string) {
+    void kind;
     this.trackSendEvent("send_fail");
   }
 

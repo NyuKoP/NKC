@@ -7,19 +7,20 @@ export default function Toasts() {
   const timers = useRef(new Map<string, number>());
 
   useEffect(() => {
+    const timerMap = timers.current;
     toasts.forEach((toast) => {
-      if (!timers.current.has(toast.id)) {
+      if (!timerMap.has(toast.id)) {
         const id = window.setTimeout(() => {
           removeToast(toast.id);
-          timers.current.delete(toast.id);
+          timerMap.delete(toast.id);
         }, 2500);
-        timers.current.set(toast.id, id);
+        timerMap.set(toast.id, id);
       }
     });
 
     return () => {
-      timers.current.forEach((id) => window.clearTimeout(id));
-      timers.current.clear();
+      timerMap.forEach((id) => window.clearTimeout(id));
+      timerMap.clear();
     };
   }, [toasts, removeToast]);
 

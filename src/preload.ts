@@ -5,6 +5,16 @@ type ProxyHealth = {
   message: string;
 };
 
+contextBridge.exposeInMainWorld("electron", {
+  secureStorage: {
+    isAvailable: () => ipcRenderer.invoke("secretStore:isAvailable") as Promise<boolean>,
+    get: (key: string) => ipcRenderer.invoke("secretStore:get", key) as Promise<string | null>,
+    set: (key: string, value: string) =>
+      ipcRenderer.invoke("secretStore:set", key, value) as Promise<boolean>,
+    remove: (key: string) => ipcRenderer.invoke("secretStore:remove", key) as Promise<boolean>,
+  },
+});
+
 contextBridge.exposeInMainWorld("secureProxy", {
   applyProxy: (payload: { proxyUrl: string; enabled: boolean; allowRemote: boolean }) =>
     ipcRenderer.invoke("proxy:apply", payload) as Promise<void>,

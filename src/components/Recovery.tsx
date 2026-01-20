@@ -1,14 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
-import { Copy, Eye, EyeOff, RefreshCcw } from "lucide-react";
+import { Copy, Eye, EyeOff } from "lucide-react";
 import {
-  clearRecoveryConfirmed,
+  cleanupLegacyRecoveryKey,
   copyRecoveryKey,
-  generateRecoveryKey,
-  getRecoveryConfirmed,
-  getSavedRecoveryKey,
+  generateAccountKeyNKC,
+  getRecoveryKeyConfirmed,
   maskKey,
-  saveRecoveryKey,
-  setRecoveryConfirmed,
+  setRecoveryKeyConfirmed,
 } from "../security/recoveryKey";
 
 type RecoveryProps = {
@@ -16,49 +14,57 @@ type RecoveryProps = {
   onDone: () => void;
 };
 
+let cachedRecoveryKey: string | null = null;
+
 export default function Recovery({ onGenerate, onDone }: RecoveryProps) {
   const [recoveryKey, setRecoveryKey] = useState("");
   const [masked, setMasked] = useState(true);
   const [confirmed, setConfirmed] = useState(false);
+  const [alreadyConfirmed, setAlreadyConfirmed] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    getRecoveryConfirmed().then(setConfirmed).catch(() => setConfirmed(false));
-  }, []);
-
-  useEffect(() => {
-    getSavedRecoveryKey()
-      .then((key) => {
-        if (key) {
-          setRecoveryKey(key);
+    let active = true;
+    const loadKey = async () => {
+      setError("");
+      setBusy(true);
+      try {
+        await cleanupLegacyRecoveryKey();
+        const isConfirmed = await getRecoveryKeyConfirmed();
+        if (!active) return;
+        setConfirmed(isConfirmed);
+        if (isConfirmed) {
+          setAlreadyConfirmed(true);
+          setRecoveryKey("");
           setMasked(true);
+          return;
         }
-      })
-      .catch((loadError) =>
-        console.error("Failed to load saved recovery key", loadError)
-      );
-  }, []);
+        if (cachedRecoveryKey) {
+          setRecoveryKey(cachedRecoveryKey);
+          setMasked(true);
+          return;
+        }
+        const key = await generateAccountKeyNKC();
+        if (!active) return;
+        cachedRecoveryKey = key;
+        setRecoveryKey(key);
+        setMasked(true);
+      } catch (loadError) {
+        console.error("Failed to load recovery key", loadError);
+        setError("Failed to load recovery key.");
+      } finally {
+        if (active) setBusy(false);
+      }
+    };
+    void loadKey();
+    return () => {
+      active = false;
+    };
+  }, [onGenerate]);
 
   const maskedValue = useMemo(() => maskKey(recoveryKey, masked), [masked, recoveryKey]);
 
-  const handleGenerate = async () => {
-    setError("");
-    setBusy(true);
-    try {
-      const key = generateRecoveryKey();
-      await onGenerate(key);
-      setRecoveryKey(key);
-      setMasked(true);
-      setConfirmed(false);
-      await clearRecoveryConfirmed();
-    } catch (generateError) {
-      console.error("Failed to generate recovery key", generateError);
-      setError("복구키 생성에 실패했습니다.");
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const handleCopy = async () => {
     setError("");
@@ -100,30 +106,26 @@ export default function Recovery({ onGenerate, onDone }: RecoveryProps) {
               onClick={() => setMasked((value) => !value)}
               aria-label={masked ? "복구키 보기" : "복구키 숨기기"}
               className="inline-flex w-fit items-center gap-1 rounded-nkc border border-nkc-border px-3 py-1 text-xs font-medium text-nkc-text hover:bg-nkc-panelMuted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nkc-accent focus-visible:ring-offset-2 focus-visible:ring-offset-nkc-panel"
-              disabled={!recoveryKey}
+              disabled={!recoveryKey || busy || alreadyConfirmed}
             >
               {masked ? <Eye size={14} /> : <EyeOff size={14} />}
               {masked ? "복구키 보기" : "복구키 숨기기"}
             </button>
           </div>
+          {alreadyConfirmed ? (
+            <div className="mt-2 text-xs text-nkc-muted">
+              Your account key was already generated and cannot be shown again.
+            </div>
+          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={handleCopy}
               className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!recoveryKey}
+              disabled={!recoveryKey || busy || alreadyConfirmed}
             >
               <Copy size={14} />
               복사
-            </button>
-            <button
-              onClick={handleGenerate}
-              className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={busy}
-            >
-              <RefreshCcw size={14} />
-              새 키 생성
-            </button>
-          </div>
+            </button>          </div>
         </div>
 
         <label className="mt-4 flex items-center gap-2 text-xs text-nkc-muted">
@@ -133,11 +135,29 @@ export default function Recovery({ onGenerate, onDone }: RecoveryProps) {
             onChange={async (event) => {
               const next = event.target.checked;
               setConfirmed(next);
-              await setRecoveryConfirmed(next);
-              if (next && recoveryKey) {
-                await saveRecoveryKey(recoveryKey);
+              if (!next) {
+                await setRecoveryKeyConfirmed(false);
+                return;
+              }
+              if (!recoveryKey) return;
+              setBusy(true);
+              setError("");
+              try {
+                await onGenerate(recoveryKey);
+                await setRecoveryKeyConfirmed(true);
+                setAlreadyConfirmed(true);
+                cachedRecoveryKey = null;
+                setRecoveryKey("");
+                setMasked(true);
+              } catch (confirmError) {
+                console.error("Failed to confirm recovery key", confirmError);
+                setError("Failed to confirm recovery key.");
+                setConfirmed(false);
+              } finally {
+                setBusy(false);
               }
             }}
+            disabled={alreadyConfirmed}
           />
           저장했음
         </label>
@@ -148,7 +168,7 @@ export default function Recovery({ onGenerate, onDone }: RecoveryProps) {
           <button
             onClick={onDone}
             className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
-            disabled={!recoveryKey || !confirmed}
+            disabled={alreadyConfirmed ? false : !recoveryKey || !confirmed}
           >
             완료
           </button>

@@ -1,16 +1,20 @@
-import { getSecureStore } from "./secureStore";
+import { getSecretStore } from "./secretStore";
 
 type SessionRecord = {
   v: 1;
   scope: "vault";
   createdAt: number;
   expiresAt: number;
-  mask_b64: string;
   key_b64: string;
 };
 
+type SessionOptions = {
+  remember?: boolean;
+};
+
 const SESSION_KEY = "nkc_session_v1";
-const DEFAULT_TTL_MS = 1000 * 60 * 60 * 24 * 30;
+const MAX_TTL_MS = 1000 * 60 * 60 * 24;
+const DEFAULT_TTL_MS = MAX_TTL_MS;
 
 const toB64 = (bytes: Uint8Array) =>
   btoa(String.fromCharCode(...Array.from(bytes)));
@@ -18,43 +22,15 @@ const toB64 = (bytes: Uint8Array) =>
 const fromB64 = (value: string) =>
   Uint8Array.from(atob(value), (char) => char.charCodeAt(0));
 
-const xorBytes = (a: Uint8Array, b: Uint8Array) => {
-  const out = new Uint8Array(a.length);
-  for (let i = 0; i < a.length; i += 1) {
-    out[i] = a[i] ^ b[i];
-  }
-  return out;
-};
+let memorySession: { vaultKey: Uint8Array; expiresAt: number; createdAt: number } | null = null;
 
-const randomBytes = (length: number) => {
-  if (!globalThis.crypto?.getRandomValues) {
-    throw new Error("Secure random generator is unavailable.");
-  }
-  const bytes = new Uint8Array(length);
-  globalThis.crypto.getRandomValues(bytes);
-  return bytes;
-};
+const clampTtl = (ttlMs: number) => Math.min(ttlMs, MAX_TTL_MS);
 
-export const setSession = async (vaultKey: Uint8Array, ttlMs = DEFAULT_TTL_MS) => {
-  const store = getSecureStore();
-  const mask = randomBytes(vaultKey.length);
-  const masked = xorBytes(vaultKey, mask);
-  const record: SessionRecord = {
-    v: 1,
-    scope: "vault",
-    createdAt: Date.now(),
-    expiresAt: Date.now() + ttlMs,
-    mask_b64: toB64(mask),
-    key_b64: toB64(masked),
-  };
-  await store.set(SESSION_KEY, JSON.stringify(record));
-};
-
-export const getSession = async () => {
-  const store = getSecureStore();
-  const raw = await store.get(SESSION_KEY);
-  if (!raw) return null;
+const loadPersistedSession = async () => {
   try {
+    const store = getSecretStore();
+    const raw = await store.get(SESSION_KEY);
+    if (!raw) return null;
     const record = JSON.parse(raw) as SessionRecord;
     if (record.v !== 1 || record.scope !== "vault") {
       await store.remove(SESSION_KEY);
@@ -64,21 +40,76 @@ export const getSession = async () => {
       await store.remove(SESSION_KEY);
       return null;
     }
-    const mask = fromB64(record.mask_b64);
-    const masked = fromB64(record.key_b64);
-    if (mask.length !== masked.length) {
+    if (!record.key_b64) {
       await store.remove(SESSION_KEY);
       return null;
     }
-    return { vaultKey: xorBytes(masked, mask), expiresAt: record.expiresAt };
-  } catch (error) {
-    console.error("Failed to read session", error);
-    await store.remove(SESSION_KEY);
+    return {
+      vaultKey: fromB64(record.key_b64),
+      expiresAt: record.expiresAt,
+      createdAt: record.createdAt,
+    };
+  } catch {
     return null;
   }
 };
 
+export const setSession = async (
+  vaultKey: Uint8Array,
+  ttlMs = DEFAULT_TTL_MS,
+  options: SessionOptions = {}
+) => {
+  const now = Date.now();
+  const ttl = clampTtl(ttlMs);
+  const expiresAt = now + ttl;
+  memorySession = {
+    vaultKey: new Uint8Array(vaultKey),
+    createdAt: now,
+    expiresAt,
+  };
+
+  if (!options.remember) return;
+  try {
+    const store = getSecretStore();
+    const record: SessionRecord = {
+      v: 1,
+      scope: "vault",
+      createdAt: now,
+      expiresAt,
+      key_b64: toB64(vaultKey),
+    };
+    await store.set(SESSION_KEY, JSON.stringify(record));
+  } catch {
+    return;
+  }
+};
+
+export const getSession = async () => {
+  if (memorySession) {
+    if (memorySession.expiresAt <= Date.now()) {
+      memorySession = null;
+      await clearSession();
+      return null;
+    }
+    return { vaultKey: memorySession.vaultKey, expiresAt: memorySession.expiresAt };
+  }
+
+  const persisted = await loadPersistedSession();
+  if (!persisted) return null;
+  memorySession = {
+    vaultKey: persisted.vaultKey,
+    createdAt: persisted.createdAt,
+    expiresAt: persisted.expiresAt,
+  };
+  return { vaultKey: persisted.vaultKey, expiresAt: persisted.expiresAt };
+};
+
 export const clearSession = async () => {
-  const store = getSecureStore();
-  await store.remove(SESSION_KEY);
+  memorySession = null;
+  try {
+    const store = getSecretStore();
+    await store.remove(SESSION_KEY);
+  } catch {
+    return;
+  }
 };

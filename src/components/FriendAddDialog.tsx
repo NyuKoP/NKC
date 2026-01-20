@@ -88,7 +88,7 @@ export default function FriendAddDialog({
                 value={friendId}
                 onChange={(event) => setFriendId(event.target.value)}
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-                placeholder="NKC-XXXXXXXX"
+                placeholder="NCK-XXXXXXXX"
               />
             </label>
           </div>

@@ -118,7 +118,7 @@ export const getVaultHeader = async (): Promise<VaultHeader | null> => {
   if (!record) return null;
   try {
     return JSON.parse(record.value) as VaultHeader;
-  } catch (error) {
+  } catch {
     await db.meta.delete(VAULT_META_KEY);
     return null;
   }
@@ -663,9 +663,13 @@ const secureEraseMessages = async (records: MessageRecord[]) => {
       };
     })
   );
-  await db.messages.bulkPut(
-    sanitized.map(({ updatedAt: _updatedAt, ...record }) => record)
-  );
+    await db.messages.bulkPut(
+      sanitized.map((record) => {
+        const { updatedAt, ...rest } = record;
+        void updatedAt;
+        return rest;
+      })
+    );
   await db.messages.bulkDelete(records.map((record) => record.id));
 };
 

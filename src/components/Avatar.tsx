@@ -60,7 +60,7 @@ export default function Avatar({ name, avatarRef, size = 40, className }: Avatar
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [avatarRef?.ownerId, avatarRef?.total]);
+  }, [avatarRef]);
 
   return (
     <div

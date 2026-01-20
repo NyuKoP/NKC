@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, net, session } from "electron";
+import { app, BrowserWindow, ipcMain, net, safeStorage, session } from "electron";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -22,12 +22,13 @@ type ProxyHealth = {
 };
 
 const isDev = !app.isPackaged;
+const SECRET_STORE_FILENAME = "secret-store.json";
 
 const isLocalhostProxyUrl = (proxyUrl: string) => {
   try {
     const parsed = new URL(proxyUrl);
     return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
-  } catch (error) {
+  } catch {
     return false;
   }
 };
@@ -64,6 +65,70 @@ export const registerProxyIpc = () => {
   });
   ipcMain.handle("proxy:check", async () => {
     return checkProxy();
+  });
+};
+
+const readSecretStore = async () => {
+  const filePath = path.join(app.getPath("userData"), SECRET_STORE_FILENAME);
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, string>;
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error) {
+      const code = String((error as { code?: unknown }).code ?? "");
+      if (code === "ENOENT") return {};
+    }
+    return {};
+  }
+};
+
+const writeSecretStore = async (payload: Record<string, string>) => {
+  const filePath = path.join(app.getPath("userData"), SECRET_STORE_FILENAME);
+  await fs.writeFile(filePath, JSON.stringify(payload), "utf8");
+};
+
+const registerSecretStoreIpc = () => {
+  ipcMain.handle("secretStore:get", async (_event, key: string) => {
+    if (!safeStorage.isEncryptionAvailable()) {
+      return null;
+    }
+    const data = await readSecretStore();
+    const entry = data[key];
+    if (!entry) return null;
+    try {
+      return safeStorage.decryptString(Buffer.from(entry, "base64"));
+    } catch {
+      return null;
+    }
+  });
+
+  ipcMain.handle("secretStore:set", async (_event, key: string, value: string) => {
+    if (!safeStorage.isEncryptionAvailable()) {
+      return false;
+    }
+    const data = await readSecretStore();
+    const encrypted = safeStorage.encryptString(value);
+    data[key] = encrypted.toString("base64");
+    await writeSecretStore(data);
+    return true;
+  });
+
+  ipcMain.handle("secretStore:remove", async (_event, key: string) => {
+    if (!safeStorage.isEncryptionAvailable()) {
+      return false;
+    }
+    const data = await readSecretStore();
+    if (key in data) {
+      delete data[key];
+      await writeSecretStore(data);
+    }
+    return true;
+  });
+
+  ipcMain.handle("secretStore:isAvailable", async () => {
+    return safeStorage.isEncryptionAvailable();
   });
 };
 
@@ -521,12 +586,14 @@ const canReach = async (url: string, timeoutMs = 1200) =>
   new Promise<boolean>((resolve) => {
     try {
       const request = net.request(url);
-      const timeout = setTimeout(() => {
-        try {
-          request.abort();
-        } catch {}
-        resolve(false);
-      }, timeoutMs);
+    const timeout = setTimeout(() => {
+      try {
+        request.abort();
+      } catch {
+        // intentionally ignored
+      }
+      resolve(false);
+    }, timeoutMs);
       request.on("response", (response) => {
         const ok = Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 400);
         response.on("data", () => {});
@@ -540,7 +607,7 @@ const canReach = async (url: string, timeoutMs = 1200) =>
         resolve(false);
       });
       request.end();
-    } catch (error) {
+    } catch {
       resolve(false);
     }
   });
@@ -697,6 +764,7 @@ app.whenReady().then(() => {
     console.log("[main] VITE_DEV_SERVER_URL =", process.env.VITE_DEV_SERVER_URL ?? "");
   }
   registerProxyIpc();
+  registerSecretStoreIpc();
   registerOnionIpc();
   createMainWindow();
   app.on("activate", () => {

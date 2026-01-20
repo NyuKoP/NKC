@@ -1,4 +1,4 @@
-import { getSecureStore } from "./secureStore";
+import { getSecretStore, isSecretStoreAvailable } from "./secretStore";
 import { getVaultKey } from "../crypto/sessionKeyring";
 import { getSodium } from "./sodium";
 
@@ -29,16 +29,43 @@ type PinRecord = PinRecordV1 | PinRecordV2;
 
 export type PinVerifyResult =
   | { ok: true; vaultKey: Uint8Array }
-  | { ok: false; reason: "not_set" | "locked" | "mismatch"; retryAfterMs?: number };
+  | {
+      ok: false;
+      reason: "not_set" | "locked" | "mismatch" | "unavailable";
+      retryAfterMs?: number;
+      message?: string;
+    };
 
 const PIN_RECORD_KEY = "nkc_pin_v1";
 const PIN_RESET_KEY = "nkc_pin_reset_v1";
 const MAX_BACKOFF_MS = 30_000;
 const PIN_ENC_DOMAIN = "NKC_PIN_ENC_V1";
+const PIN_UNAVAILABLE_MESSAGE = "PIN lock is unavailable on this platform/build.";
+const PIN_FORMAT = /^\d{4,8}$/;
 
-const normalizePin = (pin: string) => pin.trim();
+export class PinUnavailableError extends Error {
+  code = "PIN_UNAVAILABLE";
+  constructor(message = PIN_UNAVAILABLE_MESSAGE) {
+    super(message);
+    this.name = "PinUnavailableError";
+  }
+}
 
-const isPinValid = (pin: string) => /^\d{4,8}$/.test(pin);
+export const isPinUnavailableError = (error: unknown): error is PinUnavailableError =>
+  Boolean(
+    error &&
+      typeof error === "object" &&
+      "code" in error &&
+      (error as { code?: string }).code === "PIN_UNAVAILABLE"
+  );
+
+export const assertValidPin = (pin: string) => {
+  const normalized = pin.trim();
+  if (!PIN_FORMAT.test(normalized)) {
+    throw new Error("PIN must be 4-8 digits.");
+  }
+  return normalized;
+};
 
 const toBytes = (value: string) => new TextEncoder().encode(value);
 
@@ -62,8 +89,20 @@ const derivePinEncKey = (
     concatBytes([toBytes(PIN_ENC_DOMAIN), toBytes(pin)])
   );
 
+export const isPinAvailable = async () => {
+  return isSecretStoreAvailable();
+};
+
+const requirePinAvailable = async () => {
+  if (!(await isPinAvailable())) {
+    throw new PinUnavailableError();
+  }
+};
+
+const getPinStore = () => getSecretStore();
+
 const readPinRecord = async () => {
-  const store = getSecureStore();
+  const store = getPinStore();
   const raw = await store.get(PIN_RECORD_KEY);
   if (!raw) return null;
   try {
@@ -92,12 +131,12 @@ const readPinRecord = async () => {
 };
 
 const writePinRecord = async (record: PinRecord) => {
-  const store = getSecureStore();
+  const store = getPinStore();
   await store.set(PIN_RECORD_KEY, JSON.stringify(record));
 };
 
 const setPinNeedsReset = async (needsReset: boolean) => {
-  const store = getSecureStore();
+  const store = getPinStore();
   if (!needsReset) {
     await store.remove(PIN_RESET_KEY);
     return;
@@ -109,7 +148,7 @@ const setPinNeedsReset = async (needsReset: boolean) => {
 };
 
 const getPinNeedsReset = async () => {
-  const store = getSecureStore();
+  const store = getPinStore();
   const raw = await store.get(PIN_RESET_KEY);
   if (!raw) return false;
   try {
@@ -142,6 +181,15 @@ const bumpFailures = (record: PinRecord) => {
 };
 
 export const getPinStatus = async () => {
+  if (!(await isPinAvailable())) {
+    return {
+      enabled: false,
+      needsReset: false,
+      lockedUntil: 0,
+      failures: 0,
+      available: false,
+    };
+  }
   const record = await readPinRecord();
   const needsReset = await getPinNeedsReset();
   return {
@@ -149,17 +197,16 @@ export const getPinStatus = async () => {
     needsReset,
     lockedUntil: record?.lockedUntil ?? 0,
     failures: record?.failures ?? 0,
+    available: true,
   };
 };
 
 export const setPin = async (pin: string) => {
-  const normalized = normalizePin(pin);
-  if (!isPinValid(normalized)) {
-    throw new Error("PIN은 4-8자리 숫자여야 합니다.");
-  }
+  await requirePinAvailable();
+  const normalized = assertValidPin(pin);
   const vk = getVaultKey();
   if (!vk) {
-    throw new Error("금고 키를 사용할 수 없습니다.");
+    throw new Error("Vault key is unavailable.");
   }
   const sodium = await getSodium();
   const opslimit = sodium.crypto_pwhash_OPSLIMIT_MODERATE;
@@ -182,6 +229,9 @@ export const setPin = async (pin: string) => {
 };
 
 export const verifyPin = async (pin: string): Promise<PinVerifyResult> => {
+  if (!(await isPinAvailable())) {
+    return { ok: false, reason: "unavailable", message: PIN_UNAVAILABLE_MESSAGE };
+  }
   const record = await readPinRecord();
   if (!record) {
     if (await getPinNeedsReset()) {
@@ -196,8 +246,8 @@ export const verifyPin = async (pin: string): Promise<PinVerifyResult> => {
       retryAfterMs: record.lockedUntil - Date.now(),
     };
   }
-  const normalized = normalizePin(pin);
-  if (!isPinValid(normalized)) {
+  const normalized = pin.trim();
+  if (!PIN_FORMAT.test(normalized)) {
     const next = bumpFailures(record);
     await writePinRecord(next);
     return {
@@ -291,13 +341,15 @@ export const verifyPin = async (pin: string): Promise<PinVerifyResult> => {
 };
 
 export const clearPin = async () => {
-  const store = getSecureStore();
+  await requirePinAvailable();
+  const store = getPinStore();
   await store.remove(PIN_RECORD_KEY);
   await setPinNeedsReset(false);
 };
 
 export const clearPinRecord = async () => {
-  const store = getSecureStore();
+  await requirePinAvailable();
+  const store = getPinStore();
   await store.remove(PIN_RECORD_KEY);
   await setPinNeedsReset(true);
 };

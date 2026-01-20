@@ -16,6 +16,7 @@ import {
   getPrivacyPrefs,
   setPrivacyPrefs,
 } from "../security/preferences";
+import { isPinAvailable } from "../security/pin";
 import {
   applyOnionUpdate,
   checkOnionUpdates,
@@ -127,6 +128,7 @@ export default function SettingsDialog({
   // pin
   const [pinDraft, setPinDraft] = useState("");
   const [pinError, setPinError] = useState("");
+  const [pinAvailable, setPinAvailable] = useState(true);
 
   // network
   const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
@@ -180,6 +182,13 @@ export default function SettingsDialog({
       .then(setPrivacyPrefsState)
       .catch((e) => console.error("Failed to load privacy prefs", e));
   }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork]);
+
+  useEffect(() => {
+    if (!open) return;
+    isPinAvailable()
+      .then(setPinAvailable)
+      .catch(() => setPinAvailable(false));
+  }, [open]);
 
   useEffect(() => {
     const unsubscribe = onConnectionStatus(setConnectionStatus);
@@ -370,17 +379,6 @@ export default function SettingsDialog({
     }
   };
 
-  const handleStopOnion = async () => {
-    try {
-      await setOnionMode(false, onionNetworkDraft);
-      setSaveMessage(t("연결 해제됨", "Disconnected"));
-      await refreshOnionStatus();
-    } catch (error) {
-      console.error("Failed to stop onion runtime", error);
-      setSaveMessage(t("연결 해제 실패", "Disconnect failed"));
-    }
-  };
-
   const handleConnectOnion = async (network: OnionNetwork) => {
     try {
       setOnionNetworkDraft(network);
@@ -475,6 +473,10 @@ export default function SettingsDialog({
 
   const handleSetPin = async () => {
     setPinError("");
+    if (!pinAvailable) {
+      setPinError(t("PIN lock is unavailable on this platform/build.", "PIN lock is unavailable on this platform/build."));
+      return;
+    }
     const value = pinDraft.trim();
     if (value.length < 4) {
       setPinError(t("PIN은 최소 4자리 이상이어야 합니다.", "PIN must be at least 4 digits."));
@@ -491,6 +493,10 @@ export default function SettingsDialog({
 
   const handleTogglePin = async (next: boolean) => {
     setPinError("");
+    if (!pinAvailable) {
+      setPinError(t("PIN lock is unavailable on this platform/build.", "PIN lock is unavailable on this platform/build."));
+      return;
+    }
     if (!next) {
       await onDisablePin();
       setPinDraft("");
@@ -633,6 +639,9 @@ export default function SettingsDialog({
           <Dialog.Title className="text-lg font-semibold text-nkc-text">
             {t("설정", "Settings")}
           </Dialog.Title>
+          <Dialog.Description className="sr-only">
+            {t("설정 대화상자", "Settings dialog")}
+          </Dialog.Description>
 
           {/* MAIN */}
           {view === "main" && (
@@ -1257,8 +1266,15 @@ export default function SettingsDialog({
                       type="checkbox"
                       checked={pinEnabled}
                       onChange={(e) => void handleTogglePin(e.target.checked)}
+                      disabled={!pinAvailable}
                     />
                   </label>
+
+                  {!pinAvailable ? (
+                    <div className="text-xs text-nkc-muted">
+                      {t("PIN lock is unavailable on this platform/build.", "PIN lock is unavailable on this platform/build.")}
+                    </div>
+                  ) : null}
 
                   {pinEnabled ? (
                     <div className="grid gap-2">
@@ -1271,12 +1287,13 @@ export default function SettingsDialog({
                         onChange={(e) => setPinDraft(e.target.value)}
                         placeholder={t("4-8자리", "4-8 digits")}
                         className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
+                        disabled={!pinAvailable}
                       />
                       <button
                         type="button"
                         onClick={() => void handleSetPin()}
                         className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
-                        disabled={!pinDraft}
+                        disabled={!pinDraft || !pinAvailable}
                       >
                         {t("PIN 설정", "Set PIN")}
                       </button>

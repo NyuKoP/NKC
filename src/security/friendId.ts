@@ -1,6 +1,7 @@
-import { getSecureStore } from "./secureStore";
+import { getPublicStore } from "./publicStore";
 
 const SHARE_ID_KEY = "nkc_share_id_v1";
+const SHARE_ID_PREFIX = "NCK-";
 
 const toHex = (buffer: ArrayBuffer) =>
   Array.from(new Uint8Array(buffer))
@@ -17,17 +18,24 @@ const hashId = async (value: string) => {
 };
 
 export const getShareId = async (userId: string) => {
-  const store = getSecureStore();
+  const store = getPublicStore();
   const cached = await store.get(SHARE_ID_KEY);
   if (cached) return cached;
   try {
     const hashed = await hashId(userId);
-    const shareId = `NKC-${hashed.slice(0, 24)}`;
+    const shareId = `${SHARE_ID_PREFIX}${hashed.slice(0, 24)}`;
     await store.set(SHARE_ID_KEY, shareId);
     return shareId;
-  } catch (error) {
-    console.error("Failed to derive share ID", error);
-    const fallback = `NKC-${userId.slice(0, 12)}`;
+  } catch {
+    const fallbackBytes = new Uint8Array(12);
+    if (globalThis.crypto?.getRandomValues) {
+      globalThis.crypto.getRandomValues(fallbackBytes);
+    } else {
+      for (let i = 0; i < fallbackBytes.length; i += 1) {
+        fallbackBytes[i] = Math.floor(Math.random() * 256);
+      }
+    }
+    const fallback = `${SHARE_ID_PREFIX}${toHex(fallbackBytes.buffer)}`;
     await store.set(SHARE_ID_KEY, fallback);
     return fallback;
   }

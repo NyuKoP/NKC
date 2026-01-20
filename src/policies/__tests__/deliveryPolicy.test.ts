@@ -7,8 +7,11 @@ type OutboxRecord = {
   createdAtMs: number;
   expiresAtMs: number;
   lastAttemptAtMs?: number;
+  nextAttemptAtMs: number;
   attempts: number;
-  status: "pending" | "acked" | "expired";
+  status: "pending" | "in_flight" | "acked" | "expired";
+  inFlightAtMs?: number;
+  ackDeadlineMs?: number;
 };
 
 const store = new Map<string, OutboxRecord>();
@@ -50,6 +53,7 @@ describe("deliveryPolicy", () => {
       ciphertext: "enc",
       createdAtMs: 1,
       expiresAtMs: 2,
+      nextAttemptAtMs: 1,
       attempts: 0,
       status: "pending",
     });
@@ -63,6 +67,7 @@ describe("deliveryPolicy", () => {
       ciphertext: "enc",
       createdAtMs: 1,
       expiresAtMs: 2,
+      nextAttemptAtMs: 1,
       attempts: 0,
       status: "pending",
     });
@@ -79,6 +84,7 @@ describe("deliveryPolicy", () => {
       ciphertext: "enc",
       createdAtMs: 1,
       expiresAtMs: 2,
+      nextAttemptAtMs: 1,
       attempts: 0,
       status: "pending",
     });
@@ -88,6 +94,7 @@ describe("deliveryPolicy", () => {
       ciphertext: "enc",
       createdAtMs: 3,
       expiresAtMs: 100,
+      nextAttemptAtMs: 3,
       attempts: 0,
       status: "pending",
     });
@@ -97,6 +104,7 @@ describe("deliveryPolicy", () => {
       ciphertext: "enc",
       createdAtMs: 1,
       expiresAtMs: 0,
+      nextAttemptAtMs: 1,
       attempts: 0,
       status: "acked",
     });
@@ -106,6 +114,7 @@ describe("deliveryPolicy", () => {
       ciphertext: "enc",
       createdAtMs: 1,
       expiresAtMs: 10,
+      nextAttemptAtMs: 1,
       attempts: 0,
       status: "pending",
     });
