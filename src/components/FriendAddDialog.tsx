@@ -1,29 +1,33 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Copy, UserPlus } from "lucide-react";
+import { Copy, Eye, EyeOff, UserPlus } from "lucide-react";
 
 type FriendAddDialogProps = {
   open: boolean;
-  myId: string;
+  myCode: string;
   onOpenChange: (open: boolean) => void;
-  onCopyId: () => Promise<void>;
-  onAdd: (friendId: string) => Promise<{ ok: boolean; error?: string }>;
+  onCopyCode: () => Promise<void>;
+  onAdd: (payload: { code: string; psk?: string }) => Promise<{ ok: boolean; error?: string }>;
 };
 
 export default function FriendAddDialog({
   open,
-  myId,
+  myCode,
   onOpenChange,
-  onCopyId,
+  onCopyCode,
   onAdd,
 }: FriendAddDialogProps) {
-  const [friendId, setFriendId] = useState("");
+  const [code, setCode] = useState("");
+  const [psk, setPsk] = useState("");
+  const [showPsk, setShowPsk] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!open) {
-      setFriendId("");
+      setCode("");
+      setPsk("");
+      setShowPsk(false);
       setError("");
       setBusy(false);
     }
@@ -33,12 +37,13 @@ export default function FriendAddDialog({
     setError("");
     setBusy(true);
     try {
-      const result = await onAdd(friendId);
+      const result = await onAdd({ code, psk: psk.trim() ? psk : undefined });
       if (!result.ok) {
         setError(result.error || "친구 추가에 실패했습니다.");
         return;
       }
-      setFriendId("");
+      setCode("");
+      setPsk("");
       onOpenChange(false);
     } catch (addError) {
       console.error("Friend add failed", addError);
@@ -57,24 +62,24 @@ export default function FriendAddDialog({
             친구 추가
           </Dialog.Title>
           <Dialog.Description className="mt-2 text-sm text-nkc-muted">
-            내 ID를 공유하거나 친구 ID를 추가하세요.
+            친구 코드(NKC1-...)를 교환해 서로를 추가하세요.
           </Dialog.Description>
 
           <div className="mt-4 grid gap-3">
             <label className="text-sm">
-              내 ID
+              내 친구 코드
               <div className="mt-2 flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
                 <input
-                  value={myId}
+                  value={myCode}
                   readOnly
                   autoComplete="off"
                   className="w-full bg-transparent text-sm text-nkc-text focus:outline-none"
-                  placeholder="ID 생성 중..."
+                  placeholder="코드를 생성하는 중..."
                 />
                 <button
-                  onClick={onCopyId}
+                  onClick={onCopyCode}
                   className="flex items-center gap-1 rounded-nkc border border-nkc-border px-2 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!myId}
+                  disabled={!myCode}
                 >
                   <Copy size={12} />
                   복사
@@ -83,13 +88,34 @@ export default function FriendAddDialog({
             </label>
 
             <label className="text-sm">
-              친구 ID
-              <input
-                value={friendId}
-                onChange={(event) => setFriendId(event.target.value)}
-                className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-                placeholder="NCK-XXXXXXXX"
+              친구 코드
+              <textarea
+                value={code}
+                onChange={(event) => setCode(event.target.value)}
+                className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
+                placeholder="NKC1-..."
+                rows={3}
               />
+            </label>
+
+            <label className="text-sm">
+              PSK (선택)
+              <div className="mt-2 flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
+                <input
+                  value={psk}
+                  onChange={(event) => setPsk(event.target.value)}
+                  type={showPsk ? "text" : "password"}
+                  className="w-full bg-transparent text-sm text-nkc-text focus:outline-none"
+                  placeholder="추가 암호 (선택)"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPsk((prev) => !prev)}
+                  className="rounded-nkc border border-nkc-border px-2 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                >
+                  {showPsk ? <EyeOff size={12} /> : <Eye size={12} />}
+                </button>
+              </div>
             </label>
           </div>
 
@@ -104,7 +130,7 @@ export default function FriendAddDialog({
             <button
               onClick={handleAdd}
               className="flex items-center gap-2 rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!friendId.trim() || busy}
+              disabled={!code.trim() || busy}
             >
               <UserPlus size={14} />
               추가
@@ -115,3 +141,4 @@ export default function FriendAddDialog({
     </Dialog.Root>
   );
 }
+

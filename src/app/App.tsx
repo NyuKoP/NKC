@@ -18,14 +18,14 @@ import {
   resetVaultStorage,
   getVaultHeader,
   listConversations,
-  listMessagesByConv,
   listProfiles,
   lockVault,
+  repairVaultTextEncoding,
   verifyVaultKeyId,
   rotateVaultKeys,
   deleteProfile,
   saveConversation,
-  saveMessage,
+  saveMessageEnvelope,
   saveMessageMedia,
   saveProfile,
   saveProfilePhoto,
@@ -38,13 +38,26 @@ import {
 } from "../db/repo";
 import { encryptJsonRecord, validateRecoveryKey } from "../crypto/vault";
 import { getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
-import { getShareId } from "../security/friendId";
+import { decodeFriendCodeV1, encodeFriendCodeV1 } from "../security/friendCode";
+import { applyTofu, computeFriendId } from "../security/trust";
 import {
   clearSession as clearStoredSession,
   getSession as getStoredSession,
   setSession as setStoredSession,
 } from "../security/session";
 import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin as savePin, verifyPin } from "../security/pin";
+import { loadConversationMessages } from "../security/messageStore";
+import { setFriendPsk } from "../security/pskStore";
+import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
+import {
+  getDhPrivateKey,
+  getIdentityPrivateKey,
+  getIdentityPublicKey,
+  getOrCreateDhKeypair,
+  getOrCreateIdentityKeypair,
+} from "../security/identityKeys";
+import { getOrCreateDeviceId } from "../security/deviceRole";
+import { deriveConversationKey, encryptEnvelope } from "../crypto/box";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
@@ -152,6 +165,8 @@ export default function App() {
         const keyOk = await withTimeout(verifyVaultKeyId(vk), "verifyVaultKeyId");
         if (!keyOk) throw new Error("Vault key mismatch");
       }
+
+      await withTimeout(repairVaultTextEncoding(), "repairVaultTextEncoding");
 
       const profiles = await withTimeout(listProfiles(), "listProfiles");
       const user = profiles.find((profile) => profile.kind === "user") || null;
@@ -364,7 +379,7 @@ export default function App() {
     onboardingLockRef.current = true;
 
     if (!validateRecoveryKey(recoveryKey)) {
-      addToast({ message: "???? ?? ?? ? ?????. (?: NKC-...)" });
+      addToast({ message: "복구키 형식이 올바르지 않습니다. (예: NKC-...)" });
       onboardingLockRef.current = false;
       return;
     }
@@ -554,7 +569,7 @@ export default function App() {
   const handleGenerateRecoveryKey = async (newKey: string) => {
     try {
       if (!validateRecoveryKey(newKey)) {
-      addToast({ message: "???? ?? ?? ? ?????. (?: NKC-...)" });
+        addToast({ message: "복구키 형식이 올바르지 않습니다. (예: NKC-...)" });
         return;
       }
 
