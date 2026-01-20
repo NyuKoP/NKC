@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "cross-env VITE_DEV_SERVER_URL=http://localhost:5173 vite dev",
     "generate:onion-pins": "node scripts/generateOnionPins.mjs",
+    "lint:encoding": "node scripts/check-utf8.mjs",
     "build": "tsc -b && vite build",
     "test": "vitest",
     "test:ui": "playwright test",
