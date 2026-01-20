@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "./store";
 import Onboarding from "../components/Onboarding";
@@ -44,8 +44,7 @@ import {
   getSession as getStoredSession,
   setSession as setStoredSession,
 } from "../security/session";
-import { clearPin, clearPinRecord, getPinStatus, setPin as savePin, verifyPin } from "../security/pin";
-import { clearRecoveryConfirmed } from "../security/recoveryKey";
+import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin as savePin, verifyPin } from "../security/pin";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
@@ -97,27 +96,30 @@ export default function App() {
   const connectionToastKey = "nkc.sessionConnectedToastShown";
 
   const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
-  const devLog = (message: string, detail?: Record<string, unknown>) => {
-    if (!isDev) return;
-    if (detail) console.debug(`[app] ${message}`, detail);
-    else console.debug(`[app] ${message}`);
-  };
+  const devLog = useCallback(
+    (message: string, detail?: Record<string, unknown>) => {
+      if (!isDev) return;
+      if (detail) console.debug(`[app] ${message}`, detail);
+      else console.debug(`[app] ${message}`);
+    },
+    [isDev]
+  );
 
   const settingsOpen = location.pathname === "/settings";
 
-  const clearConnectionToastGuard = () => {
+  const clearConnectionToastGuard = useCallback(() => {
     connectionToastShown.current = false;
     if (typeof window !== "undefined") {
       window.sessionStorage.removeItem(connectionToastKey);
     }
-  };
+  }, [connectionToastKey]);
 
-  const resetAppState = () => {
+  const resetAppState = useCallback(() => {
     clearConnectionToastGuard();
     setSessionState({ unlocked: false, vkInMemory: false });
     setData({ user: null, friends: [], convs: [], messagesByConv: {} });
     setSelectedConv(null);
-  };
+  }, [clearConnectionToastGuard, setData, setSelectedConv, setSessionState]);
 
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;
@@ -126,19 +128,22 @@ export default function App() {
       .catch((error) => console.error("Failed to derive share ID", error));
   }, [friendAddOpen, userProfile]);
 
-  const withTimeout = async <T,>(promise: Promise<T>, label: string, ms = 15000) => {
-    let timer: number | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = window.setTimeout(() => reject(new Error(`${label} timed out`)), ms);
-    });
-    try {
-      return await Promise.race([promise, timeout]);
-    } finally {
-      if (timer) window.clearTimeout(timer);
-    }
-  };
+  const withTimeout = useCallback(
+    async <T,>(promise: Promise<T>, label: string, ms = 15000) => {
+      let timer: number | undefined;
+      const timeout = new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error(`${label} timed out`)), ms);
+      });
+      try {
+        return await Promise.race([promise, timeout]);
+      } finally {
+        if (timer) window.clearTimeout(timer);
+      }
+    },
+    []
+  );
 
-  const hydrateVault = async () => {
+  const hydrateVault = useCallback(async () => {
     try {
       devLog("hydrate:start");
 
@@ -195,7 +200,7 @@ export default function App() {
         setMode("locked");
       } else {
         if (pinStatus.needsReset) {
-          addToast({ message: "PIN을 다시 설정해야 해요. 복구키로 잠금을 해제해 주세요." });
+          addToast({ message: "PIN must be reset. Unlock with the recovery key." });
         }
         setDefaultTab("import");
         setMode("onboarding");
@@ -203,7 +208,18 @@ export default function App() {
 
       addToast({ message: "세션이 만료되었습니다. 다시 로그인해 주세요." });
     }
-  };
+  }, [
+    addToast,
+    devLog,
+    resetAppState,
+    setData,
+    setDefaultTab,
+    setMode,
+    setPinEnabled,
+    setPinNeedsReset,
+    setSessionState,
+    withTimeout,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -235,7 +251,7 @@ export default function App() {
           setMode("locked");
         } else {
           if (pinStatus.needsReset) {
-            addToast({ message: "PIN을 다시 설정해야 해요. 복구키로 잠금을 해제해 주세요." });
+          addToast({ message: "PIN must be reset. Unlock with the recovery key." });
           }
           setDefaultTab("import");
           setMode("onboarding");
@@ -252,7 +268,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [addToast, setMode]);
+  }, [addToast, hydrateVault, setDefaultTab, setMode, setPinEnabled, setPinNeedsReset]);
 
   useEffect(() => {
     if (ui.mode !== "app") return;
@@ -348,7 +364,7 @@ export default function App() {
     onboardingLockRef.current = true;
 
     if (!validateRecoveryKey(recoveryKey)) {
-      addToast({ message: "유효하지 않은 복구키 형식입니다. (예: NKC-XXXX-XXXX-XXXX-XXXX 또는 64자리 HEX)" });
+      addToast({ message: "???? ?? ?? ? ?????. (?: NKC-...)" });
       onboardingLockRef.current = false;
       return;
     }
@@ -391,6 +407,12 @@ export default function App() {
     const result = await verifyPin(pin);
 
     if (!result.ok) {
+      if (result.reason === "unavailable") {
+        return {
+          ok: false,
+          error: result.message || "PIN lock is unavailable on this platform/build.",
+        };
+      }
       if (result.reason === "not_set") {
         await clearPinRecord();
         setPinEnabled(true);
@@ -398,12 +420,12 @@ export default function App() {
         setDefaultTab("import");
         setMode("onboarding");
         navigate("/");
-        return { ok: false, error: "PIN을 다시 설정해야 해요. 복구키로 잠금을 해제해 주세요." };
+        return { ok: false, error: "PIN must be reset. Unlock with the recovery key." };
       }
 
       return {
         ok: false,
-        error: result.reason === "locked" ? "잠시 후 다시 시도해 주세요." : "PIN이 올바르지 않습니다.",
+        error: result.reason === "locked" ? "Please try again later." : "PIN is incorrect.",
         retryAfterMs: result.retryAfterMs,
       };
     }
@@ -419,17 +441,17 @@ export default function App() {
       await clearPinRecord();
       setPinEnabled(true);
       setPinNeedsReset(true);
-      return { ok: false, error: "잠금 해제에 실패했습니다." };
+      return { ok: false, error: "Unlock failed." };
     }
   };
 
-  const handleLock = async () => {
+  const handleLock = useCallback(async () => {
     if (!pinEnabled || pinNeedsReset) {
       if (pinNeedsReset) {
-        addToast({ message: "PIN을 다시 설정해야 잠금을 사용할 수 있어요." });
+        addToast({ message: "Reset your PIN to enable lock." });
         return;
       }
-      addToast({ message: "PIN 설정 후 잠금을 사용할 수 있어요." });
+      addToast({ message: "Set a PIN to enable lock." });
       return;
     }
 
@@ -441,9 +463,9 @@ export default function App() {
       navigate("/unlock");
     } catch (error) {
       console.error("Failed to lock", error);
-      addToast({ message: "잠금 처리에 실패했습니다." });
+      addToast({ message: "Lock failed." });
     }
-  };
+  }, [addToast, navigate, pinEnabled, pinNeedsReset, resetAppState, setMode]);
 
   useEffect(() => {
     if (!pinEnabled || pinNeedsReset || ui.mode !== "app") return;
@@ -461,7 +483,7 @@ export default function App() {
 
     document.addEventListener("visibilitychange", handleVisibility);
     return () => document.removeEventListener("visibilitychange", handleVisibility);
-  }, [pinEnabled, pinNeedsReset, ui.mode]);
+  }, [handleLock, pinEnabled, pinNeedsReset, ui.mode]);
 
   const handleLogout = async () => {
     try {
@@ -478,7 +500,7 @@ export default function App() {
         navigate("/unlock");
       } else {
         if (pinStatus.needsReset) {
-          addToast({ message: "PIN을 다시 설정해야 해요. 복구키로 잠금을 해제해 주세요." });
+          addToast({ message: "PIN must be reset. Unlock with the recovery key." });
         }
         setDefaultTab("import");
         setMode("onboarding");
@@ -495,13 +517,20 @@ export default function App() {
       await savePin(pin);
       setPinEnabled(true);
       setPinNeedsReset(false);
-      addToast({ message: "PIN이 설정되었습니다." });
+      addToast({ message: "PIN set." });
       return { ok: true as const };
     } catch (error) {
-      console.error("Failed to set PIN", error);
+      if (isPinUnavailableError(error)) {
+        return {
+          ok: false as const,
+          error: "PIN lock is unavailable on this platform/build.",
+        };
+      }
+      const message = String((error as { message?: unknown })?.message ?? error);
+      console.error("Failed to set PIN", message);
       return {
         ok: false as const,
-        error: error instanceof Error ? error.message : "PIN 설정에 실패했습니다.",
+        error: message || "Failed to set PIN.",
       };
     }
   };
@@ -511,17 +540,21 @@ export default function App() {
       await clearPin();
       setPinEnabled(false);
       setPinNeedsReset(false);
-      addToast({ message: "PIN 잠금이 해제되었습니다." });
+      addToast({ message: "PIN disabled." });
     } catch (error) {
+      if (isPinUnavailableError(error)) {
+        addToast({ message: "PIN lock is unavailable on this platform/build." });
+        return;
+      }
       console.error("Failed to clear PIN", error);
-      addToast({ message: "PIN 해제에 실패했습니다." });
+      addToast({ message: "Failed to disable PIN." });
     }
   };
 
   const handleGenerateRecoveryKey = async (newKey: string) => {
     try {
       if (!validateRecoveryKey(newKey)) {
-        addToast({ message: "유효하지 않은 복구키 형식입니다. (예: NKC-XXXX-XXXX-XXXX-XXXX 또는 64자리 HEX)" });
+      addToast({ message: "???? ?? ?? ? ?????. (?: NKC-...)" });
         return;
       }
 
@@ -533,7 +566,6 @@ export default function App() {
       setPinEnabled(true);
       setPinNeedsReset(true);
 
-      await clearRecoveryConfirmed();
       addToast({ message: "복구키가 변경되었습니다. PIN을 다시 설정해 주세요." });
     } catch (error) {
       console.error("Failed to rotate recovery key", error);
@@ -951,7 +983,7 @@ export default function App() {
     if (!trimmed) {
       return { ok: false as const, error: "친구 ID를 입력해 주세요." };
     }
-    if (!trimmed.startsWith("NKC-")) {
+    if (!trimmed.startsWith("NCK-")) {
       return { ok: false as const, error: "유효한 친구 ID를 입력해 주세요." };
     }
     if (trimmed === shareId) {

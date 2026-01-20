@@ -114,6 +114,7 @@ export const sendCiphertext = async (
     createdAtMs,
     expiresAtMs: computeExpiresAt(createdAtMs),
     lastAttemptAtMs: createdAtMs,
+    nextAttemptAtMs: createdAtMs,
     attempts: 0,
     status: "pending",
   };
@@ -173,5 +174,58 @@ export const sendCiphertext = async (
       transport: chosen,
       error: error instanceof Error ? error.message : String(error),
     };
+  }
+};
+
+export const sendOutboxRecord = async (
+  record: OutboxRecord,
+  deps: SendDeps = {}
+) => {
+  const config = deps.config ?? useNetConfigStore.getState().config;
+  const controller = deps.routeController ?? defaultRouteController;
+  const httpClient = deps.httpClient ?? defaultHttpClient;
+
+  warnOnionRouterGuards(config);
+  const resolve = deps.resolveTransport ?? resolveTransport;
+  const chosen = resolve(config, controller);
+
+  if (config.mode === "onionRouter" && chosen === "directP2P") {
+    controller.reportSendFail(chosen);
+    return { ok: false as const, retryable: false };
+  }
+  if (config.onionEnabled && chosen === "selfOnion") {
+    controller.reportSendFail(chosen);
+    return { ok: false as const, retryable: false };
+  }
+
+  const attemptSend = async (kind: TransportKind) => {
+    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "directP2P") {
+      throw new Error("Direct P2P blocked in onion router mode");
+    }
+    if (config.onionEnabled && kind === "selfOnion") {
+      throw new Error("Self-onion blocked while onion router is enabled");
+    }
+    const transport = getTransport(kind, config, controller, httpClient, deps.transports);
+    await ensureStarted(transport);
+    const packet: TransportPacket = { id: record.id, payload: record.ciphertext };
+    await transport.send(packet);
+    return kind;
+  };
+
+  try {
+    await attemptSend(chosen);
+    return { ok: true as const };
+  } catch {
+    controller.reportSendFail(chosen);
+    if (config.mode === "selfOnion" && chosen === "selfOnion") {
+      try {
+        await attemptSend("onionRouter");
+        return { ok: true as const };
+      } catch {
+        controller.reportSendFail("onionRouter");
+        return { ok: false as const, retryable: true };
+      }
+    }
+    return { ok: false as const, retryable: true };
   }
 };

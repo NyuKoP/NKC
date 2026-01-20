@@ -16,7 +16,7 @@ const tryProxy = async (config: NetConfig, proxyUrl: string) => {
     });
     const health = await checkProxyHealth();
     return health.ok;
-  } catch (error) {
+  } catch {
     return false;
   }
 };

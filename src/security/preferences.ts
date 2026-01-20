@@ -1,4 +1,4 @@
-import { getSecureStore } from "./secureStore";
+import { getPublicStore } from "./publicStore";
 
 export type PrivacyPreferences = {
   readReceipts: boolean;
@@ -15,7 +15,7 @@ export const defaultPrivacyPrefs: PrivacyPreferences = {
 };
 
 export const getPrivacyPrefs = async () => {
-  const store = getSecureStore();
+  const store = getPublicStore();
   const raw = await store.get(PREF_KEY);
   if (!raw) return defaultPrivacyPrefs;
   try {
@@ -29,6 +29,6 @@ export const getPrivacyPrefs = async () => {
 };
 
 export const setPrivacyPrefs = async (prefs: PrivacyPreferences) => {
-  const store = getSecureStore();
+  const store = getPublicStore();
   await store.set(PREF_KEY, JSON.stringify({ ...prefs, updatedAt: Date.now() }));
 };

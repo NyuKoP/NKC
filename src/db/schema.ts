@@ -16,8 +16,11 @@ export type OutboxRecord = {
   createdAtMs: number;
   expiresAtMs: number;
   lastAttemptAtMs?: number;
+  nextAttemptAtMs: number;
   attempts: number;
-  status: "pending" | "acked" | "expired";
+  status: "pending" | "in_flight" | "acked" | "expired";
+  inFlightAtMs?: number;
+  ackDeadlineMs?: number;
 };
 export type MediaChunkRecord = {
   id: string;
@@ -56,6 +59,16 @@ export class NKCVaultDB extends Dexie {
       conversations: "id, updatedAt",
       messages: "id, convId, ts",
       outbox: "id, convId, createdAtMs, expiresAtMs, status",
+      mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+      tombstones: "id, type, deletedAt",
+    });
+    this.version(3).stores({
+      meta: "key",
+      profiles: "id, updatedAt",
+      conversations: "id, updatedAt",
+      messages: "id, convId, ts",
+      outbox:
+        "id, status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
       mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
       tombstones: "id, type, deletedAt",
     });

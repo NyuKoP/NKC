@@ -18,6 +18,9 @@ type RightPanelProps = {
   onOpenSettings: () => void;
 };
 
+const isTabValue = (value: string): value is RightPanelProps["tab"] =>
+  value === "about" || value === "media" || value === "settings";
+
 const detailsByName: Record<
   string,
   { status: string; lastSeen: string; note: string }
@@ -59,7 +62,12 @@ export default function RightPanel({
 
   return (
     <aside className="hidden h-full w-[320px] rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft lg:block">
-      <Tabs.Root value={tab} onValueChange={(value) => onTabChange(value as any)}>
+      <Tabs.Root
+        value={tab}
+        onValueChange={(value) => {
+          if (isTabValue(value)) onTabChange(value);
+        }}
+      >
         <Tabs.List className="grid grid-cols-3 gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
           {tabs.map((item) => (
             <Tabs.Trigger

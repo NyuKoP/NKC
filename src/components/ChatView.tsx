@@ -47,10 +47,8 @@ export default function ChatView({
   onToggleRight,
   rightPanelOpen,
 }: ChatViewProps) {
-  const [text, setText] = useState("");
   const [atBottom, setAtBottom] = useState(true);
   const timelineRef = useRef<HTMLDivElement | null>(null);
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   const grouped = useMemo(
     () => groupMessages(messages, currentUserId, nameMap),
@@ -58,29 +56,18 @@ export default function ChatView({
   );
 
   useEffect(() => {
-    if (!textareaRef.current) return;
-    textareaRef.current.style.height = "auto";
-    textareaRef.current.style.height = `${Math.min(
-      textareaRef.current.scrollHeight,
-      160
-    )}px`;
-  }, [text]);
-
-  useEffect(() => {
-    if (!conversation) {
-      setText("");
-      return;
+    if (conversation) {
+      if (atBottom) {
+        requestAnimationFrame(() => scrollToBottom(timelineRef.current));
+      }
     }
-    if (atBottom) {
-      requestAnimationFrame(() => scrollToBottom(timelineRef.current));
-    }
-  }, [messages.length, conversation?.id]);
+  }, [messages.length, conversation, atBottom]);
 
   useEffect(() => {
     if (conversation) {
       requestAnimationFrame(() => scrollToBottom(timelineRef.current));
     }
-  }, [conversation?.id]);
+  }, [conversation]);
 
   const handleScroll = () => {
     if (!timelineRef.current) return;
@@ -88,22 +75,6 @@ export default function ChatView({
     const threshold = 48;
     const isBottom = el.scrollHeight - el.scrollTop - el.clientHeight <= threshold;
     setAtBottom(isBottom);
-  };
-
-  const handleSend = () => {
-    if (!conversation) return;
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    onSend(trimmed);
-    setText("");
-  };
-
-  const handleMediaSelect = (event: ChangeEvent<HTMLInputElement>) => {
-    if (!conversation) return;
-    const file = event.target.files?.[0];
-    if (!file) return;
-    onSendMedia(file);
-    event.target.value = "";
   };
 
   return (
@@ -215,108 +186,167 @@ export default function ChatView({
         ) : null}
       </div>
 
-      <form
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (isComposing) return;
-          handleSend();
-        }}
-        className={`border-t border-nkc-border bg-nkc-panel px-6 py-5 ${
-          conversation ? "" : "opacity-60"
-        }`}
-      >
-        <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3">
-          <textarea
-            ref={textareaRef}
-            disabled={!conversation}
-            value={text}
-            onChange={(event) => setText(event.target.value)}
-            onCompositionStart={() => onComposingChange(true)}
-            onCompositionEnd={() => onComposingChange(false)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" && !event.shiftKey) {
-                if (event.nativeEvent.isComposing || isComposing) {
-                  return;
-                }
-                event.preventDefault();
-                handleSend();
-              }
-            }}
-            className="h-auto w-full resize-none bg-transparent text-sm leading-relaxed text-nkc-text placeholder:text-nkc-muted focus:outline-none"
-            placeholder="메시지를 입력하세요"
-            rows={1}
-            maxLength={240}
-          />
-          <div className="mt-3 flex items-center justify-between text-xs text-nkc-muted">
-            <div className="flex items-center gap-3">
-              <label
-                className={`flex h-8 w-8 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panel ${
-                  conversation ? "" : "pointer-events-none opacity-50"
-                }`}
-              >
-                <Paperclip size={14} />
-                <input
-                  type="file"
-                  accept="image/*,video/*,audio/*"
-                  className="hidden"
-                  onChange={handleMediaSelect}
-                />
-              </label>
-              <span>{text.length} / 240</span>
-            </div>
-            <button
-              type="submit"
-              disabled={!conversation || !text.trim()}
-              className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              전송
-            </button>
-          </div>
-        </div>
-      </form>
+      <MessageComposer
+        key={conversation?.id ?? "none"}
+        conversation={conversation}
+        isComposing={isComposing}
+        onComposingChange={onComposingChange}
+        onSend={onSend}
+        onSendMedia={onSendMedia}
+      />
     </section>
   );
 }
+
+type MessageComposerProps = {
+  conversation: Conversation | null;
+  isComposing: boolean;
+  onComposingChange: (value: boolean) => void;
+  onSend: (text: string) => void;
+  onSendMedia: (file: File) => void;
+};
+
+const MessageComposer = ({
+  conversation,
+  isComposing,
+  onComposingChange,
+  onSend,
+  onSendMedia,
+}: MessageComposerProps) => {
+  const [text, setText] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  useEffect(() => {
+    if (!textareaRef.current) return;
+    textareaRef.current.style.height = "auto";
+    textareaRef.current.style.height = `${Math.min(
+      textareaRef.current.scrollHeight,
+      160
+    )}px`;
+  }, [text]);
+
+  const handleSend = () => {
+    if (!conversation) return;
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    onSend(trimmed);
+    setText("");
+  };
+
+  const handleMediaSelect = (event: ChangeEvent<HTMLInputElement>) => {
+    if (!conversation) return;
+    const file = event.target.files?.[0];
+    if (!file) return;
+    onSendMedia(file);
+    event.target.value = "";
+  };
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (isComposing) return;
+        handleSend();
+      }}
+      className={`border-t border-nkc-border bg-nkc-panel px-6 py-5 ${
+        conversation ? "" : "opacity-60"
+      }`}
+    >
+      <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3">
+        <textarea
+          ref={textareaRef}
+          disabled={!conversation}
+          value={text}
+          onChange={(event) => setText(event.target.value)}
+          onCompositionStart={() => onComposingChange(true)}
+          onCompositionEnd={() => onComposingChange(false)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              if (event.nativeEvent.isComposing || isComposing) {
+                return;
+              }
+              event.preventDefault();
+              handleSend();
+            }
+          }}
+          className="h-auto w-full resize-none bg-transparent text-sm leading-relaxed text-nkc-text placeholder:text-nkc-muted focus:outline-none"
+          placeholder="메시지를 입력하세요"
+          rows={1}
+          maxLength={240}
+        />
+        <div className="mt-3 flex items-center justify-between text-xs text-nkc-muted">
+          <div className="flex items-center gap-3">
+            <label
+              className={`flex h-8 w-8 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panel ${
+                conversation ? "" : "pointer-events-none opacity-50"
+              }`}
+            >
+              <Paperclip size={14} />
+              <input
+                type="file"
+                accept="image/*,video/*,audio/*"
+                className="hidden"
+                onChange={handleMediaSelect}
+              />
+            </label>
+            <span>{text.length} / 240</span>
+          </div>
+          <button
+            type="submit"
+            disabled={!conversation || !text.trim()}
+            className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            전송
+          </button>
+        </div>
+      </div>
+    </form>
+  );
+};
 
 type MediaAttachmentProps = {
   media: MediaRef;
 };
 
 const MediaAttachment = ({ media }: MediaAttachmentProps) => {
-  const [url, setUrl] = useState<string | null>(null);
+  const [blob, setBlob] = useState<Blob | null>(null);
   const isImage = media.mime.startsWith("image/");
+  const previewUrl = useMemo(
+    () => (isImage && blob ? URL.createObjectURL(blob) : null),
+    [isImage, blob]
+  );
 
   useEffect(() => {
-    if (!isImage) {
-      setUrl(null);
-      return;
-    }
+    if (!isImage) return;
     let active = true;
-    let objectUrl = "";
 
     const load = async () => {
       try {
-        const blob = await loadMessageMedia(media);
-        if (!blob || !active) return;
-        objectUrl = URL.createObjectURL(blob);
-        if (active) setUrl(objectUrl);
+        const nextBlob = await loadMessageMedia(media);
+        if (!nextBlob || !active) return;
+        setBlob(nextBlob);
       } catch (error) {
         console.error("Failed to load media", error);
       }
     };
 
-    load();
+    void load();
 
     return () => {
       active = false;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
   }, [isImage, media]);
 
+  useEffect(() => {
+    return () => {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+    };
+  }, [previewUrl]);
+
   if (isImage) {
-    return url ? (
+    return previewUrl ? (
       <img
-        src={url}
+        src={previewUrl}
         alt={media.name}
         className="max-h-48 w-full rounded-nkc border border-nkc-border object-cover"
       />

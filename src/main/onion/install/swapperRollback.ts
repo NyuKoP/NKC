@@ -26,7 +26,7 @@ export const readCurrentPointer = async (userDataDir: string, network: OnionNetw
   try {
     const raw = await fs.readFile(getPointerPath(userDataDir, network), "utf8");
     return JSON.parse(raw) as CurrentPointer;
-  } catch (error) {
+  } catch {
     return null;
   }
 };

@@ -141,7 +141,7 @@ export default function Onboarding({
                   setLocalError("");
                 }}
                 className="mt-2 h-24 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-                placeholder="NKC-XXXX-XXXX-XXXX-XXXX"
+                placeholder="NKC-..."
               />
             </label>
 

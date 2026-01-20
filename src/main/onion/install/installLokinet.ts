@@ -112,10 +112,10 @@ const findLokinetBinaryWin32 = async () => {
   const servicePathRaw = await ps(
     "(Get-ItemProperty 'HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Services\\\\lokinet' -ErrorAction SilentlyContinue).ImagePath"
   );
-  const servicePath = servicePathRaw.trim().replace(/^\"|\"$/g, "");
+  const servicePath = servicePathRaw.trim().replace(/^"|"$/g, "");
   if (servicePath) {
     // ImagePath may include args; take the exe portion.
-    const exePath = servicePath.split(/\s+/)[0].replace(/^\"|\"$/g, "");
+    const exePath = servicePath.split(/\s+/)[0].replace(/^"|"$/g, "");
     candidates.push(exePath);
     candidates.push(path.join(path.dirname(exePath), "lokinet.exe"));
   }

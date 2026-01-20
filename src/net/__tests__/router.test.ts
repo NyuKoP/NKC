@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { __testResetRouter } from "../router";
+import { createRouteController } from "../routeController";
+import type { Transport } from "../../adapters/transports/types";
 
 type OutboxRecord = {
   id: string;
@@ -8,12 +10,15 @@ type OutboxRecord = {
   createdAtMs: number;
   expiresAtMs: number;
   lastAttemptAtMs?: number;
+  nextAttemptAtMs: number;
   attempts: number;
-  status: "pending" | "acked" | "expired";
+  status: "pending" | "in_flight" | "acked" | "expired";
+  inFlightAtMs?: number;
+  ackDeadlineMs?: number;
 };
 
-const createTransport = (sendImpl?: () => Promise<void>) => {
-  const transport = {
+const createTransport = (sendImpl?: () => Promise<void>): Transport => {
+  const transport: Transport = {
     name: "directP2P",
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
@@ -76,7 +81,7 @@ describe("router", () => {
           lokinet: { installed: false, status: "idle" },
           lastUpdateCheckAtMs: undefined,
         },
-        transports: { directP2P: directTransport as any },
+        transports: { directP2P: directTransport },
       }
     );
 
@@ -108,14 +113,10 @@ describe("router", () => {
     const onionRouterTransport = createTransport();
 
     const reported: string[] = [];
-    const routeController = {
-      decideTransport: () => "selfOnion",
-      reportAck: () => {},
-      reportSendFail: (kind: string) => {
-        reported.push(kind);
-      },
-      reportRouteBuildFail: () => {},
-      reportRelayPoolSize: () => {},
+    const routeController = createRouteController();
+    routeController.decideTransport = () => "selfOnion";
+    routeController.reportSendFail = (kind: string) => {
+      reported.push(kind);
     };
 
     const result = await router.sendCiphertext(
@@ -141,10 +142,10 @@ describe("router", () => {
           lokinet: { installed: false, status: "idle" },
           lastUpdateCheckAtMs: undefined,
         },
-        routeController: routeController as any,
+        routeController,
         transports: {
-          selfOnion: selfOnionTransport as any,
-          onionRouter: onionRouterTransport as any,
+          selfOnion: selfOnionTransport,
+          onionRouter: onionRouterTransport,
         },
       }
     );
@@ -203,7 +204,7 @@ describe("router", () => {
           lokinet: { installed: false, status: "idle" },
           lastUpdateCheckAtMs: undefined,
         },
-        transports: { selfOnion: selfOnionTransport as any, onionRouter: onionRouterTransport as any },
+        transports: { selfOnion: selfOnionTransport, onionRouter: onionRouterTransport },
       }
     );
 

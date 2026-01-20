@@ -7,7 +7,8 @@ import {
   type KeyboardEvent,
 } from "react";
 import SettingsModal from "../components/SettingsModal";
-import Toast, { useToastQueue } from "../components/Toast";
+import Toast from "../components/Toast";
+import { useToastQueue } from "../components/toastUtils";
 import {
   BackIcon,
   MessageIcon,

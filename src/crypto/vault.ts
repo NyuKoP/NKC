@@ -47,29 +47,38 @@ const concatBytes = (chunks: Array<Uint8Array | ArrayBuffer>) => {
   return out;
 };
 
-const LEGACY_PREFIX = "NKC";
-const LEGACY_LENGTH = 19;
-const HEX_KEY_LENGTH = 64;
-const HEX_REGEX = /^[0-9a-fA-F]+$/;
+const NKC_REGEX = /^NKC-[A-Za-z0-9_-]+$/;
 
-const normalizeLegacyKey = (value: string) =>
-  value.replace(/[^a-zA-Z0-9]/g, "").toUpperCase();
-
-const isHexKey = (value: string) => HEX_REGEX.test(value) && value.length === HEX_KEY_LENGTH;
+const decodeBase64Url = (value: string) => {
+  try {
+    const b64 = value.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = b64.padEnd(Math.ceil(b64.length / 4) * 4, "=");
+    const raw = atob(padded);
+    return Uint8Array.from(raw, (char) => char.charCodeAt(0));
+  } catch {
+    return null;
+  }
+};
 
 export const normalizeRecoveryKey = (value: string) => {
   const trimmed = value.trim();
-  if (isHexKey(trimmed)) {
-    return trimmed.toLowerCase();
+  if (!NKC_REGEX.test(trimmed)) {
+    throw new Error("Invalid recovery key format.");
   }
-  return normalizeLegacyKey(trimmed);
+  const payload = trimmed.slice(4);
+  const bytes = decodeBase64Url(payload);
+  if (!bytes || bytes.length !== 32) {
+    throw new Error("Invalid recovery key format.");
+  }
+  return trimmed;
 };
 
 export const validateRecoveryKey = (value: string) => {
   const trimmed = value.trim();
-  if (isHexKey(trimmed)) return true;
-  const normalized = normalizeLegacyKey(trimmed);
-  return normalized.startsWith(LEGACY_PREFIX) && normalized.length === LEGACY_LENGTH;
+  if (!NKC_REGEX.test(trimmed)) return false;
+  const payload = trimmed.slice(4);
+  const bytes = decodeBase64Url(payload);
+  return Boolean(bytes && bytes.length === 32);
 };
 
 export const createVaultHeader = async (): Promise<VaultHeader> => {
