@@ -71,3 +71,21 @@ export default defineConfig([
   },
 ])
 ```
+
+## UI E2E tests (Playwright)
+
+- Install browsers: `npx playwright install chromium`
+- Run headless: `npm run test:ui`
+- Run headed: `npm run test:ui:headed`
+- Update snapshots: `npm run test:ui -- --update-snapshots`
+
+Artifacts (screenshots, videos, traces) are saved in `test-results/` and `playwright-report/` on failures.
+
+Note: UI tests run against the Vite dev server in browser mode; Electron Playwright launch is not supported by the current Electron build.
+
+## UI baseline branches
+
+- `baseline/ui-v1` is the comparison baseline (includes visual snapshots).
+- `fix/favorite-no-navigate` is the working branch for further changes.
+- Run UI tests: `npm run test:ui`
+- Update snapshots: `npm run test:ui -- --update-snapshots`

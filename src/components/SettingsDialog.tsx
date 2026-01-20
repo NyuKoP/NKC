@@ -34,6 +34,7 @@ import { getRouteInfo } from "../net/routeInfo";
 import type { NetworkMode } from "../net/mode";
 import type { OnionNetwork } from "../net/netConfig";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
+import { validateProxyUrl } from "../net/proxyControl";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -110,6 +111,7 @@ export default function SettingsDialog({
   const {
     config: netConfig,
     setMode,
+    setProxy,
     setOnionEnabled,
     setOnionNetwork,
     setComponentState,
@@ -139,6 +141,9 @@ export default function SettingsDialog({
   const [onionStatus, setOnionStatus] = useState<OnionStatus | null>(null);
   const [directP2PAcked, setDirectP2PAcked] = useState(false);
   const [directP2PConfirmOpen, setDirectP2PConfirmOpen] = useState(false);
+  const [pendingMode, setPendingMode] = useState<NetworkMode | null>(null);
+  const [proxyUrlDraft, setProxyUrlDraft] = useState(netConfig.onionProxyUrl);
+  const [proxyUrlError, setProxyUrlError] = useState("");
   const [torInstallBusy, setTorInstallBusy] = useState(false);
   const [torCheckBusy, setTorCheckBusy] = useState(false);
   const [torApplyBusy, setTorApplyBusy] = useState(false);
@@ -166,6 +171,23 @@ export default function SettingsDialog({
   const t = (ko: string, en: string) => (language === "en" ? en : ko);
   const tl = (label: LocalizedLabel) => (language === "en" ? label.en : label.ko);
 
+  const handleProxyUrlChange = (value: string) => {
+    setProxyUrlDraft(value);
+    const trimmed = value.trim();
+    if (!trimmed) {
+      setProxyUrlError("");
+      setProxy(netConfig.onionProxyEnabled, "");
+      return;
+    }
+    try {
+      const { normalized } = validateProxyUrl(trimmed);
+      setProxyUrlError("");
+      setProxy(netConfig.onionProxyEnabled, normalized);
+    } catch {
+      setProxyUrlError(t("유효하지 않은 프록시 URL입니다.", "Invalid proxy URL."));
+    }
+  };
+
   // misc
   const [saveMessage, setSaveMessage] = useState("");
 
@@ -183,13 +205,15 @@ export default function SettingsDialog({
     setView("main");
     setOnionEnabledDraft(netConfig.onionEnabled);
     setOnionNetworkDraft(netConfig.onionSelectedNetwork);
+    setProxyUrlDraft(netConfig.onionProxyUrl);
+    setProxyUrlError("");
     getPrivacyPrefs()
       .then(setPrivacyPrefsState)
       .catch((e) => console.error("Failed to load privacy prefs", e));
     getDirectP2PRiskAck()
       .then(setDirectP2PAcked)
       .catch(() => setDirectP2PAcked(false));
-  }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork]);
+  }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork, netConfig.onionProxyUrl]);
 
   useEffect(() => {
     if (!open) return;
@@ -416,6 +440,7 @@ export default function SettingsDialog({
 
   const handleModeChange = async (next: NetworkMode) => {
     if (next === "directP2P" && !directP2PAcked) {
+      setPendingMode(next);
       setDirectP2PConfirmOpen(true);
       return;
     }
@@ -425,7 +450,10 @@ export default function SettingsDialog({
   const handleConfirmDirectP2P = async () => {
     await setDirectP2PRiskAck(true);
     setDirectP2PAcked(true);
-    setMode("directP2P");
+    if (pendingMode === "directP2P") {
+      setMode("directP2P");
+    }
+    setPendingMode(null);
   };
 
   const formatBytes = (value: number) => {
@@ -765,6 +793,7 @@ export default function SettingsDialog({
                   <button
                     type="button"
                     onClick={() => setView("network")}
+                    data-testid="settings-network-button"
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
                     {t("네트워크 설정", "Network settings")}
@@ -917,6 +946,7 @@ export default function SettingsDialog({
                         className="mt-1"
                         checked={netConfig.mode === opt.value}
                         onChange={() => void handleModeChange(opt.value)}
+                        data-testid={`network-mode-${opt.value}`}
                       />
                       <div>
                         <div className="text-sm font-medium text-nkc-text">
@@ -934,7 +964,10 @@ export default function SettingsDialog({
                   ))}
                 </div>
                 <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-nkc-muted">
-                  <span className="rounded-full border border-nkc-border bg-nkc-panel px-2 py-1">
+                  <span
+                    className="rounded-full border border-nkc-border bg-nkc-panel px-2 py-1"
+                    data-testid="effective-mode-label"
+                  >
                     {routeInfo.pathLabel}
                   </span>
                   <span>{routeInfo.description}</span>
@@ -963,7 +996,10 @@ export default function SettingsDialog({
                   </div>
                 ) : null}
                 {netConfig.mode === "directP2P" ? (
-                  <div className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200">
+                  <div
+                    className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
+                    data-testid="direct-p2p-warning"
+                  >
                     {t(
                       "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 사용하세요.",
                       "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
@@ -992,6 +1028,35 @@ export default function SettingsDialog({
                         checked={onionEnabledDraft}
                         onChange={(e) => setOnionEnabledDraft(e.target.checked)}
                       />
+                    </div>
+                  </section>
+
+                  <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                    <div className="text-sm font-medium text-nkc-text">
+                      {t("프록시 URL", "Proxy URL")}
+                    </div>
+                    <div className="mt-2">
+                      <input
+                        value={proxyUrlDraft}
+                        onChange={(e) => handleProxyUrlChange(e.target.value)}
+                        placeholder={t("예: socks5://127.0.0.1:9050", "e.g. socks5://127.0.0.1:9050")}
+                        className={`w-full rounded-nkc border bg-nkc-panel px-3 py-2 text-sm text-nkc-text placeholder:text-nkc-muted ${
+                          proxyUrlError ? "border-red-400/60" : "border-nkc-border"
+                        }`}
+                        aria-invalid={proxyUrlError ? "true" : "false"}
+                        data-testid="proxy-url-input"
+                      />
+                      {proxyUrlError ? (
+                        <div className="mt-2 text-xs text-red-300" data-testid="proxy-url-error">
+                          {proxyUrlError}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="mt-2 text-xs text-nkc-muted">
+                      {t(
+                        "포트까지 포함한 URL을 입력하세요. 비워두면 자동 감지합니다.",
+                        "Include the port. Leave blank to auto-detect."
+                      )}
                     </div>
                   </section>
 
@@ -1666,7 +1731,12 @@ export default function SettingsDialog({
         onConfirm={() => {
           void handleConfirmDirectP2P();
         }}
-        onClose={() => setDirectP2PConfirmOpen(false)}
+        onClose={() => {
+          setDirectP2PConfirmOpen(false);
+          setPendingMode(null);
+        }}
+        confirmTestId="direct-p2p-confirm"
+        dialogTestId="direct-p2p-confirm-dialog"
       />
       </>
     );

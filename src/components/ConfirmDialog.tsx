@@ -7,6 +7,9 @@ type ConfirmDialogProps = {
   message: string;
   onConfirm: () => void;
   onClose: () => void;
+  confirmTestId?: string;
+  cancelTestId?: string;
+  dialogTestId?: string;
 };
 
 export default function ConfirmDialog({
@@ -15,6 +18,9 @@ export default function ConfirmDialog({
   message,
   onConfirm,
   onClose,
+  confirmTestId,
+  cancelTestId,
+  dialogTestId,
 }: ConfirmDialogProps) {
   const language = useAppStore((state) => state.ui.language);
   const t = (ko: string, en: string) => (language === "en" ? en : ko);
@@ -22,7 +28,10 @@ export default function ConfirmDialog({
     <Dialog.Root open={open} onOpenChange={(value) => (!value ? onClose() : null)}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/60" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft">
+        <Dialog.Content
+          className="fixed left-1/2 top-1/2 w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft"
+          data-testid={dialogTestId}
+        >
           <Dialog.Title className="text-base font-semibold text-nkc-text">
             {title}
           </Dialog.Title>
@@ -33,6 +42,7 @@ export default function ConfirmDialog({
             <button
               className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panelMuted"
               onClick={onClose}
+              data-testid={cancelTestId}
             >
               {t("취소", "Cancel")}
             </button>
@@ -42,6 +52,7 @@ export default function ConfirmDialog({
                 onConfirm();
                 onClose();
               }}
+              data-testid={confirmTestId}
             >
               {t("확인", "Confirm")}
             </button>

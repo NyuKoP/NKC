@@ -47,6 +47,7 @@ export default defineConfig({
       {
         entry: "src/main.ts",
         onstart({ startup }) {
+          if (process.env.NKC_E2E === "1") return;
           const env = { ...process.env };
           delete env.ELECTRON_RUN_AS_NODE;
           void startup(["."], { env });

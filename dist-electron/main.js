@@ -181,7 +181,7 @@ const readCurrentPointer = async (userDataDir, network) => {
   try {
     const raw = await fs.readFile(getPointerPath(userDataDir, network), "utf8");
     return JSON.parse(raw);
-  } catch (error) {
+  } catch {
     return null;
   }
 };
@@ -411,9 +411,9 @@ const findLokinetBinaryWin32 = async () => {
   const servicePathRaw = await ps(
     "(Get-ItemProperty 'HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Services\\\\lokinet' -ErrorAction SilentlyContinue).ImagePath"
   );
-  const servicePath = servicePathRaw.trim().replace(/^\"|\"$/g, "");
+  const servicePath = servicePathRaw.trim().replace(/^"|"$/g, "");
   if (servicePath) {
-    const exePath = servicePath.split(/\s+/)[0].replace(/^\"|\"$/g, "");
+    const exePath = servicePath.split(/\s+/)[0].replace(/^"|"$/g, "");
     candidates.push(exePath);
     candidates.push(path.join(path.dirname(exePath), "lokinet.exe"));
   }
@@ -823,23 +823,38 @@ const checkUpdates = async (network) => {
   return checkLokinetUpdates();
 };
 const isDev = !electron.app.isPackaged;
-const isLocalhostProxyUrl = (proxyUrl) => {
+const SECRET_STORE_FILENAME = "secret-store.json";
+const ALLOWED_PROXY_PROTOCOLS = /* @__PURE__ */ new Set(["socks5:", "socks5h:", "http:", "https:"]);
+const isLocalhostHost = (hostname) => hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+const validateProxyUrl = (input) => {
+  let url;
   try {
-    const parsed = new URL(proxyUrl);
-    return parsed.hostname === "127.0.0.1" || parsed.hostname === "localhost";
-  } catch (error) {
-    return false;
+    url = new URL(input.trim());
+  } catch {
+    throw new Error("Invalid proxy URL");
   }
+  if (!ALLOWED_PROXY_PROTOCOLS.has(url.protocol)) {
+    throw new Error("Invalid proxy URL");
+  }
+  if (!url.hostname || !url.port) {
+    throw new Error("Invalid proxy URL");
+  }
+  const port = Number(url.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Invalid proxy URL");
+  }
+  return { url, normalized: `${url.protocol}//${url.host}` };
 };
 const applyProxy = async ({ proxyUrl, enabled, allowRemote }) => {
   if (!enabled) {
     await electron.session.defaultSession.setProxy({ mode: "direct" });
     return;
   }
-  if (!isLocalhostProxyUrl(proxyUrl) && !allowRemote) {
+  const { url, normalized } = validateProxyUrl(proxyUrl);
+  if (!allowRemote && !isLocalhostHost(url.hostname)) {
     throw new Error("Remote proxy URL blocked");
   }
-  await electron.session.defaultSession.setProxy({ proxyRules: proxyUrl });
+  await electron.session.defaultSession.setProxy({ proxyRules: normalized });
 };
 const checkProxy = async () => {
   const resolve = await electron.session.defaultSession.resolveProxy("https://example.com");
@@ -860,6 +875,64 @@ const registerProxyIpc = () => {
   });
   electron.ipcMain.handle("proxy:check", async () => {
     return checkProxy();
+  });
+};
+const readSecretStore = async () => {
+  const filePath = path.join(electron.app.getPath("userData"), SECRET_STORE_FILENAME);
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error) {
+      const code = String(error.code ?? "");
+      if (code === "ENOENT") return {};
+    }
+    return {};
+  }
+};
+const writeSecretStore = async (payload) => {
+  const filePath = path.join(electron.app.getPath("userData"), SECRET_STORE_FILENAME);
+  await fs.writeFile(filePath, JSON.stringify(payload), "utf8");
+};
+const registerSecretStoreIpc = () => {
+  electron.ipcMain.handle("secretStore:get", async (_event, key) => {
+    if (!electron.safeStorage.isEncryptionAvailable()) {
+      return null;
+    }
+    const data = await readSecretStore();
+    const entry = data[key];
+    if (!entry) return null;
+    try {
+      return electron.safeStorage.decryptString(Buffer.from(entry, "base64"));
+    } catch {
+      return null;
+    }
+  });
+  electron.ipcMain.handle("secretStore:set", async (_event, key, value) => {
+    if (!electron.safeStorage.isEncryptionAvailable()) {
+      return false;
+    }
+    const data = await readSecretStore();
+    const encrypted = electron.safeStorage.encryptString(value);
+    data[key] = encrypted.toString("base64");
+    await writeSecretStore(data);
+    return true;
+  });
+  electron.ipcMain.handle("secretStore:remove", async (_event, key) => {
+    if (!electron.safeStorage.isEncryptionAvailable()) {
+      return false;
+    }
+    const data = await readSecretStore();
+    if (key in data) {
+      delete data[key];
+      await writeSecretStore(data);
+    }
+    return true;
+  });
+  electron.ipcMain.handle("secretStore:isAvailable", async () => {
+    return electron.safeStorage.isEncryptionAvailable();
   });
 };
 const onionRuntime = new OnionRuntime();
@@ -1232,7 +1305,7 @@ const canReach = async (url, timeoutMs = 1200) => new Promise((resolve) => {
       resolve(false);
     });
     request.end();
-  } catch (error) {
+  } catch {
     resolve(false);
   }
 });
@@ -1356,11 +1429,12 @@ if (!gotTheLock) {
 }
 if (process.env.VITE_DEV_SERVER_URL) {
   const temp = electron.app.getPath("temp");
-  const devRoot = path.join(temp, "nkc-electron-dev");
+  const devRoot = process.env.NKC_E2E_USER_DATA_DIR || path.join(temp, "nkc-electron-dev");
   const devUserData = path.join(devRoot, "userData");
   const devCache = path.join(devRoot, "cache");
   const devSession = path.join(devRoot, "sessionData");
   const devTemp = path.join(devRoot, "temp");
+  fsSync.mkdirSync(devRoot, { recursive: true });
   fsSync.mkdirSync(devUserData, { recursive: true });
   fsSync.mkdirSync(devCache, { recursive: true });
   fsSync.mkdirSync(devSession, { recursive: true });
@@ -1375,6 +1449,7 @@ electron.app.whenReady().then(() => {
     console.log("[main] VITE_DEV_SERVER_URL =", process.env.VITE_DEV_SERVER_URL ?? "");
   }
   registerProxyIpc();
+  registerSecretStoreIpc();
   registerOnionIpc();
   createMainWindow();
   electron.app.on("activate", () => {

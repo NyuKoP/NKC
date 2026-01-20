@@ -1,4 +1,4 @@
-ï»¿import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ChevronDown, ChevronRight, Filter, Lock, Search, Settings, UserPlus, Users } from "lucide-react";
 import type { Conversation, UserProfile } from "../db/repo";
 import { useAppStore } from "../app/store";
@@ -116,11 +116,11 @@ export default function Sidebar({
 
   const getActivityLabel = (friend: UserProfile) => {
     const lastSeenAt = getFriendLastSeen(friend.id);
-    if (!lastSeenAt) return t("ê¸°ë¡ ì—†ìŒ", "No activity");
+    if (!lastSeenAt) return t("±â·Ï ¾øÀ½", "No activity");
     const ageMs = now - lastSeenAt;
     const minutes = Math.max(0, Math.floor(ageMs / (60 * 1000)));
-    if (minutes === 0) return t("ìµœê·¼ ëŒ€í™” ë°©ê¸ˆ ì „", "Last chat just now");
-    return t(`ìµœê·¼ ëŒ€í™” ${minutes}ë¶„ ì „`, `Last chat ${minutes} min ago`);
+    if (minutes === 0) return t("ÃÖ±Ù ´ëÈ­ ¹æ±İ Àü", "Last chat just now");
+    return t(`ÃÖ±Ù ´ëÈ­ ${minutes}ºĞ Àü`, `Last chat ${minutes} min ago`);
   };
 
   const visibleConvs = convs
@@ -169,12 +169,12 @@ export default function Sidebar({
   const filterOptions: { value: SidebarProps["listFilter"]; label: string }[] =
     listMode === "chats"
       ? [
-          { value: "all", label: t("ì „ì²´", "All") },
-          { value: "unread", label: t("ì½ì§€ ì•ŠìŒ", "Unread") },
+          { value: "all", label: t("ÀüÃ¼", "All") },
+          { value: "unread", label: t("ÀĞÁö ¾ÊÀ½", "Unread") },
         ]
       : [
-          { value: "all", label: t("ì „ì²´", "All") },
-          { value: "favorites", label: t("ì¦ê²¨ì°¾ê¸°ë§Œ ë³´ê¸°", "Favorites only") },
+          { value: "all", label: t("ÀüÃ¼", "All") },
+          { value: "favorites", label: t("Áñ°ÜÃ£±â¸¸ º¸±â", "Favorites only") },
         ];
 
   const resolveConvFriend = (conv: Conversation) => {
@@ -206,9 +206,19 @@ export default function Sidebar({
       key={friend.id}
       role="button"
       tabIndex={0}
-      onClick={() => handleFriendClick(friend.id)}
-      onDoubleClick={() => handleFriendDoubleClick(friend.id)}
+      onClick={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest?.('[data-stop-row-click="true"]')) return;
+        handleFriendClick(friend.id);
+      }}
+      onDoubleClick={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest?.('[data-stop-row-click="true"]')) return;
+        handleFriendDoubleClick(friend.id);
+      }}
       onKeyDown={(e) => {
+        const target = e.target as HTMLElement | null;
+        if (target?.closest?.('[data-stop-row-click="true"]')) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onFriendViewProfile(friend.id);
@@ -226,6 +236,7 @@ export default function Sidebar({
         </div>
       </div>
       <FriendOverflowMenu
+        friendId={friend.id}
         isFavorite={friend.isFavorite}
         onChat={() => onFriendChat(friend.id)}
         onViewProfile={() => onFriendViewProfile(friend.id)}
@@ -238,7 +249,7 @@ export default function Sidebar({
   );
 
   return (
-    <aside className="flex h-full w-[320px] flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft">
+    <aside className="flex h-full w-[320px] flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft" data-testid="sidebar">
       <div className="border-b border-nkc-border p-6">
         <div className="flex items-center justify-between">
           <button
@@ -255,7 +266,7 @@ export default function Sidebar({
                 {userProfile?.displayName || "NKC"}
               </div>
               <div className="text-xs text-nkc-muted line-clamp-1">
-                {userProfile?.status || t("ê²€ìƒ‰ì–´ ì—†ìŒ", "No status")}
+                {userProfile?.status || t("°Ë»ö¾î ¾øÀ½", "No status")}
               </div>
             </div>
           </button>
@@ -263,6 +274,7 @@ export default function Sidebar({
             <button
               onClick={onSettings}
               className="flex h-9 w-9 items-center justify-center rounded-full border border-nkc-border hover:bg-nkc-panelMuted"
+              data-testid="open-settings"
             >
               <Settings size={16} />
             </button>
@@ -280,7 +292,7 @@ export default function Sidebar({
           <input
             value={search}
             onChange={(event) => onSearch(event.target.value)}
-            placeholder={t("ê²€ìƒ‰", "Search")}
+            placeholder={t("°Ë»ö", "Search")}
             className="w-full bg-transparent text-sm text-nkc-text placeholder:text-nkc-muted focus:outline-none"
           />
         </div>
@@ -294,8 +306,9 @@ export default function Sidebar({
             className={`rounded-nkc px-3 py-2 font-semibold ${
               listMode === "friends" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
             }`}
+            data-testid="list-mode-friends"
           >
-            {t("ì¹œêµ¬", "Friends")}
+            {t("Ä£±¸", "Friends")}
           </button>
           <button
             onClick={() => {
@@ -305,28 +318,29 @@ export default function Sidebar({
             className={`rounded-nkc px-3 py-2 font-semibold ${
               listMode === "chats" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
             }`}
+            data-testid="list-mode-chats"
           >
-            {t("ì±„íŒ…", "Chats")}
+            {t("Ã¤ÆÃ", "Chats")}
           </button>
         </div>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="flex items-center justify-between text-xs font-semibold text-nkc-muted">
-          <span>{t("í•„í„°", "Filter")}</span>
+          <span>{t("ÇÊÅÍ", "Filter")}</span>
           <div className="flex items-center gap-2">
             <Filter size={14} />
             <button
               onClick={onAddFriend}
               className="flex h-7 w-7 items-center justify-center rounded-full border border-nkc-border hover:bg-nkc-panelMuted"
-              aria-label={t("ì¹œêµ¬ ì¶”ê°€", "Add friend")}
+              aria-label={t("Ä£±¸ Ãß°¡", "Add friend")}
             >
               <UserPlus size={14} />
             </button>
             <button
               onClick={onCreateGroup}
               className="flex h-7 w-7 items-center justify-center rounded-full border border-nkc-border hover:bg-nkc-panelMuted"
-              aria-label={t("ê·¸ë£¹ ë§Œë“¤ê¸°", "Create group")}
+              aria-label={t("±×·ì ¸¸µé±â", "Create group")}
             >
               <Users size={14} />
             </button>
@@ -355,7 +369,7 @@ export default function Sidebar({
                   onClick={() => setPinnedChatsOpen((prev) => !prev)}
                   className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
                 >
-                  <span>{t("ê³ ì •ëœ ì±„íŒ…", "Pinned chats")} ({pinned.length})</span>
+                  <span>{t("°íÁ¤µÈ Ã¤ÆÃ", "Pinned chats")} ({pinned.length})</span>
                   <span className="text-nkc-muted">
                     {pinnedChatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   </span>
@@ -388,7 +402,7 @@ export default function Sidebar({
                 onClick={() => setChatsOpen((prev) => !prev)}
                 className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
               >
-                <span>{t("ì±„íŒ…", "Chats")} ({regular.length})</span>
+                <span>{t("Ã¤ÆÃ", "Chats")} ({regular.length})</span>
                 <span className="text-nkc-muted">
                   {chatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
@@ -415,7 +429,7 @@ export default function Sidebar({
                   </div>
                 ) : (
                   <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
-                    {t("ëŒ€í™”ê°€ ì—†ìŠµë‹ˆë‹¤.", "No conversations.")}
+                    {t("´ëÈ­°¡ ¾ø½À´Ï´Ù.", "No conversations.")}
                   </div>
                 )
               )}
@@ -429,7 +443,7 @@ export default function Sidebar({
                   onClick={() => setFavoritesOpen((prev) => !prev)}
                   className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
                 >
-                  <span>{t("ì¦ê²¨ì°¾ëŠ” ì¹œêµ¬", "Favorite friends")} ({favoriteFriends.length})</span>
+                  <span>{t("Áñ°ÜÃ£´Â Ä£±¸", "Favorite friends")} ({favoriteFriends.length})</span>
                   <span className="text-nkc-muted">
                     {favoritesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   </span>
@@ -446,7 +460,7 @@ export default function Sidebar({
                 onClick={() => setFriendsOpen((prev) => !prev)}
                 className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
               >
-                <span>{t("ì¹œêµ¬", "Friends")} ({regularFriends.length})</span>
+                <span>{t("Ä£±¸", "Friends")} ({regularFriends.length})</span>
                 <span className="text-nkc-muted">
                   {friendsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                 </span>
@@ -458,7 +472,7 @@ export default function Sidebar({
                   </div>
                 ) : (
                   <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
-                    {t("í‘œì‹œí•  ì¹œêµ¬ê°€ ì—†ìŠµë‹ˆë‹¤.", "No friends to show.")}
+                    {t("Ç¥½ÃÇÒ Ä£±¸°¡ ¾ø½À´Ï´Ù.", "No friends to show.")}
                   </div>
                 )
               )}
@@ -497,12 +511,20 @@ function ConversationRow({
   onBlock,
   onTogglePin,
 }: ConversationRowProps) {
+  const handleSelect = (event: MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest?.('[data-stop-row-click=\"true\"]')) return;
+    onSelect();
+  };
+
   return (
     <div
       role="button"
       tabIndex={0}
-      onClick={onSelect}
+      onClick={handleSelect}
       onKeyDown={(e) => {
+        const target = e.target as HTMLElement | null;
+        if (target?.closest?.('[data-stop-row-click="true"]')) return;
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onSelect();
@@ -513,6 +535,9 @@ function ConversationRow({
           ? "border-nkc-accent/40 bg-nkc-panelMuted"
           : "border-transparent hover:bg-nkc-panelMuted"
       }`}
+      data-testid={`conversation-row-${conv.id}`}
+      data-conversation-id={conv.id}
+      data-selected={active ? "true" : "false"}
     >
       <Avatar name={friend?.displayName || conv.name} avatarRef={friend?.avatarRef} size={40} />
       <div className="min-w-0 flex-1 overflow-hidden">
@@ -526,12 +551,13 @@ function ConversationRow({
         </div>
         <div className="mt-1 text-xs text-nkc-muted line-clamp-2">{conv.lastMessage}</div>
         <div className="mt-2 flex gap-2 text-[11px] text-nkc-muted">
-          {conv.muted && <span>{t("ìŒì†Œê±°", "Muted")}</span>}
-          {conv.blocked && <span>{t("ì°¨ë‹¨ë¨", "Blocked")}</span>}
+          {conv.muted && <span>{t("À½¼Ò°Å", "Muted")}</span>}
+          {conv.blocked && <span>{t("Â÷´ÜµÊ", "Blocked")}</span>}
         </div>
       </div>
       <div className="shrink-0">
         <OverflowMenu
+          conversationId={conv.id}
           onHide={onHide}
           onDelete={onDelete}
           onMute={onMute}
@@ -544,6 +570,7 @@ function ConversationRow({
     </div>
   );
 }
+
 
 
 
