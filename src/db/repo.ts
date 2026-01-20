@@ -13,6 +13,7 @@ import {
 } from "../crypto/vault";
 import { clearVaultKey, getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
 import { createId } from "../utils/ids";
+import { mapLimit } from "../utils/async";
 
 export type AvatarRef = {
   ownerType: "profile";
@@ -72,6 +73,8 @@ export type Message = {
 const VAULT_META_KEY = "vault_header_v2";
 const VAULT_KEY_ID_KEY = "vault_key_id_v1";
 const MEDIA_CHUNK_SIZE = 256 * 1024;
+const MEDIA_DECRYPT_CONCURRENCY = 6;
+const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
 
 const requireVaultKey = () => {
   const vk = getVaultKey();
@@ -299,12 +302,22 @@ export const loadProfilePhoto = async (avatarRef?: AvatarRef) => {
     .sortBy("idx");
 
   if (!chunks.length) return null;
+  if (!Number.isFinite(avatarRef.total) || avatarRef.total <= 0) return null;
+  if (!Number.isFinite(avatarRef.chunkSize) || avatarRef.chunkSize <= 0) return null;
+  if (chunks.length !== avatarRef.total) return null;
+  if (avatarRef.total * avatarRef.chunkSize > MAX_MEDIA_BYTES) return null;
 
-  const decrypted = await Promise.all(
-    chunks.map((chunk) =>
+  let decrypted: Uint8Array[];
+  try {
+    decrypted = await mapLimit(chunks, MEDIA_DECRYPT_CONCURRENCY, (chunk) =>
       decodeBinaryEnvelope(vk, chunk.id, "mediaChunk", chunk.enc_b64)
-    )
-  );
+    );
+  } catch {
+    return null;
+  }
+  if (decrypted.length !== chunks.length) return null;
+  const totalBytes = decrypted.reduce((sum, part) => sum + part.length, 0);
+  if (totalBytes > MAX_MEDIA_BYTES) return null;
   const blob = new Blob(decrypted, { type: avatarRef.mime });
   return blob;
 };
@@ -370,12 +383,23 @@ export const loadMessageMedia = async (mediaRef?: MediaRef) => {
     .sortBy("idx");
 
   if (!chunks.length) return null;
+  if (!Number.isFinite(mediaRef.total) || mediaRef.total <= 0) return null;
+  if (!Number.isFinite(mediaRef.chunkSize) || mediaRef.chunkSize <= 0) return null;
+  if (chunks.length !== mediaRef.total) return null;
+  if (mediaRef.total * mediaRef.chunkSize > MAX_MEDIA_BYTES) return null;
+  if (mediaRef.size > MAX_MEDIA_BYTES) return null;
 
-  const decrypted = await Promise.all(
-    chunks.map((chunk) =>
+  let decrypted: Uint8Array[];
+  try {
+    decrypted = await mapLimit(chunks, MEDIA_DECRYPT_CONCURRENCY, (chunk) =>
       decodeBinaryEnvelope(vk, chunk.id, "mediaChunk", chunk.enc_b64)
-    )
-  );
+    );
+  } catch {
+    return null;
+  }
+  if (decrypted.length !== chunks.length) return null;
+  const totalBytes = decrypted.reduce((sum, part) => sum + part.length, 0);
+  if (totalBytes > MAX_MEDIA_BYTES) return null;
   const blob = new Blob(decrypted, { type: mediaRef.mime });
   return blob;
 };
