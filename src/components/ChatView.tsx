@@ -78,7 +78,10 @@ export default function ChatView({
   };
 
   return (
-    <section className="flex h-full flex-1 flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft">
+    <section
+      className="flex h-full flex-1 flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft"
+      data-testid="chat-view"
+    >
       <header className="flex items-center justify-between border-b border-nkc-border px-6 py-5">
         <div className="flex min-w-0 items-center gap-3">
           <button
@@ -273,6 +276,7 @@ const MessageComposer = ({
           placeholder="메시지를 입력하세요"
           rows={1}
           maxLength={240}
+          data-testid="chat-message-input"
         />
         <div className="mt-3 flex items-center justify-between text-xs text-nkc-muted">
           <div className="flex items-center gap-3">
@@ -280,6 +284,7 @@ const MessageComposer = ({
               className={`flex h-8 w-8 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panel ${
                 conversation ? "" : "pointer-events-none opacity-50"
               }`}
+              data-testid="chat-attach-button"
             >
               <Paperclip size={14} />
               <input
@@ -287,6 +292,7 @@ const MessageComposer = ({
                 accept="image/*,video/*,audio/*"
                 className="hidden"
                 onChange={handleMediaSelect}
+                data-testid="chat-attach-input"
               />
             </label>
             <span>{text.length} / 240</span>
@@ -349,14 +355,21 @@ const MediaAttachment = ({ media }: MediaAttachmentProps) => {
         src={previewUrl}
         alt={media.name}
         className="max-h-48 w-full rounded-nkc border border-nkc-border object-cover"
+        data-testid="media-message-bubble"
       />
     ) : (
-      <div className="h-32 w-full rounded-nkc border border-nkc-border bg-nkc-panelMuted" />
+      <div
+        className="h-32 w-full rounded-nkc border border-nkc-border bg-nkc-panelMuted"
+        data-testid="media-message-bubble"
+      />
     );
   }
 
   return (
-    <div className="flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs">
+    <div
+      className="flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs"
+      data-testid="media-message-bubble"
+    >
       <FileText size={14} className="text-nkc-muted" />
       <div className="min-w-0">
         <div className="text-nkc-text line-clamp-1">{media.name}</div>

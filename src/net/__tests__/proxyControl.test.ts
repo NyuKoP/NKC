@@ -36,6 +36,18 @@ describe("proxyControl", () => {
     });
   });
 
+  it("rejects proxy URLs missing a port", async () => {
+    await expect(
+      applyProxyConfig({
+        ...DEFAULT_NET_CONFIG,
+        mode: "onionRouter",
+        onionProxyEnabled: true,
+        onionProxyUrl: "socks5://127.0.0.1",
+      })
+    ).rejects.toThrow("Invalid proxy URL");
+    expect(applyProxy).not.toHaveBeenCalled();
+  });
+
   it("checks proxy health via IPC bridge", async () => {
     const status = await checkProxyHealth();
     expect(status.ok).toBe(true);

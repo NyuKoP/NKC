@@ -1,10 +1,26 @@
 import type { NetConfig } from "./netConfig";
-import { applyProxyConfig, checkProxyHealth, isLocalhostProxy } from "./proxyControl";
+import {
+  applyProxyConfig,
+  checkProxyHealth,
+  isLocalhostProxy,
+  validateProxyUrl,
+} from "./proxyControl";
 
 const LOCAL_CANDIDATES = [
   "socks5://127.0.0.1:9050",
   "socks5://localhost:9050",
 ];
+
+const assertValidProxyUrl = (proxyUrl: string) => {
+  try {
+    validateProxyUrl(proxyUrl);
+  } catch (error) {
+    if (error instanceof Error) {
+      throw error;
+    }
+    throw new Error("Invalid proxy URL");
+  }
+};
 
 const tryProxy = async (config: NetConfig, proxyUrl: string) => {
   try {
@@ -24,6 +40,7 @@ const tryProxy = async (config: NetConfig, proxyUrl: string) => {
 export const detectLocalOnionProxy = async (config: NetConfig) => {
   const userUrl = config.onionProxyUrl?.trim();
   if (userUrl) {
+    assertValidProxyUrl(userUrl);
     if (!config.allowRemoteProxy && !isLocalhostProxy(userUrl)) {
       return null;
     }

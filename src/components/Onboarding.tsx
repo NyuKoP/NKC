@@ -83,6 +83,7 @@ export default function Onboarding({
                 onChange={(event) => setDisplayName(event.target.value)}
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
                 placeholder="NKC 사용자"
+                data-testid="onboarding-display-name"
               />
             </label>
 
@@ -94,6 +95,7 @@ export default function Onboarding({
                   setConfirmed(event.target.checked);
                   setLocalError("");
                 }}
+                data-testid="onboarding-confirm-checkbox"
               />
               복구키를 별도로 저장해야 함을 확인했습니다.
             </label>
@@ -119,6 +121,7 @@ export default function Onboarding({
               }}
               className="w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!confirmed || busy === "create"}
+              data-testid="onboarding-create-button"
             >
               {busy === "create" ? "처리 중..." : "계속하기"}
             </button>

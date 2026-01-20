@@ -1,8 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { NetConfig } from "../netConfig";
 
-vi.mock("../proxyControl", () => {
+vi.mock("../proxyControl", async () => {
+  const actual = await vi.importActual<typeof import("../proxyControl")>(
+    "../proxyControl"
+  );
   return {
+    ...actual,
     applyProxyConfig: vi.fn(),
     checkProxyHealth: vi.fn(),
     isLocalhostProxy: vi.fn(),
@@ -58,6 +62,15 @@ describe("onionProxyDetect", () => {
     const result = await detectLocalOnionProxy(config);
 
     expect(result).toBe("socks5://localhost:9050");
+  });
+
+  it("rejects proxy URLs missing a port", async () => {
+    mockedIsLocalhostProxy.mockReturnValue(true);
+
+    const config = { ...baseConfig, onionProxyUrl: "socks5://127.0.0.1" };
+
+    await expect(detectLocalOnionProxy(config)).rejects.toThrow("Invalid proxy URL");
+    expect(mockedApplyProxyConfig).not.toHaveBeenCalled();
   });
 
   it("rejects remote proxy without opt-in", async () => {

@@ -760,11 +760,12 @@ if (!gotTheLock) {
 
 if (process.env.VITE_DEV_SERVER_URL) {
   const temp = app.getPath("temp");
-  const devRoot = path.join(temp, "nkc-electron-dev");
+  const devRoot = process.env.NKC_E2E_USER_DATA_DIR || path.join(temp, "nkc-electron-dev");
   const devUserData = path.join(devRoot, "userData");
   const devCache = path.join(devRoot, "cache");
   const devSession = path.join(devRoot, "sessionData");
   const devTemp = path.join(devRoot, "temp");
+  fsSync.mkdirSync(devRoot, { recursive: true });
   fsSync.mkdirSync(devUserData, { recursive: true });
   fsSync.mkdirSync(devCache, { recursive: true });
   fsSync.mkdirSync(devSession, { recursive: true });
