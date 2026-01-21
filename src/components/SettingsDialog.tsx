@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronLeft, KeyRound, Lock, Users } from "lucide-react";
+import { AlertTriangle, Check, ChevronLeft, Clock, KeyRound, Lock, Users } from "lucide-react";
 import type { UserProfile } from "../db/repo";
 import {
   clearChatHistory,
@@ -462,13 +462,12 @@ export default function SettingsDialog({
     }
   };
 
-  const handleConnectOnion = async (network: OnionNetwork) => {
+  const handleConnectOnion = async (network?: OnionNetwork) => {
     try {
-      setOnionNetworkDraft(network);
+      const nextNetwork = network ?? onionNetworkDraft;
+      setOnionNetworkDraft(nextNetwork);
       setOnionEnabledDraft(true);
-      await setOnionMode(true, network);
-      setOnionEnabled(true);
-      setOnionNetwork(network);
+      await setOnionMode(true, nextNetwork);
       setSaveMessage(t("연결 중...", "Connecting..."));
       await refreshOnionStatus();
     } catch (error) {
@@ -480,7 +479,6 @@ export default function SettingsDialog({
   const handleDisconnectOnion = async (network: OnionNetwork) => {
     try {
       await setOnionMode(false, network);
-      setOnionEnabled(false);
       setSaveMessage(t("연결 해제됨", "Disconnected"));
       await refreshOnionStatus();
     } catch (error) {
@@ -649,6 +647,23 @@ export default function SettingsDialog({
       ? ` · SOCKS 127.0.0.1:${runtime.socksPort}`
       : "";
   const runtimeErrorLabel = runtime?.error ? `${t("실패", "Failed")}: ${runtime.error}` : "";
+  const runtimeStatusTooltip =
+    runtime?.status === "running"
+      ? t("Onion 상태: 실행 중", "Onion status: running")
+      : runtime?.status === "failed"
+        ? t("Onion 상태: 실패", "Onion status: failed")
+        : t(
+            "자동/대기 상태: 설정이 없거나 연결 경로를 자동으로 선택 중",
+            "Auto/pending: no setting or auto-selecting route"
+          );
+  const runtimeStatusIcon =
+    runtime?.status === "running" ? (
+      <Check size={12} className="text-nkc-accent" />
+    ) : runtime?.status === "failed" ? (
+      <AlertTriangle size={12} className="text-red-300" />
+    ) : (
+      <Clock size={12} className="text-nkc-muted" />
+    );
 
   const formatOnionError = (value?: string) => {
     if (!value) return null;
@@ -704,8 +719,15 @@ export default function SettingsDialog({
     return t("미설치", "Not installed");
   };
 
+  const getStatusDotClass = (state: typeof netConfig.tor) => {
+    if (!state.installed) return "bg-nkc-muted";
+    if (state.status === "failed") return "bg-red-400";
+    if (state.status === "downloading" || state.status === "installing") return "bg-amber-300";
+    return "bg-emerald-300";
+  };
+
   const isComponentReady = (state: typeof netConfig.tor) =>
-    state.installed && state.status === "ready";
+    state.installed && (state.status === "ready" || state.status === "idle");
 
   const torUpdateAvailable = Boolean(
     netConfig.tor.latest && netConfig.tor.latest !== netConfig.tor.version
@@ -746,6 +768,7 @@ export default function SettingsDialog({
             "Direct P2P: attempts a direct connection without a proxy."
           )
       : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
+  const proxyAuto = !proxyUrlDraft.trim();
   const showDirectWarning = netConfig.mode === "directP2P";
 
   return (
@@ -1110,8 +1133,17 @@ export default function SettingsDialog({
                   </section>
 
                   <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                    <div className="text-sm font-medium text-nkc-text">
-                      {t("프록시 URL", "Proxy URL")}
+                    <div className="flex items-center gap-2 text-sm font-medium text-nkc-text">
+                      <span>{t("프록시 URL", "Proxy URL")}</span>
+                      {proxyAuto ? (
+                        <span
+                          title={t("프록시 미설정/자동", "Proxy unset/auto")}
+                          className="inline-flex items-center cursor-pointer"
+                          tabIndex={0}
+                        >
+                          <Clock size={12} className="text-nkc-muted" />
+                        </span>
+                      ) : null}
                     </div>
                     <div className="mt-2">
                       <input
@@ -1144,9 +1176,18 @@ export default function SettingsDialog({
                         {t("Onion 네트워크", "Onion network")}
                       </div>
                       <div className="text-right text-xs text-nkc-muted">
-                        <div>
-                          {runtimeLabel}
-                          {runtimeSocksLabel}
+                        <div className="flex items-center justify-end gap-1">
+                          <span
+                            title={runtimeStatusTooltip}
+                            className="inline-flex items-center cursor-pointer"
+                            tabIndex={0}
+                          >
+                            {runtimeStatusIcon}
+                          </span>
+                          <span>
+                            {runtimeLabel}
+                            {runtimeSocksLabel}
+                          </span>
                         </div>
                         <div>
                           {runtimeStateLabel} · {runtimeNetworkLabel}
@@ -1168,6 +1209,13 @@ export default function SettingsDialog({
                               onChange={() => setOnionNetworkDraft("tor")}
                             />
                             Tor
+                            <span
+                              title={t("Tor 상태", "Tor status")}
+                              className={`inline-flex h-2 w-2 rounded-full ${getStatusDotClass(
+                                netConfig.tor
+                              )} cursor-pointer`}
+                              tabIndex={0}
+                            />
                           </label>
                           <div className="text-xs text-nkc-muted">
                             {buildComponentLabel(netConfig.tor)}
