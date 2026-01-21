@@ -497,12 +497,12 @@ export default function SettingsDialog({
 
   const handleModeChange = async (next: NetworkMode) => {
     if (next === "directP2P" && !directP2PAcked) {
-      addToast(
-        t(
+      addToast({
+        message: t(
           "Direct P2P 사용 전에 위험 동의를 확인해주세요.",
           "Confirm the Direct P2P risk acknowledgement before enabling."
-        )
-      );
+        ),
+      });
       return;
     }
     setMode(next);
