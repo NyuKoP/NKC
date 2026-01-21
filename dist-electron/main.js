@@ -1,5 +1,1471 @@
-"use strict";Object.defineProperty(exports,Symbol.toStringTag,{value:"Module"});const l=require("electron"),w=require("node:fs/promises"),k=require("node:fs"),u=require("node:path"),F=require("node:https"),ue=require("node:stream/promises"),pe=require("node:url"),he=require("node:crypto"),R=require("node:child_process"),ee=require("node:net"),te=async(t,n=0)=>{if(n>5)throw new Error("Too many redirects");const e=await new Promise((a,o)=>{F.get(t,{headers:{"User-Agent":"nkc-onion-installer"}},i=>a(i)).on("error",o)});if(e.statusCode&&[301,302,307,308].includes(e.statusCode)){const a=e.headers.location;if(e.resume(),!a)throw new Error("Redirect missing location header");const o=new pe.URL(a,t).toString();return te(o,n+1)}if(e.statusCode&&e.statusCode>=400){const a=e.statusCode,o=e.statusMessage??"",r=new Error(`Download failed: ${a} ${o}`.trim());throw r.details={url:t,status:a,statusMessage:o},r}return e},ne=async(t,n,e)=>{const a=await te(t),o=Number(a.headers["content-length"]??0);let r=0;a.on("data",i=>{r+=i.length,e?.({receivedBytes:r,totalBytes:o})}),await ue.pipeline(a,k.createWriteStream(n))},we=async t=>{const n=he.createHash("sha256"),e=k.createReadStream(t);return new Promise((a,o)=>{e.on("data",r=>n.update(r)),e.on("error",o),e.on("end",()=>a(n.digest("hex")))})},ae=async(t,n)=>{const e=await we(t);if(e.toLowerCase()!==n.toLowerCase()){const a=new Error(`SHA256 mismatch (expected=${n.toLowerCase()}, actual=${e.toLowerCase()})`);throw a.expected=n,a.actual=e,a}},oe=async(t,n)=>{const e=t.toLowerCase(),a=async(o,r)=>new Promise((i,s)=>{R.execFile(o,r,{windowsHide:!0},(c,p,d)=>{if(!c){i();return}const N=new Error(`${c.message}
-cmd=${o} ${r.join(" ")}
-${d||p||""}`.trim());N.details={cmd:o,args:r,stderr:d?.toString?.()??String(d??""),stdout:p?.toString?.()??String(p??""),code:c.code},s(N)})});if(e.endsWith(".zip")){if(process.platform==="win32"){await a("powershell",["-NoProfile","-Command",`Expand-Archive -Force -Path '${t}' -DestinationPath '${n}'`]);return}await a("unzip",["-o",t,"-d",n]);return}if(e.endsWith(".tar.gz")||e.endsWith(".tgz")||e.endsWith(".tar.xz")){await a(process.platform==="win32"?"tar.exe":"tar",["-xf",t,"-C",n]);return}throw new Error("Unsupported archive format")},S=t=>`${t.platform}:${t.arch}:${t.version}:${t.filename}`,re={tor:{[S({platform:"android",arch:"arm64",version:"15.0.4",filename:"tor-expert-bundle-android-aarch64-15.0.4.tar.gz"})]:"b1582efca86db843bb4fa435edd766086a77334b32924a72686894212d5e5955",[S({platform:"android",arch:"arm",version:"15.0.4",filename:"tor-expert-bundle-android-armv7-15.0.4.tar.gz"})]:"fdb2d8ed01e40506f1518ef3e5f83a3d62e6f5ac0f8798917532798d6c05771f",[S({platform:"android",arch:"ia32",version:"15.0.4",filename:"tor-expert-bundle-android-x86-15.0.4.tar.gz"})]:"c92f7ffbf105e0ae195e28ac516648b54ba1323f24b47ae236a6d711c7daffe2",[S({platform:"android",arch:"x64",version:"15.0.4",filename:"tor-expert-bundle-android-x86_64-15.0.4.tar.gz"})]:"0adf0201950c02d36897569576eff37718d4afe1835052a3bc424b78be1a0605",[S({platform:"linux",arch:"ia32",version:"15.0.4",filename:"tor-expert-bundle-linux-i686-15.0.4.tar.gz"})]:"228d1a1ccd2683b8c6abc4fd701ebdc7b59254bae47b6acd253cb6aea9338a50",[S({platform:"linux",arch:"x64",version:"15.0.4",filename:"tor-expert-bundle-linux-x86_64-15.0.4.tar.gz"})]:"b9d0cbb76b2d8cca37313393b7b02a931e8b63d58aacbeed18b24d5cbb887fe8",[S({platform:"darwin",arch:"arm64",version:"15.0.4",filename:"tor-expert-bundle-macos-aarch64-15.0.4.tar.gz"})]:"8f0a9dc1020b2d7a89356a6aabefb95663614b132790ea484381ccb669e2d255",[S({platform:"darwin",arch:"x64",version:"15.0.4",filename:"tor-expert-bundle-macos-x86_64-15.0.4.tar.gz"})]:"1577938b499f46b8cdfa6643c4bb982309ee48fcaa08e3d32ac64e2dd8c16830",[S({platform:"win32",arch:"ia32",version:"15.0.4",filename:"tor-expert-bundle-windows-i686-15.0.4.tar.gz"})]:"f1da12f12f0b49ffbbbe99d7a1994b5f7f5e6ced33e4f41d3a520d0d9c445a21",[S({platform:"win32",arch:"x64",version:"15.0.4",filename:"tor-expert-bundle-windows-x86_64-15.0.4.tar.gz"})]:"cce12f8097b1657b56e22ec54cbed4b57fd5f8ff97cc426c21ebd5cc15173924"},lokinet:{[S({platform:"linux",arch:"x64",version:"0.9.14",filename:"lokinet-linux-amd64-v0.9.14.tar.xz"})]:"4097f96779a007abf35f37a46394eb5af39debd27244c190ce6867caf7a5115d",[S({platform:"win32",arch:"x64",version:"0.9.11",filename:"lokinet-0.9.11-win64.exe"})]:"0a4a972e1f2d7d2af7f6aebcd15953d98f4ff53b5e823a7d7aa2953eeea2c8d2"}},se=(t,n)=>t==="win32"?`${n}.exe`:n,fe={id:"tor",displayName:"Tor",binaryPath:t=>u.join("Tor",se(t,"tor")),pinnedSha256:re.tor},me={id:"lokinet",displayName:"Lokinet",binaryPath:t=>se(t,"lokinet"),pinnedSha256:re.lokinet},ie={tor:fe,lokinet:me},z=(t,n=process.platform)=>ie[t].binaryPath(n),C=(t,n)=>{const e=S({platform:n.platform??process.platform,arch:n.arch??process.arch,version:n.version,filename:n.assetName});return ie[t].pinnedSha256[e]},ge="current.json",ye=(t,n)=>u.join(t,"onion","components",n),T=(t,n)=>u.join(ye(t,n),ge),W=async(t,n)=>{const e=`${t}.tmp`;await w.mkdir(u.dirname(t),{recursive:!0}),await w.writeFile(e,JSON.stringify(n,null,2)),await w.rename(e,t)},q=async(t,n)=>{try{const e=await w.readFile(T(t,n),"utf8");return JSON.parse(e)}catch{return null}},j=async(t,n,e)=>{const a=await q(t,n);return await W(T(t,n),e),async()=>{a&&await W(T(t,n),a)}};class U extends Error{code="PINNED_HASH_MISSING";details;constructor(n){super("PINNED_HASH_MISSING"),this.name="PinnedHashMissingError",this.details=n}}const ve="https://dist.torproject.org/torbrowser",Se="https://github.com/oxen-io/lokinet/releases/download",be=t=>{switch(t){case"win32":return"windows";case"darwin":return"macos";case"linux":return"linux";case"android":return"android";default:return t}},ke=t=>{switch(t){case"x64":return"x86_64";case"ia32":return"i686";case"arm64":return"aarch64";case"arm":return"armv7";default:return t}},V=(t,n=process.platform,e=process.arch)=>`tor-expert-bundle-${be(n)}-${ke(e)}-${t}.tar.gz`,H=(t,n=process.platform,e=process.arch)=>`${ve}/${t}/${V(t,n,e)}`,Ee=t=>{switch(t){case"win32":return"win32";case"darwin":return"macos";case"linux":return"linux";default:return t}},Ne=t=>{switch(t){case"x64":return"amd64";case"ia32":return"i686";case"arm64":return"arm64";default:return t}},xe=t=>{switch(t){case"linux":case"darwin":return"tar.xz";default:return"zip"}},Pe=(t,n=process.platform,e=process.arch)=>`lokinet-${Ee(n)}-${Ne(e)}-v${t}.${xe(n)}`,_e=(t,n)=>`${Se}/v${t}/${n}`,Ie=t=>({assetName:V(t),url:H(t)}),G=async(t,n,e,a,o)=>{const{assetName:i,url:s}=Ie(n),c=o??i,p=C("tor",{version:n,assetName:c});if(!p)throw new U(`Missing pinned hash for Tor asset ${c} (${n}).`);const d=u.join(t,"onion");await w.mkdir(d,{recursive:!0});const N=await w.mkdtemp(u.join(d,"tmp-")),x=a??s,v=u.join(N,c),f=u.join(t,"onion","components","tor",n),m={network:"tor",version:n,assetName:c,downloadUrl:x,archivePath:v,installPath:f};try{e?.({step:"download",message:"Downloading Tor"}),await ne(x,v,_=>e?.({step:"download",..._}));const y=await w.stat(v);m.downloadBytes=y.size,e?.({step:"verify",message:"Verifying Tor"}),await ae(v,p),m.expectedSha256=p,await w.rm(f,{recursive:!0,force:!0}),await w.mkdir(f,{recursive:!0}),e?.({step:"unpack",message:"Unpacking Tor"}),await oe(v,f);const E=u.join(f,z("tor"));if(m.binaryPath=E,!k.existsSync(E))throw new Error(`BINARY_MISSING: ${E}`);e?.({step:"activate",message:"Activating Tor"});const g=await j(t,"tor",{version:n,path:f});return{version:n,installPath:f,rollback:g}}catch(y){if(y&&typeof y=="object"){const _=y;_.expected&&(m.expectedSha256=_.expected),_.actual&&(m.actualSha256=_.actual)}const E=y instanceof Error?y.message:String(y);console.error("[onion] Tor install failed",{message:E,details:m});const g=new Error(`${E} | details=${JSON.stringify(m)}`);throw g.details=m,g}finally{await w.rm(N,{recursive:!0,force:!0})}},$e=async t=>{if(process.platform!=="win32")throw new Error("Installer execution is only supported on Windows");const e=`Start-Process -FilePath '${t.replace(/'/g,"''")}' -ArgumentList '/S' -Verb RunAs -Wait`;await new Promise((a,o)=>{R.execFile("powershell.exe",["-NoProfile","-NonInteractive","-Command",e],{windowsHide:!0},(r,i,s)=>{if(r){const c=new Error(`${r.message}
-${s||i||""}`.trim());c.details={filePath:t,stderr:s?.toString?.()??String(s??""),stdout:i?.toString?.()??String(i??""),code:r.code},o(c);return}a()})})},Re=async()=>{const t=[];await new Promise(r=>{R.execFile("where.exe",["lokinet.exe"],{windowsHide:!0},(i,s)=>{s&&t.push(...s.toString().split(/\r?\n/).map(c=>c.trim()).filter(Boolean)),r()})}),t.push("C:\\\\Program Files\\\\Lokinet\\\\lokinet.exe","C:\\\\Program Files (x86)\\\\Lokinet\\\\lokinet.exe","C:\\\\Program Files\\\\Lokinet\\\\lokinet\\\\lokinet.exe","C:\\\\Program Files (x86)\\\\Lokinet\\\\lokinet\\\\lokinet.exe");const n=async r=>new Promise(i=>{R.execFile("powershell.exe",["-NoProfile","-NonInteractive","-Command",r],{windowsHide:!0},(s,c)=>i((c??"").toString()))}),e=await n("$paths=@(); $roots=@('HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*','HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*'); foreach($r in $roots){   Get-ItemProperty $r -ErrorAction SilentlyContinue |     Where-Object { $_.DisplayName -match 'Lokinet' -or $_.DisplayName -match 'lokinet' } |     ForEach-Object { if($_.InstallLocation){$paths+=$_.InstallLocation} } }; $paths | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { $_ }");for(const r of e.split(/\r?\n/).map(i=>i.trim()).filter(Boolean))t.push(u.join(r,"lokinet.exe")),t.push(u.join(r,"lokinet","lokinet.exe"));const o=(await n("(Get-ItemProperty 'HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Services\\\\lokinet' -ErrorAction SilentlyContinue).ImagePath")).trim().replace(/^"|"$/g,"");if(o){const r=o.split(/\s+/)[0].replace(/^"|"$/g,"");t.push(r),t.push(u.join(u.dirname(r),"lokinet.exe"))}for(const r of t)if(k.existsSync(r))return{binaryPath:r,baseDir:u.dirname(r)};return null},Me=(t,n)=>{const e=n??Pe(t);return{assetName:e,url:_e(t,e)}},K=async(t,n,e,a,o)=>{const r="lokinet",{assetName:i,url:s}=Me(n,o),c=C(r,{version:n,assetName:i});if(!c)throw new U(`Missing pinned hash for Lokinet asset ${i} (${n}).`);const p=u.join(t,"onion");await w.mkdir(p,{recursive:!0});const d=await w.mkdtemp(u.join(p,"tmp-")),N=a??s,x=u.join(d,i),v=u.join(t,"onion","components",r,n),f={network:r,version:n,assetName:i,downloadUrl:N,archivePath:x,installPath:v};e?.({step:"download",message:"Downloading Lokinet"});try{await ne(N,x,g=>e?.({step:"download",...g}));const m=await w.stat(x);if(f.downloadBytes=m.size,e?.({step:"verify",message:"Verifying Lokinet"}),await ae(x,c),f.expectedSha256=c,process.platform==="win32"&&i.toLowerCase().endsWith(".exe")){e?.({step:"activate",message:"Installing Lokinet (requires admin)"}),await $e(x);const g=await Re();if(!g)throw new Error("BINARY_MISSING: lokinet.exe not found after installer");f.binaryPath=g.binaryPath;const _=await j(t,r,{version:n,path:g.baseDir});return{version:n,installPath:g.baseDir,rollback:_}}await w.rm(v,{recursive:!0,force:!0}),await w.mkdir(v,{recursive:!0}),e?.({step:"unpack",message:"Unpacking Lokinet"}),await oe(x,v);const y=u.join(v,z(r));if(f.binaryPath=y,!k.existsSync(y))throw new Error(`BINARY_MISSING: ${y}`);e?.({step:"activate",message:"Activating Lokinet"});const E=await j(t,r,{version:n,path:v});return{version:n,installPath:v,rollback:E}}catch(m){if(m&&typeof m=="object"){const g=m;g.expected&&(f.expectedSha256=g.expected),g.actual&&(f.actualSha256=g.actual)}const y=m instanceof Error?m.message:String(m);console.error("[onion] Lokinet install failed",{message:y,details:f});const E=new Error(`${y} | details=${JSON.stringify(f)}`);throw E.details=f,E}finally{await w.rm(d,{recursive:!0,force:!0})}};class Ce{process=null;state={running:!1};async start(n,e,a){if(this.process)return;const o=["--SocksPort",`127.0.0.1:${e}`,"--DataDirectory",a];this.process=R.spawn(n,o,{stdio:"ignore"}),this.state={running:!0,pid:this.process.pid},this.process.on("exit",()=>{this.state={running:!1},this.process=null})}async stop(){this.process&&(this.process.kill(),this.process=null,this.state={running:!1})}getState(){return this.state}}class Ue{process=null;state={running:!1};async start(n,e,a){if(this.process)return;const o=["--socks-port",String(e),"--data-dir",a];this.process=R.spawn(n,o,{stdio:"ignore"}),this.state={running:!0,pid:this.process.pid},this.process.on("exit",()=>{this.state={running:!1},this.process=null})}async stop(){this.process&&(this.process.kill(),this.process=null,this.state={running:!1})}getState(){return this.state}}const De=9050,Ae=9070,Le=async()=>{for(let t=De;t<=Ae;t+=1)if(await new Promise(e=>{const a=ee.createServer();a.once("error",()=>e(!1)),a.once("listening",()=>{a.close(()=>e(!0))}),a.listen(t,"127.0.0.1")}))return t;throw new Error("No available SOCKS port")},Be=async(t,n=3e4)=>{const e=Date.now();for(;Date.now()-e<n;){if(await new Promise(o=>{const r=ee.createConnection({host:"127.0.0.1",port:t},()=>{r.end(),o(!0)});r.on("error",()=>o(!1))}))return;await new Promise(o=>setTimeout(o,250))}throw new Error(`SOCKS proxy not ready (port ${t})`)};class Oe{torManager=new Ce;lokinetManager=new Ue;status={status:"idle"};async start(n,e){if(!(this.status.status==="running"&&this.status.network===e)){await this.stop(),this.status={status:"starting",network:e};try{const a=await q(n,e);if(!a)throw new Error("Component not installed");const o=await Le(),r=u.join(n,"onion","runtime",e);await w.mkdir(r,{recursive:!0});const i=u.join(a.path,z(e));if(!k.existsSync(i))throw new Error(`BINARY_MISSING: ${i}`);e==="tor"?await this.torManager.start(i,o,r):await this.lokinetManager.start(i,o,r),await Be(o),await l.session.defaultSession.setProxy({proxyRules:`socks5://127.0.0.1:${o}`}),this.status={status:"running",network:e,socksPort:o}}catch(a){throw this.status={status:"failed",network:e,error:a instanceof Error?a.message:String(a)},a}}}async stop(){await this.torManager.stop(),await this.lokinetManager.stop(),await l.session.defaultSession.setProxy({mode:"direct"}),this.status={status:"idle"}}getStatus(){return{...this.status,tor:this.torManager.getState(),lokinet:this.lokinetManager.getState()}}}const ce=async t=>new Promise((n,e)=>{F.get(t,{headers:{"User-Agent":"nkc-onion-updater"}},a=>{if(a.statusCode&&a.statusCode>=400){e(new Error(`Update check failed: ${a.statusCode}`));return}let o="";a.setEncoding("utf8"),a.on("data",r=>{o+=r}),a.on("end",()=>{try{n(JSON.parse(o))}catch(r){e(r)}})}).on("error",e)}),Te=async t=>new Promise((n,e)=>{F.get(t,{headers:{"User-Agent":"nkc-onion-updater"}},a=>{if(a.statusCode&&a.statusCode>=400){e(new Error(`Update check failed: ${a.statusCode}`));return}let o="";a.setEncoding("utf8"),a.on("data",r=>{o+=r}),a.on("end",()=>n(o))}).on("error",e)}),je=(t,n)=>{const e=t.replace(/^v/i,"").split(".").map(Number),a=n.replace(/^v/i,"").split(".").map(Number),o=Math.max(e.length,a.length);for(let r=0;r<o;r+=1){const i=e[r]??0,s=a[r]??0;if(i>s)return 1;if(i<s)return-1}return 0},He=()=>{const t=[];switch(process.platform){case"win32":t.push(/win32/i,/windows/i,/win/i);break;case"darwin":t.push(/macos/i,/darwin/i,/osx/i,/mac/i);break;case"linux":t.push(/linux/i);break;case"android":t.push(/android/i);break;default:t.push(new RegExp(process.platform,"i"));break}const n=[];switch(process.arch){case"x64":n.push(/x86_64/i,/amd64/i,/win64/i,/64bit/i);break;case"ia32":n.push(/i686/i,/x86(?!_64)/i,/win32/i,/32bit/i);break;case"arm64":n.push(/arm64/i,/aarch64/i);break;case"arm":n.push(/armv7/i,/arm(?!64)/i);break;default:n.push(new RegExp(process.arch,"i"));break}return{platformMatchers:t,archMatchers:n}},J=t=>{const{platformMatchers:n,archMatchers:e}=He();return t.find(a=>{if(a.name.endsWith(".asc")||a.name.endsWith(".sig"))return!1;const o=n.some(i=>i.test(a.name)),r=e.some(i=>i.test(a.name));return o&&r})},Fe=async()=>ce("https://api.github.com/repos/oxen-io/lokinet/releases?per_page=20"),ze=async()=>{const t=await Te("https://dist.torproject.org/torbrowser/"),e=Array.from(t.matchAll(/href="(\d+\.\d+\.\d+)\//g)).map(r=>r[1]).sort(je).at(-1);if(!e)return{version:null,assetName:null,downloadUrl:null,sha256:null};const a=V(e),o=C("tor",{version:e,assetName:a});return o?{version:e,assetName:a,downloadUrl:H(e),sha256:o}:{version:e,assetName:a,downloadUrl:H(e),sha256:null,errorCode:"PINNED_HASH_MISSING"}},qe=async()=>{const n=await ce("https://api.github.com/repos/oxen-io/lokinet/releases/latest");let e=n.tag_name.replace(/^v/i,""),a=J(n.assets);if(!a&&process.platform==="win32"){const r=await Fe();for(const i of r){const s=J(i.assets);if(s){const c=i.tag_name.replace(/^v/i,"");if(!C("lokinet",{version:c,assetName:s.name}))continue;e=c,a=s;break}}}if(!a)return{version:e,assetName:null,downloadUrl:null,sha256:null,errorCode:"ASSET_NOT_FOUND"};const o=C("lokinet",{version:e,assetName:a.name});return o?{version:e,assetName:a.name,downloadUrl:a.browser_download_url,sha256:o}:{version:e,assetName:a.name,downloadUrl:a.browser_download_url,sha256:null,errorCode:"PINNED_HASH_MISSING"}},D=async t=>t==="tor"?ze():qe(),M=!l.app.isPackaged,le="secret-store.json",Ve=new Set(["socks5:","socks5h:","http:","https:"]),We=t=>t==="127.0.0.1"||t==="localhost"||t==="::1",Ge=t=>{let n;try{n=new URL(t.trim())}catch{throw new Error("Invalid proxy URL")}if(!Ve.has(n.protocol))throw new Error("Invalid proxy URL");if(!n.hostname||!n.port)throw new Error("Invalid proxy URL");const e=Number(n.port);if(!Number.isInteger(e)||e<1||e>65535)throw new Error("Invalid proxy URL");return{url:n,normalized:`${n.protocol}//${n.host}`}},Ke=async({proxyUrl:t,enabled:n,allowRemote:e})=>{if(!n){await l.session.defaultSession.setProxy({mode:"direct"});return}const{url:a,normalized:o}=Ge(t);if(!e&&!We(a.hostname))throw new Error("Remote proxy URL blocked");await l.session.defaultSession.setProxy({proxyRules:o})},Je=async()=>{const t=await l.session.defaultSession.resolveProxy("https://example.com");return t.includes("PROXY")||t.includes("SOCKS")?new Promise(e=>{const a=l.net.request("https://example.com");a.on("response",()=>e({ok:!0,message:"ok"})),a.on("error",()=>e({ok:!1,message:"unreachable"})),a.end()}):{ok:!1,message:"proxy-not-applied"}},de=()=>{l.ipcMain.handle("proxy:apply",async(t,n)=>{await Ke(n)}),l.ipcMain.handle("proxy:check",async()=>Je())},O=async()=>{const t=u.join(l.app.getPath("userData"),le);try{const n=await w.readFile(t,"utf8"),e=JSON.parse(n);return!e||typeof e!="object"?{}:e}catch(n){return n&&typeof n=="object"&&"code"in n&&String(n.code??"")==="ENOENT"?{}:{}}},Y=async t=>{const n=u.join(l.app.getPath("userData"),le);await w.writeFile(n,JSON.stringify(t),"utf8")},Ye=()=>{l.ipcMain.handle("secretStore:get",async(t,n)=>{if(!l.safeStorage.isEncryptionAvailable())return null;const a=(await O())[n];if(!a)return null;try{return l.safeStorage.decryptString(Buffer.from(a,"base64"))}catch{return null}}),l.ipcMain.handle("secretStore:set",async(t,n,e)=>{if(!l.safeStorage.isEncryptionAvailable())return!1;const a=await O(),o=l.safeStorage.encryptString(e);return a[n]=o.toString("base64"),await Y(a),!0}),l.ipcMain.handle("secretStore:remove",async(t,n)=>{if(!l.safeStorage.isEncryptionAvailable())return!1;const e=await O();return n in e&&(delete e[n],await Y(e)),!0}),l.ipcMain.handle("secretStore:isAvailable",async()=>l.safeStorage.isEncryptionAvailable())},I=new Oe,h={tor:{installed:!1,status:"idle"},lokinet:{installed:!1,status:"idle"}},X=async(t,n,e)=>{const a=u.join(t,"onion","components",n),o=u.resolve(a)+u.sep;if(u.resolve(e.installPath).startsWith(o))try{const i=await w.readdir(a,{withFileTypes:!0});await Promise.all(i.filter(s=>s.isDirectory()).map(async s=>{s.name!==e.version&&await w.rm(u.join(a,s.name),{recursive:!0,force:!0})}))}catch{}},A=(t,n)=>{if(!t&&!n)return"";const e=n??0;return e>0?`${Math.round((t??0)/1024/1024)} / ${Math.round(e/1024/1024)} MB`:`${Math.round((t??0)/1024/1024)} MB`},Q=(t,n)=>{const e=t instanceof Error?t.message:String(t),a=t&&typeof t=="object"&&"code"in t?String(t.code??""):"",o=t instanceof U?"PINNED_HASH_MISSING":e.includes("SHA256 mismatch")?"HASH_MISMATCH":e.includes("Download failed")||e.includes("Too many redirects")||e.includes("Redirect")?"DOWNLOAD_FAILED":e.includes("Unsupported archive format")||e.includes("tar")||e.includes("unzip")||e.includes("Expand-Archive")?"EXTRACT_FAILED":e.includes("BINARY_MISSING")?"BINARY_MISSING":(()=>{const i=t;return a==="EACCES"||a==="EPERM"||i?.code==="EACCES"||i?.code==="EPERM"?"PERMISSION_DENIED":i?.code==="ENOENT"?"FS_ERROR":"UNKNOWN_ERROR"})(),r=t&&typeof t=="object"&&"details"in t?{...n,...t.details}:n;return{code:o,message:e,details:r}},L=async(t,n)=>{const e=await q(t,n);return{...h[n],installed:!!e,version:e?.version}},P=(t,n,e)=>{t.sender.send("onion:progress",{network:n,status:e})},Xe=()=>{l.ipcMain.handle("onion:status",async()=>{const t=l.app.getPath("userData");return{components:{tor:await L(t,"tor"),lokinet:await L(t,"lokinet")},runtime:I.getStatus()}}),l.ipcMain.handle("onion:checkUpdates",async()=>{const t=l.app.getPath("userData"),n=await D("tor"),e=await D("lokinet");console.log("[onion] checkUpdates",{tor:{version:n.version,assetName:n.assetName,downloadUrl:n.downloadUrl,sha256:n.sha256?"<present>":"<missing>",errorCode:n.errorCode},lokinet:{version:e.version,assetName:e.assetName,downloadUrl:e.downloadUrl,sha256:e.sha256?"<present>":"<missing>",errorCode:e.errorCode}});const a=await L(t,"tor"),o=await L(t,"lokinet"),r=!!(n.version&&n.sha256&&n.downloadUrl),i=!!(e.version&&e.sha256&&e.downloadUrl);return h.tor={...a,latest:r?n.version??void 0:void 0,error:n.errorCode==="PINNED_HASH_MISSING"?"PINNED_HASH_MISSING":void 0,detail:n.errorCode==="PINNED_HASH_MISSING"?`Pinned hash missing for ${n.assetName??n.version??"unknown"}`:void 0},h.lokinet={...o,latest:i?e.version??void 0:void 0,error:e.errorCode==="PINNED_HASH_MISSING"?"PINNED_HASH_MISSING":void 0,detail:e.errorCode==="PINNED_HASH_MISSING"?`Pinned hash missing for ${e.assetName??e.version??"unknown"}`:void 0},{components:{tor:h.tor,lokinet:h.lokinet},runtime:I.getStatus()}}),l.ipcMain.handle("onion:install",async(t,n)=>{const e=l.app.getPath("userData"),a=n.network;let o=null;try{if(o=await D(a),o.errorCode==="PINNED_HASH_MISSING")throw new U(`Missing pinned hash for ${a} ${o.assetName??o.version??"unknown"}`);if(!o.version||!o.sha256||!o.downloadUrl||!o.assetName){const s=new Error("No verified release available");throw s.details={network:a,platform:process.platform,arch:process.arch,update:o},s}h[a]={...h[a],status:"downloading",error:void 0,detail:"Preparing download",progress:void 0},P(t,a,h[a]);const i=await(a==="tor"?G(e,o.version,s=>{h[a]={...h[a],status:s.step==="download"?"downloading":"installing",detail:(s.message??"")+(s.receivedBytes||s.totalBytes?` (${A(s.receivedBytes,s.totalBytes)})`:""),progress:s.receivedBytes||s.totalBytes?{receivedBytes:s.receivedBytes??0,totalBytes:s.totalBytes??0}:void 0},P(t,a,h[a])},o.downloadUrl??void 0,o.assetName??void 0):K(e,o.version,s=>{h[a]={...h[a],status:s.step==="download"?"downloading":"installing",detail:(s.message??"")+(s.receivedBytes||s.totalBytes?` (${A(s.receivedBytes,s.totalBytes)})`:""),progress:s.receivedBytes||s.totalBytes?{receivedBytes:s.receivedBytes??0,totalBytes:s.totalBytes??0}:void 0},P(t,a,h[a])},o.downloadUrl??void 0,o.assetName??void 0));h[a]={...h[a],installed:!0,status:"ready",version:i.version,error:void 0,detail:`Installed ${i.version}`,progress:void 0},P(t,a,h[a]),await X(e,a,{version:i.version,installPath:i.installPath})}catch(r){const i={network:a,version:o?.version,assetName:o?.assetName,downloadUrl:o?.downloadUrl,targetDir:o?.version?u.join(e,"onion","components",a,o.version):void 0},s=Q(r,i);console.error("Onion install failed",{code:s.code,message:s.message,details:s.details}),h[a]={...h[a],status:"failed",error:`[${s.code}] ${s.message}`,detail:JSON.stringify(s.details),progress:void 0},P(t,a,h[a]);const c=new Error(`[${s.code}] ${s.message}`);throw c.code=s.code,c.details=s.details,c}}),l.ipcMain.handle("onion:applyUpdate",async(t,n)=>{const e=n.network,a=h[e];if(!a.latest)throw new Error("No update available");const o=await D(e);if(o.errorCode==="PINNED_HASH_MISSING")throw new U(`Missing pinned hash for ${e} ${o.assetName??o.version??"unknown"}`);if(!o.version||!o.sha256||!o.downloadUrl||!o.assetName)throw new Error("No verified release available");const r=o.version??a.latest;if(!r)throw new Error("No verified release available");const i=l.app.getPath("userData");try{const c=await(e==="tor"?G(i,r,d=>{h[e]={...h[e],status:d.step==="download"?"downloading":"installing",detail:(d.message??"")+(d.receivedBytes||d.totalBytes?` (${A(d.receivedBytes,d.totalBytes)})`:""),progress:d.receivedBytes||d.totalBytes?{receivedBytes:d.receivedBytes??0,totalBytes:d.totalBytes??0}:void 0},P(t,e,h[e])},o.downloadUrl??void 0,o.assetName??void 0):K(i,r,d=>{h[e]={...h[e],status:d.step==="download"?"downloading":"installing",detail:(d.message??"")+(d.receivedBytes||d.totalBytes?` (${A(d.receivedBytes,d.totalBytes)})`:""),progress:d.receivedBytes||d.totalBytes?{receivedBytes:d.receivedBytes??0,totalBytes:d.totalBytes??0}:void 0},P(t,e,h[e])},o.downloadUrl??void 0,o.assetName??void 0)),p=I.getStatus();if(p.status==="running"&&p.network===e)try{await I.start(i,e)}catch(d){throw await c.rollback(),await I.start(i,e),d}h[e]={...h[e],installed:!0,status:"ready",version:c.version,error:void 0,detail:`Installed ${c.version}`,progress:void 0},P(t,e,h[e]),await X(i,e,{version:c.version,installPath:c.installPath})}catch(s){const c={network:e,version:r,assetName:o.assetName,downloadUrl:o.downloadUrl,targetDir:u.join(i,"onion","components",e,r)},p=Q(s,c);console.error("Onion update failed",{code:p.code,message:p.message,details:p.details}),h[e]={...h[e],status:"failed",error:`[${p.code}] ${p.message}`,detail:JSON.stringify(p.details),progress:void 0},P(t,e,h[e]);const d=new Error(`[${p.code}] ${p.message}`);throw d.code=p.code,d.details=p.details,d}}),l.ipcMain.handle("onion:uninstall",async(t,n)=>{const e=n.network;await I.stop();const a=l.app.getPath("userData"),o=u.join(a,"onion","components",e);await w.rm(o,{recursive:!0,force:!0}),h[e]={installed:!1,status:"idle"}}),l.ipcMain.handle("onion:setMode",async(t,n)=>{const e=l.app.getPath("userData");if(!n.enabled){await I.stop();return}await I.start(e,n.network)})},$=process.env.VITE_DEV_SERVER_URL;let b=null;const Z=async(t,n=1200)=>new Promise(e=>{try{const a=l.net.request(t),o=setTimeout(()=>{try{a.abort()}catch{}e(!1)},n);a.on("response",r=>{const i=!!(r.statusCode&&r.statusCode>=200&&r.statusCode<400);r.on("data",()=>{}),r.on("end",()=>{clearTimeout(o),e(i)})}),a.on("error",()=>{clearTimeout(o),e(!1)}),a.end()}catch{e(!1)}}),B=()=>{if(b&&!b.isDestroyed())return b.show(),b.focus(),b;const t=u.join(__dirname,"preload.js"),n=k.existsSync(t);M&&!n&&console.error("[dev] preload missing at",t);const e=!(M&&process.env.ELECTRON_DEV_NO_SANDBOX==="1"),a=new l.BrowserWindow({width:1280,height:800,webPreferences:{preload:n?t:void 0,contextIsolation:!0,nodeIntegration:!1,sandbox:e,allowRunningInsecureContent:!1}});a.webContents.on("did-fail-load",(s,c,p,d)=>{console.error("[main] did-fail-load",c,p,d)}),a.webContents.on("render-process-gone",(s,c)=>{console.error("[main] render-process-gone",c)}),a.webContents.on("unresponsive",()=>{console.error("[main] renderer unresponsive")});const o=(...s)=>{if(!(!process.stdout||!process.stdout.writable))try{console.log(...s)}catch(c){const p=c instanceof Error?c.message:String(c);if((c&&typeof c=="object"&&"code"in c?String(c.code):"")==="EPIPE"||p.includes("EPIPE"))return;throw c}},r=s=>{const c=s instanceof Error?s.message:String(s);if(!((s&&typeof s=="object"&&"code"in s?String(s.code):"")==="EPIPE"||c.includes("EPIPE")))throw s};return process.stdout?.on("error",r),process.stderr?.on("error",r),M&&a.webContents.on("console-message",(s,c,p,d,N)=>{a.webContents.isDestroyed()||o("[renderer]",c,p,N,d)}),(async()=>{if($){if(console.log("[dev] rendererUrl =",$),await Z($)){console.log("[dev] loadURL =",$),a.loadURL($);return}console.error("[dev] vite not reachable",$)}if(M){const s="http://localhost:5173/";if(await Z(s)){console.log("[dev] loadURL =",s),a.loadURL(s);return}const p=u.join(__dirname,"../dist/index.html");if(k.existsSync(p)){console.log("[dev] loadFile =",p),a.loadFile(p);return}const d='<!doctype html><html><head><meta charset="utf-8" /><title>Dev Server Unavailable</title></head><body style="font-family:sans-serif;padding:16px;"><h2>Dev server not reachable</h2><p>Start Vite on http://localhost:5173 and reload.</p></body></html>';console.log("[dev] loadURL = dev fallback page"),a.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(d)}`);return}a.loadFile(u.join(__dirname,"../dist/index.html"))})(),process.env.OPEN_DEV_TOOLS&&a.webContents.openDevTools({mode:"detach"}),b=a,a.on("closed",()=>{b=null}),a},Qe=l.app.requestSingleInstanceLock();Qe?l.app.on("second-instance",()=>{if(b&&!b.isDestroyed()){b.isMinimized()&&b.restore(),b.show(),b.focus();return}B()}):(l.app.quit(),process.exit(0));if(process.env.VITE_DEV_SERVER_URL){const t=l.app.getPath("temp"),n=process.env.NKC_E2E_USER_DATA_DIR||u.join(t,"nkc-electron-dev"),e=u.join(n,"userData"),a=u.join(n,"cache"),o=u.join(n,"sessionData"),r=u.join(n,"temp");k.mkdirSync(n,{recursive:!0}),k.mkdirSync(e,{recursive:!0}),k.mkdirSync(a,{recursive:!0}),k.mkdirSync(o,{recursive:!0}),k.mkdirSync(r,{recursive:!0}),l.app.setPath("userData",e),l.app.setPath("sessionData",o),l.app.setPath("temp",r),console.log("[dev] userData =",l.app.getPath("userData"),"temp =",l.app.getPath("temp"))}l.app.whenReady().then(()=>{M&&console.log("[main] VITE_DEV_SERVER_URL =",process.env.VITE_DEV_SERVER_URL??""),de(),Ye(),Xe(),B(),l.app.on("activate",()=>{l.BrowserWindow.getAllWindows().length===0&&B()})});l.app.on("before-quit",()=>console.log("[main] before-quit"));l.app.on("will-quit",()=>console.log("[main] will-quit"));l.app.on("quit",(t,n)=>console.log("[main] quit",n));l.app.on("window-all-closed",()=>{process.platform!=="darwin"&&l.app.quit()});exports.createMainWindow=B;exports.registerProxyIpc=de;
+"use strict";
+Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+const electron = require("electron");
+const fs = require("node:fs/promises");
+const fsSync = require("node:fs");
+const path = require("node:path");
+const https = require("node:https");
+const promises = require("node:stream/promises");
+const node_url = require("node:url");
+const crypto = require("node:crypto");
+const node_child_process = require("node:child_process");
+const net = require("node:net");
+const getResponse = async (url, redirects = 0) => {
+  if (redirects > 5) {
+    throw new Error("Too many redirects");
+  }
+  const response = await new Promise((resolve, reject) => {
+    const req = https.get(
+      url,
+      { headers: { "User-Agent": "nkc-onion-installer" } },
+      (res) => resolve(res)
+    );
+    req.on("error", reject);
+  });
+  if (response.statusCode && [301, 302, 307, 308].includes(response.statusCode)) {
+    const redirect = response.headers.location;
+    response.resume();
+    if (!redirect) {
+      throw new Error("Redirect missing location header");
+    }
+    const nextUrl = new node_url.URL(redirect, url).toString();
+    return getResponse(nextUrl, redirects + 1);
+  }
+  if (response.statusCode && response.statusCode >= 400) {
+    const status = response.statusCode;
+    const statusMessage = response.statusMessage ?? "";
+    const error = new Error(`Download failed: ${status} ${statusMessage}`.trim());
+    error.details = {
+      url,
+      status,
+      statusMessage
+    };
+    throw error;
+  }
+  return response;
+};
+const downloadFile = async (url, dest, onProgress) => {
+  const request = await getResponse(url);
+  const totalBytes = Number(request.headers["content-length"] ?? 0);
+  let receivedBytes = 0;
+  request.on("data", (chunk) => {
+    receivedBytes += chunk.length;
+    onProgress?.({ receivedBytes, totalBytes });
+  });
+  await promises.pipeline(request, fsSync.createWriteStream(dest));
+};
+const hashFile = async (filePath) => {
+  const hash = crypto.createHash("sha256");
+  const stream = fsSync.createReadStream(filePath);
+  return new Promise((resolve, reject) => {
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", () => resolve(hash.digest("hex")));
+  });
+};
+const verifySha256 = async (filePath, expectedSha256) => {
+  const actual = await hashFile(filePath);
+  if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
+    const error = new Error(
+      `SHA256 mismatch (expected=${expectedSha256.toLowerCase()}, actual=${actual.toLowerCase()})`
+    );
+    error.expected = expectedSha256;
+    error.actual = actual;
+    throw error;
+  }
+};
+const unpackArchive = async (archivePath, destDir) => {
+  const lowerPath = archivePath.toLowerCase();
+  const run = async (cmd, args) => {
+    return new Promise((resolve, reject) => {
+      node_child_process.execFile(cmd, args, { windowsHide: true }, (error, stdout, stderr) => {
+        if (!error) {
+          resolve();
+          return;
+        }
+        const wrapped = new Error(
+          `${error.message}
+cmd=${cmd} ${args.join(" ")}
+${stderr || stdout || ""}`.trim()
+        );
+        wrapped.details = {
+          cmd,
+          args,
+          stderr: stderr?.toString?.() ?? String(stderr ?? ""),
+          stdout: stdout?.toString?.() ?? String(stdout ?? ""),
+          code: error.code
+        };
+        reject(wrapped);
+      });
+    });
+  };
+  if (lowerPath.endsWith(".zip")) {
+    if (process.platform === "win32") {
+      await run("powershell", [
+        "-NoProfile",
+        "-Command",
+        `Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${destDir}'`
+      ]);
+      return;
+    }
+    await run("unzip", ["-o", archivePath, "-d", destDir]);
+    return;
+  }
+  if (lowerPath.endsWith(".tar.gz") || lowerPath.endsWith(".tgz") || lowerPath.endsWith(".tar.xz")) {
+    await run(process.platform === "win32" ? "tar.exe" : "tar", [
+      "-xf",
+      archivePath,
+      "-C",
+      destDir
+    ]);
+    return;
+  }
+  throw new Error("Unsupported archive format");
+};
+const makePinnedKey = (parts) => `${parts.platform}:${parts.arch}:${parts.version}:${parts.filename}`;
+const pinnedSha256 = {
+  tor: {
+    [makePinnedKey({ platform: "android", arch: "arm64", version: "15.0.4", filename: "tor-expert-bundle-android-aarch64-15.0.4.tar.gz" })]: "b1582efca86db843bb4fa435edd766086a77334b32924a72686894212d5e5955",
+    [makePinnedKey({ platform: "android", arch: "arm", version: "15.0.4", filename: "tor-expert-bundle-android-armv7-15.0.4.tar.gz" })]: "fdb2d8ed01e40506f1518ef3e5f83a3d62e6f5ac0f8798917532798d6c05771f",
+    [makePinnedKey({ platform: "android", arch: "ia32", version: "15.0.4", filename: "tor-expert-bundle-android-x86-15.0.4.tar.gz" })]: "c92f7ffbf105e0ae195e28ac516648b54ba1323f24b47ae236a6d711c7daffe2",
+    [makePinnedKey({ platform: "android", arch: "x64", version: "15.0.4", filename: "tor-expert-bundle-android-x86_64-15.0.4.tar.gz" })]: "0adf0201950c02d36897569576eff37718d4afe1835052a3bc424b78be1a0605",
+    [makePinnedKey({ platform: "linux", arch: "ia32", version: "15.0.4", filename: "tor-expert-bundle-linux-i686-15.0.4.tar.gz" })]: "228d1a1ccd2683b8c6abc4fd701ebdc7b59254bae47b6acd253cb6aea9338a50",
+    [makePinnedKey({ platform: "linux", arch: "x64", version: "15.0.4", filename: "tor-expert-bundle-linux-x86_64-15.0.4.tar.gz" })]: "b9d0cbb76b2d8cca37313393b7b02a931e8b63d58aacbeed18b24d5cbb887fe8",
+    [makePinnedKey({ platform: "darwin", arch: "arm64", version: "15.0.4", filename: "tor-expert-bundle-macos-aarch64-15.0.4.tar.gz" })]: "8f0a9dc1020b2d7a89356a6aabefb95663614b132790ea484381ccb669e2d255",
+    [makePinnedKey({ platform: "darwin", arch: "x64", version: "15.0.4", filename: "tor-expert-bundle-macos-x86_64-15.0.4.tar.gz" })]: "1577938b499f46b8cdfa6643c4bb982309ee48fcaa08e3d32ac64e2dd8c16830",
+    [makePinnedKey({ platform: "win32", arch: "ia32", version: "15.0.4", filename: "tor-expert-bundle-windows-i686-15.0.4.tar.gz" })]: "f1da12f12f0b49ffbbbe99d7a1994b5f7f5e6ced33e4f41d3a520d0d9c445a21",
+    [makePinnedKey({ platform: "win32", arch: "x64", version: "15.0.4", filename: "tor-expert-bundle-windows-x86_64-15.0.4.tar.gz" })]: "cce12f8097b1657b56e22ec54cbed4b57fd5f8ff97cc426c21ebd5cc15173924"
+  },
+  lokinet: {
+    [makePinnedKey({ platform: "linux", arch: "x64", version: "0.9.14", filename: "lokinet-linux-amd64-v0.9.14.tar.xz" })]: "4097f96779a007abf35f37a46394eb5af39debd27244c190ce6867caf7a5115d",
+    [makePinnedKey({ platform: "win32", arch: "x64", version: "0.9.11", filename: "lokinet-0.9.11-win64.exe" })]: "0a4a972e1f2d7d2af7f6aebcd15953d98f4ff53b5e823a7d7aa2953eeea2c8d2"
+  }
+};
+const withExeSuffix = (platform, basename) => platform === "win32" ? `${basename}.exe` : basename;
+const torEntry = {
+  id: "tor",
+  displayName: "Tor",
+  binaryPath: (platform) => path.join("Tor", withExeSuffix(platform, "tor")),
+  pinnedSha256: pinnedSha256.tor
+};
+const lokinetEntry = {
+  id: "lokinet",
+  displayName: "Lokinet",
+  binaryPath: (platform) => withExeSuffix(platform, "lokinet"),
+  pinnedSha256: pinnedSha256.lokinet
+};
+const componentRegistry = {
+  tor: torEntry,
+  lokinet: lokinetEntry
+};
+const getBinaryPath = (network, platform = process.platform) => componentRegistry[network].binaryPath(platform);
+const getPinnedSha256 = (network, lookup) => {
+  const key = makePinnedKey({
+    platform: lookup.platform ?? process.platform,
+    arch: lookup.arch ?? process.arch,
+    version: lookup.version,
+    filename: lookup.assetName
+  });
+  return componentRegistry[network].pinnedSha256[key];
+};
+const currentFileName = "current.json";
+const getComponentRoot = (userDataDir, network) => path.join(userDataDir, "onion", "components", network);
+const getPointerPath = (userDataDir, network) => path.join(getComponentRoot(userDataDir, network), currentFileName);
+const writeJsonAtomic = async (filePath, data) => {
+  const tempPath = `${filePath}.tmp`;
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(tempPath, JSON.stringify(data, null, 2));
+  await fs.rename(tempPath, filePath);
+};
+const readCurrentPointer = async (userDataDir, network) => {
+  try {
+    const raw = await fs.readFile(getPointerPath(userDataDir, network), "utf8");
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+};
+const swapWithRollback = async (userDataDir, network, next) => {
+  const previous = await readCurrentPointer(userDataDir, network);
+  await writeJsonAtomic(getPointerPath(userDataDir, network), next);
+  return async () => {
+    if (previous) {
+      await writeJsonAtomic(getPointerPath(userDataDir, network), previous);
+    }
+  };
+};
+class PinnedHashMissingError extends Error {
+  code = "PINNED_HASH_MISSING";
+  details;
+  constructor(details) {
+    super("PINNED_HASH_MISSING");
+    this.name = "PinnedHashMissingError";
+    this.details = details;
+  }
+}
+const TOR_RELEASE_BASE = "https://dist.torproject.org/torbrowser";
+const LOKINET_RELEASE_BASE = "https://github.com/oxen-io/lokinet/releases/download";
+const getTorPlatformLabel = (platform) => {
+  switch (platform) {
+    case "win32":
+      return "windows";
+    case "darwin":
+      return "macos";
+    case "linux":
+      return "linux";
+    case "android":
+      return "android";
+    default:
+      return platform;
+  }
+};
+const getTorArchLabel = (arch) => {
+  switch (arch) {
+    case "x64":
+      return "x86_64";
+    case "ia32":
+      return "i686";
+    case "arm64":
+      return "aarch64";
+    case "arm":
+      return "armv7";
+    default:
+      return arch;
+  }
+};
+const getTorAssetName = (version, platform = process.platform, arch = process.arch) => `tor-expert-bundle-${getTorPlatformLabel(platform)}-${getTorArchLabel(arch)}-${version}.tar.gz`;
+const getTorAssetUrl = (version, platform = process.platform, arch = process.arch) => `${TOR_RELEASE_BASE}/${version}/${getTorAssetName(version, platform, arch)}`;
+const getLokinetPlatformLabel = (platform) => {
+  switch (platform) {
+    case "win32":
+      return "win32";
+    case "darwin":
+      return "macos";
+    case "linux":
+      return "linux";
+    default:
+      return platform;
+  }
+};
+const getLokinetArchLabel = (arch) => {
+  switch (arch) {
+    case "x64":
+      return "amd64";
+    case "ia32":
+      return "i686";
+    case "arm64":
+      return "arm64";
+    default:
+      return arch;
+  }
+};
+const getLokinetAssetExtension = (platform) => {
+  switch (platform) {
+    case "linux":
+    case "darwin":
+      return "tar.xz";
+    default:
+      return "zip";
+  }
+};
+const getLokinetAssetName = (version, platform = process.platform, arch = process.arch) => `lokinet-${getLokinetPlatformLabel(platform)}-${getLokinetArchLabel(arch)}-v${version}.${getLokinetAssetExtension(
+  platform
+)}`;
+const getLokinetAssetUrlForName = (version, assetName) => `${LOKINET_RELEASE_BASE}/v${version}/${assetName}`;
+const resolveDownload$1 = (version) => {
+  const assetName = getTorAssetName(version);
+  return {
+    assetName,
+    url: getTorAssetUrl(version)
+  };
+};
+const installTor = async (userDataDir, version, onProgress, downloadUrl, assetNameOverride) => {
+  const network = "tor";
+  const { assetName, url } = resolveDownload$1(version);
+  const resolvedAssetName = assetNameOverride ?? assetName;
+  const hash = getPinnedSha256(network, { version, assetName: resolvedAssetName });
+  if (!hash) {
+    throw new PinnedHashMissingError(
+      `Missing pinned hash for Tor asset ${resolvedAssetName} (${version}).`
+    );
+  }
+  const baseOnionDir = path.join(userDataDir, "onion");
+  await fs.mkdir(baseOnionDir, { recursive: true });
+  const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
+  const resolvedUrl = downloadUrl ?? url;
+  const archivePath = path.join(tempDir, resolvedAssetName);
+  const installPath = path.join(userDataDir, "onion", "components", network, version);
+  const details = {
+    network,
+    version,
+    assetName: resolvedAssetName,
+    downloadUrl: resolvedUrl,
+    archivePath,
+    installPath
+  };
+  try {
+    onProgress?.({ step: "download", message: "Downloading Tor" });
+    await downloadFile(
+      resolvedUrl,
+      archivePath,
+      (progress) => onProgress?.({ step: "download", ...progress })
+    );
+    const stat = await fs.stat(archivePath);
+    details.downloadBytes = stat.size;
+    onProgress?.({ step: "verify", message: "Verifying Tor" });
+    await verifySha256(archivePath, hash);
+    details.expectedSha256 = hash;
+    await fs.rm(installPath, { recursive: true, force: true });
+    await fs.mkdir(installPath, { recursive: true });
+    onProgress?.({ step: "unpack", message: "Unpacking Tor" });
+    await unpackArchive(archivePath, installPath);
+    const binaryPath = path.join(installPath, getBinaryPath(network));
+    details.binaryPath = binaryPath;
+    if (!fsSync.existsSync(binaryPath)) {
+      throw new Error(`BINARY_MISSING: ${binaryPath}`);
+    }
+    onProgress?.({ step: "activate", message: "Activating Tor" });
+    const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
+    return { version, installPath, rollback };
+  } catch (error) {
+    if (error && typeof error === "object") {
+      const err = error;
+      if (err.expected) details.expectedSha256 = err.expected;
+      if (err.actual) details.actualSha256 = err.actual;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[onion] Tor install failed", { message, details });
+    const wrapped = new Error(`${message} | details=${JSON.stringify(details)}`);
+    wrapped.details = details;
+    throw wrapped;
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+};
+const runInstaller = async (filePath) => {
+  if (process.platform !== "win32") {
+    throw new Error("Installer execution is only supported on Windows");
+  }
+  const escapedPath = filePath.replace(/'/g, "''");
+  const psCommand = `Start-Process -FilePath '${escapedPath}' -ArgumentList '/S' -Verb RunAs -Wait`;
+  await new Promise((resolve, reject) => {
+    node_child_process.execFile(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-Command", psCommand],
+      { windowsHide: true },
+      (error, stdout, stderr) => {
+        if (error) {
+          const wrapped = new Error(
+            `${error.message}
+${stderr || stdout || ""}`.trim()
+          );
+          wrapped.details = {
+            filePath,
+            stderr: stderr?.toString?.() ?? String(stderr ?? ""),
+            stdout: stdout?.toString?.() ?? String(stdout ?? ""),
+            code: error.code
+          };
+          reject(wrapped);
+          return;
+        }
+        resolve();
+      }
+    );
+  });
+};
+const findLokinetBinaryWin32 = async () => {
+  const candidates = [];
+  await new Promise((resolve) => {
+    node_child_process.execFile("where.exe", ["lokinet.exe"], { windowsHide: true }, (_error, stdout) => {
+      if (stdout) {
+        candidates.push(
+          ...stdout.toString().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+        );
+      }
+      resolve();
+    });
+  });
+  candidates.push(
+    "C:\\\\Program Files\\\\Lokinet\\\\lokinet.exe",
+    "C:\\\\Program Files (x86)\\\\Lokinet\\\\lokinet.exe",
+    "C:\\\\Program Files\\\\Lokinet\\\\lokinet\\\\lokinet.exe",
+    "C:\\\\Program Files (x86)\\\\Lokinet\\\\lokinet\\\\lokinet.exe"
+  );
+  const ps = async (command) => {
+    return new Promise((resolve) => {
+      node_child_process.execFile(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", command],
+        { windowsHide: true },
+        (_error, stdout) => resolve((stdout ?? "").toString())
+      );
+    });
+  };
+  const installLocationsRaw = await ps(
+    "$paths=@(); $roots=@('HKLM:\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*','HKLM:\\\\Software\\\\WOW6432Node\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Uninstall\\\\*'); foreach($r in $roots){   Get-ItemProperty $r -ErrorAction SilentlyContinue |     Where-Object { $_.DisplayName -match 'Lokinet' -or $_.DisplayName -match 'lokinet' } |     ForEach-Object { if($_.InstallLocation){$paths+=$_.InstallLocation} } }; $paths | ForEach-Object { $_.Trim() } | Where-Object { $_ } | Select-Object -Unique | ForEach-Object { $_ }"
+  );
+  for (const line of installLocationsRaw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean)) {
+    candidates.push(path.join(line, "lokinet.exe"));
+    candidates.push(path.join(line, "lokinet", "lokinet.exe"));
+  }
+  const servicePathRaw = await ps(
+    "(Get-ItemProperty 'HKLM:\\\\SYSTEM\\\\CurrentControlSet\\\\Services\\\\lokinet' -ErrorAction SilentlyContinue).ImagePath"
+  );
+  const servicePath = servicePathRaw.trim().replace(/^"|"$/g, "");
+  if (servicePath) {
+    const exePath = servicePath.split(/\s+/)[0].replace(/^"|"$/g, "");
+    candidates.push(exePath);
+    candidates.push(path.join(path.dirname(exePath), "lokinet.exe"));
+  }
+  for (const file of candidates) {
+    if (fsSync.existsSync(file)) {
+      return { binaryPath: file, baseDir: path.dirname(file) };
+    }
+  }
+  return null;
+};
+const resolveDownload = (version, assetNameOverride) => {
+  const assetName = assetNameOverride ?? getLokinetAssetName(version);
+  return {
+    assetName,
+    url: getLokinetAssetUrlForName(version, assetName)
+  };
+};
+const installLokinet = async (userDataDir, version, onProgress, downloadUrl, assetNameOverride) => {
+  const network = "lokinet";
+  const { assetName, url } = resolveDownload(version, assetNameOverride);
+  const hash = getPinnedSha256(network, { version, assetName });
+  if (!hash) {
+    throw new PinnedHashMissingError(
+      `Missing pinned hash for Lokinet asset ${assetName} (${version}).`
+    );
+  }
+  const baseOnionDir = path.join(userDataDir, "onion");
+  await fs.mkdir(baseOnionDir, { recursive: true });
+  const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
+  const resolvedUrl = downloadUrl ?? url;
+  const archivePath = path.join(tempDir, assetName);
+  const installPath = path.join(userDataDir, "onion", "components", network, version);
+  const details = {
+    network,
+    version,
+    assetName,
+    downloadUrl: resolvedUrl,
+    archivePath,
+    installPath
+  };
+  onProgress?.({ step: "download", message: "Downloading Lokinet" });
+  try {
+    await downloadFile(
+      resolvedUrl,
+      archivePath,
+      (progress) => onProgress?.({ step: "download", ...progress })
+    );
+    const stat = await fs.stat(archivePath);
+    details.downloadBytes = stat.size;
+    onProgress?.({ step: "verify", message: "Verifying Lokinet" });
+    await verifySha256(archivePath, hash);
+    details.expectedSha256 = hash;
+    if (process.platform === "win32" && assetName.toLowerCase().endsWith(".exe")) {
+      onProgress?.({ step: "activate", message: "Installing Lokinet (requires admin)" });
+      await runInstaller(archivePath);
+      const found = await findLokinetBinaryWin32();
+      if (!found) {
+        throw new Error("BINARY_MISSING: lokinet.exe not found after installer");
+      }
+      details.binaryPath = found.binaryPath;
+      const rollback2 = await swapWithRollback(userDataDir, network, {
+        version,
+        path: found.baseDir
+      });
+      return { version, installPath: found.baseDir, rollback: rollback2 };
+    }
+    await fs.rm(installPath, { recursive: true, force: true });
+    await fs.mkdir(installPath, { recursive: true });
+    onProgress?.({ step: "unpack", message: "Unpacking Lokinet" });
+    await unpackArchive(archivePath, installPath);
+    const binaryPath = path.join(installPath, getBinaryPath(network));
+    details.binaryPath = binaryPath;
+    if (!fsSync.existsSync(binaryPath)) {
+      throw new Error(`BINARY_MISSING: ${binaryPath}`);
+    }
+    onProgress?.({ step: "activate", message: "Activating Lokinet" });
+    const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
+    return { version, installPath, rollback };
+  } catch (error) {
+    if (error && typeof error === "object") {
+      const err = error;
+      if (err.expected) details.expectedSha256 = err.expected;
+      if (err.actual) details.actualSha256 = err.actual;
+    }
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("[onion] Lokinet install failed", { message, details });
+    const wrapped = new Error(`${message} | details=${JSON.stringify(details)}`);
+    wrapped.details = details;
+    throw wrapped;
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+};
+class TorManager {
+  process = null;
+  state = { running: false };
+  async start(binaryPath, socksPort, dataDir) {
+    if (this.process) return;
+    const args = ["--SocksPort", `127.0.0.1:${socksPort}`, "--DataDirectory", dataDir];
+    this.process = node_child_process.spawn(binaryPath, args, { stdio: "ignore" });
+    this.state = { running: true, pid: this.process.pid };
+    this.process.on("exit", () => {
+      this.state = { running: false };
+      this.process = null;
+    });
+  }
+  async stop() {
+    if (!this.process) return;
+    this.process.kill();
+    this.process = null;
+    this.state = { running: false };
+  }
+  getState() {
+    return this.state;
+  }
+}
+class LokinetManager {
+  process = null;
+  state = { running: false };
+  async start(binaryPath, socksPort, dataDir) {
+    if (this.process) return;
+    const args = ["--socks-port", String(socksPort), "--data-dir", dataDir];
+    this.process = node_child_process.spawn(binaryPath, args, { stdio: "ignore" });
+    this.state = { running: true, pid: this.process.pid };
+    this.process.on("exit", () => {
+      this.state = { running: false };
+      this.process = null;
+    });
+  }
+  async stop() {
+    if (!this.process) return;
+    this.process.kill();
+    this.process = null;
+    this.state = { running: false };
+  }
+  getState() {
+    return this.state;
+  }
+}
+const PORT_START = 9050;
+const PORT_END = 9070;
+const findAvailablePort = async () => {
+  for (let port = PORT_START; port <= PORT_END; port += 1) {
+    const isFree = await new Promise((resolve) => {
+      const server = net.createServer();
+      server.once("error", () => resolve(false));
+      server.once("listening", () => {
+        server.close(() => resolve(true));
+      });
+      server.listen(port, "127.0.0.1");
+    });
+    if (isFree) return port;
+  }
+  throw new Error("No available SOCKS port");
+};
+const waitForPort = async (port, timeoutMs = 3e4) => {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const ok = await new Promise((resolve) => {
+      const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
+        socket.end();
+        resolve(true);
+      });
+      socket.on("error", () => resolve(false));
+    });
+    if (ok) return;
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`SOCKS proxy not ready (port ${port})`);
+};
+class OnionRuntime {
+  torManager = new TorManager();
+  lokinetManager = new LokinetManager();
+  status = { status: "idle" };
+  async start(userDataDir, network) {
+    if (this.status.status === "running" && this.status.network === network) return;
+    await this.stop();
+    this.status = { status: "starting", network };
+    try {
+      const pointer = await readCurrentPointer(userDataDir, network);
+      if (!pointer) {
+        throw new Error("Component not installed");
+      }
+      const port = await findAvailablePort();
+      const dataDir = path.join(userDataDir, "onion", "runtime", network);
+      await fs.mkdir(dataDir, { recursive: true });
+      const binaryPath = path.join(pointer.path, getBinaryPath(network));
+      if (!fsSync.existsSync(binaryPath)) {
+        throw new Error(`BINARY_MISSING: ${binaryPath}`);
+      }
+      if (network === "tor") {
+        await this.torManager.start(binaryPath, port, dataDir);
+      } else {
+        await this.lokinetManager.start(binaryPath, port, dataDir);
+      }
+      await waitForPort(port);
+      await electron.session.defaultSession.setProxy({ proxyRules: `socks5://127.0.0.1:${port}` });
+      this.status = { status: "running", network, socksPort: port };
+    } catch (error) {
+      this.status = {
+        status: "failed",
+        network,
+        error: error instanceof Error ? error.message : String(error)
+      };
+      throw error;
+    }
+  }
+  async stop() {
+    await this.torManager.stop();
+    await this.lokinetManager.stop();
+    await electron.session.defaultSession.setProxy({ mode: "direct" });
+    this.status = { status: "idle" };
+  }
+  getStatus() {
+    return {
+      ...this.status,
+      tor: this.torManager.getState(),
+      lokinet: this.lokinetManager.getState()
+    };
+  }
+}
+const fetchJson = async (url) => {
+  return new Promise((resolve, reject) => {
+    https.get(
+      url,
+      { headers: { "User-Agent": "nkc-onion-updater" } },
+      (res) => {
+        if (res.statusCode && res.statusCode >= 400) {
+          reject(new Error(`Update check failed: ${res.statusCode}`));
+          return;
+        }
+        let raw = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => {
+          raw += chunk;
+        });
+        res.on("end", () => {
+          try {
+            resolve(JSON.parse(raw));
+          } catch (error) {
+            reject(error);
+          }
+        });
+      }
+    ).on("error", reject);
+  });
+};
+const fetchText = async (url) => {
+  return new Promise((resolve, reject) => {
+    https.get(url, { headers: { "User-Agent": "nkc-onion-updater" } }, (res) => {
+      if (res.statusCode && res.statusCode >= 400) {
+        reject(new Error(`Update check failed: ${res.statusCode}`));
+        return;
+      }
+      let raw = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => {
+        raw += chunk;
+      });
+      res.on("end", () => resolve(raw));
+    }).on("error", reject);
+  });
+};
+const compareVersions = (a, b) => {
+  const aParts = a.replace(/^v/i, "").split(".").map(Number);
+  const bParts = b.replace(/^v/i, "").split(".").map(Number);
+  const len = Math.max(aParts.length, bParts.length);
+  for (let i = 0; i < len; i += 1) {
+    const aVal = aParts[i] ?? 0;
+    const bVal = bParts[i] ?? 0;
+    if (aVal > bVal) return 1;
+    if (aVal < bVal) return -1;
+  }
+  return 0;
+};
+const getPlatformMatchers = () => {
+  const platformMatchers = [];
+  switch (process.platform) {
+    case "win32":
+      platformMatchers.push(/win32/i, /windows/i, /win/i);
+      break;
+    case "darwin":
+      platformMatchers.push(/macos/i, /darwin/i, /osx/i, /mac/i);
+      break;
+    case "linux":
+      platformMatchers.push(/linux/i);
+      break;
+    case "android":
+      platformMatchers.push(/android/i);
+      break;
+    default:
+      platformMatchers.push(new RegExp(process.platform, "i"));
+      break;
+  }
+  const archMatchers = [];
+  switch (process.arch) {
+    case "x64":
+      archMatchers.push(/x86_64/i, /amd64/i, /win64/i, /64bit/i);
+      break;
+    case "ia32":
+      archMatchers.push(/i686/i, /x86(?!_64)/i, /win32/i, /32bit/i);
+      break;
+    case "arm64":
+      archMatchers.push(/arm64/i, /aarch64/i);
+      break;
+    case "arm":
+      archMatchers.push(/armv7/i, /arm(?!64)/i);
+      break;
+    default:
+      archMatchers.push(new RegExp(process.arch, "i"));
+      break;
+  }
+  return { platformMatchers, archMatchers };
+};
+const selectReleaseAsset = (assets) => {
+  const { platformMatchers, archMatchers } = getPlatformMatchers();
+  return assets.find((asset) => {
+    if (asset.name.endsWith(".asc") || asset.name.endsWith(".sig")) return false;
+    const platformMatch = platformMatchers.some((pattern) => pattern.test(asset.name));
+    const archMatch = archMatchers.some((pattern) => pattern.test(asset.name));
+    return platformMatch && archMatch;
+  });
+};
+const fetchReleases = async () => {
+  const url = "https://api.github.com/repos/oxen-io/lokinet/releases?per_page=20";
+  return fetchJson(url);
+};
+const checkTorUpdates = async () => {
+  const indexHtml = await fetchText("https://dist.torproject.org/torbrowser/");
+  const versions = Array.from(indexHtml.matchAll(/href="(\d+\.\d+\.\d+)\//g)).map(
+    (match) => match[1]
+  );
+  const latest = versions.sort(compareVersions).at(-1);
+  if (!latest) {
+    return { version: null, assetName: null, downloadUrl: null, sha256: null };
+  }
+  const assetName = getTorAssetName(latest);
+  const sha256 = getPinnedSha256("tor", { version: latest, assetName });
+  if (!sha256) {
+    return {
+      version: latest,
+      assetName,
+      downloadUrl: getTorAssetUrl(latest),
+      sha256: null,
+      errorCode: "PINNED_HASH_MISSING"
+    };
+  }
+  return {
+    version: latest,
+    assetName,
+    downloadUrl: getTorAssetUrl(latest),
+    sha256
+  };
+};
+const checkLokinetUpdates = async () => {
+  const url = "https://api.github.com/repos/oxen-io/lokinet/releases/latest";
+  const release = await fetchJson(url);
+  let version = release.tag_name.replace(/^v/i, "");
+  let asset = selectReleaseAsset(release.assets);
+  if (!asset && process.platform === "win32") {
+    const releases = await fetchReleases();
+    for (const candidate of releases) {
+      const candidateAsset = selectReleaseAsset(candidate.assets);
+      if (candidateAsset) {
+        const candidateVersion = candidate.tag_name.replace(/^v/i, "");
+        const sha2562 = getPinnedSha256("lokinet", {
+          version: candidateVersion,
+          assetName: candidateAsset.name
+        });
+        if (!sha2562) continue;
+        version = candidateVersion;
+        asset = candidateAsset;
+        break;
+      }
+    }
+  }
+  if (!asset) {
+    return {
+      version,
+      assetName: null,
+      downloadUrl: null,
+      sha256: null,
+      errorCode: "ASSET_NOT_FOUND"
+    };
+  }
+  const sha256 = getPinnedSha256("lokinet", { version, assetName: asset.name });
+  if (!sha256) {
+    return {
+      version,
+      assetName: asset.name,
+      downloadUrl: asset.browser_download_url,
+      sha256: null,
+      errorCode: "PINNED_HASH_MISSING"
+    };
+  }
+  return {
+    version,
+    assetName: asset.name,
+    downloadUrl: asset.browser_download_url,
+    sha256
+  };
+};
+const checkUpdates = async (network) => {
+  if (network === "tor") {
+    return checkTorUpdates();
+  }
+  return checkLokinetUpdates();
+};
+const isDev = !electron.app.isPackaged;
+const SECRET_STORE_FILENAME = "secret-store.json";
+const ALLOWED_PROXY_PROTOCOLS = /* @__PURE__ */ new Set(["socks5:", "socks5h:", "http:", "https:"]);
+const isLocalhostHost = (hostname) => hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
+const validateProxyUrl = (input) => {
+  let url;
+  try {
+    url = new URL(input.trim());
+  } catch {
+    throw new Error("Invalid proxy URL");
+  }
+  if (!ALLOWED_PROXY_PROTOCOLS.has(url.protocol)) {
+    throw new Error("Invalid proxy URL");
+  }
+  if (!url.hostname || !url.port) {
+    throw new Error("Invalid proxy URL");
+  }
+  const port = Number(url.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error("Invalid proxy URL");
+  }
+  return { url, normalized: `${url.protocol}//${url.host}` };
+};
+const applyProxy = async ({ proxyUrl, enabled, allowRemote }) => {
+  if (!enabled) {
+    await electron.session.defaultSession.setProxy({ mode: "direct" });
+    return;
+  }
+  const { url, normalized } = validateProxyUrl(proxyUrl);
+  if (!allowRemote && !isLocalhostHost(url.hostname)) {
+    throw new Error("Remote proxy URL blocked");
+  }
+  await electron.session.defaultSession.setProxy({ proxyRules: normalized });
+};
+const checkProxy = async () => {
+  const resolve = await electron.session.defaultSession.resolveProxy("https://example.com");
+  const hasProxy = resolve.includes("PROXY") || resolve.includes("SOCKS");
+  if (!hasProxy) {
+    return { ok: false, message: "proxy-not-applied" };
+  }
+  return new Promise((resolvePromise) => {
+    const request = electron.net.request("https://example.com");
+    request.on("response", () => resolvePromise({ ok: true, message: "ok" }));
+    request.on("error", () => resolvePromise({ ok: false, message: "unreachable" }));
+    request.end();
+  });
+};
+const registerProxyIpc = () => {
+  electron.ipcMain.handle("proxy:apply", async (_event, payload) => {
+    await applyProxy(payload);
+  });
+  electron.ipcMain.handle("proxy:check", async () => {
+    return checkProxy();
+  });
+};
+const readSecretStore = async () => {
+  const filePath = path.join(electron.app.getPath("userData"), SECRET_STORE_FILENAME);
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") return {};
+    return parsed;
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error) {
+      const code = String(error.code ?? "");
+      if (code === "ENOENT") return {};
+    }
+    return {};
+  }
+};
+const writeSecretStore = async (payload) => {
+  const filePath = path.join(electron.app.getPath("userData"), SECRET_STORE_FILENAME);
+  await fs.writeFile(filePath, JSON.stringify(payload), "utf8");
+};
+const registerSecretStoreIpc = () => {
+  electron.ipcMain.handle("secretStore:get", async (_event, key) => {
+    if (!electron.safeStorage.isEncryptionAvailable()) {
+      return null;
+    }
+    const data = await readSecretStore();
+    const entry = data[key];
+    if (!entry) return null;
+    try {
+      return electron.safeStorage.decryptString(Buffer.from(entry, "base64"));
+    } catch {
+      return null;
+    }
+  });
+  electron.ipcMain.handle("secretStore:set", async (_event, key, value) => {
+    if (!electron.safeStorage.isEncryptionAvailable()) {
+      return false;
+    }
+    const data = await readSecretStore();
+    const encrypted = electron.safeStorage.encryptString(value);
+    data[key] = encrypted.toString("base64");
+    await writeSecretStore(data);
+    return true;
+  });
+  electron.ipcMain.handle("secretStore:remove", async (_event, key) => {
+    if (!electron.safeStorage.isEncryptionAvailable()) {
+      return false;
+    }
+    const data = await readSecretStore();
+    if (key in data) {
+      delete data[key];
+      await writeSecretStore(data);
+    }
+    return true;
+  });
+  electron.ipcMain.handle("secretStore:isAvailable", async () => {
+    return electron.safeStorage.isEncryptionAvailable();
+  });
+};
+const onionRuntime = new OnionRuntime();
+const onionComponentCache = {
+  tor: { installed: false, status: "idle" },
+  lokinet: { installed: false, status: "idle" }
+};
+const pruneComponentVersions = async (userDataDir, network, keep) => {
+  const componentsRoot = path.join(userDataDir, "onion", "components", network);
+  const normalizedRoot = path.resolve(componentsRoot) + path.sep;
+  const normalizedKeep = path.resolve(keep.installPath);
+  if (!normalizedKeep.startsWith(normalizedRoot)) return;
+  try {
+    const entries = await fs.readdir(componentsRoot, { withFileTypes: true });
+    await Promise.all(
+      entries.filter((entry) => entry.isDirectory()).map(async (entry) => {
+        if (entry.name === keep.version) return;
+        await fs.rm(path.join(componentsRoot, entry.name), { recursive: true, force: true });
+      })
+    );
+  } catch {
+  }
+};
+const formatProgress = (receivedBytes, totalBytes) => {
+  if (!receivedBytes && !totalBytes) return "";
+  const total = totalBytes ?? 0;
+  if (total > 0) {
+    return `${Math.round((receivedBytes ?? 0) / 1024 / 1024)} / ${Math.round(total / 1024 / 1024)} MB`;
+  }
+  return `${Math.round((receivedBytes ?? 0) / 1024 / 1024)} MB`;
+};
+const normalizeOnionError = (error, context) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const errCode = error && typeof error === "object" && "code" in error ? String(error.code ?? "") : "";
+  const code = error instanceof PinnedHashMissingError ? "PINNED_HASH_MISSING" : message.includes("SHA256 mismatch") ? "HASH_MISMATCH" : message.includes("Download failed") || message.includes("Too many redirects") || message.includes("Redirect") ? "DOWNLOAD_FAILED" : message.includes("Unsupported archive format") || message.includes("tar") || message.includes("unzip") || message.includes("Expand-Archive") ? "EXTRACT_FAILED" : message.includes("BINARY_MISSING") ? "BINARY_MISSING" : (() => {
+    const err = error;
+    if (errCode === "EACCES" || errCode === "EPERM") return "PERMISSION_DENIED";
+    if (err?.code === "EACCES" || err?.code === "EPERM") return "PERMISSION_DENIED";
+    if (err?.code === "ENOENT") return "FS_ERROR";
+    return "UNKNOWN_ERROR";
+  })();
+  const details = error && typeof error === "object" && "details" in error ? { ...context, ...error.details } : context;
+  return { code, message, details };
+};
+const refreshComponentState = async (userDataDir, network) => {
+  const pointer = await readCurrentPointer(userDataDir, network);
+  return {
+    ...onionComponentCache[network],
+    installed: Boolean(pointer),
+    version: pointer?.version
+  };
+};
+const emitOnionProgress = (event, network, status) => {
+  event.sender.send("onion:progress", { network, status });
+};
+const registerOnionIpc = () => {
+  electron.ipcMain.handle("onion:status", async () => {
+    const userDataDir = electron.app.getPath("userData");
+    return {
+      components: {
+        tor: await refreshComponentState(userDataDir, "tor"),
+        lokinet: await refreshComponentState(userDataDir, "lokinet")
+      },
+      runtime: onionRuntime.getStatus()
+    };
+  });
+  electron.ipcMain.handle("onion:checkUpdates", async () => {
+    const userDataDir = electron.app.getPath("userData");
+    const torUpdate = await checkUpdates("tor");
+    const lokinetUpdate = await checkUpdates("lokinet");
+    console.log("[onion] checkUpdates", {
+      tor: {
+        version: torUpdate.version,
+        assetName: torUpdate.assetName,
+        downloadUrl: torUpdate.downloadUrl,
+        sha256: torUpdate.sha256 ? "<present>" : "<missing>",
+        errorCode: torUpdate.errorCode
+      },
+      lokinet: {
+        version: lokinetUpdate.version,
+        assetName: lokinetUpdate.assetName,
+        downloadUrl: lokinetUpdate.downloadUrl,
+        sha256: lokinetUpdate.sha256 ? "<present>" : "<missing>",
+        errorCode: lokinetUpdate.errorCode
+      }
+    });
+    const torState = await refreshComponentState(userDataDir, "tor");
+    const lokinetState = await refreshComponentState(userDataDir, "lokinet");
+    const torHasVerifiedUpdate = Boolean(torUpdate.version && torUpdate.sha256 && torUpdate.downloadUrl);
+    const lokinetHasVerifiedUpdate = Boolean(lokinetUpdate.version && lokinetUpdate.sha256 && lokinetUpdate.downloadUrl);
+    onionComponentCache.tor = {
+      ...torState,
+      latest: torHasVerifiedUpdate ? torUpdate.version ?? void 0 : void 0,
+      error: torUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : void 0,
+      detail: torUpdate.errorCode === "PINNED_HASH_MISSING" ? `Pinned hash missing for ${torUpdate.assetName ?? torUpdate.version ?? "unknown"}` : void 0
+    };
+    onionComponentCache.lokinet = {
+      ...lokinetState,
+      latest: lokinetHasVerifiedUpdate ? lokinetUpdate.version ?? void 0 : void 0,
+      error: lokinetUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : void 0,
+      detail: lokinetUpdate.errorCode === "PINNED_HASH_MISSING" ? `Pinned hash missing for ${lokinetUpdate.assetName ?? lokinetUpdate.version ?? "unknown"}` : void 0
+    };
+    return {
+      components: {
+        tor: onionComponentCache.tor,
+        lokinet: onionComponentCache.lokinet
+      },
+      runtime: onionRuntime.getStatus()
+    };
+  });
+  electron.ipcMain.handle("onion:install", async (event, payload) => {
+    const userDataDir = electron.app.getPath("userData");
+    const network = payload.network;
+    let updates = null;
+    try {
+      updates = await checkUpdates(network);
+      if (updates.errorCode === "PINNED_HASH_MISSING") {
+        throw new PinnedHashMissingError(
+          `Missing pinned hash for ${network} ${updates.assetName ?? updates.version ?? "unknown"}`
+        );
+      }
+      if (!updates.version || !updates.sha256 || !updates.downloadUrl || !updates.assetName) {
+        const err = new Error("No verified release available");
+        err.details = {
+          network,
+          platform: process.platform,
+          arch: process.arch,
+          update: updates
+        };
+        throw err;
+      }
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        status: "downloading",
+        error: void 0,
+        detail: "Preparing download",
+        progress: void 0
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+      const install = network === "tor" ? installTor(
+        userDataDir,
+        updates.version,
+        (progress) => {
+          onionComponentCache[network] = {
+            ...onionComponentCache[network],
+            status: progress.step === "download" ? "downloading" : "installing",
+            detail: (progress.message ?? "") + (progress.receivedBytes || progress.totalBytes ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})` : ""),
+            progress: progress.receivedBytes || progress.totalBytes ? {
+              receivedBytes: progress.receivedBytes ?? 0,
+              totalBytes: progress.totalBytes ?? 0
+            } : void 0
+          };
+          emitOnionProgress(event, network, onionComponentCache[network]);
+        },
+        updates.downloadUrl ?? void 0,
+        updates.assetName ?? void 0
+      ) : installLokinet(
+        userDataDir,
+        updates.version,
+        (progress) => {
+          onionComponentCache[network] = {
+            ...onionComponentCache[network],
+            status: progress.step === "download" ? "downloading" : "installing",
+            detail: (progress.message ?? "") + (progress.receivedBytes || progress.totalBytes ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})` : ""),
+            progress: progress.receivedBytes || progress.totalBytes ? {
+              receivedBytes: progress.receivedBytes ?? 0,
+              totalBytes: progress.totalBytes ?? 0
+            } : void 0
+          };
+          emitOnionProgress(event, network, onionComponentCache[network]);
+        },
+        updates.downloadUrl ?? void 0,
+        updates.assetName ?? void 0
+      );
+      const result = await install;
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        installed: true,
+        status: "ready",
+        version: result.version,
+        error: void 0,
+        detail: `Installed ${result.version}`,
+        progress: void 0
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+      await pruneComponentVersions(userDataDir, network, {
+        version: result.version,
+        installPath: result.installPath
+      });
+    } catch (error) {
+      const context = {
+        network,
+        version: updates?.version,
+        assetName: updates?.assetName,
+        downloadUrl: updates?.downloadUrl,
+        targetDir: updates?.version ? path.join(userDataDir, "onion", "components", network, updates.version) : void 0
+      };
+      const normalized = normalizeOnionError(error, context);
+      console.error("Onion install failed", {
+        code: normalized.code,
+        message: normalized.message,
+        details: normalized.details
+      });
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        status: "failed",
+        error: `[${normalized.code}] ${normalized.message}`,
+        detail: JSON.stringify(normalized.details),
+        progress: void 0
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+      const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
+      wrapped.code = normalized.code;
+      wrapped.details = normalized.details;
+      throw wrapped;
+    }
+  });
+  electron.ipcMain.handle("onion:applyUpdate", async (event, payload) => {
+    const network = payload.network;
+    const state = onionComponentCache[network];
+    if (!state.latest) {
+      throw new Error("No update available");
+    }
+    const updateInfo = await checkUpdates(network);
+    if (updateInfo.errorCode === "PINNED_HASH_MISSING") {
+      throw new PinnedHashMissingError(
+        `Missing pinned hash for ${network} ${updateInfo.assetName ?? updateInfo.version ?? "unknown"}`
+      );
+    }
+    if (!updateInfo.version || !updateInfo.sha256 || !updateInfo.downloadUrl || !updateInfo.assetName) {
+      throw new Error("No verified release available");
+    }
+    const updateVersion = updateInfo.version ?? state.latest;
+    if (!updateVersion) {
+      throw new Error("No verified release available");
+    }
+    const userDataDir = electron.app.getPath("userData");
+    try {
+      const install = network === "tor" ? installTor(
+        userDataDir,
+        updateVersion,
+        (progress) => {
+          onionComponentCache[network] = {
+            ...onionComponentCache[network],
+            status: progress.step === "download" ? "downloading" : "installing",
+            detail: (progress.message ?? "") + (progress.receivedBytes || progress.totalBytes ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})` : ""),
+            progress: progress.receivedBytes || progress.totalBytes ? {
+              receivedBytes: progress.receivedBytes ?? 0,
+              totalBytes: progress.totalBytes ?? 0
+            } : void 0
+          };
+          emitOnionProgress(event, network, onionComponentCache[network]);
+        },
+        updateInfo.downloadUrl ?? void 0,
+        updateInfo.assetName ?? void 0
+      ) : installLokinet(
+        userDataDir,
+        updateVersion,
+        (progress) => {
+          onionComponentCache[network] = {
+            ...onionComponentCache[network],
+            status: progress.step === "download" ? "downloading" : "installing",
+            detail: (progress.message ?? "") + (progress.receivedBytes || progress.totalBytes ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})` : ""),
+            progress: progress.receivedBytes || progress.totalBytes ? {
+              receivedBytes: progress.receivedBytes ?? 0,
+              totalBytes: progress.totalBytes ?? 0
+            } : void 0
+          };
+          emitOnionProgress(event, network, onionComponentCache[network]);
+        },
+        updateInfo.downloadUrl ?? void 0,
+        updateInfo.assetName ?? void 0
+      );
+      const result = await install;
+      const runtime = onionRuntime.getStatus();
+      if (runtime.status === "running" && runtime.network === network) {
+        try {
+          await onionRuntime.start(userDataDir, network);
+        } catch (error) {
+          await result.rollback();
+          await onionRuntime.start(userDataDir, network);
+          throw error;
+        }
+      }
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        installed: true,
+        status: "ready",
+        version: result.version,
+        error: void 0,
+        detail: `Installed ${result.version}`,
+        progress: void 0
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+      await pruneComponentVersions(userDataDir, network, {
+        version: result.version,
+        installPath: result.installPath
+      });
+    } catch (error) {
+      const context = {
+        network,
+        version: updateVersion,
+        assetName: updateInfo.assetName,
+        downloadUrl: updateInfo.downloadUrl,
+        targetDir: path.join(userDataDir, "onion", "components", network, updateVersion)
+      };
+      const normalized = normalizeOnionError(error, context);
+      console.error("Onion update failed", {
+        code: normalized.code,
+        message: normalized.message,
+        details: normalized.details
+      });
+      onionComponentCache[network] = {
+        ...onionComponentCache[network],
+        status: "failed",
+        error: `[${normalized.code}] ${normalized.message}`,
+        detail: JSON.stringify(normalized.details),
+        progress: void 0
+      };
+      emitOnionProgress(event, network, onionComponentCache[network]);
+      const wrapped = new Error(`[${normalized.code}] ${normalized.message}`);
+      wrapped.code = normalized.code;
+      wrapped.details = normalized.details;
+      throw wrapped;
+    }
+  });
+  electron.ipcMain.handle("onion:uninstall", async (_event, payload) => {
+    const network = payload.network;
+    await onionRuntime.stop();
+    const userDataDir = electron.app.getPath("userData");
+    const componentRoot = path.join(userDataDir, "onion", "components", network);
+    await fs.rm(componentRoot, { recursive: true, force: true });
+    onionComponentCache[network] = { installed: false, status: "idle" };
+  });
+  electron.ipcMain.handle(
+    "onion:setMode",
+    async (_event, payload) => {
+      const userDataDir = electron.app.getPath("userData");
+      if (!payload.enabled) {
+        await onionRuntime.stop();
+        return;
+      }
+      await onionRuntime.start(userDataDir, payload.network);
+    }
+  );
+};
+const rendererUrl = process.env.VITE_DEV_SERVER_URL;
+let mainWindow = null;
+const canReach = async (url, timeoutMs = 1200) => new Promise((resolve) => {
+  try {
+    const request = electron.net.request(url);
+    const timeout = setTimeout(() => {
+      try {
+        request.abort();
+      } catch {
+      }
+      resolve(false);
+    }, timeoutMs);
+    request.on("response", (response) => {
+      const ok = Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 400);
+      response.on("data", () => {
+      });
+      response.on("end", () => {
+        clearTimeout(timeout);
+        resolve(ok);
+      });
+    });
+    request.on("error", () => {
+      clearTimeout(timeout);
+      resolve(false);
+    });
+    request.end();
+  } catch {
+    resolve(false);
+  }
+});
+const createMainWindow = () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
+  const preloadPath = path.join(__dirname, "preload.js");
+  const preloadExists = fsSync.existsSync(preloadPath);
+  if (isDev && !preloadExists) {
+    console.error("[dev] preload missing at", preloadPath);
+  }
+  const sandboxEnabled = !(isDev && process.env.ELECTRON_DEV_NO_SANDBOX === "1");
+  const win = new electron.BrowserWindow({
+    width: 1280,
+    height: 800,
+    webPreferences: {
+      preload: preloadExists ? preloadPath : void 0,
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: sandboxEnabled,
+      allowRunningInsecureContent: false
+    }
+  });
+  win.webContents.on("did-fail-load", (_event, errorCode, errorDesc, validatedURL) => {
+    console.error("[main] did-fail-load", errorCode, errorDesc, validatedURL);
+  });
+  win.webContents.on("render-process-gone", (_event, details) => {
+    console.error("[main] render-process-gone", details);
+  });
+  win.webContents.on("unresponsive", () => {
+    console.error("[main] renderer unresponsive");
+  });
+  const safeLog = (...args) => {
+    if (!process.stdout || !process.stdout.writable) return;
+    try {
+      console.log(...args);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+      if (code === "EPIPE" || message.includes("EPIPE")) {
+        return;
+      }
+      throw error;
+    }
+  };
+  const ignorePipeError = (error) => {
+    const message = error instanceof Error ? error.message : String(error);
+    const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+    if (code === "EPIPE" || message.includes("EPIPE")) {
+      return;
+    }
+    throw error;
+  };
+  process.stdout?.on("error", ignorePipeError);
+  process.stderr?.on("error", ignorePipeError);
+  if (isDev) {
+    win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
+      if (win.webContents.isDestroyed()) return;
+      safeLog("[renderer]", level, message, sourceId, line);
+    });
+  }
+  const loadRenderer = async () => {
+    if (rendererUrl) {
+      console.log("[dev] rendererUrl =", rendererUrl);
+      const ok = await canReach(rendererUrl);
+      if (ok) {
+        console.log("[dev] loadURL =", rendererUrl);
+        void win.loadURL(rendererUrl);
+        return;
+      }
+      console.error("[dev] vite not reachable", rendererUrl);
+    }
+    if (isDev) {
+      const fallbackUrl = "http://localhost:5173/";
+      const ok = await canReach(fallbackUrl);
+      if (ok) {
+        console.log("[dev] loadURL =", fallbackUrl);
+        void win.loadURL(fallbackUrl);
+        return;
+      }
+      const distIndex = path.join(__dirname, "../dist/index.html");
+      if (fsSync.existsSync(distIndex)) {
+        console.log("[dev] loadFile =", distIndex);
+        void win.loadFile(distIndex);
+        return;
+      }
+      const html = `<!doctype html><html><head><meta charset="utf-8" /><title>Dev Server Unavailable</title></head><body style="font-family:sans-serif;padding:16px;"><h2>Dev server not reachable</h2><p>Start Vite on http://localhost:5173 and reload.</p></body></html>`;
+      console.log("[dev] loadURL = dev fallback page");
+      void win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`);
+      return;
+    }
+    void win.loadFile(path.join(__dirname, "../dist/index.html"));
+  };
+  void loadRenderer();
+  if (process.env.OPEN_DEV_TOOLS) {
+    win.webContents.openDevTools({ mode: "detach" });
+  }
+  mainWindow = win;
+  win.on("closed", () => {
+    mainWindow = null;
+  });
+  return win;
+};
+const gotTheLock = electron.app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  electron.app.quit();
+  process.exit(0);
+} else {
+  electron.app.on("second-instance", () => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+      return;
+    }
+    createMainWindow();
+  });
+}
+if (process.env.VITE_DEV_SERVER_URL) {
+  const temp = electron.app.getPath("temp");
+  const devRoot = process.env.NKC_E2E_USER_DATA_DIR || path.join(temp, "nkc-electron-dev");
+  const devUserData = path.join(devRoot, "userData");
+  const devCache = path.join(devRoot, "cache");
+  const devSession = path.join(devRoot, "sessionData");
+  const devTemp = path.join(devRoot, "temp");
+  fsSync.mkdirSync(devRoot, { recursive: true });
+  fsSync.mkdirSync(devUserData, { recursive: true });
+  fsSync.mkdirSync(devCache, { recursive: true });
+  fsSync.mkdirSync(devSession, { recursive: true });
+  fsSync.mkdirSync(devTemp, { recursive: true });
+  electron.app.setPath("userData", devUserData);
+  electron.app.setPath("sessionData", devSession);
+  electron.app.setPath("temp", devTemp);
+  console.log("[dev] userData =", electron.app.getPath("userData"), "temp =", electron.app.getPath("temp"));
+}
+electron.app.whenReady().then(() => {
+  if (isDev) {
+    console.log("[main] VITE_DEV_SERVER_URL =", process.env.VITE_DEV_SERVER_URL ?? "");
+  }
+  registerProxyIpc();
+  registerSecretStoreIpc();
+  registerOnionIpc();
+  createMainWindow();
+  electron.app.on("activate", () => {
+    if (electron.BrowserWindow.getAllWindows().length === 0) {
+      createMainWindow();
+    }
+  });
+});
+electron.app.on("before-quit", () => console.log("[main] before-quit"));
+electron.app.on("will-quit", () => console.log("[main] will-quit"));
+electron.app.on("quit", (_event, code) => console.log("[main] quit", code));
+electron.app.on("window-all-closed", () => {
+  if (process.platform !== "darwin") {
+    electron.app.quit();
+  }
+});
+exports.createMainWindow = createMainWindow;
+exports.registerProxyIpc = registerProxyIpc;
 //# sourceMappingURL=main.js.map

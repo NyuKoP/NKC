@@ -23,6 +23,7 @@ import { getDhPrivateKey, getIdentityPrivateKey, getIdentityPublicKey } from "..
 import { getFriendPsk } from "../security/pskStore";
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { applyTOFU } from "../security/trust";
+import { updateFromRoleEvent, type RoleChangeEvent } from "../devices/deviceRegistry";
 import { createId } from "../utils/ids";
 import {
   connectConversation as connectTransport,
@@ -49,14 +50,14 @@ type HelloFrame = {
 
 type SyncReqFrame = {
   type: "SYNC_REQ";
-  scope: "conv" | "contacts";
+  scope: "conv" | "contacts" | "global";
   convId?: string;
   since: Record<string, number>;
 };
 
 type SyncResFrame = {
   type: "SYNC_RES";
-  scope: "conv" | "contacts";
+  scope: "conv" | "contacts" | "global";
   convId?: string;
   events: EnvelopeEvent[];
   next: Record<string, number>;
@@ -71,6 +72,7 @@ type PeerContext = PeerHint & {
 };
 
 const contactsLogId = (convId: string) => `contacts:${convId}`;
+const globalLogId = (convId: string) => `global:${convId}`;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
@@ -177,6 +179,26 @@ const getPeerVerifyKey = async (convId: string, authorDeviceId: string) => {
   const peer = peerContexts.get(convId);
   if (!peer?.identityPub) return null;
   return decodeBase64Url(peer.identityPub);
+};
+
+const applyDecryptedBody = async (
+  conv: Conversation | null,
+  envelope: Envelope,
+  body: unknown
+) => {
+  if (!body || typeof body !== "object") return;
+  const typed = body as { type?: string; kind?: string };
+  if (typed.type === "msg") {
+    await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
+    return;
+  }
+  if (typed.type === "contact") {
+    await applyContactEvent(body as { type: "contact"; profile: Partial<UserProfile> });
+    return;
+  }
+  if (typed.kind === "ROLE_CHANGE") {
+    await updateFromRoleEvent(body as RoleChangeEvent);
+  }
 };
 
 const applyMessageEvent = async (
@@ -324,12 +346,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           envelopeJson: JSON.stringify(envelope),
         });
         updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
-
-        if (body?.type === "msg") {
-          await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
-        } else if (body?.type === "contact") {
-          await applyContactEvent(body as { type: "contact"; profile: Partial<UserProfile> });
-        }
+        await applyDecryptedBody(conv, envelope, body);
         continue;
       }
 
@@ -364,12 +381,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           envelopeJson: JSON.stringify(envelope),
         });
         updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
-
-        if (body?.type === "msg") {
-          await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
-        } else if (body?.type === "contact") {
-          await applyContactEvent(body as { type: "contact"; profile: Partial<UserProfile> });
-        }
+        await applyDecryptedBody(conv, envelope, body);
         continue;
       }
 
@@ -393,12 +405,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         envelopeJson: JSON.stringify(envelope),
       });
       updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
-
-      if (body?.type === "msg") {
-        await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
-      } else if (body?.type === "contact") {
-        await applyContactEvent(body as { type: "contact"; profile: Partial<UserProfile> });
-      }
+      await applyDecryptedBody(conv, envelope, body);
     } catch (error) {
       console.warn("[sync] decrypt/apply failed", error);
     }
@@ -417,7 +424,9 @@ const handleSyncReq = async (convId: string, frame: SyncReqFrame) => {
   const scopeConvId =
     frame.scope === "contacts"
       ? contactsLogId(frame.convId ?? convId)
-      : frame.convId ?? convId;
+      : frame.scope === "global"
+        ? globalLogId(frame.convId ?? convId)
+        : frame.convId ?? convId;
   const all = await listEventsByConv(scopeConvId);
   const since = frame.since ?? {};
   const events = all.filter((event) => {
@@ -439,7 +448,9 @@ const handleSyncRes = async (convId: string, frame: SyncResFrame) => {
   const targetConvId =
     frame.scope === "contacts"
       ? contactsLogId(frame.convId ?? convId)
-      : frame.convId ?? convId;
+      : frame.scope === "global"
+        ? globalLogId(frame.convId ?? convId)
+        : frame.convId ?? convId;
   const events = Array.isArray(frame.events) ? frame.events : [];
   await applyEnvelopeEvents(convId, events);
   Object.entries(frame.next ?? {}).forEach(([deviceId, lamport]) => {
@@ -486,6 +497,7 @@ export const connectConversation = async (convId: string, peerHint: PeerContext)
   };
   await sendFrame(convId, hello);
   await syncConversation(convId);
+  await syncGlobal(convId);
 };
 
 export const disconnectConversation = async (convId: string) => {
@@ -506,6 +518,88 @@ export const syncConversation = async (convId: string) => {
     since,
   };
   await sendFrame(convId, frame);
+};
+
+export const syncGlobal = async (convId: string) => {
+  const since = getSinceMap(globalLogId(convId));
+  const frame: SyncReqFrame = {
+    type: "SYNC_REQ",
+    scope: "global",
+    convId,
+    since,
+  };
+  await sendFrame(convId, frame);
+};
+
+const buildRoleChangeEvent = async (
+  convId: string,
+  payload: RoleChangeEvent,
+  identityPriv: Uint8Array
+) => {
+  const logId = globalLogId(convId);
+  const ratchetBaseKey = await resolveRatchetBaseKey(convId, logId);
+  const legacyKey = await resolveLegacyKey(convId);
+  if (!ratchetBaseKey || !legacyKey) return null;
+  const deviceId = getOrCreateDeviceId();
+  let nextLamport = perAuthorLamportSeen.get(deviceId) ?? 0;
+  nextLamport += 1;
+
+  const header: EnvelopeHeader = {
+    v: 1 as const,
+    eventId: createId(),
+    convId: logId,
+    ts: payload.ts,
+    lamport: nextLamport,
+    authorDeviceId: deviceId,
+  };
+  let keyForEnvelope = legacyKey;
+  try {
+    const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
+    header.rk = ratchet.headerRk;
+    keyForEnvelope = ratchet.msgKey;
+  } catch {
+    try {
+      const ratchet = await nextSendKey(logId, ratchetBaseKey);
+      header.rk = ratchet.headerRk;
+      keyForEnvelope = ratchet.msgKey;
+    } catch (error) {
+      console.warn("[ratchet] global send fallback to legacy", error);
+    }
+  }
+
+  const envelope = await encryptEnvelope(keyForEnvelope, header, payload, identityPriv);
+  const event: EnvelopeEvent = {
+    eventId: header.eventId,
+    convId: logId,
+    authorDeviceId: header.authorDeviceId,
+    lamport: header.lamport,
+    ts: header.ts,
+    envelopeJson: JSON.stringify(envelope),
+  };
+  updateLamportSeen(logId, header.authorDeviceId, header.lamport);
+  return event;
+};
+
+export const emitRoleChangeEvent = async (payload: RoleChangeEvent) => {
+  const identityPriv = await getIdentityPrivateKey();
+  const activeConvs = Array.from(peerContexts.keys());
+  for (const convId of activeConvs) {
+    try {
+      const event = await buildRoleChangeEvent(convId, payload, identityPriv);
+      if (!event) continue;
+      await saveEvent(event);
+      const frame: SyncResFrame = {
+        type: "SYNC_RES",
+        scope: "global",
+        convId,
+        events: [event],
+        next: buildNextMap([event]),
+      };
+      await sendFrame(convId, frame);
+    } catch (error) {
+      console.warn("[sync] role change emit failed", error);
+    }
+  }
 };
 
 const buildContactEvents = async (convId: string) => {

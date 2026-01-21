@@ -44,6 +44,14 @@ import {
   type DeviceRole,
 } from "../security/deviceRole";
 import { assertPrimary, isPrimary } from "../security/guards";
+import {
+  getRegistrySnapshot,
+  onRegistryChange,
+  updateFromRoleEvent,
+  type RegistrySnapshot,
+  type RoleChangeEvent,
+} from "../devices/deviceRegistry";
+import { emitRoleChangeEvent } from "../sync/syncEngine";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -213,6 +221,7 @@ export default function SettingsDialog({
     role: DeviceRole;
     epoch: number;
   } | null>(null);
+  const [registrySnapshot, setRegistrySnapshot] = useState<RegistrySnapshot | null>(null);
   const [promoteConfirmOpen, setPromoteConfirmOpen] = useState(false);
   const [demoteConfirmOpen, setDemoteConfirmOpen] = useState(false);
 
@@ -246,6 +255,23 @@ export default function SettingsDialog({
     const role = getDeviceRole();
     const epoch = getRoleEpoch();
     setDeviceInfo({ deviceId, role, epoch });
+  }, [view]);
+
+  useEffect(() => {
+    if (view !== "devices") return;
+    let active = true;
+    const load = async () => {
+      const snapshot = await getRegistrySnapshot();
+      if (active) setRegistrySnapshot(snapshot);
+    };
+    void load();
+    const unsubscribe = onRegistryChange((snapshot) => {
+      if (active) setRegistrySnapshot(snapshot);
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
   }, [view]);
 
   useEffect(() => {
@@ -493,6 +519,35 @@ export default function SettingsDialog({
     if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
     if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
     return `${value} B`;
+  };
+
+  const formatTimestamp = (value: number) => {
+    if (!Number.isFinite(value)) return "-";
+    try {
+      return new Date(value).toLocaleString();
+    } catch {
+      return "-";
+    }
+  };
+
+  const handleRoleChange = async (
+    info: { deviceId: string; role: DeviceRole; epoch: number },
+    reason: RoleChangeEvent["reason"]
+  ) => {
+    const event: RoleChangeEvent = {
+      kind: "ROLE_CHANGE",
+      deviceId: info.deviceId,
+      role: info.role,
+      epoch: info.epoch,
+      ts: Date.now(),
+      reason,
+    };
+    try {
+      await updateFromRoleEvent(event);
+    } catch (error) {
+      console.warn("Failed to update device registry", error);
+    }
+    void emitRoleChangeEvent(event);
   };
 
   const refreshAppData = async () => {
@@ -1373,6 +1428,31 @@ export default function SettingsDialog({
             <div className="mt-6 grid gap-6">
               {renderBackHeader(t("디바이스 / 동기화", "Devices / Sync"))}
 
+              {registrySnapshot?.conflict.hasConflict ? (
+                <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-4">
+                  <div className="text-sm font-semibold text-red-100">
+                    {t(
+                      "Primary 충돌 감지: 여러 디바이스가 동시에 Primary로 설정되어 있습니다.",
+                      "Primary conflict detected: multiple devices are set to Primary."
+                    )}
+                  </div>
+                  <div className="mt-3 grid gap-2 text-xs text-red-100/90">
+                    {registrySnapshot.conflict.primaries.map((entry) => (
+                      <div
+                        key={entry.deviceId}
+                        className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-red-400/40 bg-red-500/10 px-3 py-2"
+                      >
+                        <div className="font-mono">{entry.deviceId.slice(0, 12)}</div>
+                        <div>
+                          {t("에폭", "Epoch")} {entry.epoch}
+                        </div>
+                        <div>{formatTimestamp(entry.lastSeenAt)}</div>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="text-sm font-semibold text-nkc-text">
                   {t("이 디바이스", "This device")}
@@ -1877,6 +1957,7 @@ export default function SettingsDialog({
           }
           const info = promoteToPrimary();
           setDeviceInfo(info);
+          void handleRoleChange(info, "user");
           addToast({
             message: t(
               "이 디바이스가 Primary로 설정되었습니다.",
@@ -1903,6 +1984,7 @@ export default function SettingsDialog({
           }
           const info = demoteToSecondary();
           setDeviceInfo(info);
+          void handleRoleChange(info, "user");
           addToast({
             message: t(
               "이 디바이스가 Secondary로 설정되었습니다.",
