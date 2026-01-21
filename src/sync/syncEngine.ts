@@ -65,7 +65,7 @@ type SyncResFrame = {
 
 type Frame = HelloFrame | SyncReqFrame | SyncResFrame;
 
-type PeerContext = PeerHint & {
+export type PeerContext = PeerHint & {
   friendKeyId?: string;
   identityPub?: string;
   dhPub?: string;
@@ -317,13 +317,14 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         continue;
       }
 
+      const verified = await verifyEnvelopeSignature(envelope, verifyKey);
+      if (!verified) {
+        console.warn("[sync] signature invalid");
+        continue;
+      }
+
       const rk = envelope.header.rk;
       if (rk && rk.v === 2 && Number.isFinite(rk.i) && typeof rk.dh === "string") {
-        const verified = await verifyEnvelopeSignature(envelope, verifyKey);
-        if (!verified) {
-          console.warn("[sync] signature invalid");
-          continue;
-        }
         logDecrypt("path", { convId: event.convId, eventId: event.eventId, mode: "v2" });
         const ratchetBaseKey = await resolveRatchetBaseKey(convKeyId, envelope.header.convId);
         if (!ratchetBaseKey) {
@@ -357,11 +358,6 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
       }
 
       if (rk && rk.v === 1 && Number.isFinite(rk.i)) {
-        const verified = await verifyEnvelopeSignature(envelope, verifyKey);
-        if (!verified) {
-          console.warn("[sync] signature invalid");
-          continue;
-        }
         logDecrypt("path", { convId: event.convId, eventId: event.eventId, mode: "v1" });
         const ratchetBaseKey = await resolveRatchetBaseKey(convKeyId, envelope.header.convId);
         if (!ratchetBaseKey) {
@@ -712,4 +708,14 @@ export const syncContactsNow = async () => {
       console.warn("[sync] contacts sync failed", error);
     }
   }
+};
+
+export const __testApplyEnvelopeEvents = applyEnvelopeEvents;
+export const __testSetPeerContext = (convId: string, peer: PeerContext) => {
+  peerContexts.set(convId, peer);
+};
+export const __testResetSyncState = () => {
+  perAuthorLamportSeen.clear();
+  perConvLamportSeen.clear();
+  peerContexts.clear();
 };
