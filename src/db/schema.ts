@@ -9,6 +9,14 @@ export type MessageRecord = {
   ts: number;
   enc_b64: string;
 };
+export type EventRecord = {
+  eventId: string;
+  convId: string;
+  authorDeviceId: string;
+  lamport: number;
+  ts: number;
+  envelopeJson: string;
+};
 export type OutboxRecord = {
   id: string;
   convId: string;
@@ -39,6 +47,7 @@ export class NKCVaultDB extends Dexie {
   profiles!: Table<EncryptedRecord, string>;
   conversations!: Table<EncryptedRecord, string>;
   messages!: Table<MessageRecord, string>;
+  events!: Table<EventRecord, string>;
   outbox!: Table<OutboxRecord, string>;
   mediaChunks!: Table<MediaChunkRecord, string>;
   tombstones!: Table<TombstoneRecord, string>;
@@ -67,6 +76,17 @@ export class NKCVaultDB extends Dexie {
       profiles: "id, updatedAt",
       conversations: "id, updatedAt",
       messages: "id, convId, ts",
+      outbox:
+        "id, status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
+      mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+      tombstones: "id, type, deletedAt",
+    });
+    this.version(4).stores({
+      meta: "key",
+      profiles: "id, updatedAt",
+      conversations: "id, updatedAt",
+      messages: "id, convId, ts",
+      events: "eventId, convId, ts, lamport, authorDeviceId, [convId+lamport], [convId+ts]",
       outbox:
         "id, status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
       mediaChunks: "id, ownerType, ownerId, idx, updatedAt",

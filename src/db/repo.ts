@@ -1,5 +1,5 @@
 import { db, ensureDbOpen, resetDb } from "./schema";
-import type { EncryptedRecord, MediaChunkRecord, MessageRecord } from "./schema";
+import type { EncryptedRecord, EventRecord, MediaChunkRecord, MessageRecord } from "./schema";
 import type { Envelope } from "../crypto/box";
 import {
   chunkBuffer,
@@ -82,6 +82,8 @@ export type MessageEnvelopeRecord = {
   ts: number;
   envelope: Envelope;
 };
+
+export type Event = EventRecord;
 
 export type StoredMessageRecord =
   | { kind: "envelope"; record: MessageEnvelopeRecord }
@@ -382,6 +384,31 @@ export const listMessageRecordsByConv = async (convId: string) => {
   });
 };
 
+const LAMPORT_PREFIX = "lamport_v1:";
+
+export const nextLamportForConv = async (convId: string) => {
+  await ensureDbOpen();
+  const key = `${LAMPORT_PREFIX}${convId}`;
+  return db.transaction("rw", db.meta, async () => {
+    const current = await db.meta.get(key);
+    const parsed = current?.value ? Number.parseInt(current.value, 10) : 0;
+    const value = Number.isFinite(parsed) ? parsed : 0;
+    const next = value + 1;
+    await db.meta.put({ key, value: String(next) });
+    return next;
+  });
+};
+
+export const saveEvent = async (record: EventRecord) => {
+  await ensureDbOpen();
+  await db.events.put(record);
+};
+
+export const listEventsByConv = async (convId: string) => {
+  await ensureDbOpen();
+  return db.events.where("convId").equals(convId).sortBy("lamport");
+};
+
 export const saveProfilePhoto = async (ownerId: string, file: File) => {
   await ensureDbOpen();
   const vk = requireVaultKey();
@@ -454,7 +481,7 @@ export const loadProfilePhoto = async (avatarRef?: AvatarRef) => {
     if (decrypted.length !== chunks.length) return null;
     const totalBytes = decrypted.reduce((sum, part) => sum + part.length, 0);
     if (totalBytes > MAX_MEDIA_BYTES) return null;
-    const blob = new Blob(decrypted, { type: avatarRef.mime });
+    const blob = new Blob(decrypted as unknown as BlobPart[], { type: avatarRef.mime });
     return blob;
   } catch {
     return null;
@@ -536,7 +563,7 @@ export const loadMessageMedia = async (mediaRef?: MediaRef) => {
     if (decrypted.length !== chunks.length) return null;
     const totalBytes = decrypted.reduce((sum, part) => sum + part.length, 0);
     if (totalBytes > MAX_MEDIA_BYTES) return null;
-    const blob = new Blob(decrypted, { type: mediaRef.mime });
+    const blob = new Blob(decrypted as unknown as BlobPart[], { type: mediaRef.mime });
     return blob;
   } catch {
     return null;

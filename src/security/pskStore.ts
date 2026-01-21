@@ -1,4 +1,3 @@
-import { getPublicStore } from "./publicStore";
 import { getSecretStore } from "./secretStore";
 import { decodeBase64Url, encodeBase64Url } from "./base64url";
 
@@ -34,11 +33,8 @@ const removeSecret = async (key: string) => {
   }
 };
 
-export const setFriendPsk = async (friendId: string, psk: string) => {
-  const bytes = new TextEncoder().encode(psk);
-  await setSecret(`${PSK_PREFIX}${friendId}`, encodeBase64Url(bytes));
-  const store = getPublicStore();
-  await store.set(`${PSK_PREFIX}${friendId}hint`, "1");
+export const setFriendPsk = async (friendId: string, psk: Uint8Array) => {
+  await setSecret(`${PSK_PREFIX}${friendId}`, encodeBase64Url(psk));
 };
 
 export const getFriendPsk = async (friendId: string) => {
@@ -53,6 +49,4 @@ export const getFriendPsk = async (friendId: string) => {
 
 export const clearFriendPsk = async (friendId: string) => {
   await removeSecret(`${PSK_PREFIX}${friendId}`);
-  const store = getPublicStore();
-  await store.remove(`${PSK_PREFIX}${friendId}hint`);
 };

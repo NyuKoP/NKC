@@ -8,6 +8,7 @@ const electronMainBuild = {
   sourcemap: true,
   emptyOutDir: false,
   lib: {
+    entry: "src/main.ts",
     formats: ["cjs"],
   },
   rollupOptions: {
@@ -24,6 +25,7 @@ const electronPreloadBuild = {
   sourcemap: true,
   emptyOutDir: false,
   lib: {
+    entry: "src/preload.ts",
     formats: ["cjs"],
   },
   rollupOptions: {
