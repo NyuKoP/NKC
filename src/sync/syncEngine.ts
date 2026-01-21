@@ -1,4 +1,12 @@
-import { decryptEnvelope, deriveConversationKey, encryptEnvelope, type Envelope } from "../crypto/box";
+import {
+  decryptEnvelope,
+  deriveConversationKey,
+  encryptEnvelope,
+  type Envelope,
+  type EnvelopeHeader,
+  verifyEnvelopeSignature,
+} from "../crypto/box";
+import { nextSendDhKey, nextSendKey, tryRecvDhKey, tryRecvKey } from "../crypto/ratchet";
 import {
   getEvent,
   listConversations,
@@ -139,14 +147,25 @@ const sortEventsDeterministic = (events: EnvelopeEvent[]) =>
     return a.lamport - b.lamport;
   });
 
-const resolveConversationKey = async (convId: string) => {
+const resolveLegacyKey = async (convId: string) => {
   const peer = peerContexts.get(convId);
   if (!peer?.dhPub) return null;
   const dhPriv = await getDhPrivateKey();
   const theirDhPub = decodeBase64Url(peer.dhPub);
   const friendKeyId = peer.friendKeyId ?? peer.directAddr ?? convId;
   const pskBytes = await getFriendPsk(friendKeyId);
-  const contextBytes = textEncoder.encode(`direct:${friendKeyId}`);
+  const legacyContextBytes = textEncoder.encode(`direct:${friendKeyId}`);
+  return deriveConversationKey(dhPriv, theirDhPub, pskBytes, legacyContextBytes);
+};
+
+const resolveRatchetBaseKey = async (peerConvId: string, contextConvId: string) => {
+  const peer = peerContexts.get(peerConvId);
+  if (!peer?.dhPub) return null;
+  const dhPriv = await getDhPrivateKey();
+  const theirDhPub = decodeBase64Url(peer.dhPub);
+  const friendKeyId = peer.friendKeyId ?? peer.directAddr ?? peerConvId;
+  const pskBytes = await getFriendPsk(friendKeyId);
+  const contextBytes = textEncoder.encode(`conv:${contextConvId}`);
   return deriveConversationKey(dhPriv, theirDhPub, pskBytes, contextBytes);
 };
 
@@ -271,7 +290,90 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         console.warn("[sync] missing verify key");
         continue;
       }
-      const conversationKey = await resolveConversationKey(convKeyId);
+
+      const rk = envelope.header.rk;
+      if (rk && rk.v === 2 && Number.isFinite(rk.i) && typeof rk.dh === "string") {
+        const verified = await verifyEnvelopeSignature(envelope, verifyKey);
+        if (!verified) {
+          console.warn("[sync] signature invalid");
+          continue;
+        }
+        const ratchetBaseKey = await resolveRatchetBaseKey(convKeyId, envelope.header.convId);
+        if (!ratchetBaseKey) {
+          console.warn("[sync] missing conversation key");
+          continue;
+        }
+        const recv = await tryRecvDhKey(envelope.header.convId, ratchetBaseKey, rk);
+        if ("deferred" in recv) {
+          console.warn("[sync] decrypt deferred");
+          continue;
+        }
+        const body = await decryptEnvelope<{ type: string }>(
+          recv.msgKey,
+          envelope,
+          verifyKey
+        );
+
+        await recv.commit();
+        await saveEvent({
+          eventId: envelope.header.eventId,
+          convId: envelope.header.convId,
+          authorDeviceId: envelope.header.authorDeviceId,
+          lamport: envelope.header.lamport,
+          ts: envelope.header.ts,
+          envelopeJson: JSON.stringify(envelope),
+        });
+        updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
+
+        if (body?.type === "msg") {
+          await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
+        } else if (body?.type === "contact") {
+          await applyContactEvent(body as { type: "contact"; profile: Partial<UserProfile> });
+        }
+        continue;
+      }
+
+      if (rk && rk.v === 1 && Number.isFinite(rk.i)) {
+        const verified = await verifyEnvelopeSignature(envelope, verifyKey);
+        if (!verified) {
+          console.warn("[sync] signature invalid");
+          continue;
+        }
+        const ratchetBaseKey = await resolveRatchetBaseKey(convKeyId, envelope.header.convId);
+        if (!ratchetBaseKey) {
+          console.warn("[sync] missing conversation key");
+          continue;
+        }
+        const recv = await tryRecvKey(envelope.header.convId, ratchetBaseKey, rk.i);
+        if ("deferred" in recv) {
+          console.warn("[sync] decrypt deferred");
+          continue;
+        }
+        const body = await decryptEnvelope<{ type: string }>(
+          recv.msgKey,
+          envelope,
+          verifyKey
+        );
+
+        await saveEvent({
+          eventId: envelope.header.eventId,
+          convId: envelope.header.convId,
+          authorDeviceId: envelope.header.authorDeviceId,
+          lamport: envelope.header.lamport,
+          ts: envelope.header.ts,
+          envelopeJson: JSON.stringify(envelope),
+        });
+        updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
+
+        if (body?.type === "msg") {
+          await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
+        } else if (body?.type === "contact") {
+          await applyContactEvent(body as { type: "contact"; profile: Partial<UserProfile> });
+        }
+        continue;
+      }
+
+      const conversationKey = await resolveLegacyKey(convKeyId);
       if (!conversationKey) {
         console.warn("[sync] missing conversation key");
         continue;
@@ -409,8 +511,10 @@ export const syncConversation = async (convId: string) => {
 const buildContactEvents = async (convId: string) => {
   const peer = peerContexts.get(convId);
   if (!peer?.friendKeyId || !peer.dhPub) return [];
-  const conversationKey = await resolveConversationKey(convId);
-  if (!conversationKey) return [];
+  const logId = contactsLogId(convId);
+  const ratchetBaseKey = await resolveRatchetBaseKey(convId, logId);
+  const legacyKey = await resolveLegacyKey(convId);
+  if (!ratchetBaseKey || !legacyKey) return [];
   const identityPriv = await getIdentityPrivateKey();
   const deviceId = getOrCreateDeviceId();
   let nextLamport = perAuthorLamportSeen.get(deviceId) ?? 0;
@@ -421,16 +525,30 @@ const buildContactEvents = async (convId: string) => {
 
   for (const contact of contacts) {
     nextLamport += 1;
-    const header = {
+    const header: EnvelopeHeader = {
       v: 1 as const,
       eventId: createId(),
-      convId: contactsLogId(convId),
+      convId: logId,
       ts: Date.now(),
       lamport: nextLamport,
       authorDeviceId: deviceId,
     };
+    let keyForEnvelope = legacyKey;
+    try {
+      const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
+      header.rk = ratchet.headerRk;
+      keyForEnvelope = ratchet.msgKey;
+    } catch {
+      try {
+        const ratchet = await nextSendKey(logId, ratchetBaseKey);
+        header.rk = ratchet.headerRk;
+        keyForEnvelope = ratchet.msgKey;
+      } catch (error) {
+        console.warn("[ratchet] contacts send fallback to legacy", error);
+      }
+    }
     const envelope = await encryptEnvelope(
-      conversationKey,
+      keyForEnvelope,
       header,
       {
         type: "contact",
@@ -450,13 +568,13 @@ const buildContactEvents = async (convId: string) => {
     );
     events.push({
       eventId: header.eventId,
-      convId: contactsLogId(convId),
+      convId: logId,
       authorDeviceId: header.authorDeviceId,
       lamport: header.lamport,
       ts: header.ts,
       envelopeJson: JSON.stringify(envelope),
     });
-    updateLamportSeen(contactsLogId(convId), header.authorDeviceId, header.lamport);
+    updateLamportSeen(logId, header.authorDeviceId, header.lamport);
   }
   return events;
 };
