@@ -49,7 +49,7 @@ import {
 } from "../security/session";
 import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin as savePin, verifyPin } from "../security/pin";
 import { loadConversationMessages } from "../security/messageStore";
-import { getFriendPsk, setFriendPsk } from "../security/pskStore";
+import { clearFriendPsk, getFriendPsk, setFriendPsk } from "../security/pskStore";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 import {
   getDhPrivateKey,
@@ -59,12 +59,23 @@ import {
   getOrCreateDhKeypair,
   getOrCreateIdentityKeypair,
 } from "../security/identityKeys";
-import { getOrCreateDeviceId } from "../security/deviceRole";
+import { assertPrimaryOrThrow, getOrCreateDeviceId } from "../security/deviceRole";
 import { deriveConversationKey, encryptEnvelope } from "../crypto/box";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
 import { syncGroupCreate } from "../sync/groupSync";
+import {
+  connectConversation as connectSyncConversation,
+  disconnectConversation as disconnectSyncConversation,
+  syncContactsNow,
+} from "../sync/syncEngine";
+import {
+  getTransportStatus,
+  onTransportStatusChange,
+  setDirectApprovalHandler,
+  type ConversationTransportStatus,
+} from "../net/transportManager";
 
 const buildNameMap = (profiles: UserProfile[]) =>
   profiles.reduce<Record<string, string>>((acc, profile) => {
@@ -104,9 +115,15 @@ export default function App() {
   const [friendAddOpen, setFriendAddOpen] = useState(false);
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [myFriendCode, setMyFriendCode] = useState("");
+  const [transportStatusByConv, setTransportStatusByConv] = useState<
+    Record<string, ConversationTransportStatus>
+  >({});
+  const [directApprovalOpen, setDirectApprovalOpen] = useState(false);
+  const directApprovalResolveRef = useRef<((approved: boolean) => void) | null>(null);
 
   const onboardingLockRef = useRef(false);
   const outboxSchedulerStarted = useRef(false);
+  const activeSyncConvRef = useRef<string | null>(null);
 
   const connectionToastShown = useRef(false);
   const connectionToastKey = "nkc.sessionConnectedToastShown";
@@ -150,6 +167,39 @@ export default function App() {
       .then(setMyFriendCode)
       .catch((error) => console.error("Failed to compute friend code", error));
   }, [friendAddOpen, userProfile]);
+
+  const resolveDirectApproval = useCallback((approved: boolean) => {
+    const resolver = directApprovalResolveRef.current;
+    if (resolver) {
+      resolver(approved);
+    }
+    directApprovalResolveRef.current = null;
+    setDirectApprovalOpen(false);
+  }, []);
+
+  const requestDirectApproval = useCallback(async () => {
+    if (directApprovalResolveRef.current) return false;
+    return new Promise<boolean>((resolve) => {
+      directApprovalResolveRef.current = resolve;
+      setDirectApprovalOpen(true);
+    });
+  }, []);
+
+  useEffect(() => {
+    setDirectApprovalHandler(requestDirectApproval);
+    return () => {
+      setDirectApprovalHandler(null);
+    };
+  }, [requestDirectApproval]);
+
+  useEffect(() => {
+    const unsubscribe = onTransportStatusChange((convId, status) => {
+      setTransportStatusByConv((prev) => ({ ...prev, [convId]: status }));
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, []);
 
   const withTimeout = useCallback(
     async <T,>(promise: Promise<T>, label: string, ms = 15000) => {
@@ -246,7 +296,7 @@ export default function App() {
         setMode("onboarding");
       }
 
-      addToast({ message: "ì„¸ì…˜ì´ ë§Œë£Œë˜ì—ˆìŠµë‹ˆë‹¤. ë‹¤ì‹œ ë¡œê·¸ì¸í•´ ì£¼ì„¸ìš”." });
+      addToast({ message: "??¼Ç??¸¸·á??¾ú??´Ï?? ??½Ã ·Î±×??ÇØ ÁÖ¼¼??" });
     }
   }, [
     addToast,
@@ -298,7 +348,7 @@ export default function App() {
         }
       } catch (error) {
         console.error("Boot failed", error);
-        addToast({ message: "ì•± ì´ˆê¸°í™”ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+        addToast({ message: "??ÃÊ±â??¿¡ ??ÆÐ??½À??´Ù." });
         setMode("onboarding");
       }
     };
@@ -317,7 +367,7 @@ export default function App() {
     outboxSchedulerStarted.current = true;
   }, [ui.mode]);
 
-  // âœ… cleanup íƒ€ìž… ë¬¸ì œ(EffectCallback) + unsubscribe íƒ€ìž… ë°©ì–´
+  // ??cleanup ????¹®Á¦(EffectCallback) + unsubscribe ????¹æ¾î
   useEffect(() => {
     if (typeof window !== "undefined") {
       connectionToastShown.current = window.sessionStorage.getItem(connectionToastKey) === "1";
@@ -341,7 +391,7 @@ export default function App() {
         return;
       }
 
-      addToast({ message: "ì„¸ì…˜ì´ ì—°ê²°ë˜ì—ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "??¼Ç????°á??¾ú??´Ï??" });
       connectionToastShown.current = true;
 
       if (typeof window !== "undefined") {
@@ -385,7 +435,7 @@ export default function App() {
       const user: UserProfile = {
         id: createId(),
         displayName,
-        status: "NKCì—ì„œ ì•ˆë…•í•˜ì„¸ìš”",
+        status: "Hello from NKC",
         theme: "dark",
         kind: "user",
         createdAt: now,
@@ -397,9 +447,9 @@ export default function App() {
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Vault bootstrap failed", error);
-      setOnboardingError(error instanceof Error ? error.message : "ê¸ˆê³  ì´ˆê¸°í™”ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤.");
+      setOnboardingError(error instanceof Error ? error.message : "±Ý°í ÃÊ±â??¿¡ ??ÆÐ??½À??´Ù.");
       lockVault();
-      addToast({ message: "ê¸ˆê³  ì´ˆê¸°í™”ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "±Ý°í ÃÊ±â??¿¡ ??ÆÐ??½À??´Ù." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -410,7 +460,7 @@ export default function App() {
     onboardingLockRef.current = true;
 
     if (!validateRecoveryKey(recoveryKey)) {
-      addToast({ message: "ë³µêµ¬í‚¤ í˜•ì‹ì´ ì˜¬ë°”ë¥´ì§€ ì•ŠìŠµë‹ˆë‹¤. (ì˜ˆ: NKC-...)" });
+      addToast({ message: "º¹±¸????½Ä????¹Ù¸£?? ??½À??´Ù. (?? NKC-...)" });
       onboardingLockRef.current = false;
       return;
     }
@@ -434,8 +484,8 @@ export default function App() {
         const now = Date.now();
         const user: UserProfile = {
           id: createId(),
-          displayName: displayName || "NKC ì‚¬ìš©ìž",
-          status: "NKCì—ì„œ ì•ˆë…•í•˜ì„¸ìš”",
+          displayName: displayName || "NKC User",
+          status: "Hello from NKC",
           theme: "dark",
           kind: "user",
           createdAt: now,
@@ -449,7 +499,7 @@ export default function App() {
     } catch (error) {
       console.error("Recovery import failed", error);
       lockVault();
-      addToast({ message: "ë³µêµ¬í‚¤ë¡œ ê°€ì ¸ì˜¤ê¸°ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "º¹±¸??·Î °¡??¿À±â¿¡ ??ÆÐ??½À??´Ù." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -560,7 +610,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to logout", error);
-      addToast({ message: "ë¡œê·¸ì•„ì›ƒì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "·Î±×??¿ô????ÆÐ??½À??´Ù." });
     }
   };
 
@@ -606,7 +656,7 @@ export default function App() {
   const handleGenerateRecoveryKey = async (newKey: string) => {
     try {
       if (!validateRecoveryKey(newKey)) {
-        addToast({ message: "ë³µêµ¬í‚¤ í˜•ì‹ì´ ì˜¬ë°”ë¥´ì§€ ì•ŠìŠµë‹ˆë‹¤. (ì˜ˆ: NKC-...)" });
+        addToast({ message: "º¹±¸????½Ä????¹Ù¸£?? ??½À??´Ù. (?? NKC-...)" });
         return;
       }
 
@@ -618,10 +668,10 @@ export default function App() {
       setPinEnabled(true);
       setPinNeedsReset(true);
 
-      addToast({ message: "ë³µêµ¬í‚¤ê°€ ë³€ê²½ë˜ì—ˆìŠµë‹ˆë‹¤. PINì„ ë‹¤ì‹œ ì„¤ì •í•´ ì£¼ì„¸ìš”." });
+      addToast({ message: "º¹±¸???? º¯°æµÇ??½À??´Ù. PIN????½Ã ??Á¤??ÁÖ¼¼??" });
     } catch (error) {
       console.error("Failed to rotate recovery key", error);
-      addToast({ message: "ë³µêµ¬í‚¤ ë³€ê²½ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "º¹±¸??º¯°æ¿¡ ??ÆÐ??½À??´Ù." });
       throw error;
     }
   };
@@ -642,7 +692,12 @@ export default function App() {
   const handleUploadPhoto = async (file: File) => {
     if (!userProfile) return;
     const avatarRef = await saveProfilePhoto(userProfile.id, file);
-    await saveProfile({ ...userProfile, avatarRef });
+    const updated: UserProfile = {
+      ...userProfile,
+      avatarRef,
+      updatedAt: Date.now(),
+    };
+    await saveProfile(updated);
     await hydrateVault();
   };
 
@@ -897,14 +952,14 @@ export default function App() {
     const newConv: Conversation = {
       id: createId(),
       type: "direct",
-      name: friend?.displayName || "ìƒˆ ì±„íŒ…",
+      name: friend?.displayName || "??Ã¤ÆÃ",
       pinned: friend?.isFavorite ?? false,
       unread: 0,
       hidden: false,
       muted: false,
       blocked: false,
       lastTs: now,
-      lastMessage: "ì±„íŒ…ì„ ì‹œìž‘í•´ìš”.",
+      lastMessage: "Ã¤ÆÃ????ÀÛ??¿ä.",
       participants: [userProfile.id, friendId],
     };
 
@@ -914,7 +969,7 @@ export default function App() {
       id: createId(),
       convId: newConv.id,
       senderId: userProfile.id,
-      text: "ì±„íŒ…ì„ ì‹œìž‘í•´ìš”.",
+      text: "Ã¤ÆÃ????ÀÛ??¿ä.",
       ts: now,
     });
 
@@ -941,7 +996,7 @@ export default function App() {
   const handleHide = (convId: string) => {
     void updateConversation(convId, { hidden: true });
     addToast({
-      message: "ì±„íŒ…ì„ ìˆ¨ê²¼ì–´ìš”.",
+      message: "Ã¤ÆÃ????°å??¿ä.",
       actionLabel: "Undo",
       onAction: () => {
         void updateConversation(convId, { hidden: false });
@@ -951,12 +1006,12 @@ export default function App() {
 
   const handleDelete = (convId: string) => {
     setConfirm({
-      title: "ì±„íŒ…ì„ ì‚­ì œí• ê¹Œìš”?",
-      message: "ì‚­ì œí•˜ë©´ ë³µêµ¬í•  ìˆ˜ ì—†ì–´ìš”.",
+      title: "Ã¤ÆÃ????????±î??",
+      message: "??????¸é º¹±¸??????¾î??",
       onConfirm: async () => {
         await updateConversation(convId, { hidden: true });
         addToast({
-          message: "ì±„íŒ…ì´ ì‚­ì œë˜ì—ˆìŠµë‹ˆë‹¤.",
+          message: "Ã¤ÆÃ????????¾ú??´Ï??",
           actionLabel: "Undo",
           onAction: () => {
             void updateConversation(convId, { hidden: false });
@@ -991,7 +1046,7 @@ export default function App() {
       setListFilter("all");
     } catch (error) {
       console.error("Failed to open chat", error);
-      addToast({ message: "ì±„íŒ… ì—´ê¸°ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "Ã¤ÆÃ ??±â????ÆÐ??½À??´Ù." });
     }
   };
 
@@ -1004,7 +1059,7 @@ export default function App() {
       setRightPanelOpen(true);
     } catch (error) {
       console.error("Failed to open profile", error);
-      addToast({ message: "í”„ë¡œí•„ ì—´ê¸°ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "??·Î????±â????ÆÐ??½À??´Ù." });
     }
   };
 
@@ -1023,7 +1078,7 @@ export default function App() {
       await hydrateVault();
     } catch (error) {
       console.error("Failed to update friend", error);
-      addToast({ message: "ì¹œêµ¬ ë³€ê²½ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "Ä£±¸ º¯°æ¿¡ ??ÆÐ??½À??´Ù." });
     }
   };
 
@@ -1041,24 +1096,28 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to toggle favorite", error);
-      addToast({ message: "ì¦ê²¨ì°¾ê¸° ë³€ê²½ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "Áñ°ÜÃ£±â º¯°æ¿¡ ??ÆÐ??½À??´Ù." });
     }
   };
 
   const handleFriendHide = (friendId: string) => {
     setConfirm({
-      title: "ì¹œêµ¬ë¥¼ ìˆ¨ê¸¸ê¹Œìš”?",
-      message: "ìˆ¨ê¸´ ì¹œêµ¬ëŠ” ì¹œêµ¬ ê´€ë¦¬ì—ì„œ ë‹¤ì‹œ í‘œì‹œí•  ìˆ˜ ìžˆì–´ìš”.",
+      title: "Hide this friend?",
+      message: "Hidden friends can be restored later from friend management.",
       onConfirm: async () => {
         await updateFriend(friendId, { friendStatus: "hidden" });
+        const existing = findDirectConvWithFriend(friendId);
+        if (existing) {
+          await updateConversation(existing.id, { hidden: true });
+        }
       },
     });
   };
 
   const handleFriendBlock = (friendId: string) => {
     setConfirm({
-      title: "ì¹œêµ¬ë¥¼ ì°¨ë‹¨í• ê¹Œìš”?",
-      message: "ì°¨ë‹¨í•˜ë©´ ì±„íŒ…ì´ ìˆ¨ê²¨ì§‘ë‹ˆë‹¤.",
+      title: "Block this friend?",
+      message: "Blocking will hide their conversations.",
       onConfirm: async () => {
         try {
           await updateFriend(friendId, { friendStatus: "blocked" });
@@ -1068,27 +1127,7 @@ export default function App() {
           }
         } catch (error) {
           console.error("Failed to block friend", error);
-          addToast({ message: "ì¹œêµ¬ ì°¨ë‹¨ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
-        }
-      },
-    });
-  };
-
-  const handleFriendDelete = (friendId: string) => {
-    setConfirm({
-      title: "ì¹œêµ¬ë¥¼ ì‚­ì œí• ê¹Œìš”?",
-      message: "ì‚­ì œ í›„ì—ëŠ” ë‹¤ì‹œ ì¶”ê°€í•´ì•¼ í•´ìš”.",
-      onConfirm: async () => {
-        try {
-          const existing = findDirectConvWithFriend(friendId);
-          if (existing) {
-            await updateConversation(existing.id, { hidden: true });
-          }
-          await deleteProfile(friendId);
-          await hydrateVault();
-        } catch (error) {
-          console.error("Failed to delete friend", error);
-          addToast({ message: "ì¹œêµ¬ ì‚­ì œì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+          addToast({ message: "Failed to block friend." });
         }
       },
     });
@@ -1107,18 +1146,54 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to unblock friend", error);
-      addToast({ message: "ì°¨ë‹¨ í•´ì œì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "Failed to unblock friend." });
     }
+  };
+
+  const handleFriendDelete = (friendId: string) => {
+    const target = friends.find((friend) => friend.id === friendId);
+    if (!target) return;
+    setConfirm({
+      title: "Delete this friend?",
+      message: "This removes the friend from your list. You can re-add them later.",
+      onConfirm: async () => {
+        try {
+          const existing = findDirectConvWithFriend(friendId);
+          if (existing) {
+            await updateConversation(existing.id, { hidden: true, blocked: true });
+          }
+          const pskKeyId = target.friendId ?? target.id;
+          await clearFriendPsk(pskKeyId);
+          await deleteProfile(friendId);
+          await hydrateVault();
+        } catch (error) {
+          console.error("Failed to delete friend", error);
+          addToast({ message: "Failed to delete friend." });
+        }
+      },
+    });
   };
 
   const handleCopyFriendCode = async () => {
     try {
+      assertPrimaryOrThrow("friendCodeExport");
       if (!myFriendCode) return;
       await navigator.clipboard.writeText(myFriendCode);
-      addToast({ message: "IDë¥¼ ë³µì‚¬í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "Ä£±¸ ÄÚµå¸¦ º¹»çÇß½À´Ï´Ù." });
     } catch (error) {
       console.error("Failed to copy friend code", error);
-      addToast({ message: "ID ë³µì‚¬ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
+      addToast({ message: "ÀÌ ÀÛ¾÷Àº Primary µð¹ÙÀÌ½º¿¡¼­¸¸ °¡´ÉÇÕ´Ï´Ù." });
+    }
+  };
+
+  const handleSyncContacts = async () => {
+    try {
+      assertPrimaryOrThrow("syncContacts");
+      await syncContactsNow();
+      addToast({ message: "¿¬¶ôÃ³ µ¿±âÈ­¸¦ ½ÃÀÛÇß½À´Ï´Ù." });
+    } catch (error) {
+      console.error("Failed to sync contacts", error);
+      addToast({ message: "ÀÌ ÀÛ¾÷Àº Primary µð¹ÙÀÌ½º¿¡¼­¸¸ °¡´ÉÇÕ´Ï´Ù." });
     }
   };
 
@@ -1178,16 +1253,13 @@ export default function App() {
     const trimmed = rawId.trim();
 
     if (!trimmed) {
-      return { ok: false as const, error: "ì¹œêµ¬ IDë¥¼ ìž…ë ¥í•´ ì£¼ì„¸ìš”." };
+      return { ok: false as const, error: "Enter a friend ID." };
     }
     if (!trimmed.startsWith("NCK-")) {
-      return { ok: false as const, error: "ìœ íš¨í•œ ì¹œêµ¬ IDë¥¼ ìž…ë ¥í•´ ì£¼ì„¸ìš”." };
-    }
-    if (false) {
-      return { ok: false as const, error: "ë‚´ IDëŠ” ì¶”ê°€í•  ìˆ˜ ì—†ìŠµë‹ˆë‹¤." };
+      return { ok: false as const, error: "Enter a valid friend ID." };
     }
     if (friends.some((friend) => friend.friendId === trimmed)) {
-      return { ok: false as const, error: "ì´ë¯¸ ì¶”ê°€ëœ ì¹œêµ¬ìž…ë‹ˆë‹¤." };
+      return { ok: false as const, error: "Friend already added." };
     }
 
     try {
@@ -1197,8 +1269,8 @@ export default function App() {
       const friend: UserProfile = {
         id: createId(),
         friendId: trimmed,
-        displayName: short ? `ì¹œêµ¬ ${short}` : "ìƒˆ ì¹œêµ¬",
-        status: "ì¹œêµ¬",
+        displayName: short ? `Friend ${short}` : "Friend",
+        status: "Friend",
         theme: "dark",
         kind: "friend",
         friendStatus: "normal",
@@ -1214,7 +1286,7 @@ export default function App() {
       return { ok: true as const };
     } catch (error) {
       console.error("Friend:add failed", error);
-      return { ok: false as const, error: "ì¹œêµ¬ ì¶”ê°€ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." };
+      return { ok: false as const, error: "Failed to add friend." };
     }
   };
 
@@ -1259,7 +1331,11 @@ export default function App() {
       if (existing) {
         await saveProfile({
           ...existing,
-          trust: { pinnedAt: existing.trust?.pinnedAt ?? now, status: "blocked", reason: tofu.reason },
+          trust: {
+            pinnedAt: existing.trust?.pinnedAt ?? now,
+            status: "blocked",
+            reason: tofu.reason,
+          },
           friendStatus: "blocked",
           updatedAt: now,
         });
@@ -1304,8 +1380,14 @@ export default function App() {
     return { ok: true as const };
   };
 
-  const currentConversation = ui.selectedConvId ? convs.find((conv) => conv.id === ui.selectedConvId) || null : null;
+  const currentConversation = ui.selectedConvId
+    ? convs.find((conv) => conv.id === ui.selectedConvId) || null
+    : null;
   const currentMessages = currentConversation ? messagesByConv[currentConversation.id] || [] : [];
+  const currentTransportStatus = currentConversation
+    ? transportStatusByConv[currentConversation.id] ??
+      getTransportStatus(currentConversation.id)
+    : null;
 
   const nameMap = useMemo(
     () => buildNameMap([...(friends || []), ...(userProfile ? [userProfile] : [])]),
@@ -1322,6 +1404,36 @@ export default function App() {
     }
     return map;
   }, [friends, userProfile]);
+  useEffect(() => {
+    const prev = activeSyncConvRef.current;
+    if (prev && prev !== ui.selectedConvId) {
+      void disconnectSyncConversation(prev);
+    }
+
+    if (!ui.selectedConvId || !userProfile) {
+      activeSyncConvRef.current = null;
+      return;
+    }
+
+    const conv = convs.find((item) => item.id === ui.selectedConvId);
+    if (!conv) return;
+    const isDirect =
+      !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
+    if (!isDirect) return;
+
+    const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
+    const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
+    if (!partner?.identityPub || !partner.dhPub) return;
+
+    void connectSyncConversation(conv.id, {
+      friendKeyId: partner.friendId ?? partner.id,
+      identityPub: partner.identityPub,
+      dhPub: partner.dhPub,
+      onionAddr: partner.routingHints?.onionAddr,
+      lokinetAddr: partner.routingHints?.lokinetAddr,
+    });
+    activeSyncConvRef.current = conv.id;
+  }, [ui.selectedConvId, convs, friends, userProfile]);
 
   const partnerProfile = useMemo(() => {
     if (!currentConversation) return null;
@@ -1377,6 +1489,7 @@ export default function App() {
 
       <ChatView
         conversation={currentConversation}
+        transportStatus={currentTransportStatus}
         messages={currentMessages}
         currentUserId={userProfile?.id || null}
         nameMap={nameMap}
@@ -1420,17 +1533,18 @@ export default function App() {
           blockedFriends={friends.filter((friend) => friend.friendStatus === "blocked")}
           onUnhideFriend={handleFriendUnhide}
           onUnblockFriend={handleFriendUnblock}
+          onSyncContacts={handleSyncContacts}
           onLogout={() =>
             setConfirm({
-              title: "ë¡œê·¸ì•„ì›ƒí• ê¹Œìš”?",
-              message: "ì„¸ì…˜ì€ ì¢…ë£Œë˜ê³  ë¡œì»¬ ë°ì´í„°ëŠ” ìœ ì§€ë©ë‹ˆë‹¤.",
+              title: "·Î±×??¿ô??±î??",
+              message: "??¼Ç?? Á¾·á??°í ·ÎÄÃ ??ÀÌ??´Â ??????´Ï??",
               onConfirm: handleLogout,
             })
           }
           onWipe={() =>
             setConfirm({
-              title: "ë°ì´í„°ë¥¼ ì‚­ì œí• ê¹Œìš”?",
-              message: "ë¡œì»¬ ê¸ˆê³ ê°€ ì´ˆê¸°í™”ë©ë‹ˆë‹¤.",
+              title: "??ÀÌ???? ??????±î??",
+              message: "·ÎÄÃ ±Ý°í°¡ ÃÊ±â??µË??´Ù.",
               onConfirm: async () => {
                 await clearStoredSession();
                 await wipeVault();
@@ -1488,13 +1602,41 @@ export default function App() {
         title={confirm?.title || ""}
         message={confirm?.message || ""}
         onConfirm={() => {
-          // confirm?.onConfirm() ì´ Promiseë¥¼ ë°˜í™˜í•´ë„ UIëŠ” voidë¡œ ì²˜ë¦¬
+          // confirm?.onConfirm() ??Promise??¹ÝÈ¯??µµ UI??void??Ã³¸®
           void confirm?.onConfirm?.();
         }}
         onClose={() => setConfirm(null)}
+      />
+
+      <ConfirmDialog
+        open={directApprovalOpen}
+        title="Direct ¿¬°á Çã¿ë"
+        message="Direct ¿¬°áÀº »ó´ë¹æ¿¡°Ô IP°¡ ³ëÃâµÉ ¼ö ÀÖ½À´Ï´Ù. Çã¿ëÇÒ±î¿ä?"
+        onConfirm={() => resolveDirectApproval(true)}
+        onClose={() => resolveDirectApproval(false)}
       />
 
       <Toasts />
     </>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

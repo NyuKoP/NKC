@@ -1,7 +1,8 @@
 ﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { ArrowLeft, ArrowUp, FileText, PanelRight, Paperclip } from "lucide-react";
+import { AlertTriangle, ArrowLeft, ArrowUp, FileText, PanelRight, Paperclip } from "lucide-react";
 import type { Conversation, MediaRef, Message, UserProfile } from "../db/repo";
 import { loadMessageMedia } from "../db/repo";
+import type { ConversationTransportStatus } from "../net/transportManager";
 import Avatar from "./Avatar";
 
 const GROUP_WINDOW_MS = 1000 * 60 * 2;
@@ -20,6 +21,7 @@ const formatDate = (ts: number) =>
 
 type ChatViewProps = {
   conversation: Conversation | null;
+  transportStatus?: ConversationTransportStatus | null;
   messages: Message[];
   currentUserId: string | null;
   nameMap: Record<string, string>;
@@ -35,6 +37,7 @@ type ChatViewProps = {
 
 export default function ChatView({
   conversation,
+  transportStatus,
   messages,
   currentUserId,
   nameMap,
@@ -77,6 +80,13 @@ export default function ChatView({
     setAtBottom(isBottom);
   };
 
+  const transportLabel =
+    transportStatus?.kind === "direct"
+      ? "Direct"
+      : transportStatus?.kind === "onion"
+        ? "Onion"
+        : null;
+
   return (
     <section
       className="flex h-full flex-1 flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft"
@@ -91,8 +101,22 @@ export default function ChatView({
             <ArrowLeft size={16} />
           </button>
           <div className="min-w-0">
-            <div className="text-base font-semibold text-nkc-text line-clamp-1">
-              {conversation ? conversation.name : "대화를 선택하세요"}
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="text-base font-semibold text-nkc-text line-clamp-1">
+                {conversation ? conversation.name : "대화를 선택하세요"}
+              </div>
+              {conversation && transportLabel ? (
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] ${
+                    transportStatus?.kind === "direct"
+                      ? "border-red-400/40 text-red-200"
+                      : "border-nkc-border text-nkc-muted"
+                  }`}
+                >
+                  {transportStatus?.kind === "direct" ? <AlertTriangle size={12} /> : null}
+                  {transportLabel}
+                </span>
+              ) : null}
             </div>
             <div className="text-xs text-nkc-muted line-clamp-1">
               {conversation ? "마지막 활동 2분 전" : "왼쪽에서 대화를 선택하세요"}

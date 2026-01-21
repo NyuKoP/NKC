@@ -73,6 +73,16 @@ export const setDeviceRole = (role: DeviceRole) => {
   setValue(DEVICE_ROLE_KEY, role);
 };
 
+export const isPrimary = () => getDeviceRole() === "primary";
+
+export const assertPrimaryOrThrow = (actionName: string) => {
+  if (isPrimary()) return;
+  const error = new Error(`Primary device required for ${actionName}`);
+  (error as { code?: string; action?: string }).code = "PRIMARY_ONLY";
+  (error as { code?: string; action?: string }).action = actionName;
+  throw error;
+};
+
 export const getRoleEpoch = () => {
   const raw = getValue(ROLE_EPOCH_KEY);
   if (!raw) return 0;
