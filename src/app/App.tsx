@@ -234,7 +234,18 @@ export default function App() {
       const vk = getVaultKey();
       if (vk) {
         const keyOk = await withTimeout(verifyVaultKeyId(vk), "verifyVaultKeyId");
-        if (!keyOk) throw new Error("Vault key mismatch");
+        if (!keyOk) {
+          console.warn("[vault] key mismatch -> reset");
+          await withTimeout(resetVaultStorage(), "resetVaultStorage");
+          await clearStoredSession();
+          lockVault();
+          resetAppState();
+          setPinEnabled(false);
+          setPinNeedsReset(false);
+          setDefaultTab("import");
+          setMode("onboarding");
+          return;
+        }
       }
 
       await withTimeout(repairVaultTextEncoding(), "repairVaultTextEncoding");
