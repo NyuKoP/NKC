@@ -1,79 +1,42 @@
-# React + TypeScript + Vite
+# Serverless Secure Chat (Electron + React + TS)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This repo contains a serverless, end-to-end encrypted P2P chat app built with Electron, React, and TypeScript.
+It is designed to keep messages encrypted at rest and in transit, with onion-first transport and optional direct fallback.
 
-Currently, two official plugins are available:
+## Security and Crypto
+- Envelope encryption: XChaCha20-Poly1305 with AAD = canonicalized header JSON.
+- Signatures: Ed25519 detached signatures; verify-first before decrypt.
+- Keying: ECDH base key + optional PSK; friend codes for key exchange and TOFU.
+- Ratchet: v2 DH ratchet (X25519) + symmetric chains, backward compatible with v1/legacy.
+- Storage: encrypted event envelopes only; no plaintext message bodies in the database.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## Sync and Transport
+- Event-log based sync (append-only `events` table).
+- Deterministic apply ordering; dedup by eventId; replay protection.
+- Transport manager: onion-first policy with optional direct fallback and UI warnings.
+- Manual-only contacts sync; messages auto-sync when connected.
 
-## React Compiler
+## Devices and Roles
+- Primary/Secondary device roles with guards for restricted actions.
+- ROLE_CHANGE events are encrypted + signed in the global scope.
+- Local device registry updates from events and warns on primary conflicts.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Debugging and Verification
+- Non-sensitive logs indicate decrypt path and commit timing (`[msg]`/`[sync]` with mode: legacy/v1/v2).
+- Manual two-device checklist: `docs/manual-two-device-checklist.md`.
 
-## Expanding the ESLint configuration
-
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Development
+```bash
+npm install
+npm run dev
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
-
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## Build
+```bash
+npm run build
 ```
 
-## UI E2E tests (Playwright)
-
+## UI E2E Tests (Playwright)
 - Install browsers: `npx playwright install chromium`
 - Run headless: `npm run test:ui`
 - Run headed: `npm run test:ui:headed`
@@ -81,11 +44,5 @@ export default defineConfig([
 
 Artifacts (screenshots, videos, traces) are saved in `test-results/` and `playwright-report/` on failures.
 
-Note: UI tests run against the Vite dev server in browser mode; Electron Playwright launch is not supported by the current Electron build.
-
-## UI baseline branches
-
-- `baseline/ui-v1` is the comparison baseline (includes visual snapshots).
-- `fix/favorite-no-navigate` is the working branch for further changes.
-- Run UI tests: `npm run test:ui`
-- Update snapshots: `npm run test:ui -- --update-snapshots`
+## Repo Notes
+- `dist-electron/` build outputs are ignored and not tracked in git.
