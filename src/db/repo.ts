@@ -404,6 +404,11 @@ export const saveEvent = async (record: EventRecord) => {
   await db.events.put(record);
 };
 
+export const getEvent = async (eventId: string) => {
+  await ensureDbOpen();
+  return db.events.get(eventId);
+};
+
 export const listEventsByConv = async (convId: string) => {
   await ensureDbOpen();
   return db.events.where("convId").equals(convId).sortBy("lamport");

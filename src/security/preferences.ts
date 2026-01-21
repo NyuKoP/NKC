@@ -8,6 +8,7 @@ export type PrivacyPreferences = {
 
 const PREF_KEY = "nkc_privacy_prefs_v1";
 const DIRECT_P2P_ACK_KEY = "directP2P_ack_risk_v1";
+const CONV_DIRECT_ALLOW_PREFIX = "nkc_conv_allow_direct_v1:";
 
 export const defaultPrivacyPrefs: PrivacyPreferences = {
   readReceipts: true,
@@ -43,4 +44,15 @@ export const getDirectP2PRiskAck = async () => {
 export const setDirectP2PRiskAck = async (value: boolean) => {
   const store = getPublicStore();
   await store.set(DIRECT_P2P_ACK_KEY, value ? "true" : "false");
+};
+
+export const getConvAllowDirect = async (convId: string) => {
+  const store = getPublicStore();
+  const raw = await store.get(`${CONV_DIRECT_ALLOW_PREFIX}${convId}`);
+  return raw === "true";
+};
+
+export const setConvAllowDirect = async (convId: string, value: boolean) => {
+  const store = getPublicStore();
+  await store.set(`${CONV_DIRECT_ALLOW_PREFIX}${convId}`, value ? "true" : "false");
 };

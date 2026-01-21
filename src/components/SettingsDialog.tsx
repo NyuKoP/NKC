@@ -36,6 +36,7 @@ import type { OnionNetwork } from "../net/netConfig";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import { validateProxyUrl } from "../net/proxyControl";
 import {
+  assertPrimaryOrThrow,
   demoteToSecondary,
   getDeviceRole,
   getOrCreateDeviceId,
@@ -93,6 +94,7 @@ type SettingsDialogProps = {
   blockedFriends: UserProfile[];
   onUnhideFriend: (id: string) => Promise<void>;
   onUnblockFriend: (id: string) => Promise<void>;
+  onSyncContacts: () => Promise<void>;
 
   onLogout: () => void;
   onWipe: () => void;
@@ -113,6 +115,7 @@ export default function SettingsDialog({
   blockedFriends,
   onUnhideFriend,
   onUnblockFriend,
+  onSyncContacts,
   onLogout,
   onWipe,
 }: SettingsDialogProps) {
@@ -1382,6 +1385,18 @@ export default function SettingsDialog({
                     <button
                       type="button"
                       onClick={async () => {
+                        try {
+                          assertPrimaryOrThrow("deviceLinking");
+                        } catch (error) {
+                          console.error("Primary-only device link blocked", error);
+                          addToast({
+                            message: t(
+                              "이 작업은 Primary 디바이스에서만 가능합니다.",
+                              "This action is only available on the Primary device."
+                            ),
+                          });
+                          return;
+                        }
                         const deviceId = deviceInfo?.deviceId ?? getOrCreateDeviceId();
                         try {
                           if (!navigator.clipboard) {
@@ -1449,6 +1464,21 @@ export default function SettingsDialog({
                     className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel"
                   >
                     {t("Secondary로 변경", "Switch to Secondary")}
+                  </button>
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
+                  {t("연락처 동기화", "Sync contacts")}
+                </div>
+                <div className="mt-3">
+                  <button
+                    type="button"
+                    onClick={() => void onSyncContacts()}
+                    className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel"
+                  >
+                    {t("연락처 동기화", "Sync Contacts")}
                   </button>
                 </div>
               </section>
