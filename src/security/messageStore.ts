@@ -7,10 +7,14 @@ import {
   verifyEnvelopeSignature,
 } from "../crypto/box";
 import { tryRecvDhKey, tryRecvKey } from "../crypto/ratchet";
+import { encodeBinaryEnvelope } from "../crypto/vault";
+import { getVaultKey } from "../crypto/sessionKeyring";
 import { getFriendPsk } from "./pskStore";
 import { decodeBase64Url } from "./base64url";
 import { getDhPrivateKey, getIdentityPublicKey } from "./identityKeys";
 import { getOrCreateDeviceId } from "./deviceRole";
+import { db, ensureDbOpen } from "../db/schema";
+import { putReceipt } from "../storage/receiptStore";
 
 const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
   console.debug(`[msg] ${label}`, meta);
@@ -23,6 +27,48 @@ const resolveSenderId = (
 ) => {
   const localDeviceId = getOrCreateDeviceId();
   return header.authorDeviceId === localDeviceId ? currentUserId : friendId;
+};
+
+const storeReadReceipt = async (convId: string, msgId: string, ts: number) => {
+  await putReceipt({
+    id: `read:${msgId}`,
+    convId,
+    msgId,
+    kind: "read",
+    ts,
+  });
+};
+
+const storeMediaChunk = async (payload: {
+  ownerId: string;
+  idx: number;
+  total: number;
+  mime: string;
+  b64: string;
+}) => {
+  const vk = getVaultKey();
+  if (!vk) return;
+  if (!Number.isFinite(payload.idx) || !Number.isFinite(payload.total)) return;
+  if (payload.idx < 0 || payload.total <= 0) return;
+  let bytes: Uint8Array;
+  try {
+    bytes = decodeBase64Url(payload.b64);
+  } catch {
+    return;
+  }
+  const chunkId = `${payload.ownerId}:${payload.idx}`;
+  await ensureDbOpen();
+  const enc_b64 = await encodeBinaryEnvelope(vk, chunkId, "mediaChunk", bytes);
+  await db.mediaChunks.put({
+    id: chunkId,
+    ownerType: "message",
+    ownerId: payload.ownerId,
+    idx: payload.idx,
+    enc_b64,
+    mime: payload.mime,
+    total: payload.total,
+    updatedAt: Date.now(),
+  });
 };
 
 export const loadConversationMessages = async (
@@ -49,6 +95,64 @@ export const loadConversationMessages = async (
 
   const eventRecords = await listEventsByConv(conv.id).catch(() => []);
   const messages: Message[] = [...legacy];
+
+  const handleBody = async (
+    body: unknown,
+    senderId: string,
+    ts: number,
+    messageId: string
+  ): Promise<Message | null> => {
+    if (!body || typeof body !== "object") return null;
+    const typed = body as {
+      type?: string;
+      text?: string;
+      media?: Message["media"];
+      kind?: string;
+      msgId?: string;
+      convId?: string;
+      ts?: number;
+      phase?: string;
+      ownerId?: string;
+      idx?: number;
+      total?: number;
+      mime?: string;
+      b64?: string;
+    };
+
+    if (typed.type === "msg") {
+      return {
+        id: messageId,
+        convId: conv.id,
+        senderId,
+        text: typed.text ?? "",
+        ts,
+        media: typed.media,
+      };
+    }
+
+    if (typed.type === "rcpt" && typed.kind === "read" && typeof typed.msgId === "string") {
+      await storeReadReceipt(typed.convId ?? conv.id, typed.msgId, typed.ts ?? ts);
+      return null;
+    }
+
+    if (
+      typed.type === "media" &&
+      typed.phase === "chunk" &&
+      typeof typed.ownerId === "string" &&
+      typeof typed.b64 === "string"
+    ) {
+      await storeMediaChunk({
+        ownerId: typed.ownerId,
+        idx: Number(typed.idx),
+        total: Number(typed.total),
+        mime: typeof typed.mime === "string" ? typed.mime : "application/octet-stream",
+        b64: typed.b64,
+      });
+      return null;
+    }
+
+    return null;
+  };
 
   for (const record of eventRecords) {
     let envelope: Envelope;
@@ -89,18 +193,15 @@ export const loadConversationMessages = async (
           media?: Message["media"];
         }>(recv.msgKey, envelope, verifyKey);
 
-        if (!body || body.type !== "msg") continue;
-
         logDecrypt("commit", { convId: record.convId, eventId: record.eventId, mode: "v2" });
         await recv.commit();
-        messages.push({
-          id: envelope.header.eventId,
-          convId: conv.id,
+        const message = await handleBody(
+          body,
           senderId,
-          text: body.text,
-          ts: envelope.header.ts,
-          media: body.media,
-        });
+          envelope.header.ts,
+          envelope.header.eventId
+        );
+        if (message) messages.push(message);
         continue;
       }
 
@@ -129,17 +230,14 @@ export const loadConversationMessages = async (
           media?: Message["media"];
         }>(recv.msgKey, envelope, verifyKey);
 
-        if (!body || body.type !== "msg") continue;
-
         logDecrypt("ok", { convId: record.convId, eventId: record.eventId, mode: "v1" });
-        messages.push({
-          id: envelope.header.eventId,
-          convId: conv.id,
+        const message = await handleBody(
+          body,
           senderId,
-          text: body.text,
-          ts: envelope.header.ts,
-          media: body.media,
-        });
+          envelope.header.ts,
+          envelope.header.eventId
+        );
+        if (message) messages.push(message);
         continue;
       }
 
@@ -150,17 +248,14 @@ export const loadConversationMessages = async (
         media?: Message["media"];
       }>(legacyKey, envelope, verifyKey);
 
-      if (!body || body.type !== "msg") continue;
-
       logDecrypt("ok", { convId: record.convId, eventId: record.eventId, mode: "legacy" });
-      messages.push({
-        id: envelope.header.eventId,
-        convId: conv.id,
+      const message = await handleBody(
+        body,
         senderId,
-        text: body.text,
-        ts: envelope.header.ts,
-        media: body.media,
-      });
+        envelope.header.ts,
+        envelope.header.eventId
+      );
+      if (message) messages.push(message);
     } catch (error) {
       console.warn(
         "[msg] decrypt failed",

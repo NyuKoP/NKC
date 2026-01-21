@@ -1,7 +1,7 @@
 import type { OutboxRecord, ReceiptRecord } from "../db/schema";
 import { computeExpiresAt } from "./ttl";
-import { db, ensureDbOpen } from "../db/schema";
 import { deleteExpiredOutbox, getOutbox, putOutbox, updateOutbox } from "../storage/outboxStore";
+import { putReceipt } from "../storage/receiptStore";
 
 export const enqueueOutgoing = async (record: OutboxRecord) => {
   const createdAtMs = record.createdAtMs ?? Date.now();
@@ -21,7 +21,6 @@ export const onAckReceived = async (messageId: string) => {
     const record = await getOutbox(messageId);
     if (record) {
       await updateOutbox(messageId, { status: "acked" });
-      await ensureDbOpen();
       const receipt: ReceiptRecord = {
         id: `delivered:${messageId}`,
         convId: record.convId,
@@ -29,7 +28,7 @@ export const onAckReceived = async (messageId: string) => {
         kind: "delivered",
         ts: Date.now(),
       };
-      await db.receipts.put(receipt);
+      await putReceipt(receipt);
     }
   } catch (error) {
     console.warn("[delivery] ack cleanup failed", error);
