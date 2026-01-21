@@ -114,6 +114,11 @@ const updateLamportSeen = (convId: string, authorDeviceId: string, lamport: numb
   if (lamport > prevConv) perConv.set(authorDeviceId, lamport);
 };
 
+const getLamportSeen = (convId: string, authorDeviceId: string) => {
+  const perConv = perConvLamportSeen.get(convId);
+  return perConv?.get(authorDeviceId) ?? 0;
+};
+
 const buildNextMap = (events: EnvelopeEvent[]) => {
   const next: Record<string, number> = {};
   for (const event of events) {
@@ -228,9 +233,24 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
   const conv = convs.find((item) => item.id === convKeyId) || null;
 
   for (const event of sorted) {
-    updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
+    if (!Number.isFinite(event.lamport)) {
+      console.warn("[sync] invalid lamport", { convId: event.convId });
+      continue;
+    }
+    const seenLamport = getLamportSeen(event.convId, event.authorDeviceId);
+    if (event.lamport <= seenLamport) {
+      console.warn("[sync] replay event dropped", {
+        convId: event.convId,
+        authorDeviceId: event.authorDeviceId,
+        lamport: event.lamport,
+      });
+      continue;
+    }
     const existing = await getEvent(event.eventId);
-    if (existing) continue;
+    if (existing) {
+      updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
+      continue;
+    }
 
     let envelope: Envelope;
     try {
@@ -270,6 +290,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         ts: envelope.header.ts,
         envelopeJson: JSON.stringify(envelope),
       });
+      updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
 
       if (body?.type === "msg") {
         await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
