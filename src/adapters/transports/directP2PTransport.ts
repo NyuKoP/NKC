@@ -1,5 +1,4 @@
 import type { Transport, TransportPacket, TransportState } from "./types";
-import { getDirectP2PRiskAck } from "../../security/preferences";
 
 type Handler<T> = (payload: T) => void;
 
@@ -17,11 +16,6 @@ export const createDirectP2PTransport = (): Transport => {
   return {
     name: "directP2P",
     async start() {
-      const acked = await getDirectP2PRiskAck();
-      if (!acked) {
-        emitState("failed");
-        throw new Error("Direct P2P risk not acknowledged");
-      }
       emitState("connecting");
       // TODO: wire WebRTC signaling/peer setup.
       emitState("connected");
