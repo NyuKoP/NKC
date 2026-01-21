@@ -86,3 +86,9 @@ export const deleteExpiredOutbox = async (now = Date.now()) => {
   await db.outbox.bulkDelete(expired.map((record) => record.id));
   return expired.length;
 };
+
+export const listOutboxByConv = async (convId: string) => {
+  await ensureDbOpen();
+  const items = await db.outbox.toArray();
+  return items.filter((record) => record.convId === convId);
+};

@@ -11,7 +11,7 @@ const DIRECT_P2P_ACK_KEY = "directP2P_ack_risk_v1";
 const CONV_DIRECT_ALLOW_PREFIX = "nkc_conv_allow_direct_v1:";
 
 export const defaultPrivacyPrefs: PrivacyPreferences = {
-  readReceipts: true,
+  readReceipts: false,
   typingIndicator: true,
   linkPreviews: true,
 };
