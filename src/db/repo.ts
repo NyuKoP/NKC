@@ -47,7 +47,7 @@ export type UserProfile = {
   routingHints?: { onionAddr?: string; lokinetAddr?: string };
   trust?: { pinnedAt: number; status: "trusted" | "blocked" | "changed"; reason?: string };
   pskHint?: boolean;
-  friendStatus?: "normal" | "hidden" | "blocked";
+  friendStatus?: "request_in" | "request_out" | "normal" | "hidden" | "blocked";
   isFavorite?: boolean;
   createdAt?: number;
   updatedAt?: number;
@@ -62,6 +62,7 @@ export type Conversation = {
   hidden: boolean;
   muted: boolean;
   blocked: boolean;
+  pendingAcceptance?: boolean;
   lastTs: number;
   lastMessage: string;
   participants: string[];
@@ -493,7 +494,11 @@ export const loadProfilePhoto = async (avatarRef?: AvatarRef) => {
   }
 };
 
-export const saveMessageMedia = async (messageId: string, file: File) => {
+export const saveMessageMedia = async (
+  messageId: string,
+  file: File,
+  chunkSize = MEDIA_CHUNK_SIZE
+) => {
   await ensureDbOpen();
   const vk = requireVaultKey();
   await db.mediaChunks
@@ -503,7 +508,7 @@ export const saveMessageMedia = async (messageId: string, file: File) => {
     .delete();
 
   const buffer = await file.arrayBuffer();
-  const chunks = chunkBuffer(buffer, MEDIA_CHUNK_SIZE);
+  const chunks = chunkBuffer(buffer, chunkSize);
   const total = chunks.length;
   const now = Date.now();
   const records: MediaChunkRecord[] = [];
@@ -538,7 +543,7 @@ export const saveMessageMedia = async (messageId: string, file: File) => {
     ownerId: messageId,
     mime: file.type || "application/octet-stream",
     total,
-    chunkSize: MEDIA_CHUNK_SIZE,
+    chunkSize,
     name: file.name,
     size: file.size,
   };

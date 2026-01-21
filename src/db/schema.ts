@@ -61,6 +61,13 @@ export type MediaPayloadChunkRecord = {
   chunkHash: string;
   updatedAt: number;
 };
+export type ReceiptRecord = {
+  id: string;
+  convId: string;
+  msgId: string;
+  kind: "delivered" | "read";
+  ts: number;
+};
 export type TombstoneRecord = { id: string; type: string; deletedAt: number };
 
 export class NKCVaultDB extends Dexie {
@@ -73,6 +80,7 @@ export class NKCVaultDB extends Dexie {
   mediaChunks!: Table<MediaChunkRecord, string>;
   mediaIndex!: Table<MediaIndexRecord, string>;
   mediaPayloadChunks!: Table<MediaPayloadChunkRecord, [string, number]>;
+  receipts!: Table<ReceiptRecord, string>;
   tombstones!: Table<TombstoneRecord, string>;
 
   constructor() {
@@ -126,6 +134,20 @@ export class NKCVaultDB extends Dexie {
       mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
       mediaIndex: "mediaId, convId, createdAt, complete",
       mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
+      tombstones: "id, type, deletedAt",
+    });
+    this.version(6).stores({
+      meta: "key",
+      profiles: "id, updatedAt",
+      conversations: "id, updatedAt",
+      messages: "id, convId, ts",
+      events: "eventId, convId, ts, lamport, authorDeviceId, [convId+lamport], [convId+ts]",
+      outbox:
+        "id, status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
+      mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+      mediaIndex: "mediaId, convId, createdAt, complete",
+      mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
+      receipts: "id, msgId, convId, kind, ts, [convId+msgId], [msgId+kind]",
       tombstones: "id, type, deletedAt",
     });
   }
