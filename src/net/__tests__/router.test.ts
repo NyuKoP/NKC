@@ -156,8 +156,12 @@ describe("router", () => {
     expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
     expect(reported).toContain("selfOnion");
     expect(store.has("m2")).toBe(true);
-    const selfOrder = selfOnionTransport.send.mock.invocationCallOrder?.[0];
-    const onionOrder = onionRouterTransport.send.mock.invocationCallOrder?.[0];
+    const selfOrder = (
+      selfOnionTransport.send as unknown as { mock?: { invocationCallOrder?: number[] } }
+    ).mock?.invocationCallOrder?.[0];
+    const onionOrder = (
+      onionRouterTransport.send as unknown as { mock?: { invocationCallOrder?: number[] } }
+    ).mock?.invocationCallOrder?.[0];
     if (selfOrder !== undefined && onionOrder !== undefined) {
       expect(selfOrder).toBeLessThan(onionOrder);
     }

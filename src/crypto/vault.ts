@@ -226,7 +226,6 @@ const shouldLogVaultDebug = (() => {
 })();
 
 const logVaultRecord = (
-  sodium: Awaited<ReturnType<typeof getSodium>>,
   phase: "encrypt" | "decrypt",
   recordType: string,
   recordId: string,
@@ -279,7 +278,7 @@ export const encryptJsonRecord = async <T>(
     nonce,
     recordKey
   );
-  logVaultRecord(sodium, "encrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
+  logVaultRecord("encrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
   const envelope: Envelope = {
     v: 2,
     alg: "XCHACHA20POLY1305",
@@ -303,7 +302,7 @@ export const decryptJsonRecord = async <T>(
   if (envelope.aad.type !== recordType || envelope.aad.id !== recordId) {
     throw new Error("AAD mismatch");
   }
-  logVaultRecord(sodium, "decrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
+  logVaultRecord("decrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
   const plain = sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
     null,
     ct,
@@ -343,7 +342,7 @@ export const encodeBinaryEnvelope = async (
     nonce,
     recordKey
   );
-  logVaultRecord(sodium, "encrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
+  logVaultRecord("encrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
   const envelope: Envelope = {
     v: 2,
     alg: "XCHACHA20POLY1305",
@@ -367,7 +366,7 @@ export const decodeBinaryEnvelope = async (
   if (envelope.aad.type !== recordType || envelope.aad.id !== recordId) {
     throw new Error("AAD mismatch");
   }
-  logVaultRecord(sodium, "decrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
+  logVaultRecord("decrypt", recordType, recordId, recordKey, nonce, aadBytes, ct);
   return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
     null,
     ct,

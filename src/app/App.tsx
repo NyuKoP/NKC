@@ -24,8 +24,10 @@ import {
   verifyVaultKeyId,
   rotateVaultKeys,
   deleteProfile,
+  nextLamportForConv,
   saveConversation,
-  saveMessageEnvelope,
+  saveEvent,
+  saveMessage,
   saveMessageMedia,
   saveProfile,
   saveProfilePhoto,
@@ -38,8 +40,8 @@ import {
 } from "../db/repo";
 import { encryptJsonRecord, validateRecoveryKey } from "../crypto/vault";
 import { getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
-import { decodeFriendCodeV1, encodeFriendCodeV1 } from "../security/friendCode";
-import { applyTofu, computeFriendId } from "../security/trust";
+import { computeFriendId, decodeFriendCodeV1, encodeFriendCodeV1 } from "../security/friendCode";
+import { applyTOFU } from "../security/trust";
 import {
   clearSession as clearStoredSession,
   getSession as getStoredSession,
@@ -47,10 +49,11 @@ import {
 } from "../security/session";
 import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin as savePin, verifyPin } from "../security/pin";
 import { loadConversationMessages } from "../security/messageStore";
-import { setFriendPsk } from "../security/pskStore";
+import { getFriendPsk, setFriendPsk } from "../security/pskStore";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 import {
   getDhPrivateKey,
+  getDhPublicKey,
   getIdentityPrivateKey,
   getIdentityPublicKey,
   getOrCreateDhKeypair,
@@ -100,7 +103,7 @@ export default function App() {
   const [onboardingError, setOnboardingError] = useState("");
   const [friendAddOpen, setFriendAddOpen] = useState(false);
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
-  const [shareId, setShareId] = useState("");
+  const [myFriendCode, setMyFriendCode] = useState("");
 
   const onboardingLockRef = useRef(false);
   const outboxSchedulerStarted = useRef(false);
@@ -136,9 +139,16 @@ export default function App() {
 
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;
-    getShareId(userProfile.id)
-      .then(setShareId)
-      .catch((error) => console.error("Failed to derive share ID", error));
+    Promise.all([getIdentityPublicKey(), getDhPublicKey()])
+      .then(([identityPub, dhPub]) =>
+        encodeFriendCodeV1({
+          v: 1,
+          identityPub: encodeBase64Url(identityPub),
+          dhPub: encodeBase64Url(dhPub),
+        })
+      )
+      .then(setMyFriendCode)
+      .catch((error) => console.error("Failed to compute friend code", error));
   }, [friendAddOpen, userProfile]);
 
   const withTimeout = useCallback(
@@ -176,7 +186,22 @@ export default function App() {
       const messagesBy: Record<string, Message[]> = {};
 
       for (const conv of conversations) {
-        messagesBy[conv.id] = await withTimeout(listMessagesByConv(conv.id), "listMessagesByConv");
+        if (!user) {
+          messagesBy[conv.id] = [];
+          continue;
+        }
+        const isDirect =
+          !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
+        const partnerId = isDirect
+          ? conv.participants.find((id) => id && id !== user.id) || null
+          : null;
+        const partner = partnerId
+          ? friendProfiles.find((profile) => profile.id === partnerId) || null
+          : null;
+        messagesBy[conv.id] = await withTimeout(
+          loadConversationMessages(conv, partner, user.id),
+          "loadConversationMessages"
+        );
       }
 
       setData({
@@ -350,6 +375,12 @@ export default function App() {
       const vk = getVaultKey();
       if (!vk) throw new Error("Vault key missing after bootstrap.");
 
+      await withTimeout(
+        Promise.all([getOrCreateIdentityKeypair(), getOrCreateDhKeypair()]).then(() => undefined),
+        "ensureDeviceKeys"
+      );
+      getOrCreateDeviceId();
+
       const now = Date.now();
       const user: UserProfile = {
         id: createId(),
@@ -391,6 +422,12 @@ export default function App() {
 
       const vk = getVaultKey();
       if (!vk) throw new Error("Vault key missing after unlock.");
+
+      await withTimeout(
+        Promise.all([getOrCreateIdentityKeypair(), getOrCreateDhKeypair()]).then(() => undefined),
+        "ensureDeviceKeys"
+      );
+      getOrCreateDeviceId();
 
       const profiles = await withTimeout(listProfiles(), "listProfiles");
       if (!profiles.length) {
@@ -617,6 +654,77 @@ export default function App() {
     const vk = getVaultKey();
     if (!vk) return;
 
+    const isDirect =
+      !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
+
+    if (isDirect) {
+      const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
+      const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
+
+      if (partner?.dhPub && partner.identityPub) {
+        const now = Date.now();
+        const friendKeyId = partner.friendId ?? partner.id;
+        const lamport = await nextLamportForConv(conv.id);
+        const header = {
+          v: 1 as const,
+          eventId: createId(),
+          convId: conv.id,
+          ts: now,
+          lamport,
+          authorDeviceId: getOrCreateDeviceId(),
+        };
+
+        const dhPriv = await getDhPrivateKey();
+        const theirDhPub = decodeBase64Url(partner.dhPub);
+        const pskBytes = await getFriendPsk(friendKeyId);
+        const contextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+        const conversationKey = await deriveConversationKey(
+          dhPriv,
+          theirDhPub,
+          pskBytes,
+          contextBytes
+        );
+
+        const myIdentityPriv = await getIdentityPrivateKey();
+        const envelope = await encryptEnvelope(
+          conversationKey,
+          header,
+          { type: "msg", text },
+          myIdentityPriv
+        );
+        const envelopeJson = JSON.stringify(envelope);
+
+        await saveEvent({
+          eventId: header.eventId,
+          convId: header.convId,
+          authorDeviceId: header.authorDeviceId,
+          lamport: header.lamport,
+          ts: header.ts,
+          envelopeJson,
+        });
+
+        void sendCiphertext({
+          convId: conv.id,
+          messageId: header.eventId,
+          ciphertext: envelopeJson,
+          priority: "high",
+        }).catch((error) => {
+          console.error("Failed to route message", error);
+        });
+
+        const updatedConv: Conversation = {
+          ...conv,
+          lastMessage: text,
+          lastTs: now,
+          unread: 0,
+        };
+
+        await saveConversation(updatedConv);
+        await hydrateVault();
+        return;
+      }
+    }
+
     const message: Message = {
       id: createId(),
       convId: conv.id,
@@ -656,6 +764,80 @@ export default function App() {
 
     const vk = getVaultKey();
     if (!vk) return;
+
+    const isDirect =
+      !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
+
+    if (isDirect) {
+      const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
+      const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
+
+      if (partner?.dhPub && partner.identityPub) {
+        const now = Date.now();
+        const friendKeyId = partner.friendId ?? partner.id;
+        const lamport = await nextLamportForConv(conv.id);
+        const header = {
+          v: 1 as const,
+          eventId: createId(),
+          convId: conv.id,
+          ts: now,
+          lamport,
+          authorDeviceId: getOrCreateDeviceId(),
+        };
+
+        const media = await saveMessageMedia(header.eventId, file);
+        const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
+
+        const dhPriv = await getDhPrivateKey();
+        const theirDhPub = decodeBase64Url(partner.dhPub);
+        const pskBytes = await getFriendPsk(friendKeyId);
+        const contextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+        const conversationKey = await deriveConversationKey(
+          dhPriv,
+          theirDhPub,
+          pskBytes,
+          contextBytes
+        );
+
+        const myIdentityPriv = await getIdentityPrivateKey();
+        const envelope = await encryptEnvelope(
+          conversationKey,
+          header,
+          { type: "msg", text: label, media },
+          myIdentityPriv
+        );
+        const envelopeJson = JSON.stringify(envelope);
+
+        await saveEvent({
+          eventId: header.eventId,
+          convId: header.convId,
+          authorDeviceId: header.authorDeviceId,
+          lamport: header.lamport,
+          ts: header.ts,
+          envelopeJson,
+        });
+
+        void sendCiphertext({
+          convId: conv.id,
+          messageId: header.eventId,
+          ciphertext: envelopeJson,
+          priority: "high",
+        }).catch((error) => {
+          console.error("Failed to route message", error);
+        });
+
+        const updatedConv: Conversation = {
+          ...conv,
+          lastMessage: label,
+          lastTs: now,
+          unread: 0,
+        };
+
+        await saveConversation(updatedConv);
+        await hydrateVault();
+        return;
+      }
+    }
 
     const messageId = createId();
     const media = await saveMessageMedia(messageId, file);
@@ -929,13 +1111,13 @@ export default function App() {
     }
   };
 
-  const handleCopyShareId = async () => {
+  const handleCopyFriendCode = async () => {
     try {
-      if (!shareId) return;
-      await navigator.clipboard.writeText(shareId);
+      if (!myFriendCode) return;
+      await navigator.clipboard.writeText(myFriendCode);
       addToast({ message: "ID를 복사했습니다." });
     } catch (error) {
-      console.error("Failed to copy share ID", error);
+      console.error("Failed to copy friend code", error);
       addToast({ message: "ID 복사에 실패했습니다." });
     }
   };
@@ -992,7 +1174,7 @@ export default function App() {
     }
   };
 
-  const handleAddFriend = async (rawId: string) => {
+  const handleAddFriendLegacy = async (rawId: string) => {
     const trimmed = rawId.trim();
 
     if (!trimmed) {
@@ -1001,7 +1183,7 @@ export default function App() {
     if (!trimmed.startsWith("NCK-")) {
       return { ok: false as const, error: "유효한 친구 ID를 입력해 주세요." };
     }
-    if (trimmed === shareId) {
+    if (false) {
       return { ok: false as const, error: "내 ID는 추가할 수 없습니다." };
     }
     if (friends.some((friend) => friend.friendId === trimmed)) {
@@ -1034,6 +1216,92 @@ export default function App() {
       console.error("Friend:add failed", error);
       return { ok: false as const, error: "친구 추가에 실패했습니다." };
     }
+  };
+
+  const handleAddFriend = async (payload: { code: string; psk?: string }) => {
+    if (!userProfile) return { ok: false as const, error: "User profile missing." };
+
+    const rawCode = payload.code.trim();
+    if (rawCode.startsWith("NCK-")) {
+      return handleAddFriendLegacy(rawCode);
+    }
+
+    const decoded = decodeFriendCodeV1(rawCode);
+    if ("error" in decoded) {
+      return { ok: false as const, error: decoded.error };
+    }
+
+    const identityPubBytes = decodeBase64Url(decoded.identityPub);
+    const friendId = computeFriendId(identityPubBytes);
+
+    try {
+      const myIdentityPub = await getIdentityPublicKey();
+      if (encodeBase64Url(myIdentityPub) === decoded.identityPub) {
+        return { ok: false as const, error: "You cannot add yourself." };
+      }
+    } catch {
+      // Best-effort self-check only; continue.
+    }
+
+    const existing = friends.find(
+      (friend) => friend.friendId === friendId || friend.identityPub === decoded.identityPub
+    );
+
+    const tofu = applyTOFU(
+      existing?.identityPub && existing?.dhPub
+        ? { identityPub: existing.identityPub, dhPub: existing.dhPub }
+        : null,
+      { identityPub: decoded.identityPub, dhPub: decoded.dhPub }
+    );
+
+    const now = Date.now();
+    if (!tofu.ok) {
+      if (existing) {
+        await saveProfile({
+          ...existing,
+          trust: { pinnedAt: existing.trust?.pinnedAt ?? now, status: "blocked", reason: tofu.reason },
+          friendStatus: "blocked",
+          updatedAt: now,
+        });
+        await hydrateVault();
+      }
+      return { ok: false as const, error: "Friend keys changed; blocked." };
+    }
+
+    const psk = payload.psk?.trim() ? new TextEncoder().encode(payload.psk.trim()) : null;
+    if (psk) {
+      await setFriendPsk(friendId, psk);
+    }
+
+    const routingHints =
+      decoded.onionAddr || decoded.lokinetAddr
+        ? { onionAddr: decoded.onionAddr, lokinetAddr: decoded.lokinetAddr }
+        : undefined;
+
+    const short = friendId.slice(0, 6);
+    const friend: UserProfile = {
+      id: existing?.id ?? createId(),
+      friendId,
+      displayName: existing?.displayName ?? (short ? `Friend ${short}` : "Friend"),
+      status: existing?.status ?? "Friend",
+      theme: existing?.theme ?? "dark",
+      kind: "friend",
+      friendStatus: existing?.friendStatus ?? "normal",
+      isFavorite: existing?.isFavorite ?? false,
+      identityPub: decoded.identityPub,
+      dhPub: decoded.dhPub,
+      routingHints,
+      trust: { pinnedAt: existing?.trust?.pinnedAt ?? now, status: "trusted" },
+      pskHint: Boolean(psk) || existing?.pskHint,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+    };
+
+    await saveProfile(friend);
+    await hydrateVault();
+    devLog("friend:add:success", { id: friend.id, friendId });
+
+    return { ok: true as const };
   };
 
   const currentConversation = ui.selectedConvId ? convs.find((conv) => conv.id === ui.selectedConvId) || null : null;
@@ -1177,8 +1445,8 @@ export default function App() {
         <FriendAddDialog
           open={friendAddOpen}
           onOpenChange={setFriendAddOpen}
-          myId={shareId}
-          onCopyId={handleCopyShareId}
+          myCode={myFriendCode}
+          onCopyCode={handleCopyFriendCode}
           onAdd={handleAddFriend}
         />
       ) : null}

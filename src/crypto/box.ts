@@ -4,10 +4,10 @@ import { getSodium } from "../security/sodium";
 export type EnvelopeHeader = {
   v: 1;
   convId: string;
-  msgId: string;
-  senderDeviceId: string;
+  eventId: string;
+  authorDeviceId: string;
   ts: number;
-  seq: number;
+  lamport: number;
 };
 
 export type Envelope = {
@@ -15,7 +15,6 @@ export type Envelope = {
   ciphertext: string;
   nonce: string;
   sig: string;
-  senderIdentityPub?: string;
 };
 
 const textEncoder = new TextEncoder();
@@ -61,8 +60,7 @@ export const encryptEnvelope = async (
   conversationKey: Uint8Array,
   headerObj: EnvelopeHeader,
   plaintextObj: unknown,
-  myIdentityPriv: Uint8Array,
-  senderIdentityPub?: string
+  myIdentityPriv: Uint8Array
 ) => {
   const sodium = await getSodium();
   const headerBytes = canonicalBytes(headerObj);
@@ -86,7 +84,6 @@ export const encryptEnvelope = async (
     ciphertext: toB64(sodium, ciphertext),
     nonce: toB64(sodium, nonce),
     sig: toB64(sodium, sig),
-    senderIdentityPub,
   } satisfies Envelope;
 };
 
