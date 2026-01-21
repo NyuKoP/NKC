@@ -5,6 +5,7 @@ import { Copy, Eye, EyeOff, UserPlus } from "lucide-react";
 type FriendAddDialogProps = {
   open: boolean;
   myCode: string;
+  canShowMyCode: boolean;
   onOpenChange: (open: boolean) => void;
   onCopyCode: () => Promise<void>;
   onAdd: (payload: { code: string; psk?: string }) => Promise<{ ok: boolean; error?: string }>;
@@ -13,6 +14,7 @@ type FriendAddDialogProps = {
 export default function FriendAddDialog({
   open,
   myCode,
+  canShowMyCode,
   onOpenChange,
   onCopyCode,
   onAdd,
@@ -70,21 +72,27 @@ export default function FriendAddDialog({
               내 친구 코드
               <div className="mt-2 flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
                 <input
-                  value={myCode}
+                  value={canShowMyCode ? myCode : ""}
                   readOnly
                   autoComplete="off"
                   className="w-full bg-transparent text-sm text-nkc-text focus:outline-none"
-                  placeholder="코드를 생성하는 중..."
+                  placeholder={canShowMyCode ? "코드를 생성하는 중..." : "Primary 디바이스에서만 표시됩니다."}
                 />
                 <button
                   onClick={onCopyCode}
                   className="flex items-center gap-1 rounded-nkc border border-nkc-border px-2 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!myCode}
+                  disabled={!canShowMyCode || !myCode}
+                  title={canShowMyCode ? undefined : "이 작업은 Primary 디바이스에서만 가능합니다."}
                 >
                   <Copy size={12} />
                   복사
                 </button>
               </div>
+              {!canShowMyCode ? (
+                <div className="mt-2 text-xs text-nkc-muted">
+                  이 작업은 Primary 디바이스에서만 가능합니다.
+                </div>
+              ) : null}
             </label>
 
             <label className="text-sm">

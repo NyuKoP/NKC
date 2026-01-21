@@ -36,7 +36,6 @@ import type { OnionNetwork } from "../net/netConfig";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import { validateProxyUrl } from "../net/proxyControl";
 import {
-  assertPrimaryOrThrow,
   demoteToSecondary,
   getDeviceRole,
   getOrCreateDeviceId,
@@ -44,6 +43,7 @@ import {
   promoteToPrimary,
   type DeviceRole,
 } from "../security/deviceRole";
+import { assertPrimary, isPrimary } from "../security/guards";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -183,6 +183,11 @@ export default function SettingsDialog({
 
   const t = (ko: string, en: string) => (language === "en" ? en : ko);
   const tl = (label: LocalizedLabel) => (language === "en" ? label.en : label.ko);
+  const primaryEnabled = isPrimary();
+  const primaryOnlyMessage = t(
+    "이 작업은 Primary 디바이스에서만 가능합니다.",
+    "This action is only available on the Primary device."
+  );
 
   const handleProxyUrlChange = (value: string) => {
     setProxyUrlDraft(value);
@@ -1386,14 +1391,11 @@ export default function SettingsDialog({
                       type="button"
                       onClick={async () => {
                         try {
-                          assertPrimaryOrThrow("deviceLinking");
+                          assertPrimary("deviceLinking");
                         } catch (error) {
                           console.error("Primary-only device link blocked", error);
                           addToast({
-                            message: t(
-                              "이 작업은 Primary 디바이스에서만 가능합니다.",
-                              "This action is only available on the Primary device."
-                            ),
+                            message: primaryOnlyMessage,
                           });
                           return;
                         }
@@ -1419,11 +1421,16 @@ export default function SettingsDialog({
                           });
                         }
                       }}
-                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-60"
+                      disabled={!primaryEnabled}
+                      title={primaryEnabled ? undefined : primaryOnlyMessage}
                     >
                       {t("복사", "Copy")}
                     </button>
                   </div>
+                  {!primaryEnabled ? (
+                    <div className="text-xs text-nkc-muted">{primaryOnlyMessage}</div>
+                  ) : null}
                   <div className="flex items-center justify-between gap-4">
                     <div className="text-xs text-nkc-muted">
                       {t("현재 역할", "Current role")}
@@ -1453,19 +1460,38 @@ export default function SettingsDialog({
                 <div className="flex flex-wrap gap-2">
                   <button
                     type="button"
-                    onClick={() => setPromoteConfirmOpen(true)}
-                    className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg"
+                    onClick={() => {
+                      if (!primaryEnabled) {
+                        addToast({ message: primaryOnlyMessage });
+                        return;
+                      }
+                      setPromoteConfirmOpen(true);
+                    }}
+                    className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={!primaryEnabled}
+                    title={primaryEnabled ? undefined : primaryOnlyMessage}
                   >
                     {t("이 디바이스를 Primary로 설정", "Set this device as Primary")}
                   </button>
                   <button
                     type="button"
-                    onClick={() => setDemoteConfirmOpen(true)}
-                    className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel"
+                    onClick={() => {
+                      if (!primaryEnabled) {
+                        addToast({ message: primaryOnlyMessage });
+                        return;
+                      }
+                      setDemoteConfirmOpen(true);
+                    }}
+                    className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={!primaryEnabled}
+                    title={primaryEnabled ? undefined : primaryOnlyMessage}
                   >
                     {t("Secondary로 변경", "Switch to Secondary")}
                   </button>
                 </div>
+                {!primaryEnabled ? (
+                  <div className="mt-2 text-xs text-nkc-muted">{primaryOnlyMessage}</div>
+                ) : null}
               </section>
 
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
@@ -1475,12 +1501,23 @@ export default function SettingsDialog({
                 <div className="mt-3">
                   <button
                     type="button"
-                    onClick={() => void onSyncContacts()}
-                    className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel"
+                    onClick={() => {
+                      if (!primaryEnabled) {
+                        addToast({ message: primaryOnlyMessage });
+                        return;
+                      }
+                      void onSyncContacts();
+                    }}
+                    className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-60"
+                    disabled={!primaryEnabled}
+                    title={primaryEnabled ? undefined : primaryOnlyMessage}
                   >
                     {t("연락처 동기화", "Sync Contacts")}
                   </button>
                 </div>
+                {!primaryEnabled ? (
+                  <div className="mt-2 text-xs text-nkc-muted">{primaryOnlyMessage}</div>
+                ) : null}
               </section>
             </div>
           )}
@@ -1831,6 +1868,13 @@ export default function SettingsDialog({
         )}
         onClose={() => setPromoteConfirmOpen(false)}
         onConfirm={() => {
+          try {
+            assertPrimary("promoteDevice");
+          } catch (error) {
+            console.error("Primary-only promote blocked", error);
+            addToast({ message: primaryOnlyMessage });
+            return;
+          }
           const info = promoteToPrimary();
           setDeviceInfo(info);
           addToast({
@@ -1850,6 +1894,13 @@ export default function SettingsDialog({
         )}
         onClose={() => setDemoteConfirmOpen(false)}
         onConfirm={() => {
+          try {
+            assertPrimary("demoteDevice");
+          } catch (error) {
+            console.error("Primary-only demote blocked", error);
+            addToast({ message: primaryOnlyMessage });
+            return;
+          }
           const info = demoteToSecondary();
           setDeviceInfo(info);
           addToast({

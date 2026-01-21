@@ -59,7 +59,8 @@ import {
   getOrCreateDhKeypair,
   getOrCreateIdentityKeypair,
 } from "../security/identityKeys";
-import { assertPrimaryOrThrow, getOrCreateDeviceId } from "../security/deviceRole";
+import { getOrCreateDeviceId } from "../security/deviceRole";
+import { assertPrimary, isPrimary } from "../security/guards";
 import { deriveConversationKey, encryptEnvelope } from "../crypto/box";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
@@ -139,6 +140,7 @@ export default function App() {
   );
 
   const settingsOpen = location.pathname === "/settings";
+  const primaryEnabled = isPrimary();
 
   const clearConnectionToastGuard = useCallback(() => {
     connectionToastShown.current = false;
@@ -156,6 +158,10 @@ export default function App() {
 
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;
+    if (!primaryEnabled) {
+      setMyFriendCode("");
+      return;
+    }
     Promise.all([getIdentityPublicKey(), getDhPublicKey()])
       .then(([identityPub, dhPub]) =>
         encodeFriendCodeV1({
@@ -166,7 +172,7 @@ export default function App() {
       )
       .then(setMyFriendCode)
       .catch((error) => console.error("Failed to compute friend code", error));
-  }, [friendAddOpen, userProfile]);
+  }, [friendAddOpen, primaryEnabled, userProfile]);
 
   const resolveDirectApproval = useCallback((approved: boolean) => {
     const resolver = directApprovalResolveRef.current;
@@ -296,7 +302,7 @@ export default function App() {
         setMode("onboarding");
       }
 
-      addToast({ message: "??¼Ç??¸¸·á??¾ú??´Ï?? ??½Ã ·Î±×??ÇØ ÁÖ¼¼??" });
+      addToast({ message: "ì„¸ì…˜ì´ ë§Œë£Œë˜ì—ˆìœ¼ë‹ˆ ë‹¤ì‹œ ë¡œê·¸ì¸í•´ ì£¼ì„¸ìš”." });
     }
   }, [
     addToast,
@@ -348,7 +354,7 @@ export default function App() {
         }
       } catch (error) {
         console.error("Boot failed", error);
-        addToast({ message: "??ÃÊ±â??¿¡ ??ÆÐ??½À??´Ù." });
+        addToast({ message: "ì´ˆê¸°í™”ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
         setMode("onboarding");
       }
     };
@@ -367,7 +373,7 @@ export default function App() {
     outboxSchedulerStarted.current = true;
   }, [ui.mode]);
 
-  // ??cleanup ????¹®Á¦(EffectCallback) + unsubscribe ????¹æ¾î
+  // cleanup íƒ€ìž… ë¬¸ì œ(EffectCallback) + unsubscribe ë°©ì–´
   useEffect(() => {
     if (typeof window !== "undefined") {
       connectionToastShown.current = window.sessionStorage.getItem(connectionToastKey) === "1";
@@ -391,7 +397,7 @@ export default function App() {
         return;
       }
 
-      addToast({ message: "??¼Ç????°á??¾ú??´Ï??" });
+      addToast({ message: "ì„¸ì…˜ì´ ì—°ê²°ë˜ì—ˆìŠµë‹ˆë‹¤." });
       connectionToastShown.current = true;
 
       if (typeof window !== "undefined") {
@@ -447,9 +453,9 @@ export default function App() {
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Vault bootstrap failed", error);
-      setOnboardingError(error instanceof Error ? error.message : "±Ý°í ÃÊ±â??¿¡ ??ÆÐ??½À??´Ù.");
+      setOnboardingError(error instanceof Error ? error.message : "ê¸ˆê³  ì´ˆê¸°í™”ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤.");
       lockVault();
-      addToast({ message: "±Ý°í ÃÊ±â??¿¡ ??ÆÐ??½À??´Ù." });
+      addToast({ message: "ê¸ˆê³  ì´ˆê¸°í™”ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -460,7 +466,7 @@ export default function App() {
     onboardingLockRef.current = true;
 
     if (!validateRecoveryKey(recoveryKey)) {
-      addToast({ message: "º¹±¸????½Ä????¹Ù¸£?? ??½À??´Ù. (?? NKC-...)" });
+      addToast({ message: "ë³µêµ¬í‚¤ í˜•ì‹ì´ ì˜¬ë°”ë¥´ì§€ ì•ŠìŠµë‹ˆë‹¤. (ì˜ˆ: NKC-...)" });
       onboardingLockRef.current = false;
       return;
     }
@@ -499,7 +505,7 @@ export default function App() {
     } catch (error) {
       console.error("Recovery import failed", error);
       lockVault();
-      addToast({ message: "º¹±¸??·Î °¡??¿À±â¿¡ ??ÆÐ??½À??´Ù." });
+      addToast({ message: "ë³µêµ¬í‚¤ë¡œ ê°€ì ¸ì˜¤ê¸°ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -610,7 +616,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to logout", error);
-      addToast({ message: "·Î±×??¿ô????ÆÐ??½À??´Ù." });
+      addToast({ message: "ë¡œê·¸ì•„ì›ƒì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
     }
   };
 
@@ -656,7 +662,7 @@ export default function App() {
   const handleGenerateRecoveryKey = async (newKey: string) => {
     try {
       if (!validateRecoveryKey(newKey)) {
-        addToast({ message: "º¹±¸????½Ä????¹Ù¸£?? ??½À??´Ù. (?? NKC-...)" });
+        addToast({ message: "ë³µêµ¬í‚¤ í˜•ì‹ì´ ì˜¬ë°”ë¥´ì§€ ì•ŠìŠµë‹ˆë‹¤. (ì˜ˆ: NKC-...)" });
         return;
       }
 
@@ -668,10 +674,10 @@ export default function App() {
       setPinEnabled(true);
       setPinNeedsReset(true);
 
-      addToast({ message: "º¹±¸???? º¯°æµÇ??½À??´Ù. PIN????½Ã ??Á¤??ÁÖ¼¼??" });
+      addToast({ message: "ë³µêµ¬í‚¤ê°€ ë³€ê²½ë˜ì—ˆìŠµë‹ˆë‹¤. PINì„ ë‹¤ì‹œ ì„¤ì •í•´ ì£¼ì„¸ìš”." });
     } catch (error) {
       console.error("Failed to rotate recovery key", error);
-      addToast({ message: "º¹±¸??º¯°æ¿¡ ??ÆÐ??½À??´Ù." });
+      addToast({ message: "ë³µêµ¬í‚¤ ë³€ê²½ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
       throw error;
     }
   };
@@ -952,14 +958,14 @@ export default function App() {
     const newConv: Conversation = {
       id: createId(),
       type: "direct",
-      name: friend?.displayName || "??Ã¤ÆÃ",
+      name: friend?.displayName || "ìƒˆ ì±„íŒ…",
       pinned: friend?.isFavorite ?? false,
       unread: 0,
       hidden: false,
       muted: false,
       blocked: false,
       lastTs: now,
-      lastMessage: "Ã¤ÆÃ????ÀÛ??¿ä.",
+      lastMessage: "ì±„íŒ…ì„ ì‹œìž‘í–ˆì–´ìš”.",
       participants: [userProfile.id, friendId],
     };
 
@@ -969,7 +975,7 @@ export default function App() {
       id: createId(),
       convId: newConv.id,
       senderId: userProfile.id,
-      text: "Ã¤ÆÃ????ÀÛ??¿ä.",
+      text: "ì±„íŒ…ì„ ì‹œìž‘í–ˆì–´ìš”.",
       ts: now,
     });
 
@@ -996,7 +1002,7 @@ export default function App() {
   const handleHide = (convId: string) => {
     void updateConversation(convId, { hidden: true });
     addToast({
-      message: "Ã¤ÆÃ????°å??¿ä.",
+      message: "ì±„íŒ…ì„ ìˆ¨ê²¼ì–´ìš”.",
       actionLabel: "Undo",
       onAction: () => {
         void updateConversation(convId, { hidden: false });
@@ -1006,12 +1012,12 @@ export default function App() {
 
   const handleDelete = (convId: string) => {
     setConfirm({
-      title: "Ã¤ÆÃ????????±î??",
-      message: "??????¸é º¹±¸??????¾î??",
+      title: "ì±„íŒ…ì„ ì‚­ì œí• ê¹Œìš”?",
+      message: "ì‚­ì œí•˜ë©´ ë³µêµ¬í•  ìˆ˜ ì—†ìŠµë‹ˆë‹¤.",
       onConfirm: async () => {
         await updateConversation(convId, { hidden: true });
         addToast({
-          message: "Ã¤ÆÃ????????¾ú??´Ï??",
+          message: "ì±„íŒ…ì„ ì‚­ì œí–ˆì–´ìš”.",
           actionLabel: "Undo",
           onAction: () => {
             void updateConversation(convId, { hidden: false });
@@ -1046,7 +1052,7 @@ export default function App() {
       setListFilter("all");
     } catch (error) {
       console.error("Failed to open chat", error);
-      addToast({ message: "Ã¤ÆÃ ??±â????ÆÐ??½À??´Ù." });
+      addToast({ message: "ì±„íŒ… ì—´ê¸°ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
     }
   };
 
@@ -1059,7 +1065,7 @@ export default function App() {
       setRightPanelOpen(true);
     } catch (error) {
       console.error("Failed to open profile", error);
-      addToast({ message: "??·Î????±â????ÆÐ??½À??´Ù." });
+      addToast({ message: "í”„ë¡œí•„ ì—´ê¸°ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
     }
   };
 
@@ -1078,7 +1084,7 @@ export default function App() {
       await hydrateVault();
     } catch (error) {
       console.error("Failed to update friend", error);
-      addToast({ message: "Ä£±¸ º¯°æ¿¡ ??ÆÐ??½À??´Ù." });
+      addToast({ message: "ì¹œêµ¬ ë³€ê²½ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
     }
   };
 
@@ -1096,7 +1102,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to toggle favorite", error);
-      addToast({ message: "Áñ°ÜÃ£±â º¯°æ¿¡ ??ÆÐ??½À??´Ù." });
+      addToast({ message: "ì¦ê²¨ì°¾ê¸° ë³€ê²½ì— ì‹¤íŒ¨í–ˆìŠµë‹ˆë‹¤." });
     }
   };
 
@@ -1176,24 +1182,24 @@ export default function App() {
 
   const handleCopyFriendCode = async () => {
     try {
-      assertPrimaryOrThrow("friendCodeExport");
+      assertPrimary("friendCodeExport");
       if (!myFriendCode) return;
       await navigator.clipboard.writeText(myFriendCode);
-      addToast({ message: "Ä£±¸ ÄÚµå¸¦ º¹»çÇß½À´Ï´Ù." });
+      addToast({ message: "ì¹œêµ¬ ì½”ë“œë¥¼ ë³µì‚¬í–ˆìŠµë‹ˆë‹¤." });
     } catch (error) {
       console.error("Failed to copy friend code", error);
-      addToast({ message: "ÀÌ ÀÛ¾÷Àº Primary µð¹ÙÀÌ½º¿¡¼­¸¸ °¡´ÉÇÕ´Ï´Ù." });
+      addToast({ message: "ì´ ìž‘ì—…ì€ Primary ë””ë°”ì´ìŠ¤ì—ì„œë§Œ ê°€ëŠ¥í•©ë‹ˆë‹¤." });
     }
   };
 
   const handleSyncContacts = async () => {
     try {
-      assertPrimaryOrThrow("syncContacts");
+      assertPrimary("syncContacts");
       await syncContactsNow();
-      addToast({ message: "¿¬¶ôÃ³ µ¿±âÈ­¸¦ ½ÃÀÛÇß½À´Ï´Ù." });
+      addToast({ message: "ì—°ë½ì²˜ ë™ê¸°í™”ë¥¼ ì‹œìž‘í–ˆìŠµë‹ˆë‹¤." });
     } catch (error) {
       console.error("Failed to sync contacts", error);
-      addToast({ message: "ÀÌ ÀÛ¾÷Àº Primary µð¹ÙÀÌ½º¿¡¼­¸¸ °¡´ÉÇÕ´Ï´Ù." });
+      addToast({ message: "ì´ ìž‘ì—…ì€ Primary ë””ë°”ì´ìŠ¤ì—ì„œë§Œ ê°€ëŠ¥í•©ë‹ˆë‹¤." });
     }
   };
 
@@ -1536,15 +1542,15 @@ export default function App() {
           onSyncContacts={handleSyncContacts}
           onLogout={() =>
             setConfirm({
-              title: "·Î±×??¿ô??±î??",
-              message: "??¼Ç?? Á¾·á??°í ·ÎÄÃ ??ÀÌ??´Â ??????´Ï??",
+              title: "ë¡œê·¸ì•„ì›ƒí• ê¹Œìš”?",
+              message: "ì„¸ì…˜ì„ ì¢…ë£Œí•˜ê³  ë¡œì»¬ ë°ì´í„°ëŠ” ìœ ì§€ë©ë‹ˆë‹¤.",
               onConfirm: handleLogout,
             })
           }
           onWipe={() =>
             setConfirm({
-              title: "??ÀÌ???? ??????±î??",
-              message: "·ÎÄÃ ±Ý°í°¡ ÃÊ±â??µË??´Ù.",
+              title: "ë°ì´í„°ë¥¼ ì‚­ì œí• ê¹Œìš”?",
+              message: "ë¡œì»¬ ê¸ˆê³ ê°€ ì´ˆê¸°í™”ë©ë‹ˆë‹¤.",
               onConfirm: async () => {
                 await clearStoredSession();
                 await wipeVault();
@@ -1560,6 +1566,7 @@ export default function App() {
           open={friendAddOpen}
           onOpenChange={setFriendAddOpen}
           myCode={myFriendCode}
+          canShowMyCode={primaryEnabled}
           onCopyCode={handleCopyFriendCode}
           onAdd={handleAddFriend}
         />
@@ -1602,7 +1609,7 @@ export default function App() {
         title={confirm?.title || ""}
         message={confirm?.message || ""}
         onConfirm={() => {
-          // confirm?.onConfirm() ??Promise??¹ÝÈ¯??µµ UI??void??Ã³¸®
+          // confirm?.onConfirm()ì´ Promiseë¥¼ ë°˜í™˜í•´ë„ UIëŠ” void ì²˜ë¦¬
           void confirm?.onConfirm?.();
         }}
         onClose={() => setConfirm(null)}
@@ -1610,8 +1617,8 @@ export default function App() {
 
       <ConfirmDialog
         open={directApprovalOpen}
-        title="Direct ¿¬°á Çã¿ë"
-        message="Direct ¿¬°áÀº »ó´ë¹æ¿¡°Ô IP°¡ ³ëÃâµÉ ¼ö ÀÖ½À´Ï´Ù. Çã¿ëÇÒ±î¿ä?"
+        title="Direct ì—°ê²° í—ˆìš©"
+        message="Direct ì—°ê²°ì€ ìƒëŒ€ë°©ì—ê²Œ IPê°€ ë…¸ì¶œë  ìˆ˜ ìžˆìŠµë‹ˆë‹¤. í—ˆìš©í• ê¹Œìš”?"
         onConfirm={() => resolveDirectApproval(true)}
         onClose={() => resolveDirectApproval(false)}
       />
