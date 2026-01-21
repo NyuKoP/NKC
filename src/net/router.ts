@@ -11,6 +11,7 @@ import { createDirectP2PTransport } from "../adapters/transports/directP2PTransp
 import { createSelfOnionTransport } from "../adapters/transports/selfOnionTransport";
 import { createOnionRouterTransport } from "../adapters/transports/onionRouterTransport";
 import { updateConnectionStatus } from "./connectionStatus";
+import { decideRouterTransport } from "./transportPolicy";
 
 export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
 
@@ -80,12 +81,7 @@ const ensureStarted = async (transport: Transport) => {
 export const resolveTransport = (
   config: NetConfig,
   controller: RouteController = defaultRouteController
-): TransportKind => {
-  if (config.onionEnabled) return "onionRouter";
-  if (config.mode === "directP2P") return "directP2P";
-  if (config.mode === "onionRouter") return "onionRouter";
-  return controller.decideTransport(config);
-};
+): TransportKind => decideRouterTransport(config, controller);
 
 export const __testResetRouter = () => {
   transportCache.clear();
