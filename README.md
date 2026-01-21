@@ -16,6 +16,13 @@ It is designed to keep messages encrypted at rest and in transit, with onion-fir
 - Transport manager: onion-first policy with optional direct fallback and UI warnings.
 - Manual-only contacts sync; messages auto-sync when connected.
 
+## Sync Conflict Rules
+- Events are append-only; merges follow deterministic order (ts asc, authorDeviceId, lamport).
+- Duplicates are ignored by eventId; replays (lamport <= seen) are dropped.
+- Signatures are verified before storing or applying any event.
+- Contacts sync runs only on explicit user action; messages can auto-sync when connected.
+- Transport metadata is privacy-preserving (no IP/ICE strings stored).
+
 ## Devices and Roles
 - Primary/Secondary device roles with guards for restricted actions.
 - ROLE_CHANGE events are encrypted + signed in the global scope.

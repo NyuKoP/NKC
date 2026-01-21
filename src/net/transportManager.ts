@@ -3,6 +3,7 @@ import { createOnionTransport } from "./onionTransport";
 import { createDirectTransport } from "./directTransport";
 import { getConvAllowDirect, setConvAllowDirect } from "../security/preferences";
 import { redactIPs } from "./privacy";
+import { decideConversationTransport } from "./transportPolicy";
 
 export type ConversationTransportStatus = TransportStatus & {
   kind?: TransportKind;
@@ -206,7 +207,8 @@ export const connectConversation = async (convId: string, peerHint?: PeerHint) =
       }
     }
 
-    if (!approved) {
+    const decision = decideConversationTransport({ allowDirect: approved });
+    if (!decision.fallback) {
       scheduleRetry(convId);
       return;
     }
