@@ -32,6 +32,7 @@ import {
   sendToConversation,
 } from "../net/transportManager";
 import type { PeerHint } from "../net/transport";
+import { sanitizeRoutingHints } from "../net/privacy";
 
 type EnvelopeEvent = {
   eventId: string;
@@ -247,6 +248,9 @@ const applyContactEvent = async (body: { type: "contact"; profile: Partial<UserP
   }
 
   const now = Date.now();
+  const sanitizedHints = sanitizeRoutingHints(
+    profile.routingHints ?? existing?.routingHints
+  );
   const next: UserProfile = {
     id: existing?.id ?? createId(),
     friendId: profile.friendId,
@@ -258,7 +262,7 @@ const applyContactEvent = async (body: { type: "contact"; profile: Partial<UserP
     isFavorite: profile.isFavorite ?? existing?.isFavorite ?? false,
     identityPub: profile.identityPub ?? existing?.identityPub,
     dhPub: profile.dhPub ?? existing?.dhPub,
-    routingHints: profile.routingHints ?? existing?.routingHints,
+    routingHints: sanitizedHints,
     trust: existing?.trust ?? { pinnedAt: now, status: "trusted" },
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -661,7 +665,7 @@ const buildContactEvents = async (convId: string) => {
           isFavorite: contact.isFavorite,
           identityPub: contact.identityPub,
           dhPub: contact.dhPub,
-          routingHints: contact.routingHints,
+          routingHints: sanitizeRoutingHints(contact.routingHints),
         },
       },
       identityPriv
