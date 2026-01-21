@@ -61,7 +61,8 @@ import {
 } from "../security/identityKeys";
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { assertPrimary, isPrimary } from "../security/guards";
-import { deriveConversationKey, encryptEnvelope } from "../crypto/box";
+import { deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
+import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
@@ -726,7 +727,7 @@ export default function App() {
         const now = Date.now();
         const friendKeyId = partner.friendId ?? partner.id;
         const lamport = await nextLamportForConv(conv.id);
-        const header = {
+        const header: EnvelopeHeader = {
           v: 1 as const,
           eventId: createId(),
           convId: conv.id,
@@ -738,17 +739,38 @@ export default function App() {
         const dhPriv = await getDhPrivateKey();
         const theirDhPub = decodeBase64Url(partner.dhPub);
         const pskBytes = await getFriendPsk(friendKeyId);
-        const contextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+        const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+        const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
         const conversationKey = await deriveConversationKey(
           dhPriv,
           theirDhPub,
           pskBytes,
-          contextBytes
+          legacyContextBytes
+        );
+        const ratchetBaseKey = await deriveConversationKey(
+          dhPriv,
+          theirDhPub,
+          pskBytes,
+          ratchetContextBytes
         );
 
         const myIdentityPriv = await getIdentityPrivateKey();
+        let keyForEnvelope = conversationKey;
+        try {
+          const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
+          header.rk = ratchet.headerRk;
+          keyForEnvelope = ratchet.msgKey;
+        } catch {
+          try {
+            const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
+            header.rk = ratchet.headerRk;
+            keyForEnvelope = ratchet.msgKey;
+          } catch (error) {
+            console.warn("[ratchet] send fallback to legacy", error);
+          }
+        }
         const envelope = await encryptEnvelope(
-          conversationKey,
+          keyForEnvelope,
           header,
           { type: "msg", text },
           myIdentityPriv
@@ -837,7 +859,7 @@ export default function App() {
         const now = Date.now();
         const friendKeyId = partner.friendId ?? partner.id;
         const lamport = await nextLamportForConv(conv.id);
-        const header = {
+        const header: EnvelopeHeader = {
           v: 1 as const,
           eventId: createId(),
           convId: conv.id,
@@ -852,17 +874,38 @@ export default function App() {
         const dhPriv = await getDhPrivateKey();
         const theirDhPub = decodeBase64Url(partner.dhPub);
         const pskBytes = await getFriendPsk(friendKeyId);
-        const contextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+        const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+        const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
         const conversationKey = await deriveConversationKey(
           dhPriv,
           theirDhPub,
           pskBytes,
-          contextBytes
+          legacyContextBytes
+        );
+        const ratchetBaseKey = await deriveConversationKey(
+          dhPriv,
+          theirDhPub,
+          pskBytes,
+          ratchetContextBytes
         );
 
         const myIdentityPriv = await getIdentityPrivateKey();
+        let keyForEnvelope = conversationKey;
+        try {
+          const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
+          header.rk = ratchet.headerRk;
+          keyForEnvelope = ratchet.msgKey;
+        } catch {
+          try {
+            const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
+            header.rk = ratchet.headerRk;
+            keyForEnvelope = ratchet.msgKey;
+          } catch (error) {
+            console.warn("[ratchet] send fallback to legacy", error);
+          }
+        }
         const envelope = await encryptEnvelope(
-          conversationKey,
+          keyForEnvelope,
           header,
           { type: "msg", text: label, media },
           myIdentityPriv

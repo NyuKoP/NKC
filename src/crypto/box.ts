@@ -8,6 +8,7 @@ export type EnvelopeHeader = {
   authorDeviceId: string;
   ts: number;
   lamport: number;
+  rk?: { v: 1; i: number } | { v: 2; i: number; dh: string; pn?: number };
 };
 
 export type Envelope = {
@@ -57,7 +58,7 @@ export const deriveConversationKey = async (
 };
 
 export const encryptEnvelope = async (
-  conversationKey: Uint8Array,
+  keyOrMsgKey: Uint8Array,
   headerObj: EnvelopeHeader,
   plaintextObj: unknown,
   myIdentityPriv: Uint8Array
@@ -73,7 +74,7 @@ export const encryptEnvelope = async (
     headerBytes,
     null,
     nonce,
-    conversationKey
+    keyOrMsgKey
   );
   const sig = sodium.crypto_sign_detached(
     concatBytes([headerBytes, nonce, ciphertext]),
@@ -88,7 +89,7 @@ export const encryptEnvelope = async (
 };
 
 export const decryptEnvelope = async <T>(
-  conversationKey: Uint8Array,
+  keyOrMsgKey: Uint8Array,
   envelope: Envelope,
   theirIdentityPub: Uint8Array
 ) => {
@@ -105,7 +106,20 @@ export const decryptEnvelope = async <T>(
     ciphertext,
     headerBytes,
     nonce,
-    conversationKey
+    keyOrMsgKey
   );
   return JSON.parse(textDecoder.decode(plain)) as T;
+};
+
+export const verifyEnvelopeSignature = async (
+  envelope: Envelope,
+  theirIdentityPub: Uint8Array
+) => {
+  const sodium = await getSodium();
+  const headerBytes = canonicalBytes(envelope.header);
+  const nonce = fromB64(sodium, envelope.nonce);
+  const ciphertext = fromB64(sodium, envelope.ciphertext);
+  const sig = fromB64(sodium, envelope.sig);
+  const signed = concatBytes([headerBytes, nonce, ciphertext]);
+  return sodium.crypto_sign_verify_detached(sig, signed, theirIdentityPub);
 };

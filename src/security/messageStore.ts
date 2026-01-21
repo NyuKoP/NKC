@@ -1,6 +1,12 @@
 import type { Conversation, Message, UserProfile } from "../db/repo";
 import { listEventsByConv, listMessagesByConv } from "../db/repo";
-import { decryptEnvelope, deriveConversationKey, type Envelope } from "../crypto/box";
+import {
+  decryptEnvelope,
+  deriveConversationKey,
+  type Envelope,
+  verifyEnvelopeSignature,
+} from "../crypto/box";
+import { tryRecvDhKey, tryRecvKey } from "../crypto/ratchet";
 import { getFriendPsk } from "./pskStore";
 import { decodeBase64Url } from "./base64url";
 import { getDhPrivateKey, getIdentityPublicKey } from "./identityKeys";
@@ -29,8 +35,10 @@ export const loadConversationMessages = async (
   const dhPriv = await getDhPrivateKey();
   const theirDhPub = decodeBase64Url(friend.dhPub);
   const pskBytes = await getFriendPsk(friend.friendId ?? friend.id);
-  const contextBytes = new TextEncoder().encode(`direct:${friend.friendId ?? friend.id}`);
-  const conversationKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, contextBytes);
+  const legacyContextBytes = new TextEncoder().encode(`direct:${friend.friendId ?? friend.id}`);
+  const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
+  const legacyKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, legacyContextBytes);
+  const ratchetBaseKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, ratchetContextBytes);
 
   const myIdentityPub = await getIdentityPublicKey();
   const theirIdentityPub = decodeBase64Url(friend.identityPub);
@@ -51,11 +59,85 @@ export const loadConversationMessages = async (
     const verifyKey = senderId === currentUserId ? myIdentityPub : theirIdentityPub;
 
     try {
+      const rk = envelope.header.rk;
+      if (rk && rk.v === 2 && Number.isFinite(rk.i) && typeof rk.dh === "string") {
+        const verified = await verifyEnvelopeSignature(envelope, verifyKey);
+        if (!verified) {
+          console.warn("[msg] signature invalid", { convId: record.convId, eventId: record.eventId });
+          continue;
+        }
+        const recv = await tryRecvDhKey(conv.id, ratchetBaseKey, rk);
+        if ("deferred" in recv) {
+          messages.push({
+            id: envelope.header.eventId,
+            convId: conv.id,
+            senderId,
+            text: "복호화 보류",
+            ts: envelope.header.ts,
+          });
+          continue;
+        }
+        const body = await decryptEnvelope<{
+          type: "msg";
+          text: string;
+          media?: Message["media"];
+        }>(recv.msgKey, envelope, verifyKey);
+
+        if (!body || body.type !== "msg") continue;
+
+        await recv.commit();
+        messages.push({
+          id: envelope.header.eventId,
+          convId: conv.id,
+          senderId,
+          text: body.text,
+          ts: envelope.header.ts,
+          media: body.media,
+        });
+        continue;
+      }
+
+      if (rk && rk.v === 1 && Number.isFinite(rk.i)) {
+        const verified = await verifyEnvelopeSignature(envelope, verifyKey);
+        if (!verified) {
+          console.warn("[msg] signature invalid", { convId: record.convId, eventId: record.eventId });
+          continue;
+        }
+        const recv = await tryRecvKey(conv.id, ratchetBaseKey, rk.i);
+        if ("deferred" in recv) {
+          messages.push({
+            id: envelope.header.eventId,
+            convId: conv.id,
+            senderId,
+            text: "복호화 보류",
+            ts: envelope.header.ts,
+          });
+          continue;
+        }
+        const body = await decryptEnvelope<{
+          type: "msg";
+          text: string;
+          media?: Message["media"];
+        }>(recv.msgKey, envelope, verifyKey);
+
+        if (!body || body.type !== "msg") continue;
+
+        messages.push({
+          id: envelope.header.eventId,
+          convId: conv.id,
+          senderId,
+          text: body.text,
+          ts: envelope.header.ts,
+          media: body.media,
+        });
+        continue;
+      }
+
       const body = await decryptEnvelope<{
         type: "msg";
         text: string;
         media?: Message["media"];
-      }>(conversationKey, envelope, verifyKey);
+      }>(legacyKey, envelope, verifyKey);
 
       if (!body || body.type !== "msg") continue;
 
@@ -79,4 +161,3 @@ export const loadConversationMessages = async (
   messages.sort((a, b) => a.ts - b.ts);
   return messages;
 };
-
