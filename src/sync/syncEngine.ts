@@ -76,6 +76,10 @@ const globalLogId = (convId: string) => `global:${convId}`;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
+const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
+  console.debug(`[sync] ${label}`, meta);
+};
+
 const perAuthorLamportSeen = new Map<string, number>();
 const perConvLamportSeen = new Map<string, Map<string, number>>();
 const peerContexts = new Map<string, PeerContext>();
@@ -320,6 +324,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           console.warn("[sync] signature invalid");
           continue;
         }
+        logDecrypt("path", { convId: event.convId, eventId: event.eventId, mode: "v2" });
         const ratchetBaseKey = await resolveRatchetBaseKey(convKeyId, envelope.header.convId);
         if (!ratchetBaseKey) {
           console.warn("[sync] missing conversation key");
@@ -327,7 +332,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         }
         const recv = await tryRecvDhKey(envelope.header.convId, ratchetBaseKey, rk);
         if ("deferred" in recv) {
-          console.warn("[sync] decrypt deferred");
+          logDecrypt("deferred", { convId: event.convId, eventId: event.eventId, mode: "v2" });
           continue;
         }
         const body = await decryptEnvelope<{ type: string }>(
@@ -336,6 +341,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           verifyKey
         );
 
+        logDecrypt("commit", { convId: event.convId, eventId: event.eventId, mode: "v2" });
         await recv.commit();
         await saveEvent({
           eventId: envelope.header.eventId,
@@ -356,6 +362,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           console.warn("[sync] signature invalid");
           continue;
         }
+        logDecrypt("path", { convId: event.convId, eventId: event.eventId, mode: "v1" });
         const ratchetBaseKey = await resolveRatchetBaseKey(convKeyId, envelope.header.convId);
         if (!ratchetBaseKey) {
           console.warn("[sync] missing conversation key");
@@ -363,7 +370,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         }
         const recv = await tryRecvKey(envelope.header.convId, ratchetBaseKey, rk.i);
         if ("deferred" in recv) {
-          console.warn("[sync] decrypt deferred");
+          logDecrypt("deferred", { convId: event.convId, eventId: event.eventId, mode: "v1" });
           continue;
         }
         const body = await decryptEnvelope<{ type: string }>(
@@ -372,6 +379,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           verifyKey
         );
 
+        logDecrypt("ok", { convId: event.convId, eventId: event.eventId, mode: "v1" });
         await saveEvent({
           eventId: envelope.header.eventId,
           convId: envelope.header.convId,
@@ -390,12 +398,14 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         console.warn("[sync] missing conversation key");
         continue;
       }
+      logDecrypt("path", { convId: event.convId, eventId: event.eventId, mode: "legacy" });
       const body = await decryptEnvelope<{ type: string }>(
         conversationKey,
         envelope,
         verifyKey
       );
 
+      logDecrypt("ok", { convId: event.convId, eventId: event.eventId, mode: "legacy" });
       await saveEvent({
         eventId: envelope.header.eventId,
         convId: envelope.header.convId,
