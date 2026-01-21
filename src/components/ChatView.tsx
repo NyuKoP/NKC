@@ -1,8 +1,22 @@
 ﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
-import { AlertTriangle, ArrowLeft, ArrowUp, FileText, PanelRight, Paperclip } from "lucide-react";
+import { useCallback } from "react";
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ArrowUp,
+  Check,
+  CheckCheck,
+  Clock,
+  FileText,
+  PanelRight,
+  Paperclip,
+} from "lucide-react";
 import type { Conversation, MediaRef, Message, UserProfile } from "../db/repo";
 import { loadMessageMedia } from "../db/repo";
 import type { ConversationTransportStatus } from "../net/transportManager";
+import { getOutbox } from "../storage/outboxStore";
+import { getReceiptState } from "../storage/receiptStore";
+import { getPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
 
 const GROUP_WINDOW_MS = 1000 * 60 * 2;
@@ -30,10 +44,15 @@ type ChatViewProps = {
   onComposingChange: (value: boolean) => void;
   onSend: (text: string) => void;
   onSendMedia: (file: File) => void;
+  onSendReadReceipt?: (payload: { convId: string; msgId: string }) => void;
+  onAcceptRequest?: () => void;
+  onDeclineRequest?: () => void;
   onBack: () => void;
   onToggleRight: () => void;
   rightPanelOpen: boolean;
 };
+
+type SendState = "queued" | "sent" | "delivered" | "read";
 
 export default function ChatView({
   conversation,
@@ -46,17 +65,117 @@ export default function ChatView({
   onComposingChange,
   onSend,
   onSendMedia,
+  onSendReadReceipt,
+  onAcceptRequest,
+  onDeclineRequest,
   onBack,
   onToggleRight,
   rightPanelOpen,
 }: ChatViewProps) {
   const [atBottom, setAtBottom] = useState(true);
+  const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(false);
+  const [sendStates, setSendStates] = useState<Record<string, SendState>>({});
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const lastReadReceiptSentRef = useRef<Record<string, number>>({});
+
+  const peerProfile = useMemo(() => {
+    if (!conversation || !currentUserId) return null;
+    const partnerId = conversation.participants.find((id) => id !== currentUserId);
+    return partnerId ? profilesById[partnerId] ?? null : null;
+  }, [conversation, currentUserId, profilesById]);
+
+  const requestIncoming =
+    Boolean(conversation?.pendingAcceptance) || peerProfile?.friendStatus === "request_in";
+  const requestOutgoing = peerProfile?.friendStatus === "request_out";
 
   const grouped = useMemo(
     () => groupMessages(messages, currentUserId, nameMap),
     [messages, currentUserId, nameMap]
   );
+
+  useEffect(() => {
+    let active = true;
+    void getPrivacyPrefs()
+      .then((prefs) => {
+        if (active) setReadReceiptsEnabled(Boolean(prefs.readReceipts));
+      })
+      .catch(() => {
+        if (active) setReadReceiptsEnabled(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [conversation?.id]);
+
+  const refreshSendStates = useCallback(async () => {
+    if (!currentUserId) {
+      setSendStates({});
+      return;
+    }
+    const ownMessages = messages.filter((message) => typeof message.id === "string" && message.senderId === currentUserId);
+    if (!ownMessages.length) {
+      setSendStates({});
+      return;
+    }
+    const entries = await Promise.all(
+      ownMessages.map(async (message) => {
+        const [outbox, receiptState] = await Promise.all([
+          getOutbox(message.id),
+          getReceiptState(message.id),
+        ]);
+        let state: SendState = "queued";
+        if (readReceiptsEnabled && receiptState.read) {
+          state = "read";
+        } else if (receiptState.delivered || outbox?.status === "acked") {
+          state = "delivered";
+        } else if (outbox?.status === "in_flight") {
+          state = "sent";
+        } else {
+          state = "queued";
+        }
+        return [message.id, state] as const;
+      })
+    );
+    setSendStates(Object.fromEntries(entries));
+  }, [currentUserId, messages, readReceiptsEnabled]);
+
+  useEffect(() => {
+    let active = true;
+    const run = async () => {
+      if (!active) return;
+      await refreshSendStates();
+    };
+    void run();
+    const timer = window.setInterval(() => {
+      void refreshSendStates();
+    }, 2000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [refreshSendStates]);
+
+  useEffect(() => {
+    if (!conversation || !currentUserId || !readReceiptsEnabled || !onSendReadReceipt) return;
+    if (requestIncoming) return;
+    const latestIncoming = [...messages].reverse().find((message) => message.senderId !== currentUserId);
+    if (!latestIncoming) return;
+    const lastSentAt = lastReadReceiptSentRef.current[conversation.id] ?? 0;
+    if (Date.now() - lastSentAt < 2000) return;
+
+    let active = true;
+    const sendReceipt = async () => {
+      const state = await getReceiptState(latestIncoming.id);
+      if (!active) return;
+      if (state.read) return;
+      await onSendReadReceipt({ convId: conversation.id, msgId: latestIncoming.id });
+      lastReadReceiptSentRef.current[conversation.id] = Date.now();
+    };
+    void sendReceipt();
+    return () => {
+      active = false;
+    };
+  }, [conversation, currentUserId, messages, onSendReadReceipt, readReceiptsEnabled, requestIncoming]);
 
   useEffect(() => {
     if (conversation) {
@@ -86,6 +205,14 @@ export default function ChatView({
       : transportStatus?.kind === "onion"
         ? "Onion"
         : null;
+
+  const renderSendState = (state?: SendState) => {
+    if (!state) return null;
+    if (state === "queued") return <Clock size={12} className="text-nkc-muted" />;
+    if (state === "sent") return <Check size={12} className="text-nkc-muted" />;
+    if (state === "delivered") return <CheckCheck size={12} className="text-nkc-muted" />;
+    return <CheckCheck size={12} className="text-nkc-accent" />;
+  };
 
   return (
     <section
@@ -117,6 +244,11 @@ export default function ChatView({
                   {transportLabel}
                 </span>
               ) : null}
+              {conversation && requestOutgoing ? (
+                <span className="inline-flex items-center rounded-full border border-nkc-border px-2 py-1 text-[11px] text-nkc-muted">
+                  초대됨
+                </span>
+              ) : null}
             </div>
             <div className="text-xs text-nkc-muted line-clamp-1">
               {conversation ? "마지막 활동 2분 전" : "왼쪽에서 대화를 선택하세요"}
@@ -140,6 +272,27 @@ export default function ChatView({
       >
         {conversation ? (
           <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 px-8 py-6">
+            {requestIncoming ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3 text-sm">
+                <div className="text-nkc-text">메시지 요청</div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={onDeclineRequest}
+                    className="rounded-nkc border border-nkc-border px-3 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                  >
+                    거절
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onAcceptRequest}
+                    className="rounded-nkc bg-nkc-accent px-3 py-1 text-xs font-semibold text-nkc-bg"
+                  >
+                    수락
+                  </button>
+                </div>
+              </div>
+            ) : null}
             {grouped.map((group) => {
               const senderProfile = profilesById[group.senderId];
               const senderName = senderProfile?.displayName || group.senderName;
@@ -183,8 +336,11 @@ export default function ChatView({
                           ) : (
                             message.text
                           )}
-                          <div className="mt-2 text-[11px] text-nkc-muted">
-                            {formatTime(message.ts)}
+                          <div className="mt-2 flex items-center gap-1 text-[11px] text-nkc-muted">
+                            <span>{formatTime(message.ts)}</span>
+                            {group.senderId === currentUserId
+                              ? renderSendState(sendStates[message.id])
+                              : null}
                           </div>
                         </div>
                       ))}
@@ -216,6 +372,7 @@ export default function ChatView({
       <MessageComposer
         key={conversation?.id ?? "none"}
         conversation={conversation}
+        disabled={requestIncoming}
         isComposing={isComposing}
         onComposingChange={onComposingChange}
         onSend={onSend}
@@ -227,6 +384,7 @@ export default function ChatView({
 
 type MessageComposerProps = {
   conversation: Conversation | null;
+  disabled?: boolean;
   isComposing: boolean;
   onComposingChange: (value: boolean) => void;
   onSend: (text: string) => void;
@@ -235,6 +393,7 @@ type MessageComposerProps = {
 
 const MessageComposer = ({
   conversation,
+  disabled = false,
   isComposing,
   onComposingChange,
   onSend,
@@ -253,7 +412,7 @@ const MessageComposer = ({
   }, [text]);
 
   const handleSend = () => {
-    if (!conversation) return;
+    if (!conversation || disabled) return;
     const trimmed = text.trim();
     if (!trimmed) return;
     onSend(trimmed);
@@ -261,7 +420,7 @@ const MessageComposer = ({
   };
 
   const handleMediaSelect = (event: ChangeEvent<HTMLInputElement>) => {
-    if (!conversation) return;
+    if (!conversation || disabled) return;
     const file = event.target.files?.[0];
     if (!file) return;
     onSendMedia(file);
@@ -276,13 +435,13 @@ const MessageComposer = ({
         handleSend();
       }}
       className={`border-t border-nkc-border bg-nkc-panel px-6 py-5 ${
-        conversation ? "" : "opacity-60"
+        conversation && !disabled ? "" : "opacity-60"
       }`}
     >
       <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3">
         <textarea
           ref={textareaRef}
-          disabled={!conversation}
+          disabled={!conversation || disabled}
           value={text}
           onChange={(event) => setText(event.target.value)}
           onCompositionStart={() => onComposingChange(true)}
@@ -306,7 +465,7 @@ const MessageComposer = ({
           <div className="flex items-center gap-3">
             <label
               className={`flex h-8 w-8 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panel ${
-                conversation ? "" : "pointer-events-none opacity-50"
+                conversation && !disabled ? "" : "pointer-events-none opacity-50"
               }`}
               data-testid="chat-attach-button"
             >
@@ -316,6 +475,7 @@ const MessageComposer = ({
                 accept="image/*,video/*,audio/*"
                 className="hidden"
                 onChange={handleMediaSelect}
+                disabled={!conversation || disabled}
                 data-testid="chat-attach-input"
               />
             </label>
@@ -323,7 +483,7 @@ const MessageComposer = ({
           </div>
           <button
             type="submit"
-            disabled={!conversation || !text.trim()}
+            disabled={!conversation || disabled || !text.trim()}
             className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
           >
             전송

@@ -38,7 +38,7 @@ import {
   type Message,
   type UserProfile,
 } from "../db/repo";
-import { encryptJsonRecord, validateRecoveryKey } from "../crypto/vault";
+import { chunkBuffer, encryptJsonRecord, validateRecoveryKey } from "../crypto/vault";
 import { getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
 import { computeFriendId, decodeFriendCodeV1, encodeFriendCodeV1 } from "../security/friendCode";
 import { applyTOFU } from "../security/trust";
@@ -84,6 +84,9 @@ const buildNameMap = (profiles: UserProfile[]) =>
     acc[profile.id] = profile.displayName;
     return acc;
   }, {});
+
+const INLINE_MEDIA_MAX_BYTES = 2 * 1024 * 1024;
+const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
 
 export default function App() {
   const ui = useAppStore((state) => state.ui);
@@ -708,6 +711,75 @@ export default function App() {
     await hydrateVault();
   };
 
+  const sendDirectEnvelope = async (
+    conv: Conversation,
+    partner: UserProfile,
+    body: unknown,
+    priority: "high" | "normal" = "high"
+  ) => {
+    if (!partner.dhPub || !partner.identityPub) {
+      throw new Error("Missing peer keys");
+    }
+    const now = Date.now();
+    const friendKeyId = partner.friendId ?? partner.id;
+    const lamport = await nextLamportForConv(conv.id);
+    const header: EnvelopeHeader = {
+      v: 1 as const,
+      eventId: createId(),
+      convId: conv.id,
+      ts: now,
+      lamport,
+      authorDeviceId: getOrCreateDeviceId(),
+    };
+
+    const dhPriv = await getDhPrivateKey();
+    const theirDhPub = decodeBase64Url(partner.dhPub);
+    const pskBytes = await getFriendPsk(friendKeyId);
+    const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+    const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
+    const conversationKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, legacyContextBytes);
+    const ratchetBaseKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, ratchetContextBytes);
+
+    const myIdentityPriv = await getIdentityPrivateKey();
+    let keyForEnvelope = conversationKey;
+    try {
+      const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
+      header.rk = ratchet.headerRk;
+      keyForEnvelope = ratchet.msgKey;
+    } catch {
+      try {
+        const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
+        header.rk = ratchet.headerRk;
+        keyForEnvelope = ratchet.msgKey;
+      } catch (error) {
+        console.warn("[ratchet] send fallback to legacy", error);
+      }
+    }
+
+    const envelope = await encryptEnvelope(keyForEnvelope, header, body, myIdentityPriv);
+    const envelopeJson = JSON.stringify(envelope);
+
+    await saveEvent({
+      eventId: header.eventId,
+      convId: header.convId,
+      authorDeviceId: header.authorDeviceId,
+      lamport: header.lamport,
+      ts: header.ts,
+      envelopeJson,
+    });
+
+    void sendCiphertext({
+      convId: conv.id,
+      messageId: header.eventId,
+      ciphertext: envelopeJson,
+      priority,
+    }).catch((error) => {
+      console.error("Failed to route message", error);
+    });
+
+    return { header, envelopeJson };
+  };
+
   const handleSendMessage = async (text: string) => {
     if (!ui.selectedConvId || !userProfile) return;
     const conv = convs.find((item) => item.id === ui.selectedConvId);
@@ -856,6 +928,11 @@ export default function App() {
       const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
 
       if (partner?.dhPub && partner.identityPub) {
+        const inlineAllowed = file.size <= INLINE_MEDIA_MAX_BYTES;
+        if (!inlineAllowed) {
+          addToast({ message: "Attachment too large for inline transfer (MVP limit 2MB)." });
+        }
+
         const now = Date.now();
         const friendKeyId = partner.friendId ?? partner.id;
         const lamport = await nextLamportForConv(conv.id);
@@ -868,7 +945,9 @@ export default function App() {
           authorDeviceId: getOrCreateDeviceId(),
         };
 
-        const media = await saveMessageMedia(header.eventId, file);
+        const media = inlineAllowed
+          ? await saveMessageMedia(header.eventId, file, INLINE_MEDIA_CHUNK_SIZE)
+          : await saveMessageMedia(header.eventId, file);
         const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
 
         const dhPriv = await getDhPrivateKey();
@@ -939,6 +1018,31 @@ export default function App() {
 
         await saveConversation(updatedConv);
         await hydrateVault();
+
+        if (inlineAllowed) {
+          const sendChunks = async () => {
+            const buffer = await file.arrayBuffer();
+            const chunks = chunkBuffer(buffer, INLINE_MEDIA_CHUNK_SIZE);
+            const total = chunks.length;
+            for (let idx = 0; idx < chunks.length; idx += 1) {
+              const chunkBody = {
+                type: "media",
+                phase: "chunk",
+                ownerId: header.eventId,
+                idx,
+                total,
+                mime: media.mime,
+                name: media.name,
+                size: media.size,
+                b64: encodeBase64Url(chunks[idx]),
+              };
+              await sendDirectEnvelope(conv, partner, chunkBody, "normal");
+            }
+          };
+          void sendChunks().catch((error) => {
+            console.error("Failed to send media chunks", error);
+          });
+        }
         return;
       }
     }
@@ -979,6 +1083,33 @@ export default function App() {
     await saveConversation(updatedConv);
     await hydrateVault();
   };
+
+  const handleSendReadReceipt = useCallback(
+    async (payload: { convId: string; msgId: string }) => {
+      if (!userProfile) return;
+      const conv = convs.find((item) => item.id === payload.convId);
+      if (!conv) return;
+      const isDirect =
+        !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
+      if (!isDirect) return;
+
+      const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
+      const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
+      if (!partner?.dhPub || !partner.identityPub) return;
+
+      try {
+        await sendDirectEnvelope(
+          conv,
+          partner,
+          { type: "rcpt", kind: "read", msgId: payload.msgId, convId: conv.id, ts: Date.now() },
+          "normal"
+        );
+      } catch (error) {
+        console.error("Failed to send read receipt", error);
+      }
+    },
+    [convs, friends, userProfile, sendDirectEnvelope]
+  );
 
   const findDirectConvWithFriend = (friendId: string) =>
     convs.find(
@@ -1322,7 +1453,7 @@ export default function App() {
         status: "Friend",
         theme: "dark",
         kind: "friend",
-        friendStatus: "normal",
+        friendStatus: "request_out",
         isFavorite: false,
         createdAt: now,
         updatedAt: now,
@@ -1411,7 +1542,7 @@ export default function App() {
       status: existing?.status ?? "Friend",
       theme: existing?.theme ?? "dark",
       kind: "friend",
-      friendStatus: existing?.friendStatus ?? "normal",
+      friendStatus: existing?.friendStatus ?? "request_out",
       isFavorite: existing?.isFavorite ?? false,
       identityPub: decoded.identityPub,
       dhPub: decoded.dhPub,
@@ -1490,6 +1621,31 @@ export default function App() {
     return friends.find((friend) => friend.id === partnerId) || null;
   }, [currentConversation, friends, userProfile]);
 
+  const handleAcceptRequest = async () => {
+    if (!currentConversation || !partnerProfile) return;
+    try {
+      await updateFriend(partnerProfile.id, { friendStatus: "normal" });
+      await updateConversation(currentConversation.id, { hidden: false, pendingAcceptance: false });
+    } catch (error) {
+      console.error("Failed to accept request", error);
+      addToast({ message: "메시지 요청 수락에 실패했습니다." });
+    }
+  };
+
+  const handleDeclineRequest = async () => {
+    if (!currentConversation || !partnerProfile) return;
+    try {
+      await updateFriend(partnerProfile.id, { friendStatus: "blocked" });
+      await updateConversation(currentConversation.id, {
+        hidden: true,
+        pendingAcceptance: false,
+      });
+    } catch (error) {
+      console.error("Failed to decline request", error);
+      addToast({ message: "메시지 요청 거절에 실패했습니다." });
+    }
+  };
+
   if (ui.mode === "onboarding") {
     return (
       <>
@@ -1547,6 +1703,9 @@ export default function App() {
         onComposingChange={setIsComposing}
         onSend={handleSendMessage}
         onSendMedia={handleSendMedia}
+        onSendReadReceipt={handleSendReadReceipt}
+        onAcceptRequest={handleAcceptRequest}
+        onDeclineRequest={handleDeclineRequest}
         onBack={() => {
           setSelectedConv(null);
           setRightPanelOpen(false);
