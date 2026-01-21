@@ -12,6 +12,10 @@ import { decodeBase64Url } from "./base64url";
 import { getDhPrivateKey, getIdentityPublicKey } from "./identityKeys";
 import { getOrCreateDeviceId } from "./deviceRole";
 
+const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
+  console.debug(`[msg] ${label}`, meta);
+};
+
 const resolveSenderId = (
   header: Envelope["header"],
   currentUserId: string,
@@ -66,8 +70,10 @@ export const loadConversationMessages = async (
           console.warn("[msg] signature invalid", { convId: record.convId, eventId: record.eventId });
           continue;
         }
+        logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "v2" });
         const recv = await tryRecvDhKey(conv.id, ratchetBaseKey, rk);
         if ("deferred" in recv) {
+          logDecrypt("deferred", { convId: record.convId, eventId: record.eventId, mode: "v2" });
           messages.push({
             id: envelope.header.eventId,
             convId: conv.id,
@@ -85,6 +91,7 @@ export const loadConversationMessages = async (
 
         if (!body || body.type !== "msg") continue;
 
+        logDecrypt("commit", { convId: record.convId, eventId: record.eventId, mode: "v2" });
         await recv.commit();
         messages.push({
           id: envelope.header.eventId,
@@ -103,8 +110,10 @@ export const loadConversationMessages = async (
           console.warn("[msg] signature invalid", { convId: record.convId, eventId: record.eventId });
           continue;
         }
+        logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "v1" });
         const recv = await tryRecvKey(conv.id, ratchetBaseKey, rk.i);
         if ("deferred" in recv) {
+          logDecrypt("deferred", { convId: record.convId, eventId: record.eventId, mode: "v1" });
           messages.push({
             id: envelope.header.eventId,
             convId: conv.id,
@@ -122,6 +131,7 @@ export const loadConversationMessages = async (
 
         if (!body || body.type !== "msg") continue;
 
+        logDecrypt("ok", { convId: record.convId, eventId: record.eventId, mode: "v1" });
         messages.push({
           id: envelope.header.eventId,
           convId: conv.id,
@@ -133,6 +143,7 @@ export const loadConversationMessages = async (
         continue;
       }
 
+      logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "legacy" });
       const body = await decryptEnvelope<{
         type: "msg";
         text: string;
@@ -141,6 +152,7 @@ export const loadConversationMessages = async (
 
       if (!body || body.type !== "msg") continue;
 
+      logDecrypt("ok", { convId: record.convId, eventId: record.eventId, mode: "legacy" });
       messages.push({
         id: envelope.header.eventId,
         convId: conv.id,
