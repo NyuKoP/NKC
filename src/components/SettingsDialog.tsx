@@ -13,9 +13,7 @@ import {
 import { useAppStore } from "../app/store";
 import {
   defaultPrivacyPrefs,
-  getDirectP2PRiskAck,
   getPrivacyPrefs,
-  setDirectP2PRiskAck,
   setPrivacyPrefs,
 } from "../security/preferences";
 import { isPinAvailable } from "../security/pin";
@@ -159,7 +157,6 @@ export default function SettingsDialog({
   const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
   const [onionNetworkDraft, setOnionNetworkDraft] = useState(netConfig.onionSelectedNetwork);
   const [onionStatus, setOnionStatus] = useState<OnionStatus | null>(null);
-  const [directP2PAcked, setDirectP2PAcked] = useState(false);
   const [proxyUrlDraft, setProxyUrlDraft] = useState(netConfig.onionProxyUrl);
   const [proxyUrlError, setProxyUrlError] = useState("");
   const [torInstallBusy, setTorInstallBusy] = useState(false);
@@ -242,9 +239,6 @@ export default function SettingsDialog({
     getPrivacyPrefs()
       .then(setPrivacyPrefsState)
       .catch((e) => console.error("Failed to load privacy prefs", e));
-    getDirectP2PRiskAck()
-      .then(setDirectP2PAcked)
-      .catch(() => setDirectP2PAcked(false));
   }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork, netConfig.onionProxyUrl]);
 
   useEffect(() => {
@@ -496,21 +490,7 @@ export default function SettingsDialog({
   };
 
   const handleModeChange = async (next: NetworkMode) => {
-    if (next === "directP2P" && !directP2PAcked) {
-      addToast({
-        message: t(
-          "Direct P2P 사용 전에 위험 동의를 확인해주세요.",
-          "Confirm the Direct P2P risk acknowledgement before enabling."
-        ),
-      });
-      return;
-    }
     setMode(next);
-  };
-
-  const handleDirectAckChange = async (checked: boolean) => {
-    await setDirectP2PRiskAck(checked);
-    setDirectP2PAcked(checked);
   };
 
   const formatBytes = (value: number) => {
@@ -766,7 +746,7 @@ export default function SettingsDialog({
             "Direct P2P: attempts a direct connection without a proxy."
           )
       : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
-  const showDirectWarning = netConfig.mode === "directP2P" || !directP2PAcked;
+  const showDirectWarning = netConfig.mode === "directP2P";
 
   return (
     <>
@@ -1102,22 +1082,6 @@ export default function SettingsDialog({
                         "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
                       )}
                     </div>
-                    <label className="mt-2 flex items-start gap-2 text-xs text-amber-200">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={directP2PAcked}
-                        onChange={(e) => void handleDirectAckChange(e.target.checked)}
-                        disabled={netConfig.mode === "directP2P"}
-                        data-testid="direct-p2p-ack"
-                      />
-                      <span>
-                        {t(
-                          "Direct P2P가 IP를 노출할 수 있음을 이해합니다.",
-                          "I understand Direct P2P may expose my IP."
-                        )}
-                      </span>
-                    </label>
                   </div>
                 ) : null}
               </section>
