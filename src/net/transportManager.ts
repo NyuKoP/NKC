@@ -2,6 +2,7 @@ import type { PeerHint, Transport, TransportKind, TransportStatus } from "./tran
 import { createOnionTransport } from "./onionTransport";
 import { createDirectTransport } from "./directTransport";
 import { getConvAllowDirect, setConvAllowDirect } from "../security/preferences";
+import { redactIPs } from "./privacy";
 
 export type ConversationTransportStatus = TransportStatus & {
   kind?: TransportKind;
@@ -68,8 +69,12 @@ const getState = (convId: string) => {
 
 const setStatus = (convId: string, status: ConversationTransportStatus) => {
   const state = getState(convId);
-  state.status = status;
-  notify(convId, status);
+  const sanitized =
+    status.detail && typeof status.detail === "string"
+      ? { ...status, detail: redactIPs(status.detail) }
+      : status;
+  state.status = sanitized;
+  notify(convId, sanitized);
 };
 
 const clearRetryTimer = (state: ConversationState) => {

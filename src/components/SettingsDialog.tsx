@@ -160,8 +160,6 @@ export default function SettingsDialog({
   const [onionNetworkDraft, setOnionNetworkDraft] = useState(netConfig.onionSelectedNetwork);
   const [onionStatus, setOnionStatus] = useState<OnionStatus | null>(null);
   const [directP2PAcked, setDirectP2PAcked] = useState(false);
-  const [directP2PConfirmOpen, setDirectP2PConfirmOpen] = useState(false);
-  const [pendingMode, setPendingMode] = useState<NetworkMode | null>(null);
   const [proxyUrlDraft, setProxyUrlDraft] = useState(netConfig.onionProxyUrl);
   const [proxyUrlError, setProxyUrlError] = useState("");
   const [torInstallBusy, setTorInstallBusy] = useState(false);
@@ -499,20 +497,20 @@ export default function SettingsDialog({
 
   const handleModeChange = async (next: NetworkMode) => {
     if (next === "directP2P" && !directP2PAcked) {
-      setPendingMode(next);
-      setDirectP2PConfirmOpen(true);
+      addToast(
+        t(
+          "Direct P2P 사용 전에 위험 동의를 확인해주세요.",
+          "Confirm the Direct P2P risk acknowledgement before enabling."
+        )
+      );
       return;
     }
     setMode(next);
   };
 
-  const handleConfirmDirectP2P = async () => {
-    await setDirectP2PRiskAck(true);
-    setDirectP2PAcked(true);
-    if (pendingMode === "directP2P") {
-      setMode("directP2P");
-    }
-    setPendingMode(null);
+  const handleDirectAckChange = async (checked: boolean) => {
+    await setDirectP2PRiskAck(checked);
+    setDirectP2PAcked(checked);
   };
 
   const formatBytes = (value: number) => {
@@ -767,7 +765,8 @@ export default function SettingsDialog({
             "Direct P2P: 프록시 없이 직접 연결을 시도합니다.",
             "Direct P2P: attempts a direct connection without a proxy."
           )
-        : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
+      : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
+  const showDirectWarning = netConfig.mode === "directP2P" || !directP2PAcked;
 
   return (
     <>
@@ -1092,15 +1091,33 @@ export default function SettingsDialog({
                     </div>
                   </div>
                 ) : null}
-                {netConfig.mode === "directP2P" ? (
+                {showDirectWarning ? (
                   <div
                     className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
                     data-testid="direct-p2p-warning"
                   >
-                    {t(
-                      "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 사용하세요.",
-                      "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
-                    )}
+                    <div>
+                      {t(
+                        "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 사용하세요.",
+                        "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
+                      )}
+                    </div>
+                    <label className="mt-2 flex items-start gap-2 text-xs text-amber-200">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={directP2PAcked}
+                        onChange={(e) => void handleDirectAckChange(e.target.checked)}
+                        disabled={netConfig.mode === "directP2P"}
+                        data-testid="direct-p2p-ack"
+                      />
+                      <span>
+                        {t(
+                          "Direct P2P가 IP를 노출할 수 있음을 이해합니다.",
+                          "I understand Direct P2P may expose my IP."
+                        )}
+                      </span>
+                    </label>
                   </div>
                 ) : null}
               </section>
@@ -2051,23 +2068,6 @@ export default function SettingsDialog({
             }
           }}
         />
-      <ConfirmDialog
-        open={directP2PConfirmOpen}
-        title={t("Direct P2P 위험 안내", "Direct P2P risk warning")}
-        message={t(
-          "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 활성화하세요.",
-          "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
-        )}
-        onConfirm={() => {
-          void handleConfirmDirectP2P();
-        }}
-        onClose={() => {
-          setDirectP2PConfirmOpen(false);
-          setPendingMode(null);
-        }}
-        confirmTestId="direct-p2p-confirm"
-        dialogTestId="direct-p2p-confirm-dialog"
-      />
       </>
     );
   }

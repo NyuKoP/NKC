@@ -66,6 +66,7 @@ import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
+import { sanitizeRoutingHints } from "../net/privacy";
 import { syncGroupCreate } from "../sync/groupSync";
 import {
   connectConversation as connectSyncConversation,
@@ -1544,10 +1545,11 @@ export default function App() {
       await setFriendPsk(friendId, psk);
     }
 
-    const routingHints =
+    const routingHints = sanitizeRoutingHints(
       decoded.onionAddr || decoded.lokinetAddr
         ? { onionAddr: decoded.onionAddr, lokinetAddr: decoded.lokinetAddr }
-        : undefined;
+        : undefined
+    );
 
     const short = friendId.slice(0, 6);
     const friend: UserProfile = {
