@@ -598,6 +598,14 @@ const registerOnionIpc = () => {
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow: BrowserWindow | null = null;
 
+const focusMainWindow = () => {
+  if (!mainWindow || mainWindow.isDestroyed()) return false;
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  return true;
+};
+
 const canReach = async (url: string, timeoutMs = 1200) =>
   new Promise<boolean>((resolve) => {
     try {
@@ -629,11 +637,7 @@ const canReach = async (url: string, timeoutMs = 1200) =>
   });
 
 export const createMainWindow = () => {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.show();
-    mainWindow.focus();
-    return mainWindow;
-  }
+  if (focusMainWindow()) return mainWindow;
   const preloadPath = path.join(__dirname, "preload.js");
   const preloadExists = fsSync.existsSync(preloadPath);
   if (isDev && !preloadExists) {
@@ -748,13 +752,7 @@ if (!gotTheLock) {
   process.exit(0);
 } else {
   app.on("second-instance", () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      if (mainWindow.isMinimized()) mainWindow.restore();
-      mainWindow.show();
-      mainWindow.focus();
-      return;
-    }
-    createMainWindow();
+    if (!focusMainWindow()) createMainWindow();
   });
 }
 

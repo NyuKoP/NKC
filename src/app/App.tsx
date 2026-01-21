@@ -127,6 +127,7 @@ export default function App() {
   const directApprovalResolveRef = useRef<((approved: boolean) => void) | null>(null);
 
   const onboardingLockRef = useRef(false);
+  const bootGuardRef = useRef<Promise<void> | null>(null);
   const outboxSchedulerStarted = useRef(false);
   const activeSyncConvRef = useRef<string | null>(null);
 
@@ -322,6 +323,7 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    if (bootGuardRef.current) return;
     let cancelled = false;
 
     const boot = async () => {
@@ -363,7 +365,9 @@ export default function App() {
       }
     };
 
-    void boot();
+    bootGuardRef.current = boot().finally(() => {
+      bootGuardRef.current = null;
+    });
 
     return () => {
       cancelled = true;
