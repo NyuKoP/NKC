@@ -24,6 +24,7 @@ import { getFriendPsk } from "../security/pskStore";
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { applyTOFU } from "../security/trust";
 import { updateFromRoleEvent, type RoleChangeEvent } from "../devices/deviceRegistry";
+import { isDeviceApproved } from "../devices/deviceApprovals";
 import { createId } from "../utils/ids";
 import {
   connectConversation as connectTransport,
@@ -51,14 +52,14 @@ type HelloFrame = {
 
 type SyncReqFrame = {
   type: "SYNC_REQ";
-  scope: "conv" | "contacts" | "global";
+  scope: "conv" | "contacts" | "conversations" | "global";
   convId?: string;
   since: Record<string, number>;
 };
 
 type SyncResFrame = {
   type: "SYNC_RES";
-  scope: "conv" | "contacts" | "global";
+  scope: "conv" | "contacts" | "conversations" | "global";
   convId?: string;
   events: EnvelopeEvent[];
   next: Record<string, number>;
@@ -70,15 +71,46 @@ export type PeerContext = PeerHint & {
   friendKeyId?: string;
   identityPub?: string;
   dhPub?: string;
+  kind?: "friend" | "device";
+  peerDeviceId?: string;
 };
 
 const contactsLogId = (convId: string) => `contacts:${convId}`;
+const conversationsLogId = (convId: string) => `convs:${convId}`;
 const globalLogId = (convId: string) => `global:${convId}`;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
 const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
   console.debug(`[sync] ${label}`, meta);
+};
+
+const isDeviceSyncAllowed = async (convId: string, reason: string) => {
+  const peer = peerContexts.get(convId);
+  if (!peer || peer.kind !== "device") return true;
+  const peerDeviceId = peer.peerDeviceId ?? peer.friendKeyId;
+  if (!peerDeviceId) {
+    console.warn("[sync] device sync blocked: missing peer device id", {
+      convId,
+      reason,
+    });
+    return false;
+  }
+  const localDeviceId = getOrCreateDeviceId();
+  const [localApproved, peerApproved] = await Promise.all([
+    isDeviceApproved(localDeviceId),
+    isDeviceApproved(peerDeviceId),
+  ]);
+  if (localApproved || peerApproved) return true;
+  if (!localApproved && !peerApproved) {
+    console.warn("[sync] device sync blocked: approval missing", {
+      convId,
+      peerDeviceId,
+      localDeviceId,
+      reason,
+    });
+  }
+  return false;
 };
 
 const perAuthorLamportSeen = new Map<string, number>();
@@ -201,6 +233,10 @@ const applyDecryptedBody = async (
     await applyContactEvent(body as { type: "contact"; profile: Partial<UserProfile> });
     return;
   }
+  if (typed.type === "conv") {
+    await applyConversationEvent(body as { type: "conv"; conv: Conversation });
+    return;
+  }
   if (typed.kind === "ROLE_CHANGE") {
     await updateFromRoleEvent(body as RoleChangeEvent);
   }
@@ -268,6 +304,27 @@ const applyContactEvent = async (body: { type: "contact"; profile: Partial<UserP
     updatedAt: now,
   };
   await saveProfile(next);
+};
+
+const applyConversationEvent = async (body: { type: "conv"; conv: Conversation }) => {
+  const incoming = body.conv;
+  if (!incoming?.id) return;
+  const existing = (await listConversations()).find((item) => item.id === incoming.id) || null;
+  const merged: Conversation = {
+    id: incoming.id,
+    type: incoming.type ?? existing?.type ?? "direct",
+    name: incoming.name ?? existing?.name ?? "Chat",
+    pinned: incoming.pinned ?? existing?.pinned ?? false,
+    unread: incoming.unread ?? existing?.unread ?? 0,
+    hidden: incoming.hidden ?? existing?.hidden ?? false,
+    muted: incoming.muted ?? existing?.muted ?? false,
+    blocked: incoming.blocked ?? existing?.blocked ?? false,
+    pendingAcceptance: incoming.pendingAcceptance ?? existing?.pendingAcceptance,
+    lastTs: incoming.lastTs ?? existing?.lastTs ?? Date.now(),
+    lastMessage: incoming.lastMessage ?? existing?.lastMessage ?? "",
+    participants: incoming.participants ?? existing?.participants ?? [],
+  };
+  await saveConversation(merged);
 };
 
 const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) => {
@@ -431,12 +488,17 @@ const sendFrame = async (convId: string, frame: Frame) => {
 };
 
 const handleSyncReq = async (convId: string, frame: SyncReqFrame) => {
+  const allowed = await isDeviceSyncAllowed(convId, "sync_req");
+  if (!allowed) return;
+
   const scopeConvId =
     frame.scope === "contacts"
       ? contactsLogId(frame.convId ?? convId)
-      : frame.scope === "global"
-        ? globalLogId(frame.convId ?? convId)
-        : frame.convId ?? convId;
+      : frame.scope === "conversations"
+        ? conversationsLogId(frame.convId ?? convId)
+        : frame.scope === "global"
+          ? globalLogId(frame.convId ?? convId)
+          : frame.convId ?? convId;
   const all = await listEventsByConv(scopeConvId);
   const since = frame.since ?? {};
   const events = all.filter((event) => {
@@ -455,12 +517,17 @@ const handleSyncReq = async (convId: string, frame: SyncReqFrame) => {
 };
 
 const handleSyncRes = async (convId: string, frame: SyncResFrame) => {
+  const allowed = await isDeviceSyncAllowed(convId, "sync_res");
+  if (!allowed) return;
+
   const targetConvId =
     frame.scope === "contacts"
       ? contactsLogId(frame.convId ?? convId)
-      : frame.scope === "global"
-        ? globalLogId(frame.convId ?? convId)
-        : frame.convId ?? convId;
+      : frame.scope === "conversations"
+        ? conversationsLogId(frame.convId ?? convId)
+        : frame.scope === "global"
+          ? globalLogId(frame.convId ?? convId)
+          : frame.convId ?? convId;
   const events = Array.isArray(frame.events) ? frame.events : [];
   await applyEnvelopeEvents(convId, events);
   Object.entries(frame.next ?? {}).forEach(([deviceId, lamport]) => {
@@ -492,6 +559,8 @@ const handleIncoming = async (convId: string, bytes: Uint8Array) => {
 
 export const connectConversation = async (convId: string, peerHint: PeerContext) => {
   peerContexts.set(convId, peerHint);
+  const allowed = await isDeviceSyncAllowed(convId, "connect");
+  if (!allowed) return;
   if (!convSubscriptions.has(convId)) {
     const unsubscribe = onConversationMessage(convId, (bytes) => {
       void handleIncoming(convId, bytes);
@@ -520,6 +589,8 @@ export const disconnectConversation = async (convId: string) => {
 };
 
 export const syncConversation = async (convId: string) => {
+  const allowed = await isDeviceSyncAllowed(convId, "sync_conversation");
+  if (!allowed) return;
   const since = getSinceMap(convId);
   const frame: SyncReqFrame = {
     type: "SYNC_REQ",
@@ -531,6 +602,8 @@ export const syncConversation = async (convId: string) => {
 };
 
 export const syncGlobal = async (convId: string) => {
+  const allowed = await isDeviceSyncAllowed(convId, "sync_global");
+  if (!allowed) return;
   const since = getSinceMap(globalLogId(convId));
   const frame: SyncReqFrame = {
     type: "SYNC_REQ",
@@ -683,10 +756,88 @@ const buildContactEvents = async (convId: string) => {
   return events;
 };
 
+const buildConversationEvents = async (convId: string) => {
+  const peer = peerContexts.get(convId);
+  if (!peer?.friendKeyId || !peer.dhPub) return [];
+  const logId = conversationsLogId(convId);
+  const ratchetBaseKey = await resolveRatchetBaseKey(convId, logId);
+  const legacyKey = await resolveLegacyKey(convId);
+  if (!ratchetBaseKey || !legacyKey) return [];
+  const identityPriv = await getIdentityPrivateKey();
+  const deviceId = getOrCreateDeviceId();
+  let nextLamport = perAuthorLamportSeen.get(deviceId) ?? 0;
+
+  const conversations = await listConversations();
+  const events: EnvelopeEvent[] = [];
+
+  for (const conversation of conversations) {
+    nextLamport += 1;
+    const header: EnvelopeHeader = {
+      v: 1 as const,
+      eventId: createId(),
+      convId: logId,
+      ts: Date.now(),
+      lamport: nextLamport,
+      authorDeviceId: deviceId,
+    };
+    let keyForEnvelope = legacyKey;
+    try {
+      const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
+      header.rk = ratchet.headerRk;
+      keyForEnvelope = ratchet.msgKey;
+    } catch {
+      try {
+        const ratchet = await nextSendKey(logId, ratchetBaseKey);
+        header.rk = ratchet.headerRk;
+        keyForEnvelope = ratchet.msgKey;
+      } catch (error) {
+        console.warn("[ratchet] conversations send fallback to legacy", error);
+      }
+    }
+
+    const envelope = await encryptEnvelope(
+      keyForEnvelope,
+      header,
+      {
+        type: "conv",
+        conv: {
+          id: conversation.id,
+          type: conversation.type,
+          name: conversation.name,
+          pinned: conversation.pinned,
+          unread: conversation.unread,
+          hidden: conversation.hidden,
+          muted: conversation.muted,
+          blocked: conversation.blocked,
+          pendingAcceptance: conversation.pendingAcceptance,
+          lastTs: conversation.lastTs,
+          lastMessage: conversation.lastMessage,
+          participants: conversation.participants,
+        },
+      },
+      identityPriv
+    );
+    events.push({
+      eventId: header.eventId,
+      convId: logId,
+      authorDeviceId: header.authorDeviceId,
+      lamport: header.lamport,
+      ts: header.ts,
+      envelopeJson: JSON.stringify(envelope),
+    });
+    updateLamportSeen(logId, header.authorDeviceId, header.lamport);
+  }
+  return events;
+};
+
 export const syncContactsNow = async () => {
   const activeConvs = Array.from(peerContexts.keys());
   for (const convId of activeConvs) {
     try {
+      const peer = peerContexts.get(convId);
+      if (peer?.kind !== "device") continue;
+      const allowed = await isDeviceSyncAllowed(convId, "sync_contacts");
+      if (!allowed) continue;
       const since = getSinceMap(contactsLogId(convId));
       const req: SyncReqFrame = {
         type: "SYNC_REQ",
@@ -710,6 +861,41 @@ export const syncContactsNow = async () => {
       await sendFrame(convId, frame);
     } catch (error) {
       console.warn("[sync] contacts sync failed", error);
+    }
+  }
+};
+
+export const syncConversationsNow = async () => {
+  const activeConvs = Array.from(peerContexts.keys());
+  for (const convId of activeConvs) {
+    try {
+      const peer = peerContexts.get(convId);
+      if (peer?.kind !== "device") continue;
+      const allowed = await isDeviceSyncAllowed(convId, "sync_conversations");
+      if (!allowed) continue;
+      const since = getSinceMap(conversationsLogId(convId));
+      const req: SyncReqFrame = {
+        type: "SYNC_REQ",
+        scope: "conversations",
+        convId,
+        since,
+      };
+      await sendFrame(convId, req);
+
+      const events = await buildConversationEvents(convId);
+      if (!events.length) continue;
+      await Promise.all(events.map((event) => saveEvent(event)));
+      const next = buildNextMap(events);
+      const frame: SyncResFrame = {
+        type: "SYNC_RES",
+        scope: "conversations",
+        convId,
+        events,
+        next,
+      };
+      await sendFrame(convId, frame);
+    } catch (error) {
+      console.warn("[sync] conversations sync failed", error);
     }
   }
 };
