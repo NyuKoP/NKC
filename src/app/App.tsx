@@ -25,6 +25,7 @@ import {
   rotateVaultKeys,
   deleteProfile,
   nextLamportForConv,
+  getLastEventHash,
   saveConversation,
   saveEvent,
   saveMessage,
@@ -41,6 +42,9 @@ import {
 import { chunkBuffer, encryptJsonRecord, validateStartKey } from "../crypto/vault";
 import { getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
 import { computeFriendId, decodeFriendCodeV1, encodeFriendCodeV1 } from "../security/friendCode";
+import { decodeInviteCodeV1 } from "../security/inviteCode";
+import { isInviteUsed, markInviteUsed } from "../security/inviteUseStore";
+import { checkAllowed, recordFail, recordSuccess } from "../security/rateLimit";
 import { applyTOFU } from "../security/trust";
 import {
   clearSession as clearStoredSession,
@@ -60,7 +64,7 @@ import {
   getOrCreateIdentityKeypair,
 } from "../security/identityKeys";
 import { getOrCreateDeviceId } from "../security/deviceRole";
-import { deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
+import { computeEnvelopeHash, deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
 import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
@@ -739,6 +743,7 @@ export default function App() {
       lamport,
       authorDeviceId: getOrCreateDeviceId(),
     };
+    header.prev = await getLastEventHash(conv.id);
 
     const dhPriv = await getDhPrivateKey();
     const theirDhPub = decodeBase64Url(partner.dhPub);
@@ -766,6 +771,7 @@ export default function App() {
 
     const envelope = await encryptEnvelope(keyForEnvelope, header, body, myIdentityPriv);
     const envelopeJson = JSON.stringify(envelope);
+    const eventHash = await computeEnvelopeHash(envelope);
 
     await saveEvent({
       eventId: header.eventId,
@@ -774,6 +780,8 @@ export default function App() {
       lamport: header.lamport,
       ts: header.ts,
       envelopeJson,
+      prevHash: header.prev,
+      eventHash,
     });
 
     void sendCiphertext({
@@ -815,6 +823,8 @@ export default function App() {
           lamport,
           authorDeviceId: getOrCreateDeviceId(),
         };
+        header.prev = await getLastEventHash(conv.id);
+        header.prev = await getLastEventHash(conv.id);
 
         const dhPriv = await getDhPrivateKey();
         const theirDhPub = decodeBase64Url(partner.dhPub);
@@ -856,6 +866,7 @@ export default function App() {
           myIdentityPriv
         );
         const envelopeJson = JSON.stringify(envelope);
+        const eventHash = await computeEnvelopeHash(envelope);
 
         await saveEvent({
           eventId: header.eventId,
@@ -864,6 +875,8 @@ export default function App() {
           lamport: header.lamport,
           ts: header.ts,
           envelopeJson,
+          prevHash: header.prev,
+          eventHash,
         });
 
         void sendCiphertext({
@@ -998,6 +1011,7 @@ export default function App() {
           myIdentityPriv
         );
         const envelopeJson = JSON.stringify(envelope);
+        const eventHash = await computeEnvelopeHash(envelope);
 
         await saveEvent({
           eventId: header.eventId,
@@ -1006,6 +1020,8 @@ export default function App() {
           lamport: header.lamport,
           ts: header.ts,
           envelopeJson,
+          prevHash: header.prev,
+          eventHash,
         });
 
         void sendCiphertext({
@@ -1373,6 +1389,20 @@ export default function App() {
     }
   };
 
+  const normalizeInviteCode = (value: string) =>
+    value.trim().replace(/\s+/g, "").toUpperCase();
+
+  const computeInviteFingerprint = async (normalized: string) => {
+    if (!globalThis.crypto?.subtle) {
+      throw new Error("Crypto subtle is unavailable.");
+    }
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(normalized)
+    );
+    return encodeBase64Url(new Uint8Array(digest)).slice(0, 22);
+  };
+
 
   const handleCreateGroup = () => {
     setGroupCreateOpen(true);
@@ -1470,92 +1500,174 @@ export default function App() {
   const handleAddFriend = async (payload: { code: string; psk?: string }) => {
     if (!userProfile) return { ok: false as const, error: "User profile missing." };
 
-    const rawCode = payload.code.trim();
-    if (rawCode.startsWith("NCK-")) {
-      return handleAddFriendLegacy(rawCode);
+    const rawInput = payload.code.trim();
+    const normalized = normalizeInviteCode(rawInput);
+    let attemptKey = normalized || "empty";
+    let inviteFingerprint: string | null = null;
+    let invitePsk: Uint8Array | null = null;
+    let oneTimeInvite = false;
+
+    if (normalized.startsWith("NKI1")) {
+      try {
+        inviteFingerprint = await computeInviteFingerprint(normalized);
+        attemptKey = `invite:${inviteFingerprint}`;
+      } catch {
+        return { ok: false as const, error: "Invite code invalid." };
+      }
     }
 
-    const decoded = decodeFriendCodeV1(rawCode);
+    const firstGate = checkAllowed(attemptKey);
+    if (!firstGate.ok) {
+      const waitSeconds = Math.ceil((firstGate.waitMs ?? 0) / 1000);
+      return {
+        ok: false as const,
+        error: `Too many attempts. Try again in ${waitSeconds}s.`,
+      };
+    }
+
+    if (rawInput.startsWith("NCK-")) {
+      const legacy = await handleAddFriendLegacy(rawInput);
+      if (legacy.ok) {
+        recordSuccess(attemptKey);
+      } else {
+        recordFail(attemptKey);
+      }
+      return legacy;
+    }
+
+    let friendCode = rawInput;
+    if (normalized.startsWith("NKI1")) {
+      const decodedInvite = decodeInviteCodeV1(rawInput);
+      if ("error" in decodedInvite) {
+        recordFail(attemptKey);
+        if (decodedInvite.error.toLowerCase().includes("expired")) {
+          return { ok: false as const, error: "Invite expired." };
+        }
+        return { ok: false as const, error: decodedInvite.error };
+      }
+      oneTimeInvite = Boolean(decodedInvite.oneTime);
+      if (oneTimeInvite && inviteFingerprint) {
+        if (await isInviteUsed(inviteFingerprint)) {
+          recordFail(attemptKey);
+          return { ok: false as const, error: "Invite already used." };
+        }
+      }
+      try {
+        invitePsk = decodeBase64Url(decodedInvite.psk);
+      } catch {
+        recordFail(attemptKey);
+        return { ok: false as const, error: "Invalid invite PSK." };
+      }
+      friendCode = encodeFriendCodeV1(decodedInvite.friend);
+    }
+
+    const decoded = decodeFriendCodeV1(friendCode);
     if ("error" in decoded) {
+      recordFail(attemptKey);
       return { ok: false as const, error: decoded.error };
     }
 
     const identityPubBytes = decodeBase64Url(decoded.identityPub);
     const friendId = computeFriendId(identityPubBytes);
+    const finalKey = normalized.startsWith("NKI1") ? attemptKey : `friend:${friendId}`;
+    if (finalKey !== attemptKey) {
+      const gate = checkAllowed(finalKey);
+      if (!gate.ok) {
+        const waitSeconds = Math.ceil((gate.waitMs ?? 0) / 1000);
+        return {
+          ok: false as const,
+          error: `Too many attempts. Try again in ${waitSeconds}s.`,
+        };
+      }
+    }
 
     try {
       const myIdentityPub = await getIdentityPublicKey();
       if (encodeBase64Url(myIdentityPub) === decoded.identityPub) {
+        recordFail(finalKey);
         return { ok: false as const, error: "You cannot add yourself." };
       }
     } catch {
       // Best-effort self-check only; continue.
     }
 
-    const existing = friends.find(
-      (friend) => friend.friendId === friendId || friend.identityPub === decoded.identityPub
-    );
+    try {
+      const existing = friends.find(
+        (friend) => friend.friendId === friendId || friend.identityPub === decoded.identityPub
+      );
 
-    const tofu = applyTOFU(
-      existing?.identityPub && existing?.dhPub
-        ? { identityPub: existing.identityPub, dhPub: existing.dhPub }
-        : null,
-      { identityPub: decoded.identityPub, dhPub: decoded.dhPub }
-    );
+      const tofu = applyTOFU(
+        existing?.identityPub && existing?.dhPub
+          ? { identityPub: existing.identityPub, dhPub: existing.dhPub }
+          : null,
+        { identityPub: decoded.identityPub, dhPub: decoded.dhPub }
+      );
 
-    const now = Date.now();
-    if (!tofu.ok) {
-      if (existing) {
-        await saveProfile({
-          ...existing,
-          trust: {
-            pinnedAt: existing.trust?.pinnedAt ?? now,
-            status: "blocked",
-            reason: tofu.reason,
-          },
-          friendStatus: "blocked",
-          updatedAt: now,
-        });
-        await hydrateVault();
+      const now = Date.now();
+      if (!tofu.ok) {
+        if (existing) {
+          await saveProfile({
+            ...existing,
+            trust: {
+              pinnedAt: existing.trust?.pinnedAt ?? now,
+              status: "blocked",
+              reason: tofu.reason,
+            },
+            friendStatus: "blocked",
+            updatedAt: now,
+          });
+          await hydrateVault();
+        }
+        recordFail(finalKey);
+        return { ok: false as const, error: "Friend keys changed; blocked." };
       }
-      return { ok: false as const, error: "Friend keys changed; blocked." };
+
+      const psk =
+        invitePsk ?? (payload.psk?.trim() ? new TextEncoder().encode(payload.psk.trim()) : null);
+      if (psk) {
+        await setFriendPsk(friendId, psk);
+      }
+
+      const routingHints = sanitizeRoutingHints(
+        decoded.onionAddr || decoded.lokinetAddr
+          ? { onionAddr: decoded.onionAddr, lokinetAddr: decoded.lokinetAddr }
+          : undefined
+      );
+
+      const short = friendId.slice(0, 6);
+      const friend: UserProfile = {
+        id: existing?.id ?? createId(),
+        friendId,
+        displayName: existing?.displayName ?? (short ? `Friend ${short}` : "Friend"),
+        status: existing?.status ?? "Friend",
+        theme: existing?.theme ?? "dark",
+        kind: "friend",
+        friendStatus: existing?.friendStatus ?? "request_out",
+        isFavorite: existing?.isFavorite ?? false,
+        identityPub: decoded.identityPub,
+        dhPub: decoded.dhPub,
+        routingHints,
+        trust: { pinnedAt: existing?.trust?.pinnedAt ?? now, status: "trusted" },
+        pskHint: Boolean(psk) || existing?.pskHint,
+        createdAt: existing?.createdAt ?? now,
+        updatedAt: now,
+      };
+
+      await saveProfile(friend);
+      await hydrateVault();
+      devLog("friend:add:success", { id: friend.id, friendId });
+
+      if (oneTimeInvite && inviteFingerprint) {
+        await markInviteUsed(inviteFingerprint);
+      }
+
+      recordSuccess(finalKey);
+      return { ok: true as const };
+    } catch (error) {
+      console.error("Friend:add failed", error);
+      recordFail(finalKey);
+      return { ok: false as const, error: "Failed to add friend." };
     }
-
-    const psk = payload.psk?.trim() ? new TextEncoder().encode(payload.psk.trim()) : null;
-    if (psk) {
-      await setFriendPsk(friendId, psk);
-    }
-
-    const routingHints = sanitizeRoutingHints(
-      decoded.onionAddr || decoded.lokinetAddr
-        ? { onionAddr: decoded.onionAddr, lokinetAddr: decoded.lokinetAddr }
-        : undefined
-    );
-
-    const short = friendId.slice(0, 6);
-    const friend: UserProfile = {
-      id: existing?.id ?? createId(),
-      friendId,
-      displayName: existing?.displayName ?? (short ? `Friend ${short}` : "Friend"),
-      status: existing?.status ?? "Friend",
-      theme: existing?.theme ?? "dark",
-      kind: "friend",
-      friendStatus: existing?.friendStatus ?? "request_out",
-      isFavorite: existing?.isFavorite ?? false,
-      identityPub: decoded.identityPub,
-      dhPub: decoded.dhPub,
-      routingHints,
-      trust: { pinnedAt: existing?.trust?.pinnedAt ?? now, status: "trusted" },
-      pskHint: Boolean(psk) || existing?.pskHint,
-      createdAt: existing?.createdAt ?? now,
-      updatedAt: now,
-    };
-
-    await saveProfile(friend);
-    await hydrateVault();
-    devLog("friend:add:success", { id: friend.id, friendId });
-
-    return { ok: true as const };
   };
 
   const currentConversation = ui.selectedConvId

@@ -1,3 +1,4 @@
+import Dexie from "dexie";
 import { db, ensureDbOpen, resetDb } from "./schema";
 import type { EncryptedRecord, EventRecord, MediaChunkRecord, MessageRecord } from "./schema";
 import type { Envelope } from "../crypto/box";
@@ -413,6 +414,16 @@ export const getEvent = async (eventId: string) => {
 export const listEventsByConv = async (convId: string) => {
   await ensureDbOpen();
   return db.events.where("convId").equals(convId).sortBy("lamport");
+};
+
+export const getLastEventHash = async (convId: string) => {
+  await ensureDbOpen();
+  const record = await db.events
+    .where("[convId+lamport]")
+    .between([convId, Dexie.minKey], [convId, Dexie.maxKey])
+    .reverse()
+    .first();
+  return record?.eventHash;
 };
 
 export const saveProfilePhoto = async (ownerId: string, file: File) => {

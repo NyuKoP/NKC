@@ -1,4 +1,5 @@
 import { canonicalBytes } from "./canonicalJson";
+import { encodeBase64Url } from "../security/base64url";
 import { getSodium } from "../security/sodium";
 
 export type EnvelopeHeader = {
@@ -8,6 +9,7 @@ export type EnvelopeHeader = {
   authorDeviceId: string;
   ts: number;
   lamport: number;
+  prev?: string;
   rk?: { v: 1; i: number } | { v: 2; i: number; dh: string; pn?: number };
 };
 
@@ -122,4 +124,13 @@ export const verifyEnvelopeSignature = async (
   const sig = fromB64(sodium, envelope.sig);
   const signed = concatBytes([headerBytes, nonce, ciphertext]);
   return sodium.crypto_sign_verify_detached(sig, signed, theirIdentityPub);
+};
+
+export const computeEnvelopeHash = async (envelope: Envelope) => {
+  const sodium = await getSodium();
+  const headerBytes = canonicalBytes(envelope.header);
+  const nonce = fromB64(sodium, envelope.nonce);
+  const ciphertext = fromB64(sodium, envelope.ciphertext);
+  const hash = sodium.crypto_generichash(32, concatBytes([headerBytes, nonce, ciphertext]));
+  return encodeBase64Url(hash);
 };

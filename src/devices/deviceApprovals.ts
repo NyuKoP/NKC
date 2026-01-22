@@ -1,5 +1,5 @@
 import { canonicalBytes } from "../crypto/canonicalJson";
-import { saveEvent } from "../db/repo";
+import { getLastEventHash, saveEvent } from "../db/repo";
 import { createId } from "../utils/ids";
 import { encodeBase64Url, decodeBase64Url } from "../security/base64url";
 import { getDhPublicKey, getIdentityPrivateKey, getIdentityPublicKey } from "../security/identityKeys";
@@ -49,6 +49,12 @@ const stripSig = (event: DeviceAddedEvent): DeviceAddedPayload => {
   const { sig, ...payload } = event;
   void sig;
   return payload;
+};
+
+const computeApprovalEventHash = async (event: DeviceAddedEvent) => {
+  const sodium = await getSodium();
+  const hash = sodium.crypto_generichash(32, canonicalBytes(event));
+  return encodeBase64Url(hash);
 };
 
 export const createDeviceAddedEvent = async (input: {
@@ -115,6 +121,8 @@ export const storeDeviceApproval = async (event: DeviceAddedEvent) => {
   const approvals = await readApprovals();
   approvals[event.deviceId] = event;
   await writeApprovals(approvals);
+  const prevHash = await getLastEventHash(DEVICE_APPROVAL_LOG_ID);
+  const eventHash = await computeApprovalEventHash(event);
   await saveEvent({
     eventId: createId(),
     convId: DEVICE_APPROVAL_LOG_ID,
@@ -122,6 +130,8 @@ export const storeDeviceApproval = async (event: DeviceAddedEvent) => {
     lamport: event.ts,
     ts: event.ts,
     envelopeJson: JSON.stringify(event),
+    prevHash,
+    eventHash,
   });
   return true;
 };
