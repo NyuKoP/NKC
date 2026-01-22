@@ -10,8 +10,8 @@ import type { Transport, TransportPacket, TransportState } from "./types";
 type Handler<T> = (payload: T) => void;
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const POLL_INTERVAL_MS = 1000;
 const MAX_SEEN_IDS = 500;
+const STATE_DEBOUNCE_MS = 1000;
 
 type OnionFetchRequest = {
   url: string;
@@ -92,10 +92,9 @@ export const createOnionRouterTransport = ({
 }: OnionRouterOptions): Transport => {
   let state: TransportState = "idle";
   let client: OnionInboxClient | null = null;
-  let pollTimer: ReturnType<typeof setInterval> | null = null;
-  let pollCursor: string | null = null;
+  let pollerStop: (() => void) | null = null;
   let errorStreak = 0;
-  let pollInFlight = false;
+  let stateTimer: ReturnType<typeof setTimeout> | null = null;
   const seenIds = new Set<string>();
   const seenOrder: string[] = [];
   const messageHandlers: Array<Handler<TransportPacket>> = [];
@@ -105,6 +104,26 @@ export const createOnionRouterTransport = ({
   const emitState = (next: TransportState) => {
     state = next;
     stateHandlers.forEach((handler) => handler(next));
+  };
+
+  const requestState = (next: TransportState, immediate = false) => {
+    if (state === next) return;
+    const flipFlop =
+      (state === "connected" && next === "degraded") ||
+      (state === "degraded" && next === "connected");
+    if (!immediate && flipFlop) {
+      if (stateTimer) clearTimeout(stateTimer);
+      stateTimer = setTimeout(() => {
+        stateTimer = null;
+        emitState(next);
+      }, STATE_DEBOUNCE_MS);
+      return;
+    }
+    if (stateTimer) {
+      clearTimeout(stateTimer);
+      stateTimer = null;
+    }
+    emitState(next);
   };
 
   const rememberId = (id: string) => {
@@ -120,9 +139,9 @@ export const createOnionRouterTransport = ({
 
   const updateStateForError = () => {
     if (errorStreak >= 6) {
-      emitState("failed");
+      requestState("failed", true);
     } else if (errorStreak >= 3) {
-      emitState("degraded");
+      requestState("degraded");
     }
   };
 
@@ -155,33 +174,22 @@ export const createOnionRouterTransport = ({
     return "http://127.0.0.1:3210";
   };
 
-  const pollInbox = async () => {
-    if (!client || pollInFlight) return;
-    pollInFlight = true;
-    try {
-      const result = await client.poll(pollCursor, 50);
-      if (!result.ok) {
-        errorStreak += 1;
-        updateStateForError();
-        return;
-      }
-      errorStreak = 0;
-      if (state === "degraded" || state === "failed") {
-        emitState("connected");
-      }
-      pollCursor = result.nextAfter ?? pollCursor;
-      result.items.forEach((item) => {
-        if (!rememberId(item.id)) return;
-        const packet = decodeEnvelope(item.envelope);
-        if (!packet) return;
-        messageHandlers.forEach((handler) => handler(packet));
-      });
-    } catch {
-      errorStreak += 1;
-      updateStateForError();
-    } finally {
-      pollInFlight = false;
+  const handlePollSuccess = (result: Awaited<ReturnType<OnionInboxClient["poll"]>>) => {
+    errorStreak = 0;
+    if (state === "degraded" || state === "failed") {
+      requestState("connected");
     }
+    result.items.forEach((item) => {
+      if (!rememberId(item.id)) return;
+      const packet = decodeEnvelope(item.envelope);
+      if (!packet) return;
+      messageHandlers.forEach((handler) => handler(packet));
+    });
+  };
+
+  const handlePollError = () => {
+    errorStreak += 1;
+    updateStateForError();
   };
 
   return {
@@ -189,7 +197,7 @@ export const createOnionRouterTransport = ({
     async start() {
       void httpClient;
       void config;
-      emitState("connecting");
+      requestState("connecting", true);
       const baseUrl = await resolveControllerUrl();
       client = new OnionInboxClient({
         baseUrl,
@@ -197,26 +205,32 @@ export const createOnionRouterTransport = ({
       });
       const health = await client.health();
       if (!health.ok) {
-        emitState("failed");
+        requestState("failed", true);
         throw new Error(health.details ?? "Onion controller unavailable");
       }
-      emitState("connected");
-      pollTimer = setInterval(() => {
-        void pollInbox();
-      }, POLL_INTERVAL_MS);
+      requestState("connected", true);
+      pollerStop = client.startPolling(
+        {
+          onResult: handlePollSuccess,
+          onError: handlePollError,
+        },
+        { limit: 50 }
+      ).stop;
     },
     async stop() {
-      if (pollTimer) {
-        clearInterval(pollTimer);
-        pollTimer = null;
+      if (pollerStop) {
+        pollerStop();
+        pollerStop = null;
       }
-      pollCursor = null;
+      if (stateTimer) {
+        clearTimeout(stateTimer);
+        stateTimer = null;
+      }
       errorStreak = 0;
-      pollInFlight = false;
       seenIds.clear();
       seenOrder.length = 0;
       client = null;
-      emitState("idle");
+      requestState("idle", true);
     },
     async send(packet: TransportPacket) {
       const torOnion =

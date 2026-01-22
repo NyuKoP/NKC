@@ -4,6 +4,15 @@ export type OnionInboxConfig = {
   timeoutMs?: number;
 };
 
+type PollerHandlers = {
+  onResult: (result: PollResponse) => void;
+  onError: (error: string) => void;
+};
+
+type PollerHandle = {
+  stop: () => void;
+};
+
 type HealthResponse = {
   ok: boolean;
   network: "tor" | "lokinet" | "none";
@@ -99,7 +108,8 @@ export class OnionInboxClient {
 
   private async requestJson<T>(
     path: string,
-    init: { method: string; body?: unknown }
+    init: { method: string; body?: unknown },
+    signal?: AbortSignal
   ): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
     const url = new URL(path, this.baseUrl).toString();
     const body =
@@ -110,6 +120,9 @@ export class OnionInboxClient {
     const controllerFetch = getNkcControllerFetch();
     if (controllerFetch) {
       try {
+        if (signal?.aborted) {
+          return { ok: false, status: 0, error: "aborted" };
+        }
         const response = await controllerFetch({
           url,
           method: init.method,
@@ -133,6 +146,12 @@ export class OnionInboxClient {
     }
 
     const controller = new AbortController();
+    if (signal) {
+      if (signal.aborted) {
+        return { ok: false, status: 0, error: "aborted" };
+      }
+      signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
     const timeout = setTimeout(() => controller.abort(), timeoutMs);
     try {
       const response = await fetch(url, {
@@ -199,9 +218,10 @@ export class OnionInboxClient {
     params.set("deviceId", this.deviceId);
     if (after) params.set("after", after);
     if (limit) params.set("limit", String(limit));
-    const response = await this.requestJson<PollResponse>(`/onion/inbox?${params}`, {
-      method: "GET",
-    });
+    const response = await this.requestJson<PollResponse>(
+      `/onion/inbox?${params}`,
+      { method: "GET" }
+    );
     if (!response.ok || !response.data) {
       return {
         ok: false,
@@ -211,6 +231,97 @@ export class OnionInboxClient {
       };
     }
     return response.data;
+  }
+
+  private async pollInternal(
+    after: string | null,
+    limit: number,
+    signal?: AbortSignal
+  ): Promise<PollResponse> {
+    const params = new URLSearchParams();
+    params.set("deviceId", this.deviceId);
+    if (after) params.set("after", after);
+    if (limit) params.set("limit", String(limit));
+    const response = await this.requestJson<PollResponse>(
+      `/onion/inbox?${params}`,
+      { method: "GET" },
+      signal
+    );
+    if (!response.ok || !response.data) {
+      return {
+        ok: false,
+        items: [],
+        nextAfter: after,
+        error: response.error ?? "Poll failed",
+      };
+    }
+    return response.data;
+  }
+
+  startPolling(
+    handlers: PollerHandlers,
+    options?: { after?: string | null; limit?: number }
+  ): PollerHandle {
+    const baseDelayMs = 1000;
+    const maxDelayMs = 8000;
+    const jitter = 0.15;
+    let cursor = options?.after ?? null;
+    let failureCount = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let active = true;
+    let aborter: AbortController | null = null;
+
+    const jitterDelay = (value: number) => {
+      const offset = value * jitter * (Math.random() * 2 - 1);
+      return Math.max(0, Math.round(value + offset));
+    };
+
+    const schedule = (delayMs: number) => {
+      if (!active) return;
+      timer = setTimeout(() => void tick(), jitterDelay(delayMs));
+    };
+
+    const tick = async () => {
+      if (!active) return;
+      aborter = new AbortController();
+      try {
+        const result = await this.pollInternal(cursor, options?.limit ?? 50, aborter.signal);
+        if (!active || aborter.signal.aborted) return;
+        if (result.ok) {
+          if (failureCount > 0) {
+            failureCount = 0;
+          }
+          cursor = result.nextAfter;
+          handlers.onResult(result);
+          schedule(baseDelayMs);
+          return;
+        }
+        failureCount += 1;
+        handlers.onError(result.error ?? "Poll failed");
+      } catch (error) {
+        if (!active || aborter.signal.aborted) return;
+        failureCount += 1;
+        handlers.onError(safeError(error));
+      }
+      const backoffMs = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, failureCount));
+      schedule(backoffMs);
+    };
+
+    schedule(baseDelayMs);
+
+    return {
+      stop: () => {
+        active = false;
+        if (timer) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (aborter) {
+          aborter.abort();
+          aborter = null;
+        }
+      },
+    };
   }
 
   async address(): Promise<AddressResponse> {

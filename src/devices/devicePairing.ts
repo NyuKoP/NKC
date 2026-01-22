@@ -1,6 +1,6 @@
 import type { DeviceAddedEvent } from "./deviceApprovals";
-import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
-import { RendezvousClient } from "../net/rendezvousSignaling";
+import type { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
+import { RendezvousClient, type RendezvousConfig } from "../net/rendezvousSignaling";
 import { createId } from "../utils/ids";
 
 export type SyncCodeState = {
@@ -56,8 +56,11 @@ const pendingRequests = new Map<string, PairingRequest>();
 const requestListeners = new Set<(req: PairingRequest) => void>();
 const resultListeners = new Set<(res: PairingResult) => void>();
 
+const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
 const channel =
-  typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANNEL_NAME) : null;
+  isDev && typeof BroadcastChannel !== "undefined"
+    ? new BroadcastChannel(CHANNEL_NAME)
+    : null;
 
 type PairingMessage =
   | {
@@ -153,7 +156,9 @@ const emitResult = (res: PairingResult) => {
 const postMessage = (message: PairingMessage) => {
   if (channel) {
     channel.postMessage(message);
-  } else {
+    return;
+  }
+  if (isDev) {
     handleMessage(message);
   }
 };
@@ -335,21 +340,16 @@ const startPolling = (args: {
 };
 
 export const startRendezvousPairingAsHost = (args: {
-  baseUrl: string;
-  deviceId: string;
-  useOnionProxy: boolean;
-  onionProxyUrl?: string | null;
   syncCode?: string;
+  deviceId: string;
+  rendezvousConfig: RendezvousConfig;
+  transport: DirectSignalTransport;
 }): RendezvousPairingSession => {
   const syncCode = args.syncCode ?? generateShortSyncCode();
   const session = createRendezvousSession(syncCode);
   const activeRef = { current: true };
-  const client = new RendezvousClient({
-    baseUrl: args.baseUrl,
-    useOnionProxy: args.useOnionProxy,
-    onionProxyUrl: args.onionProxyUrl,
-  });
-  const transport = createDirectP2PTransport() as DirectSignalTransport;
+  const client = new RendezvousClient(args.rendezvousConfig);
+  const transport = args.transport;
 
   const stopPolling = startPolling({
     client,
@@ -403,20 +403,15 @@ export const startRendezvousPairingAsHost = (args: {
 };
 
 export const startRendezvousPairingAsGuest = (args: {
-  baseUrl: string;
-  deviceId: string;
   syncCode: string;
-  useOnionProxy: boolean;
-  onionProxyUrl?: string | null;
+  deviceId: string;
+  rendezvousConfig: RendezvousConfig;
+  transport: DirectSignalTransport;
 }): RendezvousPairingSession => {
   const session = createRendezvousSession(args.syncCode);
   const activeRef = { current: true };
-  const client = new RendezvousClient({
-    baseUrl: args.baseUrl,
-    useOnionProxy: args.useOnionProxy,
-    onionProxyUrl: args.onionProxyUrl,
-  });
-  const transport = createDirectP2PTransport() as DirectSignalTransport;
+  const client = new RendezvousClient(args.rendezvousConfig);
+  const transport = args.transport;
 
   const stopPolling = startPolling({
     client,

@@ -94,6 +94,38 @@ type OnionSendDeps = {
   storeLocal: (deviceId: string, item: Omit<InboxItem, "expiresAt"> & { ttlMs?: number }) => void;
 };
 
+const normalizeForwardError = (error: unknown) => {
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  if (code === "timeout" || code === "proxy_unreachable" || code === "handshake_failed" || code === "upstream_error") {
+    return code;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  const text = message.toLowerCase();
+  if (text.includes("timeout")) return "timeout";
+  if (
+    text.includes("socks_auth_failed") ||
+    text.includes("socks_connect_failed") ||
+    text.includes("unsupported_socks_protocol") ||
+    text.includes("invalid_socks_proxy") ||
+    text.includes("socks_auth_unsupported")
+  ) {
+    return "handshake_failed";
+  }
+  if (
+    text.includes("econnrefused") ||
+    text.includes("enotfound") ||
+    text.includes("ehostunreach") ||
+    text.includes("econnreset") ||
+    text.includes("connect_fail")
+  ) {
+    return "proxy_unreachable";
+  }
+  return "upstream_error";
+};
+
 export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSendDeps) => {
   if (!payload.envelope) {
     return { status: 400, body: { ok: false, error: "missing-fields" } };
@@ -114,10 +146,17 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
   }
   const hasRouteTargets = Boolean(toOnion || lokinetAddress);
   if (payload.route || hasRouteTargets) {
-    const candidates = deps.selectRoute(routeMode, {
-      torOnion: toOnion,
-      lokinet: lokinetAddress,
-    });
+    const candidates = deps.selectRoute(
+      routeMode,
+      {
+        torOnion: toOnion,
+        lokinet: lokinetAddress,
+      },
+      {
+        tor: Boolean(deps.torProxyUrl),
+        lokinet: Boolean(deps.lokinetProxyUrl),
+      }
+    );
     for (let index = 0; index < candidates.length; index += 1) {
       const candidate = candidates[index];
       const isLast = index === candidates.length - 1;
@@ -149,16 +188,17 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
         if (!isLast && routeMode === "auto") {
           continue;
         }
+        const code = normalizeForwardError("upstream_error");
         return {
           status: 502,
-          body: { ok: false, error: `forward_failed:${response.status}` },
+          body: { ok: false, error: `forward_failed:${code}` },
         };
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const code = normalizeForwardError(error);
         if (!isLast && routeMode === "auto") {
           continue;
         }
-        return { status: 502, body: { ok: false, error: `forward_failed:${message}` } };
+        return { status: 502, body: { ok: false, error: `forward_failed:${code}` } };
       }
     }
     return { status: 400, body: { ok: false, error: "forward_failed:no_route" } };

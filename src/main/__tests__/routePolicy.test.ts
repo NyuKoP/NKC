@@ -22,8 +22,13 @@ describe("routePolicy.selectRoute", () => {
     expect(result.map((item) => item.kind)).toEqual(["tor"]);
   });
 
-  it("manual: uses explicit priority (lokinet then tor)", () => {
+  it("manual: rejects multiple targets", () => {
     const result = selectRoute("manual", { lokinet: "lokinet.example", torOnion: "abc.onion" });
-    expect(result.map((item) => item.kind)).toEqual(["lokinet"]);
+    expect(result).toEqual([]);
+  });
+
+  it("manual: allows a single explicit target", () => {
+    const result = selectRoute("manual", { torOnion: "abc.onion" });
+    expect(result.map((item) => item.kind)).toEqual(["tor"]);
   });
 });
