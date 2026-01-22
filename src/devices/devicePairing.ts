@@ -1,4 +1,6 @@
 import type { DeviceAddedEvent } from "./deviceApprovals";
+import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
+import { RendezvousClient } from "../net/rendezvousSignaling";
 import { createId } from "../utils/ids";
 
 export type SyncCodeState = {
@@ -22,6 +24,27 @@ export type PairingResult = {
   status: "approved" | "rejected" | "error";
   message?: string;
   event?: DeviceAddedEvent;
+};
+
+type DirectSignalTransport = ReturnType<typeof createDirectP2PTransport> & {
+  createOfferCode: () => Promise<string>;
+  acceptSignalCode: (code: string) => Promise<void>;
+  onSignalCode: (cb: (code: string) => void) => void;
+  onState: (cb: (state: "idle" | "connecting" | "connected" | "failed" | "degraded") => void) => void;
+};
+
+export type RendezvousPairingStatus =
+  | "idle"
+  | "connecting"
+  | "exchanging"
+  | "connected"
+  | "error";
+
+export type RendezvousPairingSession = {
+  syncCode: string;
+  stop: () => void;
+  getStatus: () => RendezvousPairingStatus;
+  onStatus: (cb: (status: RendezvousPairingStatus) => void) => () => void;
 };
 
 const CHANNEL_NAME = "nkc-device-pairing-v1";
@@ -74,6 +97,16 @@ const toBase32 = (bytes: Uint8Array) => {
     output += CODE_ALPHABET[index];
   }
   return output;
+};
+
+const generateShortSyncCode = () => {
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error("Secure random generator is unavailable.");
+  }
+  const bytes = new Uint8Array(5);
+  globalThis.crypto.getRandomValues(bytes);
+  const raw = toBase32(bytes).slice(0, 6);
+  return `NKC-SYNC1-${raw}`;
 };
 
 const generateCode = () => {
@@ -240,4 +273,195 @@ export const approvePairingRequest = (requestId: string, event: DeviceAddedEvent
 export const rejectPairingRequest = (requestId: string, message: string) => {
   pendingRequests.delete(requestId);
   postMessage({ type: "PAIR_RES", requestId, status: "rejected", message });
+};
+
+const createRendezvousSession = (syncCode: string) => {
+  let status: RendezvousPairingStatus = "idle";
+  const listeners = new Set<(next: RendezvousPairingStatus) => void>();
+  const setStatus = (next: RendezvousPairingStatus) => {
+    status = next;
+    listeners.forEach((listener) => listener(next));
+  };
+  return {
+    syncCode,
+    setStatus,
+    getStatus: () => status,
+    onStatus: (cb: (next: RendezvousPairingStatus) => void) => {
+      listeners.add(cb);
+      return () => listeners.delete(cb);
+    },
+  };
+};
+
+const startPolling = (args: {
+  client: RendezvousClient;
+  syncCode: string;
+  deviceId: string;
+  onItems: (payloads: string[]) => Promise<void>;
+  onError: (error: unknown) => void;
+  setStatus: (status: RendezvousPairingStatus) => void;
+  activeRef: { current: boolean };
+}) => {
+  let afterTs = 0;
+  let timer: number | null = null;
+  const intervals = [900, 1500, 2500];
+  let backoffIndex = 0;
+
+  const tick = async () => {
+    if (!args.activeRef.current) return;
+    try {
+      const result = await args.client.poll(args.syncCode, args.deviceId, afterTs);
+      afterTs = result.nextAfterTs;
+      backoffIndex = 0;
+      if (result.items.length) {
+        const payloads = result.items.map((item) => item.payload);
+        await args.onItems(payloads);
+        if (args.activeRef.current) args.setStatus("exchanging");
+      }
+    } catch (error) {
+      backoffIndex = Math.min(backoffIndex + 1, intervals.length - 1);
+      args.onError(error);
+    } finally {
+      if (!args.activeRef.current) return;
+      const delay = intervals[backoffIndex];
+      timer = window.setTimeout(tick, delay);
+    }
+  };
+
+  timer = window.setTimeout(tick, intervals[0]);
+  return () => {
+    if (timer) window.clearTimeout(timer);
+  };
+};
+
+export const startRendezvousPairingAsHost = (args: {
+  baseUrl: string;
+  deviceId: string;
+  useOnionProxy: boolean;
+  onionProxyUrl?: string | null;
+  syncCode?: string;
+}): RendezvousPairingSession => {
+  const syncCode = args.syncCode ?? generateShortSyncCode();
+  const session = createRendezvousSession(syncCode);
+  const activeRef = { current: true };
+  const client = new RendezvousClient({
+    baseUrl: args.baseUrl,
+    useOnionProxy: args.useOnionProxy,
+    onionProxyUrl: args.onionProxyUrl,
+  });
+  const transport = createDirectP2PTransport() as DirectSignalTransport;
+
+  const stopPolling = startPolling({
+    client,
+    syncCode,
+    deviceId: args.deviceId,
+    onItems: async (payloads) => {
+      await Promise.all(payloads.map((payload) => transport.acceptSignalCode(payload)));
+    },
+    onError: () => session.setStatus("error"),
+    setStatus: session.setStatus,
+    activeRef,
+  });
+
+  transport.onSignalCode((code) => {
+    if (!activeRef.current) return;
+    void client.publish(syncCode, args.deviceId, [code]).catch(() => {
+      if (activeRef.current) session.setStatus("error");
+    });
+  });
+
+  transport.onState((next) => {
+    if (!activeRef.current) return;
+    if (next === "connected") session.setStatus("connected");
+  });
+
+  const start = async () => {
+    try {
+      session.setStatus("connecting");
+      await transport.start();
+      const offer = await transport.createOfferCode();
+      await client.publish(syncCode, args.deviceId, [offer]);
+      session.setStatus("exchanging");
+    } catch {
+      session.setStatus("error");
+    }
+  };
+
+  void start();
+
+  return {
+    syncCode,
+    getStatus: session.getStatus,
+    onStatus: session.onStatus,
+    stop: () => {
+      activeRef.current = false;
+      stopPolling();
+      void transport.stop();
+      session.setStatus("idle");
+    },
+  };
+};
+
+export const startRendezvousPairingAsGuest = (args: {
+  baseUrl: string;
+  deviceId: string;
+  syncCode: string;
+  useOnionProxy: boolean;
+  onionProxyUrl?: string | null;
+}): RendezvousPairingSession => {
+  const session = createRendezvousSession(args.syncCode);
+  const activeRef = { current: true };
+  const client = new RendezvousClient({
+    baseUrl: args.baseUrl,
+    useOnionProxy: args.useOnionProxy,
+    onionProxyUrl: args.onionProxyUrl,
+  });
+  const transport = createDirectP2PTransport() as DirectSignalTransport;
+
+  const stopPolling = startPolling({
+    client,
+    syncCode: args.syncCode,
+    deviceId: args.deviceId,
+    onItems: async (payloads) => {
+      await Promise.all(payloads.map((payload) => transport.acceptSignalCode(payload)));
+    },
+    onError: () => session.setStatus("error"),
+    setStatus: session.setStatus,
+    activeRef,
+  });
+
+  transport.onSignalCode((code) => {
+    if (!activeRef.current) return;
+    void client.publish(args.syncCode, args.deviceId, [code]).catch(() => {
+      if (activeRef.current) session.setStatus("error");
+    });
+  });
+
+  transport.onState((next) => {
+    if (!activeRef.current) return;
+    if (next === "connected") session.setStatus("connected");
+  });
+
+  const start = async () => {
+    try {
+      session.setStatus("connecting");
+      await transport.start();
+    } catch {
+      session.setStatus("error");
+    }
+  };
+
+  void start();
+
+  return {
+    syncCode: args.syncCode,
+    getStatus: session.getStatus,
+    onStatus: session.onStatus,
+    stop: () => {
+      activeRef.current = false;
+      stopPolling();
+      void transport.stop();
+      session.setStatus("idle");
+    },
+  };
 };
