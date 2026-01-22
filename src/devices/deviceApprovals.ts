@@ -139,6 +139,8 @@ export const getApprovedDevice = async (deviceId: string) => {
   return event;
 };
 
+export const getDeviceApproval = async (deviceId: string) => getApprovedDevice(deviceId);
+
 export const isDeviceApproved = async (deviceId: string) => {
   const event = await getApprovedDevice(deviceId);
   return Boolean(event);

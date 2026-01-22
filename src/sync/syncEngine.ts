@@ -24,7 +24,7 @@ import { getFriendPsk } from "../security/pskStore";
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { applyTOFU } from "../security/trust";
 import { updateFromRoleEvent, type RoleChangeEvent } from "../devices/deviceRegistry";
-import { isDeviceApproved } from "../devices/deviceApprovals";
+import { getDeviceApproval } from "../devices/deviceApprovals";
 import { createId } from "../utils/ids";
 import {
   connectConversation as connectTransport,
@@ -97,19 +97,21 @@ const isDeviceSyncAllowed = async (convId: string, reason: string) => {
     return false;
   }
   const localDeviceId = getOrCreateDeviceId();
-  const [localApproved, peerApproved] = await Promise.all([
-    isDeviceApproved(localDeviceId),
-    isDeviceApproved(peerDeviceId),
+  const [localApproval, peerApproval] = await Promise.all([
+    getDeviceApproval(localDeviceId),
+    getDeviceApproval(peerDeviceId),
   ]);
-  if (localApproved || peerApproved) return true;
-  if (!localApproved && !peerApproved) {
-    console.warn("[sync] device sync blocked: approval missing", {
-      convId,
-      peerDeviceId,
-      localDeviceId,
-      reason,
-    });
-  }
+  const hasPeerApproval = Boolean(peerApproval);
+  const isBoundToPeer = localApproval?.approvedBy === peerDeviceId;
+  if (hasPeerApproval || isBoundToPeer) return true;
+  console.warn("[sync] device sync blocked: approval not bound to peer", {
+    convId,
+    reason,
+    localDeviceId,
+    peerDeviceId,
+    localApprovedBy: localApproval?.approvedBy ?? null,
+    hasPeerApproval,
+  });
   return false;
 };
 
