@@ -22,8 +22,13 @@ describe("routePolicy.selectRoute", () => {
     expect(result.map((item) => item.kind)).toEqual(["tor"]);
   });
 
-  it("manual: uses explicit priority (alternateRoute then tor)", () => {
+  it("manual: rejects multiple targets", () => {
     const result = selectRoute("manual", { alternateRoute: "alternateRoute.example", torOnion: "abc.onion" });
-    expect(result.map((item) => item.kind)).toEqual(["alternateRoute"]);
+    expect(result).toEqual([]);
+  });
+
+  it("manual: allows a single explicit target", () => {
+    const result = selectRoute("manual", { torOnion: "abc.onion" });
+    expect(result.map((item) => item.kind)).toEqual(["tor"]);
   });
 });

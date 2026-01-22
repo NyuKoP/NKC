@@ -94,7 +94,6 @@ export class TorManager {
   private status: TorStatus = { state: "unavailable", details: "not-started" };
   private listeners = new Set<StatusListener>();
   private torPath: string | null = null;
-  private socksPort: number | null = null;
   private dataDir: string;
   private hsConfig: HiddenServiceConfig | null = null;
 
@@ -156,7 +155,6 @@ export class TorManager {
     this.emit({ state: "starting", details: "starting-tor" });
     await fsPromises.mkdir(this.dataDir, { recursive: true });
     const socksPort = await getAvailablePort();
-    this.socksPort = socksPort;
     const torrcPath = path.join(this.dataDir, "torrc");
     await fsPromises.writeFile(this.buildTorrc(socksPort, this.hsConfig), torrcPath, "utf8");
     this.process = spawn(torPath, ["-f", torrcPath], { stdio: "ignore" });
@@ -182,7 +180,6 @@ export class TorManager {
       this.process.kill();
       this.process = null;
     }
-    this.socksPort = null;
     this.emit({ state: "unavailable", details: "stopped" });
   }
 

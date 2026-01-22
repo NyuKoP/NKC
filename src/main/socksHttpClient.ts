@@ -21,8 +21,34 @@ type SocksFetchResponse = {
 };
 
 const MAX_BODY_BYTES = 256 * 1024;
+const MAX_INFLIGHT = 8;
+
+type SocksErrorCode = "timeout" | "proxy_unreachable" | "handshake_failed" | "upstream_error";
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+let inflight = 0;
+const inflightQueue: Array<() => void> = [];
+
+const acquireSlot = () =>
+  new Promise<void>((resolve) => {
+    if (inflight < MAX_INFLIGHT) {
+      inflight += 1;
+      resolve();
+      return;
+    }
+    inflightQueue.push(() => {
+      inflight += 1;
+      resolve();
+    });
+  });
+
+const releaseSlot = () => {
+  inflight = Math.max(0, inflight - 1);
+  const next = inflightQueue.shift();
+  if (next) {
+    next();
+  }
+};
 
 const parseSocksUrl = (value: string) => {
   const url = new URL(value);
@@ -61,9 +87,10 @@ const readExactly = (socket: net.Socket, size: number) =>
         resolve(buffer.slice(0, size));
       }
     };
-    const onError = (error: Error) => {
+    const onError = (error: unknown) => {
       socket.off("data", onData);
-      reject(error);
+      const err = error instanceof Error ? error : new Error(String(error));
+      reject(err);
     };
     socket.on("data", onData);
     socket.once("error", onError);
@@ -73,17 +100,24 @@ const connectSocks = async (
   targetHost: string,
   targetPort: number,
   proxyUrl: string,
-  socketFactory?: SocketFactory
+  socketFactory?: SocketFactory,
+  onSocket?: (socket: SocketLike) => void,
+  timeoutState?: { timedOut: boolean }
 ) => {
   const proxy = parseSocksUrl(proxyUrl);
   const socket = socketFactory
     ? await socketFactory({ host: proxy.host, port: proxy.port })
     : net.connect(proxy.port, proxy.host);
+  if (onSocket) onSocket(socket);
   if (!socketFactory) {
     await new Promise<void>((resolve, reject) => {
       (socket as net.Socket).once("connect", resolve);
       (socket as net.Socket).once("error", reject);
     });
+  }
+  if (timeoutState?.timedOut) {
+    socket.destroy();
+    throw new Error("timeout");
   }
   socket.write(Buffer.from([0x05, 0x01, 0x00]));
   const methodReply = await readExactly(socket as net.Socket, 2);
@@ -124,6 +158,11 @@ const connectSocks = async (
   }
   await readExactly(socket as net.Socket, 2);
 
+  if (timeoutState?.timedOut) {
+    socket.destroy();
+    throw new Error("timeout");
+  }
+
   return socket;
 };
 
@@ -163,6 +202,7 @@ const decodeChunkedBody = (buffer: Buffer) => {
 const readHttpResponse = async (socket: SocketLike, timeoutMs: number) => {
   const chunks: Buffer[] = [];
   let total = 0;
+  let timeoutError: Error | null = null;
   const done = new Promise<void>((resolve, reject) => {
     const onData = (chunk: Buffer) => {
       total += chunk.length;
@@ -174,16 +214,23 @@ const readHttpResponse = async (socket: SocketLike, timeoutMs: number) => {
       chunks.push(chunk);
     };
     const onEnd = () => resolve();
-    const onError = (error: Error) => reject(error);
+    const onError = (error: unknown) => {
+      const err = error instanceof Error ? error : new Error(String(error));
+      reject(err);
+    };
     socket.on("data", onData);
     socket.once("end", onEnd);
     socket.once("error", onError);
   });
   const timeout = setTimeout(() => {
     socket.destroy();
+    timeoutError = new Error("timeout");
   }, timeoutMs);
   try {
     await done;
+    if (timeoutError) {
+      throw timeoutError;
+    }
   } finally {
     clearTimeout(timeout);
   }
@@ -217,7 +264,35 @@ const socksFetchOnce = async (url: string, opts: SocksFetchOptions): Promise<Soc
   const path = `${parsed.pathname}${parsed.search}`;
   const timeoutMs = opts.timeoutMs ?? 10000;
 
-  const socket = await connectSocks(host, port, opts.socksProxyUrl, opts.socketFactory);
+  let socket: SocketLike | null = null;
+  const timeoutState = { timedOut: false };
+  const timeout = setTimeout(() => {
+    timeoutState.timedOut = true;
+    if (socket) {
+      socket.destroy();
+    }
+  }, timeoutMs);
+  try {
+    socket = await connectSocks(
+      host,
+      port,
+      opts.socksProxyUrl,
+      opts.socketFactory,
+      (created) => {
+        socket = created;
+        if (timeoutState.timedOut) {
+          created.destroy();
+        }
+      },
+      timeoutState
+    );
+    if (timeoutState.timedOut) {
+      socket.destroy();
+      throw new Error("timeout");
+    }
+  } finally {
+    clearTimeout(timeout);
+  }
   const transport = isHttps
     ? tls.connect({ socket: socket as net.Socket, servername: host })
     : socket;
@@ -245,19 +320,56 @@ const socksFetchOnce = async (url: string, opts: SocksFetchOptions): Promise<Soc
   return readHttpResponse(transport, timeoutMs);
 };
 
+const normalizeSocksError = (error: unknown): Error => {
+  const message = error instanceof Error ? error.message : String(error);
+  const knownCode = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  const rawCode = knownCode.toLowerCase();
+  const text = message.toLowerCase();
+
+  let code: SocksErrorCode = "upstream_error";
+  if (rawCode === "timeout" || text.includes("timeout")) {
+    code = "timeout";
+  } else if (
+    rawCode.includes("econnrefused") ||
+    rawCode.includes("enotfound") ||
+    rawCode.includes("ehostunreach") ||
+    rawCode.includes("econnreset") ||
+    text.includes("connect_fail")
+  ) {
+    code = "proxy_unreachable";
+  } else if (
+    text.includes("socks_auth_failed") ||
+    text.includes("socks_connect_failed") ||
+    text.includes("unsupported_socks_protocol") ||
+    text.includes("invalid_socks_proxy") ||
+    text.includes("socks_auth_unsupported")
+  ) {
+    code = "handshake_failed";
+  }
+
+  const err = new Error(message);
+  (err as { code?: SocksErrorCode }).code = code;
+  return err;
+};
+
 export async function socksFetch(url: string, opts: SocksFetchOptions): Promise<SocksFetchResponse> {
-  const attempts = Math.max(1, opts.retry?.attempts ?? 1);
+  await acquireSlot();
+  const attempts = Math.min(2, Math.max(1, opts.retry?.attempts ?? 1));
   const delayMs = Math.max(50, opts.retry?.delayMs ?? 200);
   let lastError: Error | null = null;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      return await socksFetchOnce(url, opts);
-    } catch (error) {
-      lastError = error instanceof Error ? error : new Error(String(error));
-      if (attempt < attempts - 1) {
-        await sleep(delayMs * (attempt + 1));
+  try {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        return await socksFetchOnce(url, opts);
+      } catch (error) {
+        lastError = normalizeSocksError(error);
+        if (attempt < attempts - 1) {
+          await sleep(delayMs * (attempt + 1));
+        }
       }
     }
+    throw lastError ?? normalizeSocksError(new Error("socks_fetch_failed"));
+  } finally {
+    releaseSlot();
   }
-  throw lastError ?? new Error("socks_fetch_failed");
 }

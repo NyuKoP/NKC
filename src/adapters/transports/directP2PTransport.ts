@@ -2,6 +2,12 @@ import type { Transport, TransportPacket, TransportState } from "./types";
 
 type Handler<T> = (payload: T) => void;
 
+type DirectSignalExt = {
+  createOfferCode: () => Promise<string>;
+  acceptSignalCode: (code: string) => Promise<void>;
+  onSignalCode: (cb: (code: string) => void) => void;
+};
+
 type SignalMessage =
   | { v: 1; t: "offer"; sdp: RTCSessionDescriptionInit }
   | { v: 1; t: "answer"; sdp: RTCSessionDescriptionInit }
@@ -140,7 +146,7 @@ export const createDirectP2PTransport = (): Transport => {
     }
   };
 
-  return {
+  const transport = {
     name: "directP2P",
     async start() {
       if (started) return;
@@ -219,18 +225,19 @@ export const createDirectP2PTransport = (): Transport => {
         await pc.addIceCandidate(new RTCIceCandidate(message.c));
       }
     },
-    onSignalCode(cb) {
+    onSignalCode(cb: (code: string) => void) {
       signalHandlers.push(cb);
     },
-    onMessage(cb) {
+    onMessage(cb: (packet: TransportPacket) => void) {
       messageHandlers.push(cb);
     },
-    onAck(cb) {
+    onAck(cb: (id: string, rttMs: number) => void) {
       ackHandlers.push((payload) => cb(payload.id, payload.rttMs));
     },
-    onState(cb) {
+    onState(cb: (state: TransportState) => void) {
       stateHandlers.push(cb);
       cb(state);
     },
   };
+  return transport as Transport & DirectSignalExt;
 };
