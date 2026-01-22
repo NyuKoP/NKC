@@ -33,7 +33,8 @@ export const createDirectTransport = (): Transport => {
 
   return {
     kind: "direct",
-    async connect(_peerHint?: PeerHint) {
+    async connect(peerHint?: PeerHint) {
+      void peerHint;
       status = { state: "connecting" };
       try {
         await adapter.start();

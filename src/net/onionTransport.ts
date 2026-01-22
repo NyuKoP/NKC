@@ -40,7 +40,8 @@ export const createOnionTransport = (): Transport => {
 
   return {
     kind: "onion",
-    async connect(_peerHint?: PeerHint) {
+    async connect(peerHint?: PeerHint) {
+      void peerHint;
       status = { state: "connecting" };
       try {
         await adapter.start();
