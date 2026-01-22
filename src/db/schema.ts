@@ -16,6 +16,9 @@ export type EventRecord = {
   lamport: number;
   ts: number;
   envelopeJson: string;
+  prevHash?: string;
+  eventHash: string;
+  conflict?: boolean;
 };
 export type OutboxRecord = {
   id: string;
@@ -137,6 +140,20 @@ export class NKCVaultDB extends Dexie {
       tombstones: "id, type, deletedAt",
     });
     this.version(6).stores({
+      meta: "key",
+      profiles: "id, updatedAt",
+      conversations: "id, updatedAt",
+      messages: "id, convId, ts",
+      events: "eventId, convId, ts, lamport, authorDeviceId, [convId+lamport], [convId+ts]",
+      outbox:
+        "id, status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
+      mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+      mediaIndex: "mediaId, convId, createdAt, complete",
+      mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
+      receipts: "id, msgId, convId, kind, ts, [convId+msgId], [msgId+kind]",
+      tombstones: "id, type, deletedAt",
+    });
+    this.version(7).stores({
       meta: "key",
       profiles: "id, updatedAt",
       conversations: "id, updatedAt",

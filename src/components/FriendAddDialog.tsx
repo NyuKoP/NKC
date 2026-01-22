@@ -89,7 +89,7 @@ export default function FriendAddDialog({
                 value={code}
                 onChange={(event) => setCode(event.target.value)}
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-                placeholder="NCK- 또는 NKC-..."
+                placeholder="NCK- 또는 NKC1-/NKI1-..."
               />
             </label>
 

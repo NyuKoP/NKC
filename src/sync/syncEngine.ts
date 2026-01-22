@@ -1,4 +1,5 @@
 import {
+  computeEnvelopeHash,
   decryptEnvelope,
   deriveConversationKey,
   encryptEnvelope,
@@ -9,6 +10,7 @@ import {
 import { nextSendDhKey, nextSendKey, tryRecvDhKey, tryRecvKey } from "../crypto/ratchet";
 import {
   getEvent,
+  getLastEventHash,
   listConversations,
   listEventsByConv,
   listProfiles,
@@ -178,6 +180,15 @@ const buildNextMap = (events: EnvelopeEvent[]) => {
   }
   return next;
 };
+
+const toEnvelopeEvent = (event: EnvelopeEvent) => ({
+  eventId: event.eventId,
+  convId: event.convId,
+  authorDeviceId: event.authorDeviceId,
+  lamport: event.lamport,
+  ts: event.ts,
+  envelopeJson: event.envelopeJson,
+});
 
 const sortEventsDeterministic = (events: EnvelopeEvent[]) =>
   events.sort((a, b) => {
@@ -407,6 +418,12 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
 
         logDecrypt("commit", { convId: event.convId, eventId: event.eventId, mode: "v2" });
         await recv.commit();
+        const eventHash = await computeEnvelopeHash(envelope);
+        const expectedPrev = await getLastEventHash(envelope.header.convId);
+        const mismatch = envelope.header.prev !== expectedPrev;
+        if (mismatch) {
+          console.warn("[sync] event chain mismatch");
+        }
         await saveEvent({
           eventId: envelope.header.eventId,
           convId: envelope.header.convId,
@@ -414,6 +431,9 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           lamport: envelope.header.lamport,
           ts: envelope.header.ts,
           envelopeJson: JSON.stringify(envelope),
+          prevHash: envelope.header.prev,
+          eventHash,
+          conflict: mismatch || undefined,
         });
         updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
         await applyDecryptedBody(conv, envelope, body);
@@ -439,6 +459,12 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         );
 
         logDecrypt("ok", { convId: event.convId, eventId: event.eventId, mode: "v1" });
+        const eventHash = await computeEnvelopeHash(envelope);
+        const expectedPrev = await getLastEventHash(envelope.header.convId);
+        const mismatch = envelope.header.prev !== expectedPrev;
+        if (mismatch) {
+          console.warn("[sync] event chain mismatch");
+        }
         await saveEvent({
           eventId: envelope.header.eventId,
           convId: envelope.header.convId,
@@ -446,6 +472,9 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           lamport: envelope.header.lamport,
           ts: envelope.header.ts,
           envelopeJson: JSON.stringify(envelope),
+          prevHash: envelope.header.prev,
+          eventHash,
+          conflict: mismatch || undefined,
         });
         updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
         await applyDecryptedBody(conv, envelope, body);
@@ -465,6 +494,12 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
       );
 
       logDecrypt("ok", { convId: event.convId, eventId: event.eventId, mode: "legacy" });
+      const eventHash = await computeEnvelopeHash(envelope);
+      const expectedPrev = await getLastEventHash(envelope.header.convId);
+      const mismatch = envelope.header.prev !== expectedPrev;
+      if (mismatch) {
+        console.warn("[sync] event chain mismatch");
+      }
       await saveEvent({
         eventId: envelope.header.eventId,
         convId: envelope.header.convId,
@@ -472,6 +507,9 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         lamport: envelope.header.lamport,
         ts: envelope.header.ts,
         envelopeJson: JSON.stringify(envelope),
+        prevHash: envelope.header.prev,
+        eventHash,
+        conflict: mismatch || undefined,
       });
       updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
       await applyDecryptedBody(conv, envelope, body);
@@ -512,7 +550,7 @@ const handleSyncReq = async (convId: string, frame: SyncReqFrame) => {
     type: "SYNC_RES",
     scope: frame.scope,
     convId: frame.convId,
-    events: events as EnvelopeEvent[],
+    events: events.map((event) => toEnvelopeEvent(event as EnvelopeEvent)),
     next,
   };
   await sendFrame(convId, response);
@@ -637,6 +675,7 @@ const buildRoleChangeEvent = async (
     lamport: nextLamport,
     authorDeviceId: deviceId,
   };
+  header.prev = await getLastEventHash(logId);
   let keyForEnvelope = legacyKey;
   try {
     const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
@@ -653,6 +692,7 @@ const buildRoleChangeEvent = async (
   }
 
   const envelope = await encryptEnvelope(keyForEnvelope, header, payload, identityPriv);
+  const eventHash = await computeEnvelopeHash(envelope);
   const event: EnvelopeEvent = {
     eventId: header.eventId,
     convId: logId,
@@ -661,6 +701,11 @@ const buildRoleChangeEvent = async (
     ts: header.ts,
     envelopeJson: JSON.stringify(envelope),
   };
+  await saveEvent({
+    ...event,
+    prevHash: header.prev,
+    eventHash,
+  });
   updateLamportSeen(logId, header.authorDeviceId, header.lamport);
   return event;
 };
@@ -672,7 +717,6 @@ export const emitRoleChangeEvent = async (payload: RoleChangeEvent) => {
     try {
       const event = await buildRoleChangeEvent(convId, payload, identityPriv);
       if (!event) continue;
-      await saveEvent(event);
       const frame: SyncResFrame = {
         type: "SYNC_RES",
         scope: "global",
@@ -702,6 +746,7 @@ const buildContactEvents = async (convId: string) => {
   const contacts = profiles.filter((profile) => profile.kind === "friend");
   const events: EnvelopeEvent[] = [];
 
+  let prevHash = await getLastEventHash(logId);
   for (const contact of contacts) {
     nextLamport += 1;
     const header: EnvelopeHeader = {
@@ -712,6 +757,7 @@ const buildContactEvents = async (convId: string) => {
       lamport: nextLamport,
       authorDeviceId: deviceId,
     };
+    header.prev = prevHash;
     let keyForEnvelope = legacyKey;
     try {
       const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
@@ -745,6 +791,7 @@ const buildContactEvents = async (convId: string) => {
       },
       identityPriv
     );
+    const eventHash = await computeEnvelopeHash(envelope);
     events.push({
       eventId: header.eventId,
       convId: logId,
@@ -753,7 +800,18 @@ const buildContactEvents = async (convId: string) => {
       ts: header.ts,
       envelopeJson: JSON.stringify(envelope),
     });
+    prevHash = eventHash;
     updateLamportSeen(logId, header.authorDeviceId, header.lamport);
+    await saveEvent({
+      eventId: header.eventId,
+      convId: logId,
+      authorDeviceId: header.authorDeviceId,
+      lamport: header.lamport,
+      ts: header.ts,
+      envelopeJson: JSON.stringify(envelope),
+      prevHash: header.prev,
+      eventHash,
+    });
   }
   return events;
 };
@@ -772,6 +830,7 @@ const buildConversationEvents = async (convId: string) => {
   const conversations = await listConversations();
   const events: EnvelopeEvent[] = [];
 
+  let prevHash = await getLastEventHash(logId);
   for (const conversation of conversations) {
     nextLamport += 1;
     const header: EnvelopeHeader = {
@@ -782,6 +841,7 @@ const buildConversationEvents = async (convId: string) => {
       lamport: nextLamport,
       authorDeviceId: deviceId,
     };
+    header.prev = prevHash;
     let keyForEnvelope = legacyKey;
     try {
       const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
@@ -819,6 +879,7 @@ const buildConversationEvents = async (convId: string) => {
       },
       identityPriv
     );
+    const eventHash = await computeEnvelopeHash(envelope);
     events.push({
       eventId: header.eventId,
       convId: logId,
@@ -827,7 +888,18 @@ const buildConversationEvents = async (convId: string) => {
       ts: header.ts,
       envelopeJson: JSON.stringify(envelope),
     });
+    prevHash = eventHash;
     updateLamportSeen(logId, header.authorDeviceId, header.lamport);
+    await saveEvent({
+      eventId: header.eventId,
+      convId: logId,
+      authorDeviceId: header.authorDeviceId,
+      lamport: header.lamport,
+      ts: header.ts,
+      envelopeJson: JSON.stringify(envelope),
+      prevHash: header.prev,
+      eventHash,
+    });
   }
   return events;
 };
@@ -851,7 +923,6 @@ export const syncContactsNow = async () => {
 
       const events = await buildContactEvents(convId);
       if (!events.length) continue;
-      await Promise.all(events.map((event) => saveEvent(event)));
       const next = buildNextMap(events);
       const frame: SyncResFrame = {
         type: "SYNC_RES",
@@ -886,7 +957,6 @@ export const syncConversationsNow = async () => {
 
       const events = await buildConversationEvents(convId);
       if (!events.length) continue;
-      await Promise.all(events.map((event) => saveEvent(event)));
       const next = buildNextMap(events);
       const frame: SyncResFrame = {
         type: "SYNC_RES",
