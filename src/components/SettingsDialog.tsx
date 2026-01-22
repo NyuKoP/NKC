@@ -17,10 +17,16 @@ import {
   getRendezvousBaseUrl,
   getRendezvousUseOnion,
   getOnionControllerUrlOverride,
+  getRoutePolicy,
+  getLokinetExternalProxyUrl,
+  getLokinetServiceAddress,
   setPrivacyPrefs,
   setRendezvousBaseUrl,
   setRendezvousUseOnion,
   setOnionControllerUrlOverride,
+  setRoutePolicy,
+  setLokinetExternalProxyUrl,
+  setLokinetServiceAddress,
 } from "../security/preferences";
 import { isPinAvailable } from "../security/pin";
 import {
@@ -78,6 +84,22 @@ type DirectSignalTransport = ReturnType<typeof createDirectP2PTransport> & {
   acceptSignalCode: (code: string) => Promise<void>;
   onSignalCode: (cb: (code: string) => void) => void;
 };
+
+type TorStatus = {
+  state: "unavailable" | "starting" | "running" | "failed";
+  socksProxyUrl?: string;
+  dataDir?: string;
+  details?: string;
+};
+
+type LokinetStatus = {
+  state: "unavailable" | "stopped" | "starting" | "running" | "failed";
+  proxyUrl?: string;
+  serviceAddress?: string;
+  details?: string;
+};
+
+type RoutePolicyMode = "auto" | "preferLokinet" | "preferTor" | "manual";
 
 const themeOptions: { value: "dark" | "light"; label: LocalizedLabel }[] = [
   { value: "dark", label: { ko: "다크", en: "Dark" } },
@@ -142,6 +164,15 @@ const getNkcBridge = () =>
         bodyBase64?: string;
         timeoutMs?: number;
       }) => Promise<unknown>;
+      getTorStatus?: () => Promise<unknown>;
+      startTor?: () => Promise<unknown>;
+      stopTor?: () => Promise<unknown>;
+      ensureHiddenService?: () => Promise<unknown>;
+      getMyOnionAddress?: () => Promise<string>;
+      getLokinetStatus?: () => Promise<unknown>;
+      configureLokinetExternal?: (payload: { proxyUrl: string; serviceAddress?: string }) => Promise<unknown>;
+      startLokinet?: () => Promise<unknown>;
+      stopLokinet?: () => Promise<unknown>;
     };
   }).nkc;
 
@@ -242,9 +273,29 @@ export default function SettingsDialog({
     ok: boolean;
     network: "tor" | "lokinet" | "none";
     details?: string;
+    tor?: {
+      active: boolean;
+      socksProxy?: string | null;
+      address?: string;
+      details?: string;
+    };
+    lokinet?: {
+      active: boolean;
+      proxyUrl?: string | null;
+      address?: string;
+      details?: string;
+    };
   } | null>(null);
   const [onionControllerHealthBusy, setOnionControllerHealthBusy] = useState(false);
   const [onionForwardProxyDraft, setOnionForwardProxyDraft] = useState("");
+  const [torStatus, setTorStatus] = useState<TorStatus | null>(null);
+  const [torBusy, setTorBusy] = useState(false);
+  const [myOnionAddress, setMyOnionAddress] = useState("");
+  const [lokinetStatus, setLokinetStatus] = useState<LokinetStatus | null>(null);
+  const [lokinetBusy, setLokinetBusy] = useState(false);
+  const [lokinetProxyDraft, setLokinetProxyDraft] = useState("");
+  const [lokinetServiceDraft, setLokinetServiceDraft] = useState("");
+  const [routePolicyDraft, setRoutePolicyDraft] = useState<RoutePolicyMode>("auto");
   const [torInstallBusy, setTorInstallBusy] = useState(false);
   const [torCheckBusy, setTorCheckBusy] = useState(false);
   const [torApplyBusy, setTorApplyBusy] = useState(false);
@@ -329,6 +380,12 @@ export default function SettingsDialog({
       });
       const health = await client.health();
       setOnionControllerHealth(health);
+      if (health.tor?.address) {
+        setMyOnionAddress(health.tor.address);
+      }
+      if (health.lokinet?.address) {
+        setLokinetServiceDraft(health.lokinet.address);
+      }
     } catch (error) {
       setOnionControllerHealth({
         ok: false,
@@ -364,6 +421,138 @@ export default function SettingsDialog({
         network: "none",
         details: error instanceof Error ? error.message : String(error),
       });
+    }
+  };
+
+  const handleRoutePolicyChange = async (value: RoutePolicyMode) => {
+    setRoutePolicyDraft(value);
+    try {
+      await setRoutePolicy(value);
+    } catch (error) {
+      console.error("Failed to store route policy", error);
+    }
+  };
+
+  const refreshLokinetStatus = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.getLokinetStatus) return;
+    try {
+      const status = (await nkc.getLokinetStatus()) as LokinetStatus;
+      setLokinetStatus(status);
+      if (status.serviceAddress) {
+        setLokinetServiceDraft(status.serviceAddress);
+      }
+    } catch (error) {
+      console.error("Failed to refresh Lokinet status", error);
+    }
+  };
+
+  const handleApplyLokinetExternal = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.configureLokinetExternal) return;
+    if (lokinetBusy) return;
+    setLokinetBusy(true);
+    try {
+      await setLokinetExternalProxyUrl(lokinetProxyDraft);
+      await setLokinetServiceAddress(lokinetServiceDraft);
+      await nkc.configureLokinetExternal({
+        proxyUrl: lokinetProxyDraft.trim(),
+        serviceAddress: lokinetServiceDraft.trim() || undefined,
+      });
+      await refreshLokinetStatus();
+    } catch (error) {
+      console.error("Failed to configure Lokinet", error);
+    } finally {
+      setLokinetBusy(false);
+    }
+  };
+
+  const handleStartLokinet = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.startLokinet) return;
+    if (lokinetBusy) return;
+    setLokinetBusy(true);
+    try {
+      await nkc.startLokinet();
+      await refreshLokinetStatus();
+    } catch (error) {
+      console.error("Failed to start Lokinet", error);
+    } finally {
+      setLokinetBusy(false);
+    }
+  };
+
+  const handleStopLokinet = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.stopLokinet) return;
+    if (lokinetBusy) return;
+    setLokinetBusy(true);
+    try {
+      await nkc.stopLokinet();
+      await refreshLokinetStatus();
+    } catch (error) {
+      console.error("Failed to stop Lokinet", error);
+    } finally {
+      setLokinetBusy(false);
+    }
+  };
+
+  const refreshTorStatus = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.getTorStatus) return;
+    try {
+      const status = (await nkc.getTorStatus()) as TorStatus;
+      setTorStatus(status);
+    } catch (error) {
+      console.error("Failed to refresh Tor status", error);
+    }
+  };
+
+  const handleStartTor = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.startTor) return;
+    if (torBusy) return;
+    setTorBusy(true);
+    try {
+      await nkc.startTor();
+      await refreshTorStatus();
+    } catch (error) {
+      console.error("Failed to start Tor", error);
+    } finally {
+      setTorBusy(false);
+    }
+  };
+
+  const handleStopTor = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.stopTor) return;
+    if (torBusy) return;
+    setTorBusy(true);
+    try {
+      await nkc.stopTor();
+      await refreshTorStatus();
+    } catch (error) {
+      console.error("Failed to stop Tor", error);
+    } finally {
+      setTorBusy(false);
+    }
+  };
+
+  const handleEnsureHiddenService = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.ensureHiddenService) return;
+    if (torBusy) return;
+    setTorBusy(true);
+    try {
+      const result = (await nkc.ensureHiddenService()) as { onionHost?: string };
+      if (result?.onionHost) {
+        setMyOnionAddress(result.onionHost);
+      }
+      await refreshTorStatus();
+    } catch (error) {
+      console.error("Failed to ensure hidden service", error);
+    } finally {
+      setTorBusy(false);
     }
   };
 
@@ -678,6 +867,14 @@ export default function SettingsDialog({
     setOnionControllerHealth(null);
     setOnionControllerHealthBusy(false);
     setOnionForwardProxyDraft("");
+    setTorStatus(null);
+    setTorBusy(false);
+    setMyOnionAddress("");
+    setLokinetStatus(null);
+    setLokinetBusy(false);
+    setLokinetProxyDraft("");
+    setLokinetServiceDraft("");
+    setRoutePolicyDraft("auto");
     const nkc = getNkcBridge();
     if (nkc?.getOnionControllerUrl) {
       nkc
@@ -687,6 +884,33 @@ export default function SettingsDialog({
     } else {
       setOnionControllerLocalUrl("");
     }
+    if (nkc?.getTorStatus) {
+      nkc
+        .getTorStatus()
+        .then((value) => setTorStatus(value as TorStatus))
+        .catch((e) => console.error("Failed to load Tor status", e));
+    }
+    if (nkc?.getLokinetStatus) {
+      nkc
+        .getLokinetStatus()
+        .then((value) => setLokinetStatus(value as LokinetStatus))
+        .catch((e) => console.error("Failed to load Lokinet status", e));
+    }
+    if (nkc?.getMyOnionAddress) {
+      nkc
+        .getMyOnionAddress()
+        .then((value) => setMyOnionAddress(value))
+        .catch((e) => console.error("Failed to load onion address", e));
+    }
+    getRoutePolicy()
+      .then((value) => setRoutePolicyDraft(value as RoutePolicyMode))
+      .catch((e) => console.error("Failed to load route policy", e));
+    getLokinetExternalProxyUrl()
+      .then((value) => setLokinetProxyDraft(value))
+      .catch((e) => console.error("Failed to load lokinet proxy", e));
+    getLokinetServiceAddress()
+      .then((value) => setLokinetServiceDraft(value))
+      .catch((e) => console.error("Failed to load lokinet service address", e));
     getOnionControllerUrlOverride()
       .then((value) => {
         setOnionControllerOverrideUrl(value);
@@ -1726,6 +1950,129 @@ export default function SettingsDialog({
 
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="text-sm font-semibold text-nkc-text">
+                  {t("Route policy", "Route policy")}
+                </div>
+                <div className="mt-3 text-xs text-nkc-muted">
+                  <select
+                    value={routePolicyDraft}
+                    onChange={(e) => void handleRoutePolicyChange(e.target.value as RoutePolicyMode)}
+                    className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                  >
+                    <option value="auto">Auto (Lokinet then Tor)</option>
+                    <option value="preferLokinet">Prefer Lokinet</option>
+                    <option value="preferTor">Prefer Tor</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">Tor</div>
+                <div className="mt-3 grid gap-3 text-xs text-nkc-muted">
+                  <div>
+                    Status: {torStatus?.state ?? "unknown"}
+                    {torStatus?.details ? ` - ${torStatus.details}` : ""}
+                  </div>
+                  {torStatus?.socksProxyUrl ? (
+                    <div>SOCKS: {torStatus.socksProxyUrl}</div>
+                  ) : null}
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleStartTor()}
+                      disabled={torBusy}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Start Tor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleStopTor()}
+                      disabled={torBusy}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Stop Tor
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleEnsureHiddenService()}
+                      disabled={torBusy}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Create/Refresh Onion Address
+                    </button>
+                  </div>
+                  <label className="text-xs text-nkc-muted">
+                    My Onion Address
+                    <input
+                      readOnly
+                      value={myOnionAddress}
+                      placeholder="unavailable"
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">Lokinet</div>
+                <div className="mt-3 grid gap-3 text-xs text-nkc-muted">
+                  <div>
+                    Status: {lokinetStatus?.state ?? "unknown"}
+                    {lokinetStatus?.details ? ` - ${lokinetStatus.details}` : ""}
+                  </div>
+                  {lokinetStatus?.proxyUrl ? (
+                    <div>Proxy: {lokinetStatus.proxyUrl}</div>
+                  ) : null}
+                  <label className="text-xs text-nkc-muted">
+                    External proxy (SOCKS)
+                    <input
+                      value={lokinetProxyDraft}
+                      onChange={(e) => setLokinetProxyDraft(e.target.value)}
+                      placeholder="socks5://127.0.0.1:22000"
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <label className="text-xs text-nkc-muted">
+                    Service address (optional)
+                    <input
+                      value={lokinetServiceDraft}
+                      onChange={(e) => setLokinetServiceDraft(e.target.value)}
+                      placeholder="http://example.loki"
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleApplyLokinetExternal()}
+                      disabled={lokinetBusy}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Apply External Lokinet
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleStartLokinet()}
+                      disabled={lokinetBusy}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Start Lokinet
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleStopLokinet()}
+                      disabled={lokinetBusy}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Stop Lokinet
+                    </button>
+                  </div>
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
                   {t("Local Onion Controller", "Local Onion Controller")}
                 </div>
                 <div className="mt-3 grid gap-3 text-xs text-nkc-muted">
@@ -1789,6 +2136,18 @@ export default function SettingsDialog({
                   {onionControllerHealth ? (
                     <div className="text-xs text-nkc-muted">
                       {t("Network", "Network")}: {onionControllerHealth.network}
+                      {onionControllerHealth.tor?.socksProxy
+                        ? ` - Tor ${onionControllerHealth.tor.socksProxy}`
+                        : ""}
+                      {onionControllerHealth.tor?.address
+                        ? ` - ${onionControllerHealth.tor.address}`
+                        : ""}
+                      {onionControllerHealth.lokinet?.proxyUrl
+                        ? ` - Lokinet ${onionControllerHealth.lokinet.proxyUrl}`
+                        : ""}
+                      {onionControllerHealth.lokinet?.address
+                        ? ` - ${onionControllerHealth.lokinet.address}`
+                        : ""}
                       {onionControllerHealth.details
                         ? ` - ${onionControllerHealth.details}`
                         : ""}

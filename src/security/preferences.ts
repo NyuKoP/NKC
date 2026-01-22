@@ -11,6 +11,9 @@ const CONV_DIRECT_ALLOW_PREFIX = "nkc_conv_allow_direct_v1:";
 const RENDEZVOUS_BASE_URL_KEY = "rendezvous_base_url_v1";
 const RENDEZVOUS_USE_ONION_KEY = "rendezvous_use_onion_v1";
 const ONION_CONTROLLER_URL_KEY = "onion_controller_url_v1";
+const ROUTE_POLICY_KEY = "route_policy_v1";
+const LOKINET_PROXY_URL_KEY = "lokinet_proxy_url_v1";
+const LOKINET_SERVICE_ADDRESS_KEY = "lokinet_service_address_v1";
 
 export const defaultPrivacyPrefs: PrivacyPreferences = {
   readReceipts: false,
@@ -82,4 +85,49 @@ export const setOnionControllerUrlOverride = async (value: string) => {
     return;
   }
   await store.set(ONION_CONTROLLER_URL_KEY, trimmed);
+};
+
+export const getRoutePolicy = async () => {
+  const store = getPublicStore();
+  const raw = await store.get(ROUTE_POLICY_KEY);
+  if (!raw) return "auto";
+  if (raw === "auto" || raw === "preferLokinet" || raw === "preferTor" || raw === "manual") {
+    return raw;
+  }
+  return "auto";
+};
+
+export const setRoutePolicy = async (value: string) => {
+  const store = getPublicStore();
+  await store.set(ROUTE_POLICY_KEY, value);
+};
+
+export const getLokinetExternalProxyUrl = async () => {
+  const store = getPublicStore();
+  return (await store.get(LOKINET_PROXY_URL_KEY)) ?? "";
+};
+
+export const setLokinetExternalProxyUrl = async (value: string) => {
+  const store = getPublicStore();
+  const trimmed = value.trim();
+  if (!trimmed) {
+    await store.remove(LOKINET_PROXY_URL_KEY);
+    return;
+  }
+  await store.set(LOKINET_PROXY_URL_KEY, trimmed);
+};
+
+export const getLokinetServiceAddress = async () => {
+  const store = getPublicStore();
+  return (await store.get(LOKINET_SERVICE_ADDRESS_KEY)) ?? "";
+};
+
+export const setLokinetServiceAddress = async (value: string) => {
+  const store = getPublicStore();
+  const trimmed = value.trim();
+  if (!trimmed) {
+    await store.remove(LOKINET_SERVICE_ADDRESS_KEY);
+    return;
+  }
+  await store.set(LOKINET_SERVICE_ADDRESS_KEY, trimmed);
 };

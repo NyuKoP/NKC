@@ -10,6 +10,8 @@ import { OnionRuntime } from "./main/onion/runtime/onionRuntime";
 import { checkUpdates } from "./main/onion/update/checkUpdates";
 import { PinnedHashMissingError } from "./main/onion/errors";
 import { startOnionController, type OnionControllerHandle } from "./main/onionController";
+import { TorManager } from "./main/torManager";
+import { LokinetManager } from "./main/lokinetManager";
 
 type ProxyApplyPayload = {
   proxyUrl: string;
@@ -322,11 +324,56 @@ const fetchOnionController = async (
 const registerOnionControllerIpc = () => {
   ipcMain.handle("nkc:getOnionControllerUrl", async () => onionControllerUrl);
   ipcMain.handle("nkc:setOnionForwardProxy", async (_event, proxyUrl: string | null) => {
-    await onionController?.setForwardProxy(proxyUrl);
+    await onionController?.setTorSocksProxy(proxyUrl);
     return { ok: true };
   });
   ipcMain.handle("nkc:onionControllerFetch", async (_event, req: OnionControllerFetchRequest) => {
     return fetchOnionController(req);
+  });
+  ipcMain.handle("nkc:getTorStatus", async () => torManager?.getStatus() ?? { state: "unavailable" });
+  ipcMain.handle("nkc:startTor", async () => {
+    if (!torManager) return { ok: false };
+    await torManager.start();
+    return { ok: true };
+  });
+  ipcMain.handle("nkc:stopTor", async () => {
+    if (!torManager) return { ok: false };
+    await torManager.stop();
+    return { ok: true };
+  });
+  ipcMain.handle("nkc:ensureHiddenService", async () => {
+    if (!torManager || !onionController) {
+      throw new Error("tor-or-controller-unavailable");
+    }
+    const result = await torManager.ensureHiddenService({
+      localPort: onionController.port,
+      virtPort: 80,
+    });
+    myOnionAddress = result.onionHost;
+    onionController.setTorOnionHost(result.onionHost);
+    return { ok: true, onionHost: result.onionHost };
+  });
+  ipcMain.handle("nkc:getMyOnionAddress", async () => {
+    return myOnionAddress ?? "";
+  });
+  ipcMain.handle("nkc:getLokinetStatus", async () => lokinetManager?.getStatus() ?? { state: "unavailable" });
+  ipcMain.handle("nkc:configureLokinetExternal", async (_event, payload: { proxyUrl: string; serviceAddress?: string }) => {
+    if (!lokinetManager) return { ok: false };
+    await lokinetManager.configureExternal(payload);
+    return { ok: true };
+  });
+  ipcMain.handle("nkc:startLokinet", async () => {
+    if (!lokinetManager) return { ok: false };
+    await lokinetManager.start();
+    return { ok: true };
+  });
+  ipcMain.handle("nkc:stopLokinet", async () => {
+    if (!lokinetManager) return { ok: false };
+    await lokinetManager.stop();
+    return { ok: true };
+  });
+  ipcMain.handle("nkc:getMyLokinetAddress", async () => {
+    return myLokinetAddress ?? "";
   });
 };
 
@@ -409,6 +456,10 @@ const onionComponentCache: Record<OnionNetwork, OnionComponentState> = {
 };
 let onionController: OnionControllerHandle | null = null;
 let onionControllerUrl = "";
+let torManager: TorManager | null = null;
+let myOnionAddress: string | null = null;
+let lokinetManager: LokinetManager | null = null;
+let myLokinetAddress: string | null = null;
 
 const pruneComponentVersions = async (
   userDataDir: string,
@@ -1032,20 +1083,50 @@ app.whenReady().then(() => {
   registerOnionIpc();
   registerOnionControllerIpc();
   (async () => {
+    torManager = new TorManager({ appDataDir: app.getPath("userData") });
+    lokinetManager = new LokinetManager({ appDataDir: app.getPath("userData") });
     try {
-      onionController = await startOnionController({ port: 3210 });
+      onionController = await startOnionController({
+        port: 3210,
+        getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
+        getLokinetStatus: () => lokinetManager?.getStatus() ?? { state: "unavailable" },
+      });
     } catch (error) {
       const code =
         error && typeof error === "object" && "code" in error
           ? String((error as { code?: unknown }).code ?? "")
           : "";
       if (code === "EADDRINUSE") {
-        onionController = await startOnionController({ port: 0 });
+        onionController = await startOnionController({
+          port: 0,
+          getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
+          getLokinetStatus: () => lokinetManager?.getStatus() ?? { state: "unavailable" },
+        });
       } else {
         throw error;
       }
     }
     onionControllerUrl = onionController.baseUrl;
+    torManager.onStatus((status) => {
+      if (!onionController) return;
+      if (status.state === "running") {
+        void onionController.setTorSocksProxy(status.socksProxyUrl);
+      } else {
+        void onionController.setTorSocksProxy(null);
+      }
+    });
+    lokinetManager.onStatus((status) => {
+      if (!onionController) return;
+      if (status.state === "running") {
+        myLokinetAddress = status.serviceAddress ?? null;
+        onionController.setLokinetAddress(status.serviceAddress ?? null);
+        void onionController.setLokinetSocksProxy(status.proxyUrl);
+      } else {
+        myLokinetAddress = null;
+        onionController.setLokinetAddress(null);
+        void onionController.setLokinetSocksProxy(null);
+      }
+    });
   })().catch((error) => {
     console.error("[main] onion controller start failed", error);
   });

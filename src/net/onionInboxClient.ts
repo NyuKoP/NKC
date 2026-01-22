@@ -8,12 +8,31 @@ type HealthResponse = {
   ok: boolean;
   network: "tor" | "lokinet" | "none";
   details?: string;
+  tor?: {
+    active: boolean;
+    socksProxy?: string | null;
+    address?: string;
+    details?: string;
+  };
+  lokinet?: {
+    active: boolean;
+    proxyUrl?: string | null;
+    address?: string;
+    details?: string;
+  };
 };
 
 type SendResponse = {
   ok: boolean;
   msgId?: string;
   error?: string;
+};
+
+type AddressResponse = {
+  ok: boolean;
+  torOnion?: string;
+  lokinet?: string;
+  details?: string;
 };
 
 type PollResponse = {
@@ -146,15 +165,25 @@ export class OnionInboxClient {
     return response.data;
   }
 
-  async send(to: string, envelope: string, ttlMs?: number): Promise<SendResponse> {
+  async send(
+    toDeviceId: string,
+    envelope: string,
+    ttlMs?: number,
+    route?: { mode: "auto" | "preferLokinet" | "preferTor" | "manual"; torOnion?: string; lokinet?: string }
+  ): Promise<SendResponse> {
+    const body: Record<string, unknown> = {
+      to: route ? undefined : toDeviceId,
+      toDeviceId,
+      fromDeviceId: this.deviceId,
+      envelope,
+      ttlMs,
+    };
+    if (route) {
+      body.route = route;
+    }
     const response = await this.requestJson<SendResponse>("/onion/send", {
       method: "POST",
-      body: {
-        to,
-        from: this.deviceId,
-        envelope,
-        ttlMs,
-      },
+      body,
     });
     if (!response.ok || !response.data) {
       return {
@@ -179,6 +208,19 @@ export class OnionInboxClient {
         items: [],
         nextAfter: after,
         error: response.error ?? "Poll failed",
+      };
+    }
+    return response.data;
+  }
+
+  async address(): Promise<AddressResponse> {
+    const response = await this.requestJson<AddressResponse>("/onion/address", {
+      method: "GET",
+    });
+    if (!response.ok || !response.data) {
+      return {
+        ok: false,
+        details: response.error ?? "Address check failed",
       };
     }
     return response.data;

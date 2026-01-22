@@ -3,7 +3,8 @@ import type { NetConfig } from "../../net/netConfig";
 import { OnionInboxClient } from "../../net/onionInboxClient";
 import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
 import { getOrCreateDeviceId } from "../../security/deviceRole";
-import { getOnionControllerUrlOverride } from "../../security/preferences";
+import { getOnionControllerUrlOverride, getRoutePolicy } from "../../security/preferences";
+import type { RouteMode } from "../../main/routePolicy";
 import type { Transport, TransportPacket, TransportState } from "./types";
 
 type Handler<T> = (payload: T) => void;
@@ -218,11 +219,30 @@ export const createOnionRouterTransport = ({
       emitState("idle");
     },
     async send(packet: TransportPacket) {
-      const to =
+      const torOnion =
+        (packet as { torOnion?: string }).torOnion ??
+        (packet as { toOnion?: string }).toOnion ??
+        (packet as { route?: { torOnion?: string; toOnion?: string } }).route?.torOnion ??
+        (packet as { route?: { torOnion?: string; toOnion?: string } }).route?.toOnion ??
+        (packet as { meta?: { torOnion?: string; toOnion?: string } }).meta?.torOnion ??
+        (packet as { meta?: { torOnion?: string; toOnion?: string } }).meta?.toOnion;
+      const lokinet =
+        (packet as { lokinet?: string }).lokinet ??
+        (packet as { route?: { lokinet?: string } }).route?.lokinet ??
+        (packet as { meta?: { lokinet?: string } }).meta?.lokinet;
+      const routeMode =
+        ((packet as { route?: { mode?: RouteMode } }).route?.mode ??
+          (packet as { meta?: { routeMode?: RouteMode } }).meta?.routeMode ??
+          (packet as { meta?: { routePolicy?: RouteMode } }).meta?.routePolicy) ??
+        ((await getRoutePolicy()) as RouteMode);
+      const toDeviceId =
+        (packet as { toDeviceId?: string }).toDeviceId ??
+        (packet as { meta?: { toDeviceId?: string } }).meta?.toDeviceId ??
+        (packet as { route?: { toDeviceId?: string } }).route?.toDeviceId ??
         (packet as { to?: string }).to ??
         (packet as { route?: { to?: string } }).route?.to ??
         (packet as { meta?: { to?: string } }).meta?.to;
-      if (!to) {
+      if (!toDeviceId) {
         throw new Error("onionRouterTransport: missing destination 'to'");
       }
       if (!client) {
@@ -231,7 +251,15 @@ export const createOnionRouterTransport = ({
       const envelope = encodeBase64Url(
         new TextEncoder().encode(JSON.stringify(packet))
       );
-      const result = await client.send(to, envelope, DEFAULT_TTL_MS);
+      const route =
+        torOnion || lokinet
+          ? {
+              mode: routeMode,
+              torOnion,
+              lokinet,
+            }
+          : undefined;
+      const result = await client.send(toDeviceId, envelope, DEFAULT_TTL_MS, route);
       if (!result.ok) {
         throw new Error(result.error ?? "Onion send failed");
       }
