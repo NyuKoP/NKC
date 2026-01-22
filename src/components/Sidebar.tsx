@@ -513,7 +513,7 @@ function ConversationRow({
 }: ConversationRowProps) {
   const handleSelect = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
-    if (target?.closest?.('[data-stop-row-click=\"true\"]')) return;
+    if (target?.closest?.('[data-stop-row-click="true"]')) return;
     onSelect();
   };
 
