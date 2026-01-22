@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { wipeVault } from "../db/repo";
 import { clearSession as clearStoredSession } from "../security/session";
 
@@ -33,7 +33,7 @@ export default function Unlock({ onUnlock }: UnlockProps) {
 
   const handleReset = async () => {
     const ok = window.confirm(
-      "로컬 금고를 초기화할까요? 복구키 없이는 복구할 수 없습니다."
+      "로컬 금고를 초기화할까요? 이 작업은 되돌릴 수 없습니다."
     );
     if (!ok) return;
     await clearStoredSession();
@@ -47,7 +47,7 @@ export default function Unlock({ onUnlock }: UnlockProps) {
     try {
       const result = await onUnlock(pin);
       if (!result.ok) {
-        setError(result.error || "PIN이 올바르지 않습니다.");
+        setError(result.error || "PIN 형식이 올바르지 않습니다.");
         if (result.retryAfterMs) {
           setRetryAt(Date.now() + result.retryAfterMs);
         }
@@ -67,7 +67,7 @@ export default function Unlock({ onUnlock }: UnlockProps) {
       <div className="w-full max-w-md rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
         <h1 className="text-xl font-semibold">NKC 잠금 해제</h1>
         <p className="mt-2 text-sm text-nkc-muted">
-          PIN을 입력해야 로컬 금고를 열 수 있습니다.
+          PIN 잠금이 설정되어 있습니다. PIN을 잊었다면 시작 키로 재설정해야 합니다.
         </p>
 
         <label className="mt-6 text-sm">
@@ -86,7 +86,7 @@ export default function Unlock({ onUnlock }: UnlockProps) {
 
         {retrySeconds ? (
           <div className="mt-2 text-xs text-nkc-muted">
-            잠시 후 다시 시도하세요. ({retrySeconds}s)
+            다시 시도 가능: {retrySeconds}s
           </div>
         ) : null}
         {error ? <div className="mt-2 text-xs text-red-300">{error}</div> : null}
@@ -102,7 +102,7 @@ export default function Unlock({ onUnlock }: UnlockProps) {
           onClick={handleReset}
           className="mt-3 w-full rounded-nkc border border-nkc-border px-4 py-2 text-xs text-nkc-muted hover:bg-nkc-panel"
         >
-          금고 초기화하고 다시 시작
+          로컬 금고 초기화
         </button>
       </div>
     </div>

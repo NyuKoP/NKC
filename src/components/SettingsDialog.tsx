@@ -1,4 +1,4 @@
-﻿import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { AlertTriangle, Check, ChevronLeft, Clock, KeyRound, Lock, Users } from "lucide-react";
 import type { UserProfile } from "../db/repo";
@@ -33,23 +33,29 @@ import type { NetworkMode } from "../net/mode";
 import type { OnionNetwork } from "../net/netConfig";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import { validateProxyUrl } from "../net/proxyControl";
+import { getOrCreateDeviceId } from "../security/deviceRole";
+import { encodeBase64Url } from "../security/base64url";
+import { getDhPublicKey, getIdentityPublicKey } from "../security/identityKeys";
 import {
-  demoteToSecondary,
-  getDeviceRole,
-  getOrCreateDeviceId,
-  getRoleEpoch,
-  promoteToPrimary,
-  type DeviceRole,
-} from "../security/deviceRole";
-import { assertPrimary, isPrimary } from "../security/guards";
+  approvePairingRequest,
+  createSyncCode,
+  onPairingRequest,
+  onPairingResult,
+  rejectPairingRequest,
+  submitSyncCode,
+  type PairingRequest,
+  type PairingResult,
+  type SyncCodeState,
+} from "../devices/devicePairing";
 import {
-  getRegistrySnapshot,
-  onRegistryChange,
-  updateFromRoleEvent,
-  type RegistrySnapshot,
-  type RoleChangeEvent,
-} from "../devices/deviceRegistry";
-import { emitRoleChangeEvent } from "../sync/syncEngine";
+  createDeviceAddedEvent,
+  storeDeviceApproval,
+  verifyDeviceAddedEvent,
+} from "../devices/deviceApprovals";
+import {
+  startDeviceSyncAsApprover,
+  startDeviceSyncAsInitiator,
+} from "../devices/deviceSync";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
 
@@ -94,13 +100,12 @@ type SettingsDialogProps = {
   pinEnabled: boolean;
   onSetPin: (pin: string) => Promise<{ ok: boolean; error?: string }>;
   onDisablePin: () => Promise<void>;
-  onOpenRecovery: () => void;
+  onOpenStartKey: () => void;
 
   hiddenFriends: UserProfile[];
   blockedFriends: UserProfile[];
   onUnhideFriend: (id: string) => Promise<void>;
   onUnblockFriend: (id: string) => Promise<void>;
-  onSyncContacts: () => Promise<void>;
 
   onLogout: () => void;
   onWipe: () => void;
@@ -116,12 +121,11 @@ export default function SettingsDialog({
   pinEnabled,
   onSetPin,
   onDisablePin,
-  onOpenRecovery,
+  onOpenStartKey,
   hiddenFriends,
   blockedFriends,
   onUnhideFriend,
   onUnblockFriend,
-  onSyncContacts,
   onLogout,
   onWipe,
 }: SettingsDialogProps) {
@@ -186,11 +190,6 @@ export default function SettingsDialog({
 
   const t = (ko: string, en: string) => (language === "en" ? en : ko);
   const tl = (label: LocalizedLabel) => (language === "en" ? label.en : label.ko);
-  const primaryEnabled = isPrimary();
-  const primaryOnlyMessage = t(
-    "이 작업은 Primary 디바이스에서만 가능합니다.",
-    "This action is only available on the Primary device."
-  );
 
   const handleProxyUrlChange = (value: string) => {
     setProxyUrlDraft(value);
@@ -211,14 +210,78 @@ export default function SettingsDialog({
 
   // misc
   const [saveMessage, setSaveMessage] = useState("");
-  const [deviceInfo, setDeviceInfo] = useState<{
-    deviceId: string;
-    role: DeviceRole;
-    epoch: number;
-  } | null>(null);
-  const [registrySnapshot, setRegistrySnapshot] = useState<RegistrySnapshot | null>(null);
-  const [promoteConfirmOpen, setPromoteConfirmOpen] = useState(false);
-  const [demoteConfirmOpen, setDemoteConfirmOpen] = useState(false);
+  const [syncCodeState, setSyncCodeState] = useState<SyncCodeState | null>(null);
+  const [syncCodeNow, setSyncCodeNow] = useState(Date.now());
+  const [pairingRequest, setPairingRequest] = useState<PairingRequest | null>(null);
+  const [pairingRequestError, setPairingRequestError] = useState("");
+  const [pairingRequestBusy, setPairingRequestBusy] = useState(false);
+  const [linkCodeDraft, setLinkCodeDraft] = useState("");
+  const [linkRequestId, setLinkRequestId] = useState<string | null>(null);
+  const [linkStatus, setLinkStatus] = useState<
+    "idle" | "pending" | "approved" | "rejected" | "error"
+  >("idle");
+  const [linkMessage, setLinkMessage] = useState("");
+  const [linkBusy, setLinkBusy] = useState(false);
+  const linkTimeoutRef = useRef<number | null>(null);
+
+  const handleApprovedResult = useCallback(async (result: PairingResult) => {
+    setLinkBusy(false);
+    const event = result.event;
+    if (!event) {
+      setLinkStatus("error");
+      setLinkMessage(t("승인 이벤트를 받지 못했습니다.", "Missing approval event."));
+      return;
+    }
+    try {
+      const localDeviceId = getOrCreateDeviceId();
+      if (event.deviceId !== localDeviceId) {
+        setLinkStatus("error");
+        setLinkMessage(t("승인 대상이 이 기기가 아닙니다.", "Approval does not match this device."));
+        return;
+      }
+      const [identityPub, dhPub] = await Promise.all([
+        getIdentityPublicKey(),
+        getDhPublicKey(),
+      ]);
+      const localIdentity = encodeBase64Url(identityPub);
+      const localDh = encodeBase64Url(dhPub);
+      if (event.identityPub !== localIdentity || event.dhPub !== localDh) {
+        setLinkStatus("error");
+        setLinkMessage(t("기기 키가 일치하지 않습니다.", "Device keys do not match."));
+        return;
+      }
+      if (!event.approvedBy || !event.approverIdentityPub || !event.approverDhPub) {
+        setLinkStatus("error");
+        setLinkMessage(t("승인 정보가 누락되었습니다.", "Approval data is missing."));
+        return;
+      }
+      const verified = await verifyDeviceAddedEvent(event);
+      if (!verified) {
+        setLinkStatus("error");
+        setLinkMessage(
+          t("승인 서명 검증에 실패했습니다.", "Approval signature verification failed.")
+        );
+        return;
+      }
+      const stored = await storeDeviceApproval(event);
+      if (!stored) {
+        setLinkStatus("error");
+        setLinkMessage(t("승인 정보를 저장하지 못했습니다.", "Failed to store approval."));
+        return;
+      }
+      await startDeviceSyncAsInitiator({
+        deviceId: event.approvedBy,
+        identityPub: event.approverIdentityPub,
+        dhPub: event.approverDhPub,
+      });
+      setLinkStatus("approved");
+      setLinkMessage(t("승인이 완료되었습니다. 동기화를 시작합니다.", "Approved. Starting sync."));
+    } catch (error) {
+      console.error("Failed to process approval result", error);
+      setLinkStatus("error");
+      setLinkMessage(t("승인 처리에 실패했습니다.", "Failed to process approval."));
+    }
+  }, [t]);
 
   useEffect(() => {
     setDisplayName(user.displayName);
@@ -243,28 +306,48 @@ export default function SettingsDialog({
 
   useEffect(() => {
     if (view !== "devices") return;
-    const deviceId = getOrCreateDeviceId();
-    const role = getDeviceRole();
-    const epoch = getRoleEpoch();
-    setDeviceInfo({ deviceId, role, epoch });
-  }, [view]);
-
-  useEffect(() => {
-    if (view !== "devices") return;
-    let active = true;
-    const load = async () => {
-      const snapshot = await getRegistrySnapshot();
-      if (active) setRegistrySnapshot(snapshot);
-    };
-    void load();
-    const unsubscribe = onRegistryChange((snapshot) => {
-      if (active) setRegistrySnapshot(snapshot);
+    const unsubscribeRequests = onPairingRequest((request) => {
+      setPairingRequestError("");
+      setPairingRequest(request);
+      setSyncCodeState((prev) => {
+        if (!prev || prev.code !== request.code) return prev;
+        return { ...prev, used: true };
+      });
+    });
+    const unsubscribeResults = onPairingResult((result) => {
+      if (!linkRequestId || result.requestId !== linkRequestId) return;
+      if (linkTimeoutRef.current) {
+        window.clearTimeout(linkTimeoutRef.current);
+        linkTimeoutRef.current = null;
+      }
+      if (result.status === "approved") {
+        void handleApprovedResult(result);
+        return;
+      }
+      setLinkBusy(false);
+      if (result.status === "rejected") {
+        setLinkStatus("rejected");
+        setLinkMessage(result.message || t("요청이 거절되었습니다.", "Request rejected."));
+        return;
+      }
+      setLinkStatus("error");
+      setLinkMessage(result.message || t("연결에 실패했습니다.", "Connection failed."));
     });
     return () => {
-      active = false;
-      unsubscribe();
+      unsubscribeRequests();
+      unsubscribeResults();
+      if (linkTimeoutRef.current) {
+        window.clearTimeout(linkTimeoutRef.current);
+        linkTimeoutRef.current = null;
+      }
     };
-  }, [view]);
+  }, [handleApprovedResult, linkRequestId, t, view]);
+
+  useEffect(() => {
+    if (!syncCodeState) return;
+    const timer = window.setInterval(() => setSyncCodeNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [syncCodeState]);
 
   useEffect(() => {
     if (!open) return;
@@ -506,24 +589,122 @@ export default function SettingsDialog({
     }
   };
 
-  const handleRoleChange = async (
-    info: { deviceId: string; role: DeviceRole; epoch: number },
-    reason: RoleChangeEvent["reason"]
-  ) => {
-    const event: RoleChangeEvent = {
-      kind: "ROLE_CHANGE",
-      deviceId: info.deviceId,
-      role: info.role,
-      epoch: info.epoch,
-      ts: Date.now(),
-      reason,
-    };
+  const formatCountdown = (valueMs: number) => {
+    const totalSeconds = Math.max(0, Math.ceil(valueMs / 1000));
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes}:${String(seconds).padStart(2, "0")}`;
+  };
+
+
+  const handleGenerateSyncCode = () => {
     try {
-      await updateFromRoleEvent(event);
+      const next = createSyncCode();
+      setSyncCodeState(next);
+      setSyncCodeNow(Date.now());
+      setPairingRequest(null);
+      setPairingRequestError("");
     } catch (error) {
-      console.warn("Failed to update device registry", error);
+      console.error("Failed to generate sync code", error);
+      addToast({ message: t("코드 생성에 실패했습니다.", "Failed to generate code.") });
     }
-    void emitRoleChangeEvent(event);
+  };
+
+  const handleCopySyncCode = async () => {
+    if (!syncCodeState?.code) return;
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard not available");
+      await navigator.clipboard.writeText(syncCodeState.code);
+      addToast({ message: t("코드를 복사했습니다.", "Code copied.") });
+    } catch (error) {
+      console.error("Failed to copy sync code", error);
+      addToast({ message: t("코드 복사에 실패했습니다.", "Failed to copy code.") });
+    }
+  };
+
+  const handleApproveRequest = async () => {
+    if (!pairingRequest) return;
+    setPairingRequestBusy(true);
+    setPairingRequestError("");
+    try {
+      const event = await createDeviceAddedEvent({
+        deviceId: pairingRequest.deviceId,
+        identityPub: pairingRequest.identityPub,
+        dhPub: pairingRequest.dhPub,
+      });
+      const stored = await storeDeviceApproval(event);
+      if (!stored) {
+        setPairingRequestError(
+          t("승인 정보를 저장하지 못했습니다.", "Failed to store approval.")
+        );
+        return;
+      }
+      approvePairingRequest(pairingRequest.requestId, event);
+      await startDeviceSyncAsApprover({
+        deviceId: pairingRequest.deviceId,
+        identityPub: pairingRequest.identityPub,
+        dhPub: pairingRequest.dhPub,
+      });
+      setPairingRequest(null);
+      addToast({ message: t("새 기기를 승인했습니다.", "New device approved.") });
+    } catch (error) {
+      console.error("Failed to approve device", error);
+      setPairingRequestError(t("승인 처리에 실패했습니다.", "Approval failed."));
+    } finally {
+      setPairingRequestBusy(false);
+    }
+  };
+
+  const handleRejectRequest = () => {
+    if (!pairingRequest) return;
+    rejectPairingRequest(
+      pairingRequest.requestId,
+      t("요청이 거절되었습니다.", "Request rejected.")
+    );
+    setPairingRequest(null);
+    addToast({ message: t("요청을 거절했습니다.", "Request rejected.") });
+  };
+
+  const handleSubmitLink = async () => {
+    if (!linkCodeDraft.trim()) {
+      setLinkStatus("error");
+      setLinkMessage(t("연결 코드를 입력해 주세요.", "Enter a sync code."));
+      return;
+    }
+    setLinkBusy(true);
+    setLinkStatus("pending");
+    setLinkMessage(t("승인을 기다리는 중...", "Waiting for approval..."));
+    try {
+      const [identityPub, dhPub] = await Promise.all([
+        getIdentityPublicKey(),
+        getDhPublicKey(),
+      ]);
+      const requestId = submitSyncCode({
+        code: linkCodeDraft.trim(),
+        deviceId: getOrCreateDeviceId(),
+        identityPub: encodeBase64Url(identityPub),
+        dhPub: encodeBase64Url(dhPub),
+      });
+      setLinkRequestId(requestId);
+      if (linkTimeoutRef.current) {
+        window.clearTimeout(linkTimeoutRef.current);
+      }
+      linkTimeoutRef.current = window.setTimeout(() => {
+        setLinkBusy(false);
+        setLinkStatus("error");
+        setLinkMessage(
+          t(
+            "기존 기기의 응답이 없습니다. 온라인 상태를 확인하세요.",
+            "No response from the existing device. Check it is online."
+          )
+        );
+      }, 30_000);
+    } catch (error) {
+      console.error("Failed to submit sync code", error);
+      setLinkBusy(false);
+      setLinkStatus("error");
+      setLinkMessage(t("연결 요청에 실패했습니다.", "Failed to request pairing."));
+    }
   };
 
   const refreshAppData = async () => {
@@ -770,6 +951,16 @@ export default function SettingsDialog({
       : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
   const proxyAuto = !proxyUrlDraft.trim();
   const showDirectWarning = netConfig.mode === "directP2P";
+  const syncCodeRemainingMs = syncCodeState
+    ? Math.max(0, syncCodeState.expiresAt - syncCodeNow)
+    : 0;
+  const syncCodeExpired = Boolean(syncCodeState && syncCodeRemainingMs <= 0);
+  const linkStatusClass =
+    linkStatus === "approved"
+      ? "text-emerald-300"
+      : linkStatus === "pending"
+        ? "text-nkc-muted"
+        : "text-red-300";
 
   return (
     <>
@@ -895,7 +1086,7 @@ export default function SettingsDialog({
                     className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
                   >
                     <Users size={16} className="text-nkc-muted" />
-                    {t("디바이스 / 동기화", "Devices / Sync")}
+                    {t("기기/동기화", "Devices / Sync")}
                   </button>
                   <button
                     type="button"
@@ -1455,178 +1646,139 @@ export default function SettingsDialog({
           {/* DEVICES */}
           {view === "devices" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("디바이스 / 동기화", "Devices / Sync"))}
-
-              {registrySnapshot?.conflict.hasConflict ? (
-                <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-4">
-                  <div className="text-sm font-semibold text-red-100">
-                    {t(
-                      "Primary 충돌 감지: 여러 디바이스가 동시에 Primary로 설정되어 있습니다.",
-                      "Primary conflict detected: multiple devices are set to Primary."
-                    )}
-                  </div>
-                  <div className="mt-3 grid gap-2 text-xs text-red-100/90">
-                    {registrySnapshot.conflict.primaries.map((entry) => (
-                      <div
-                        key={entry.deviceId}
-                        className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-red-400/40 bg-red-500/10 px-3 py-2"
-                      >
-                        <div className="font-mono">{entry.deviceId.slice(0, 12)}</div>
-                        <div>
-                          {t("에폭", "Epoch")} {entry.epoch}
-                        </div>
-                        <div>{formatTimestamp(entry.lastSeenAt)}</div>
-                      </div>
-                    ))}
-                  </div>
-                </section>
-              ) : null}
+              {renderBackHeader(t("기기/동기화", "Devices / Sync"))}
 
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="text-sm font-semibold text-nkc-text">
-                  {t("이 디바이스", "This device")}
+                  {t("새 기기 추가(코드 생성)", "Add new device (Generate code)")}
                 </div>
-                <div className="mt-4 grid gap-3 text-sm">
-                  <div className="flex items-center justify-between gap-4">
-                    <div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("디바이스 ID", "Device ID")}
-                      </div>
-                      <div className="mt-1 font-mono text-sm text-nkc-text">
-                        {deviceInfo ? deviceInfo.deviceId.slice(0, 12) : "-"}
-                      </div>
-                    </div>
+                <div className="mt-2 text-xs text-nkc-muted">
+                  {t(
+                    "기존 기기에서 코드를 생성한 뒤 새 기기에 입력하세요.",
+                    "Generate a code on an existing device and enter it on the new device."
+                  )}
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={handleGenerateSyncCode}
+                    className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg"
+                  >
+                    {t("코드 생성", "Generate code")}
+                  </button>
+                  {syncCodeState ? (
                     <button
                       type="button"
-                      onClick={async () => {
-                        try {
-                          assertPrimary("deviceLinking");
-                        } catch (error) {
-                          console.error("Primary-only device link blocked", error);
-                          addToast({
-                            message: primaryOnlyMessage,
-                          });
-                          return;
-                        }
-                        const deviceId = deviceInfo?.deviceId ?? getOrCreateDeviceId();
-                        try {
-                          if (!navigator.clipboard) {
-                            throw new Error("Clipboard not available");
-                          }
-                          await navigator.clipboard.writeText(deviceId);
-                          addToast({
-                            message: t(
-                              "디바이스 ID를 복사했습니다.",
-                              "Device ID copied."
-                            ),
-                          });
-                        } catch (error) {
-                          console.error("Failed to copy device id", error);
-                          addToast({
-                            message: t(
-                              "디바이스 ID 복사에 실패했습니다.",
-                              "Failed to copy device ID."
-                            ),
-                          });
-                        }
-                      }}
-                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-60"
-                      disabled={!primaryEnabled}
-                      title={primaryEnabled ? undefined : primaryOnlyMessage}
+                      onClick={() => void handleCopySyncCode()}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
                     >
-                      {t("복사", "Copy")}
+                      {t("코드 복사", "Copy code")}
                     </button>
-                  </div>
-                  {!primaryEnabled ? (
-                    <div className="text-xs text-nkc-muted">{primaryOnlyMessage}</div>
                   ) : null}
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="text-xs text-nkc-muted">
-                      {t("현재 역할", "Current role")}
-                    </div>
-                    <span
-                      className={`rounded-full border px-2 py-1 text-xs ${
-                        deviceInfo?.role === "secondary"
-                          ? "border-nkc-border text-nkc-muted"
-                          : "border-nkc-accent/40 bg-nkc-panel text-nkc-text"
-                      }`}
-                    >
-                      {deviceInfo?.role === "secondary" ? "Secondary" : "Primary"}
-                    </span>
-                  </div>
-                  <div className="flex items-center justify-between gap-4">
-                    <div className="text-xs text-nkc-muted">
-                      {t("역할 에폭", "Role epoch")}
-                    </div>
-                    <div className="text-xs text-nkc-muted">
-                      {deviceInfo?.epoch ?? 0}
-                    </div>
-                  </div>
                 </div>
-              </section>
+                {syncCodeState ? (
+                  <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
+                    <div className="text-xs text-nkc-muted">{t("동기화 코드", "Sync code")}</div>
+                    <div className="mt-1 font-mono text-lg text-nkc-text">{syncCodeState.code}</div>
+                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-nkc-muted">
+                      <Clock size={14} />
+                      {syncCodeState.used
+                        ? t("이미 사용됨", "Already used")
+                        : syncCodeExpired
+                          ? t("만료됨", "Expired")
+                          : `${t("남은 시간", "Time left")}: ${formatCountdown(syncCodeRemainingMs)}`}
+                    </div>
+                  </div>
+                ) : null}
 
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!primaryEnabled) {
-                        addToast({ message: primaryOnlyMessage });
-                        return;
-                      }
-                      setPromoteConfirmOpen(true);
-                    }}
-                    className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={!primaryEnabled}
-                    title={primaryEnabled ? undefined : primaryOnlyMessage}
-                  >
-                    {t("이 디바이스를 Primary로 설정", "Set this device as Primary")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!primaryEnabled) {
-                        addToast({ message: primaryOnlyMessage });
-                        return;
-                      }
-                      setDemoteConfirmOpen(true);
-                    }}
-                    className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={!primaryEnabled}
-                    title={primaryEnabled ? undefined : primaryOnlyMessage}
-                  >
-                    {t("Secondary로 변경", "Switch to Secondary")}
-                  </button>
-                </div>
-                {!primaryEnabled ? (
-                  <div className="mt-2 text-xs text-nkc-muted">{primaryOnlyMessage}</div>
+                {pairingRequest ? (
+                  <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3">
+                    <div className="text-xs text-nkc-muted">
+                      {t("연결 요청", "Pairing request")}
+                    </div>
+                    <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-sm">
+                      <span className="font-mono text-nkc-text">
+                        {pairingRequest.deviceId.slice(0, 12)}
+                      </span>
+                      <span className="text-xs text-nkc-muted">
+                        {formatTimestamp(pairingRequest.ts)}
+                      </span>
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleApproveRequest()}
+                        disabled={pairingRequestBusy}
+                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                      >
+                        {t("승인", "Approve")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleRejectRequest}
+                        disabled={pairingRequestBusy}
+                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                      >
+                        {t("거절", "Reject")}
+                      </button>
+                    </div>
+                    {pairingRequestError ? (
+                      <div className="mt-2 text-xs text-red-300">{pairingRequestError}</div>
+                    ) : null}
+                  </div>
                 ) : null}
               </section>
 
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="text-sm font-semibold text-nkc-text">
-                  {t("연락처 동기화", "Sync contacts")}
+                  {t("기기 연결(코드 입력)", "Link device (Enter code)")}
                 </div>
-                <div className="mt-3">
+                <div className="mt-2 text-xs text-nkc-muted">
+                  {t(
+                    "새 기기에서 코드를 입력해 연결을 요청합니다.",
+                    "Enter the code on the new device to request linking."
+                  )}
+                </div>
+                <div className="mt-4 grid gap-2">
+                  <input
+                    value={linkCodeDraft}
+                    onChange={(event) => {
+                      setLinkCodeDraft(event.target.value);
+                      if (linkStatus !== "idle") {
+                        setLinkStatus("idle");
+                        setLinkMessage("");
+                      }
+                    }}
+                    placeholder="NKC-SYNC-XXXX-XXXX"
+                    className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
+                  />
                   <button
                     type="button"
-                    onClick={() => {
-                      if (!primaryEnabled) {
-                        addToast({ message: primaryOnlyMessage });
-                        return;
-                      }
-                      void onSyncContacts();
-                    }}
-                    className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-60"
-                    disabled={!primaryEnabled}
-                    title={primaryEnabled ? undefined : primaryOnlyMessage}
+                    onClick={() => void handleSubmitLink()}
+                    disabled={linkBusy}
+                    className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                   >
-                    {t("연락처 동기화", "Sync Contacts")}
+                    {linkBusy ? t("연결 중...", "Connecting...") : t("연결 요청", "Request link")}
                   </button>
                 </div>
-                {!primaryEnabled ? (
-                  <div className="mt-2 text-xs text-nkc-muted">{primaryOnlyMessage}</div>
+                {linkStatus !== "idle" ? (
+                  <div className={`mt-2 text-xs ${linkStatusClass}`}>{linkMessage}</div>
                 ) : null}
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-xs text-nkc-muted">
+                <div>
+                  {t(
+                    "기존 기기가 온라인일 때만 동기화/기기 추가가 가능합니다.",
+                    "Syncing and adding devices only works while an existing device is online."
+                  )}
+                </div>
+                <div className="mt-1">
+                  {t(
+                    "기존 기기를 분실/파손하면 이 계정은 복구할 수 없고 새 계정을 만들어야 합니다.",
+                    "If the existing device is lost or broken, this account cannot be recovered and you must create a new account."
+                  )}
+                </div>
               </section>
             </div>
           )}
@@ -1664,7 +1816,10 @@ export default function SettingsDialog({
 
                   {!pinAvailable ? (
                     <div className="text-xs text-nkc-muted">
-                      {t("PIN lock is unavailable on this platform/build.", "PIN lock is unavailable on this platform/build.")}
+                      {t(
+                        "PIN lock is unavailable on this platform/build.",
+                        "PIN lock is unavailable on this platform/build."
+                      )}
                     </div>
                   ) : null}
 
@@ -1692,17 +1847,15 @@ export default function SettingsDialog({
                     </div>
                   ) : null}
 
-                  {pinError ? (
-                    <div className="text-xs text-red-300">{pinError}</div>
-                  ) : null}
+                  {pinError ? <div className="text-xs text-red-300">{pinError}</div> : null}
 
                   <button
                     type="button"
-                    onClick={onOpenRecovery}
+                    onClick={onOpenStartKey}
                     className="flex w-fit items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
                   >
                     <KeyRound size={14} />
-                    {t("복구 키 관리", "Manage recovery key")}
+                    {t("시작 키 관리", "Manage start key")}
                   </button>
                 </div>
               </section>
@@ -1891,7 +2044,9 @@ export default function SettingsDialog({
                     disabled={chatWipeBusy}
                     className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                   >
-                    {chatWipeBusy ? t("처리 중...", "Working...") : t("채팅 내역 초기화", "Reset chat history")}
+                    {chatWipeBusy
+                      ? t("처리 중...", "Working...")
+                      : t("채팅 내역 초기화", "Reset chat history")}
                   </button>
                   <button
                     type="button"
@@ -1969,60 +2124,6 @@ export default function SettingsDialog({
         </Dialog.Portal>
       </Dialog.Root>
       <ConfirmDialog
-        open={promoteConfirmOpen}
-        title={t("Primary로 설정", "Set as Primary")}
-        message={t(
-          "서버가 없기 때문에 다른 디바이스도 Primary일 수 있습니다. 나중에 두 디바이스가 다시 연결되면 역할을 정리해야 합니다. 계속할까요?",
-          "Without a server, other devices might also be Primary. When devices reconnect, roles must be reconciled. Continue?"
-        )}
-        onClose={() => setPromoteConfirmOpen(false)}
-        onConfirm={() => {
-          try {
-            assertPrimary("promoteDevice");
-          } catch (error) {
-            console.error("Primary-only promote blocked", error);
-            addToast({ message: primaryOnlyMessage });
-            return;
-          }
-          const info = promoteToPrimary();
-          setDeviceInfo(info);
-          void handleRoleChange(info, "user");
-          addToast({
-            message: t(
-              "이 디바이스가 Primary로 설정되었습니다.",
-              "This device is now Primary."
-            ),
-          });
-        }}
-      />
-      <ConfirmDialog
-        open={demoteConfirmOpen}
-        title={t("Secondary로 변경", "Switch to Secondary")}
-        message={t(
-          "이 디바이스를 Secondary로 전환합니다. 계속할까요?",
-          "This device will switch to Secondary. Continue?"
-        )}
-        onClose={() => setDemoteConfirmOpen(false)}
-        onConfirm={() => {
-          try {
-            assertPrimary("demoteDevice");
-          } catch (error) {
-            console.error("Primary-only demote blocked", error);
-            addToast({ message: primaryOnlyMessage });
-            return;
-          }
-          const info = demoteToSecondary();
-          setDeviceInfo(info);
-          void handleRoleChange(info, "user");
-          addToast({
-            message: t(
-              "이 디바이스가 Secondary로 설정되었습니다.",
-              "This device is now Secondary."
-            ),
-          });
-        }}
-      />
-      <ConfirmDialog
         open={wipeConfirmOpen}
         title={
           wipeConfirmType === "media"
@@ -2075,11 +2176,14 @@ export default function SettingsDialog({
           } catch (error) {
             console.error("Failed to delete media", error);
             setSaveMessage(t("미디어 초기화 실패", "Media reset failed"));
-            } finally {
-              setMediaWipeBusy(false);
-            }
-          }}
+          } finally {
+            setMediaWipeBusy(false);
+          }
+        }}
         />
       </>
     );
   }
+
+
+

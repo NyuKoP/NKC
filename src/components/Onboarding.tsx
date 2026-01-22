@@ -1,28 +1,28 @@
-import { useEffect, useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { Upload } from "lucide-react";
 
 type OnboardingProps = {
   onCreate: (displayName: string) => Promise<void>;
-  onImport: (recoveryKey: string, displayName: string) => Promise<void>;
-  defaultTab?: "create" | "import";
+  onUnlockWithStartKey: (startKey: string, displayName: string) => Promise<void>;
+  defaultTab?: "create" | "startKey";
   errorMessage?: string;
 };
 
 export default function Onboarding({
   onCreate,
-  onImport,
+  onUnlockWithStartKey,
   defaultTab = "create",
   errorMessage,
 }: OnboardingProps) {
-  const [tab, setTab] = useState<"create" | "import">(defaultTab);
+  const [tab, setTab] = useState<"create" | "startKey">(defaultTab);
   const [displayName, setDisplayName] = useState("");
-  const [importKey, setImportKey] = useState("");
+  const [startKey, setStartKey] = useState("");
   const [confirmed, setConfirmed] = useState(false);
-  const [busy, setBusy] = useState<"create" | "import" | null>(null);
+  const [busy, setBusy] = useState<"create" | "startKey" | null>(null);
   const [localError, setLocalError] = useState("");
 
   const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
-  const logClick = (mode: "create" | "import", disabled: boolean) => {
+  const logClick = (mode: "create" | "startKey", disabled: boolean) => {
     if (!isDev) return;
     console.log("Onboarding button clicked", { mode, disabled });
   };
@@ -33,7 +33,7 @@ export default function Onboarding({
 
   const handleUpload = async (file: File) => {
     const text = await file.text();
-    setImportKey(text.trim());
+    setStartKey(text.trim());
   };
 
   return (
@@ -41,9 +41,9 @@ export default function Onboarding({
       <div className="w-full max-w-2xl rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-semibold">NKC 시작하기</h1>
+            <h1 className="text-xl font-semibold">NKC 시작</h1>
             <p className="mt-2 text-sm text-nkc-muted">
-              복구키는 복구 화면에서만 생성됩니다. 설정 후 바로 저장하세요.
+              시작 키(로그인 키)는 이 기기의 잠금 해제에만 사용됩니다.
             </p>
           </div>
           <span className="rounded-full bg-nkc-panelMuted px-3 py-1 text-xs font-semibold text-nkc-accent">
@@ -62,18 +62,18 @@ export default function Onboarding({
           </button>
           <button
             className={`rounded-nkc px-4 py-2 font-semibold ${
-              tab === "import" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
+              tab === "startKey" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
             }`}
-            onClick={() => setTab("import")}
+            onClick={() => setTab("startKey")}
           >
-            복구키 가져오기
+            시작 키로 잠금 해제
           </button>
         </div>
 
         {tab === "create" ? (
           <div className="mt-6 space-y-4">
             <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-xs text-nkc-muted">
-              복구키는 설정 완료 후 복구키 화면에서 생성합니다.
+              기존 기기를 분실하거나 파손하면 이 계정은 복구할 수 없고 새 계정을 만들어야 합니다.
             </div>
 
             <label className="text-sm">
@@ -97,7 +97,7 @@ export default function Onboarding({
                 }}
                 data-testid="onboarding-confirm-checkbox"
               />
-              복구키를 별도로 저장해야 함을 확인했습니다.
+              위 내용을 확인했습니다.
             </label>
 
             <button
@@ -105,7 +105,7 @@ export default function Onboarding({
                 const disabled = !confirmed || busy === "create";
                 logClick("create", disabled);
                 if (!confirmed) {
-                  setLocalError("체크박스를 확인해주세요.");
+                  setLocalError("확인 체크박스를 선택해 주세요.");
                   return;
                 }
                 setLocalError("");
@@ -126,7 +126,7 @@ export default function Onboarding({
               {busy === "create" ? "처리 중..." : "계속하기"}
             </button>
             {!confirmed ? (
-              <div className="text-xs text-nkc-muted">체크박스를 확인해주세요.</div>
+              <div className="text-xs text-nkc-muted">확인 체크박스를 선택해 주세요.</div>
             ) : null}
             {localError ? <div className="text-xs text-red-300">{localError}</div> : null}
             {errorMessage ? (
@@ -136,11 +136,11 @@ export default function Onboarding({
         ) : (
           <div className="mt-6 space-y-4">
             <label className="text-sm">
-              복구키 입력
+              시작 키 입력
               <textarea
-                value={importKey}
+                value={startKey}
                 onChange={(event) => {
-                  setImportKey(event.target.value);
+                  setStartKey(event.target.value);
                   setLocalError("");
                 }}
                 className="mt-2 h-24 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
@@ -173,30 +173,30 @@ export default function Onboarding({
 
             <button
               onClick={async () => {
-                const disabled = !importKey.trim() || busy === "import";
-                logClick("import", disabled);
-                if (!importKey.trim()) {
-                  setLocalError("복구키를 입력해주세요.");
+                const disabled = !startKey.trim() || busy === "startKey";
+                logClick("startKey", disabled);
+                if (!startKey.trim()) {
+                  setLocalError("시작 키를 입력해 주세요.");
                   return;
                 }
                 setLocalError("");
-                setBusy("import");
+                setBusy("startKey");
                 try {
-                  await onImport(importKey.trim(), displayName.trim() || "NKC 사용자");
+                  await onUnlockWithStartKey(startKey.trim(), displayName.trim() || "NKC 사용자");
                 } catch (error) {
-                  console.error("Onboarding import failed", error);
-                  setLocalError("복구키로 잠금 해제에 실패했습니다.");
+                  console.error("Onboarding start key unlock failed", error);
+                  setLocalError("시작 키로 잠금 해제에 실패했습니다.");
                 } finally {
                   setBusy(null);
                 }
               }}
               className="w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={busy === "import"}
+              disabled={busy === "startKey"}
             >
-              {busy === "import" ? "처리 중..." : "복구키로 잠금 해제"}
+              {busy === "startKey" ? "처리 중..." : "시작 키로 잠금 해제"}
             </button>
-            {!importKey.trim() ? (
-              <div className="text-xs text-nkc-muted">복구키를 입력해주세요.</div>
+            {!startKey.trim() ? (
+              <div className="text-xs text-nkc-muted">시작 키를 입력해 주세요.</div>
             ) : null}
             {localError ? <div className="text-xs text-red-300">{localError}</div> : null}
           </div>

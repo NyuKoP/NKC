@@ -5,7 +5,6 @@ import { Copy, Eye, EyeOff, UserPlus } from "lucide-react";
 type FriendAddDialogProps = {
   open: boolean;
   myCode: string;
-  canShowMyCode: boolean;
   onOpenChange: (open: boolean) => void;
   onCopyCode: () => Promise<void>;
   onAdd: (payload: { code: string; psk?: string }) => Promise<{ ok: boolean; error?: string }>;
@@ -14,7 +13,6 @@ type FriendAddDialogProps = {
 export default function FriendAddDialog({
   open,
   myCode,
-  canShowMyCode,
   onOpenChange,
   onCopyCode,
   onAdd,
@@ -60,93 +58,83 @@ export default function FriendAddDialog({
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/60" />
         <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft">
-          <Dialog.Title className="text-base font-semibold text-nkc-text">
-            친구 추가
+          <Dialog.Title className="flex items-center gap-2 text-lg font-semibold text-nkc-text">
+            <UserPlus size={18} /> 친구 추가
           </Dialog.Title>
-          <Dialog.Description className="mt-2 text-sm text-nkc-muted">
-            친구 코드(NKC1-...)를 교환해 서로를 추가하세요.
-          </Dialog.Description>
 
-          <div className="mt-4 grid gap-3">
-            <label className="text-sm">
-              내 친구 코드
-              <div className="mt-2 flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
-                <input
-                  value={canShowMyCode ? myCode : ""}
-                  readOnly
-                  autoComplete="off"
-                  className="w-full bg-transparent text-sm text-nkc-text focus:outline-none"
-                  placeholder={canShowMyCode ? "코드를 생성하는 중..." : "Primary 디바이스에서만 표시됩니다."}
-                />
-                <button
-                  onClick={onCopyCode}
-                  className="flex items-center gap-1 rounded-nkc border border-nkc-border px-2 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={!canShowMyCode || !myCode}
-                  title={canShowMyCode ? undefined : "이 작업은 Primary 디바이스에서만 가능합니다."}
-                >
-                  <Copy size={12} />
-                  복사
-                </button>
-              </div>
-              {!canShowMyCode ? (
-                <div className="mt-2 text-xs text-nkc-muted">
-                  이 작업은 Primary 디바이스에서만 가능합니다.
-                </div>
-              ) : null}
+          <div className="mt-4 space-y-4">
+            <label className="text-sm text-nkc-muted">
+              내 코드
+              <input
+                value={myCode}
+                onClick={() => setShowPsk(false)}
+                className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 font-mono text-sm text-nkc-text"
+                placeholder="코드를 생성하는 중..."
+                readOnly
+              />
             </label>
+            <button
+              type="button"
+              onClick={onCopyCode}
+              className="inline-flex items-center gap-1 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={!myCode}
+            >
+              <Copy size={14} />
+              복사
+            </button>
 
-            <label className="text-sm">
+            <label className="text-sm text-nkc-muted">
               친구 코드
-              <textarea
+              <input
                 value={code}
                 onChange={(event) => setCode(event.target.value)}
-                className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
-                placeholder="NKC1-..."
-                rows={3}
+                className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+                placeholder="NCK- 또는 NKC-..."
               />
             </label>
 
-            <label className="text-sm">
-              PSK (선택)
-              <div className="mt-2 flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
+            <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3 text-xs text-nkc-muted">
+              PSK는 선택사항입니다. 친구와 미리 공유한 경우 입력하세요.
+            </div>
+
+            <label className="text-sm text-nkc-muted">
+              PSK
+              <div className="mt-2 flex items-center gap-2">
                 <input
+                  type={showPsk ? "text" : "password"}
                   value={psk}
                   onChange={(event) => setPsk(event.target.value)}
-                  type={showPsk ? "text" : "password"}
-                  className="w-full bg-transparent text-sm text-nkc-text focus:outline-none"
-                  placeholder="추가 암호 (선택)"
+                  className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+                  placeholder="PSK (선택)"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPsk((prev) => !prev)}
-                  className="rounded-nkc border border-nkc-border px-2 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                  className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
                 >
-                  {showPsk ? <EyeOff size={12} /> : <Eye size={12} />}
+                  {showPsk ? <EyeOff size={14} /> : <Eye size={14} />}
                 </button>
               </div>
             </label>
-          </div>
 
-          {error ? <div className="mt-3 text-xs text-red-300">{error}</div> : null}
+            {error ? <div className="text-xs text-red-300">{error}</div> : null}
 
-          <div className="mt-5 flex justify-end gap-2">
-            <Dialog.Close asChild>
-              <button className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panelMuted">
+            <div className="flex justify-end gap-2">
+              <Dialog.Close className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel">
                 닫기
+              </Dialog.Close>
+              <button
+                type="button"
+                onClick={() => void handleAdd()}
+                className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                disabled={!code.trim() || busy}
+              >
+                {busy ? "추가 중..." : "친구 추가"}
               </button>
-            </Dialog.Close>
-            <button
-              onClick={handleAdd}
-              className="flex items-center gap-2 rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!code.trim() || busy}
-            >
-              <UserPlus size={14} />
-              추가
-            </button>
+            </div>
           </div>
         </Dialog.Content>
       </Dialog.Portal>
     </Dialog.Root>
   );
 }
-

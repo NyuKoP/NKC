@@ -3,7 +3,7 @@ import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-
 import { useAppStore } from "./store";
 import Onboarding from "../components/Onboarding";
 import Unlock from "../components/Unlock";
-import Recovery from "../components/Recovery";
+import StartKey from "../components/StartKey";
 import FriendAddDialog from "../components/FriendAddDialog";
 import GroupCreateDialog from "../components/GroupCreateDialog";
 import Sidebar from "../components/Sidebar";
@@ -38,7 +38,7 @@ import {
   type Message,
   type UserProfile,
 } from "../db/repo";
-import { chunkBuffer, encryptJsonRecord, validateRecoveryKey } from "../crypto/vault";
+import { chunkBuffer, encryptJsonRecord, validateStartKey } from "../crypto/vault";
 import { getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
 import { computeFriendId, decodeFriendCodeV1, encodeFriendCodeV1 } from "../security/friendCode";
 import { applyTOFU } from "../security/trust";
@@ -60,7 +60,6 @@ import {
   getOrCreateIdentityKeypair,
 } from "../security/identityKeys";
 import { getOrCreateDeviceId } from "../security/deviceRole";
-import { assertPrimary, isPrimary } from "../security/guards";
 import { deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
 import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
 import { sendCiphertext } from "../net/router";
@@ -71,7 +70,6 @@ import { syncGroupCreate } from "../sync/groupSync";
 import {
   connectConversation as connectSyncConversation,
   disconnectConversation as disconnectSyncConversation,
-  syncContactsNow,
 } from "../sync/syncEngine";
 import {
   getTransportStatus,
@@ -113,7 +111,7 @@ export default function App() {
   const location = useLocation();
 
   const [pinEnabled, setPinEnabled] = useState(false);
-  const [defaultTab, setDefaultTab] = useState<"create" | "import">("create");
+  const [defaultTab, setDefaultTab] = useState<"create" | "startKey">("create");
   const [pinNeedsReset, setPinNeedsReset] = useState(false);
   const wasHiddenRef = useRef(false);
 
@@ -146,8 +144,6 @@ export default function App() {
   );
 
   const settingsOpen = location.pathname === "/settings";
-  const primaryEnabled = isPrimary();
-
   const clearConnectionToastGuard = useCallback(() => {
     connectionToastShown.current = false;
     if (typeof window !== "undefined") {
@@ -164,10 +160,6 @@ export default function App() {
 
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;
-    if (!primaryEnabled) {
-      setMyFriendCode("");
-      return;
-    }
     Promise.all([getIdentityPublicKey(), getDhPublicKey()])
       .then(([identityPub, dhPub]) =>
         encodeFriendCodeV1({
@@ -178,7 +170,7 @@ export default function App() {
       )
       .then(setMyFriendCode)
       .catch((error) => console.error("Failed to compute friend code", error));
-  }, [friendAddOpen, primaryEnabled, userProfile]);
+  }, [friendAddOpen, userProfile]);
 
   const resolveDirectApproval = useCallback((approved: boolean) => {
     const resolver = directApprovalResolveRef.current;
@@ -243,7 +235,7 @@ export default function App() {
           resetAppState();
           setPinEnabled(false);
           setPinNeedsReset(false);
-          setDefaultTab("import");
+          setDefaultTab("startKey");
           setMode("onboarding");
           return;
         }
@@ -313,9 +305,9 @@ export default function App() {
         setMode("locked");
       } else {
         if (pinStatus.needsReset) {
-          addToast({ message: "PIN must be reset. Unlock with the recovery key." });
+          addToast({ message: "PIN must be reset. Unlock with the start key." });
         }
-        setDefaultTab("import");
+        setDefaultTab("startKey");
         setMode("onboarding");
       }
 
@@ -365,9 +357,9 @@ export default function App() {
           setMode("locked");
         } else {
           if (pinStatus.needsReset) {
-          addToast({ message: "PIN must be reset. Unlock with the recovery key." });
+          addToast({ message: "PIN must be reset. Unlock with the start key." });
           }
-          setDefaultTab("import");
+          setDefaultTab("startKey");
           setMode("onboarding");
         }
       } catch (error) {
@@ -481,20 +473,20 @@ export default function App() {
     }
   };
 
-  const handleImport = async (recoveryKey: string, displayName: string) => {
+  const handleStartKeyUnlock = async (startKey: string, displayName: string) => {
     if (onboardingLockRef.current) return;
     onboardingLockRef.current = true;
 
-    if (!validateRecoveryKey(recoveryKey)) {
-      addToast({ message: "복구키 형식이 올바르지 않습니다. (예: NKC-...)" });
+    if (!validateStartKey(startKey)) {
+      addToast({ message: "시작 키 형식이 올바르지 않습니다. (예: NKC-...)" });
       onboardingLockRef.current = false;
       return;
     }
 
     try {
-      devLog("onboarding:import:start");
+      devLog("onboarding:start-key:start");
 
-      await withTimeout(unlockVault(recoveryKey), "unlockVault");
+      await withTimeout(unlockVault(startKey), "unlockVault");
 
       const vk = getVaultKey();
       if (!vk) throw new Error("Vault key missing after unlock.");
@@ -523,9 +515,9 @@ export default function App() {
       await withTimeout(setStoredSession(vk), "setStoredSession");
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
-      console.error("Recovery import failed", error);
+      console.error("Start key unlock failed", error);
       lockVault();
-      addToast({ message: "복구키로 가져오기에 실패했습니다." });
+      addToast({ message: "시작 키로 잠금 해제에 실패했습니다." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -545,10 +537,10 @@ export default function App() {
         await clearPinRecord();
         setPinEnabled(true);
         setPinNeedsReset(true);
-        setDefaultTab("import");
+        setDefaultTab("startKey");
         setMode("onboarding");
         navigate("/");
-        return { ok: false, error: "PIN must be reset. Unlock with the recovery key." };
+        return { ok: false, error: "PIN must be reset. Unlock with the start key." };
       }
 
       return {
@@ -628,9 +620,9 @@ export default function App() {
         navigate("/unlock");
       } else {
         if (pinStatus.needsReset) {
-          addToast({ message: "PIN must be reset. Unlock with the recovery key." });
+          addToast({ message: "PIN must be reset. Unlock with the start key." });
         }
-        setDefaultTab("import");
+        setDefaultTab("startKey");
         setMode("onboarding");
         navigate("/");
       }
@@ -679,10 +671,10 @@ export default function App() {
     }
   };
 
-  const handleGenerateRecoveryKey = async (newKey: string) => {
+  const handleRotateStartKey = async (newKey: string) => {
     try {
-      if (!validateRecoveryKey(newKey)) {
-        addToast({ message: "복구키 형식이 올바르지 않습니다. (예: NKC-...)" });
+      if (!validateStartKey(newKey)) {
+        addToast({ message: "시작 키 형식이 올바르지 않습니다. (예: NKC-...)" });
         return;
       }
 
@@ -694,10 +686,10 @@ export default function App() {
       setPinEnabled(true);
       setPinNeedsReset(true);
 
-      addToast({ message: "복구키가 변경되었습니다. PIN을 다시 설정해 주세요." });
+      addToast({ message: "시작 키가 변경되었습니다. PIN을 다시 설정해 주세요." });
     } catch (error) {
-      console.error("Failed to rotate recovery key", error);
-      addToast({ message: "복구키 변경에 실패했습니다." });
+      console.error("Failed to rotate start key", error);
+      addToast({ message: "시작 키 변경에 실패했습니다." });
       throw error;
     }
   };
@@ -1372,26 +1364,15 @@ export default function App() {
 
   const handleCopyFriendCode = async () => {
     try {
-      assertPrimary("friendCodeExport");
       if (!myFriendCode) return;
       await navigator.clipboard.writeText(myFriendCode);
-      addToast({ message: "친구 코드를 복사했습니다." });
+      addToast({ message: "친구 코드가 복사되었습니다." });
     } catch (error) {
       console.error("Failed to copy friend code", error);
-      addToast({ message: "이 작업은 Primary 디바이스에서만 가능합니다." });
+      addToast({ message: "친구 코드 복사에 실패했습니다." });
     }
   };
 
-  const handleSyncContacts = async () => {
-    try {
-      assertPrimary("syncContacts");
-      await syncContactsNow();
-      addToast({ message: "연락처 동기화를 시작했습니다." });
-    } catch (error) {
-      console.error("Failed to sync contacts", error);
-      addToast({ message: "이 작업은 Primary 디바이스에서만 가능합니다." });
-    }
-  };
 
   const handleCreateGroup = () => {
     setGroupCreateOpen(true);
@@ -1668,7 +1649,7 @@ export default function App() {
       <>
         <Onboarding
           onCreate={handleCreate}
-          onImport={handleImport}
+          onUnlockWithStartKey={handleStartKeyUnlock}
           defaultTab={defaultTab}
           errorMessage={onboardingError}
         />
@@ -1753,12 +1734,11 @@ export default function App() {
           pinEnabled={pinEnabled}
           onSetPin={handleSetPin}
           onDisablePin={handleDisablePin}
-          onOpenRecovery={() => navigate("/recovery")}
+          onOpenStartKey={() => navigate("/start-key")}
           hiddenFriends={friends.filter((friend) => friend.friendStatus === "hidden")}
           blockedFriends={friends.filter((friend) => friend.friendStatus === "blocked")}
           onUnhideFriend={handleFriendUnhide}
           onUnblockFriend={handleFriendUnblock}
-          onSyncContacts={handleSyncContacts}
           onLogout={() =>
             setConfirm({
               title: "로그아웃할까요?",
@@ -1785,7 +1765,6 @@ export default function App() {
           open={friendAddOpen}
           onOpenChange={setFriendAddOpen}
           myCode={myFriendCode}
-          canShowMyCode={primaryEnabled}
           onCopyCode={handleCopyFriendCode}
           onAdd={handleAddFriend}
         />
@@ -1810,10 +1789,13 @@ export default function App() {
           element={ui.mode === "locked" ? <Unlock onUnlock={handlePinUnlock} /> : <Navigate to="/" replace />}
         />
         <Route
-          path="/recovery"
+          path="/start-key"
           element={
             ui.mode === "app" ? (
-              <Recovery onGenerate={handleGenerateRecoveryKey} onDone={() => navigate("/settings")} />
+              <StartKey
+                onRotate={handleRotateStartKey}
+                onDone={() => navigate("/settings")}
+              />
             ) : (
               <Navigate to="/unlock" replace />
             )
@@ -1846,23 +1828,5 @@ export default function App() {
     </>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 

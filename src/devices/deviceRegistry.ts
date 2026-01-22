@@ -1,7 +1,7 @@
 import { getRoleEpoch } from "../security/deviceRole";
 import { getPublicStore } from "../security/publicStore";
 
-export type RoleChangeReason = "user" | "recovery" | "handover";
+export type RoleChangeReason = "user" | "handover";
 
 export type RoleChangeEvent = {
   kind: "ROLE_CHANGE";
