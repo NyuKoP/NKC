@@ -1,7 +1,10 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
-import { net, session } from "electron";
+import type { TorStatus } from "./torManager";
+import type { alternateRouteStatus } from "./alternateRouteManager";
+import { socksFetch } from "./socksHttpClient";
+import { buildRouteCandidates, type RouteMode } from "./routePolicy";
 
 type InboxItem = {
   id: string;
@@ -19,7 +22,10 @@ type ForwardingState = {
 export type OnionControllerHandle = {
   baseUrl: string;
   port: number;
-  setForwardProxy: (proxyUrl: string | null) => Promise<void>;
+  setTorSocksProxy: (proxyUrl: string | null) => Promise<void>;
+  setalternateRouteSocksProxy: (proxyUrl: string | null) => Promise<void>;
+  setTorOnionHost: (host: string | null) => void;
+  setalternateRouteAddress: (address: string | null) => void;
   close: () => Promise<void>;
 };
 
@@ -31,9 +37,6 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 };
-
-const isUrlTarget = (value: string) =>
-  value.startsWith("http://") || value.startsWith("https://");
 
 const sendJson = (res: http.ServerResponse, status: number, payload: unknown) => {
   res.statusCode = status;
@@ -68,31 +71,52 @@ const readBody = (req: http.IncomingMessage) =>
 
 export const startOnionController = async (options?: {
   port?: number;
+  getTorStatus?: () => TorStatus;
+  getalternateRouteStatus?: () => alternateRouteStatus;
 }): Promise<OnionControllerHandle> => {
   const host = "127.0.0.1";
   const port = options?.port ?? 3210;
   const inbox = new Map<string, InboxItem[]>();
-  const forwarding: ForwardingState = {
+  const torForwarding: ForwardingState = {
     proxyUrl: null,
     ready: false,
   };
-  const forwardSession = session.fromPartition("persist:nkc-onion-forward");
-
-  const setForwardProxy = async (proxyUrl: string | null) => {
+  const alternateRouteForwarding: ForwardingState = {
+    proxyUrl: null,
+    ready: false,
+  };
+  let myTorOnionHost: string | null = null;
+  let myalternateRouteAddress: string | null = null;
+  const setTorSocksProxy = async (proxyUrl: string | null) => {
     const trimmed = proxyUrl?.trim() ?? "";
     if (!trimmed) {
-      forwarding.proxyUrl = null;
-      forwarding.ready = false;
-      await forwardSession.setProxy({ proxyRules: "" });
+      torForwarding.proxyUrl = null;
+      torForwarding.ready = false;
       return;
     }
-    forwarding.proxyUrl = trimmed;
-    try {
-      await forwardSession.setProxy({ proxyRules: trimmed });
-      forwarding.ready = true;
-    } catch {
-      forwarding.ready = false;
+    torForwarding.proxyUrl = trimmed;
+    torForwarding.ready = true;
+  };
+
+  const setalternateRouteSocksProxy = async (proxyUrl: string | null) => {
+    const trimmed = proxyUrl?.trim() ?? "";
+    if (!trimmed) {
+      alternateRouteForwarding.proxyUrl = null;
+      alternateRouteForwarding.ready = false;
+      return;
     }
+    alternateRouteForwarding.proxyUrl = trimmed;
+    alternateRouteForwarding.ready = true;
+  };
+
+  const setTorOnionHost = (hostValue: string | null) => {
+    const trimmed = hostValue?.trim() ?? "";
+    myTorOnionHost = trimmed ? trimmed : null;
+  };
+
+  const setalternateRouteAddress = (addressValue: string | null) => {
+    const trimmed = addressValue?.trim() ?? "";
+    myalternateRouteAddress = trimmed ? trimmed : null;
   };
 
   const enqueue = (deviceId: string, item: Omit<InboxItem, "expiresAt"> & { ttlMs?: number }) => {
@@ -128,17 +152,51 @@ export const startOnionController = async (options?: {
 
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     if (req.method === "GET" && url.pathname === "/onion/health") {
-      const details = forwarding.ready
-        ? "forward proxy enabled"
-        : forwarding.proxyUrl
-          ? "local-only mode (proxy unavailable)"
-          : "local-only mode";
-      const network = forwarding.ready ? "tor" : "none";
+      const torStatus = options?.getTorStatus ? options.getTorStatus() : null;
+      const alternateRouteStatus = options?.getalternateRouteStatus ? options.getalternateRouteStatus() : null;
+      const torActive = Boolean(
+        torStatus &&
+          torStatus.state === "running" &&
+          torForwarding.ready &&
+          torForwarding.proxyUrl
+      );
+      const alternateRouteActive = Boolean(
+        alternateRouteStatus &&
+          alternateRouteStatus.state === "running" &&
+          alternateRouteForwarding.ready &&
+          alternateRouteForwarding.proxyUrl
+      );
+      const details = torActive || alternateRouteActive ? "route proxies enabled" : "local-only mode";
+      const network = torActive ? "tor" : alternateRouteActive ? "alternateRoute" : "none";
       sendJson(res, 200, {
         ok: true,
         network,
         details,
-        socksProxy: forwarding.proxyUrl,
+        tor: {
+          active: torActive,
+          socksProxy: torForwarding.proxyUrl ?? null,
+          address: myTorOnionHost ?? undefined,
+          details: torStatus?.state,
+        },
+        alternateRoute: {
+          active: alternateRouteActive,
+          proxyUrl: alternateRouteForwarding.proxyUrl ?? null,
+          address: myalternateRouteAddress ?? undefined,
+          details: alternateRouteStatus?.state,
+        },
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/onion/address") {
+      sendJson(res, 200, {
+        ok: true,
+        torOnion: myTorOnionHost ?? undefined,
+        alternateRoute: myalternateRouteAddress ?? undefined,
+        details:
+          myTorOnionHost || myalternateRouteAddress
+            ? undefined
+            : "address-unavailable",
       });
       return;
     }
@@ -157,6 +215,14 @@ export const startOnionController = async (options?: {
         from?: string;
         envelope?: string;
         ttlMs?: number;
+        toDeviceId?: string;
+        toOnion?: string;
+        fromDeviceId?: string;
+        route?: {
+          mode?: RouteMode;
+          torOnion?: string;
+          alternateRoute?: string;
+        };
       };
       try {
         payload = JSON.parse(parsed.body) as {
@@ -164,72 +230,97 @@ export const startOnionController = async (options?: {
           from?: string;
           envelope?: string;
           ttlMs?: number;
+          toDeviceId?: string;
+          toOnion?: string;
+          fromDeviceId?: string;
+          route?: {
+            mode?: RouteMode;
+            torOnion?: string;
+            alternateRoute?: string;
+          };
         };
       } catch {
         sendJson(res, 400, { ok: false, error: "invalid-json" });
         return;
       }
-      if (!payload.to || !payload.envelope) {
+      if (!payload.envelope) {
         sendJson(res, 400, { ok: false, error: "missing-fields" });
         return;
       }
       const msgId = randomUUID();
       const ts = Date.now();
-      enqueue(payload.to, {
-        id: msgId,
-        ts,
-        from: payload.from ?? "",
-        envelope: payload.envelope,
-        ttlMs: payload.ttlMs,
-      });
+      const toOnion = payload.toOnion ?? payload.route?.torOnion ?? (payload.to?.includes(".onion") ? payload.to : undefined);
+      const toDeviceId = payload.toDeviceId ?? payload.to;
+      const fromDeviceId = payload.fromDeviceId ?? payload.from ?? "";
+      const routeMode = payload.route?.mode ?? "manual";
+      const alternateRouteAddress = payload.route?.alternateRoute;
 
-      let forwarded = false;
-      if (forwarding.ready && isUrlTarget(payload.to)) {
-        try {
-          if (typeof net.fetch === "function") {
-            const response = await net.fetch(`${payload.to}/onion/ingest`, {
+      if (!toDeviceId) {
+        sendJson(res, 400, { ok: false, error: "missing-to-device" });
+        return;
+      }
+      const hasRouteTargets = Boolean(toOnion || alternateRouteAddress);
+      if (payload.route || hasRouteTargets) {
+        const candidates = buildRouteCandidates(routeMode, {
+          torOnion: toOnion,
+          alternateRoute: alternateRouteAddress,
+        });
+        for (let index = 0; index < candidates.length; index += 1) {
+          const candidate = candidates[index];
+          const isLast = index === candidates.length - 1;
+          const proxyUrl =
+            candidate.kind === "tor" ? torForwarding.proxyUrl : alternateRouteForwarding.proxyUrl;
+          if (!proxyUrl) {
+            if (routeMode === "auto") continue;
+            sendJson(res, 400, { ok: false, error: "forward_failed:no_proxy" });
+            return;
+          }
+          try {
+            const response = await socksFetch(`${candidate.target}/onion/ingest`, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                toDeviceId: payload.to,
-                from: payload.from,
-                envelope: payload.envelope,
-                ts,
-                id: msgId,
-              }),
-              session: forwardSession,
-            });
-            forwarded = response.ok;
-          } else {
-            forwarded = await new Promise<boolean>((resolve) => {
-              const request = net.request({
-                method: "POST",
-                url: `${payload.to}/onion/ingest`,
-                session: forwardSession,
-              });
-              request.setHeader("Content-Type", "application/json");
-              request.on("response", (response) => {
-                resolve(Boolean(response.statusCode && response.statusCode >= 200 && response.statusCode < 300));
-              });
-              request.on("error", () => resolve(false));
-              request.write(
+              body: Buffer.from(
                 JSON.stringify({
-                  toDeviceId: payload.to,
-                  from: payload.from,
+                  toDeviceId,
+                  from: fromDeviceId,
                   envelope: payload.envelope,
                   ts,
                   id: msgId,
                 })
-              );
-              request.end();
+              ),
+              timeoutMs: 10000,
+              socksProxyUrl: proxyUrl,
+              retry: { attempts: 2, delayMs: 200 },
             });
+            if (response.status >= 200 && response.status < 300) {
+              sendJson(res, 200, { ok: true, msgId, forwarded: true, route: candidate.kind });
+              return;
+            }
+            if (!isLast && routeMode === "auto") {
+              continue;
+            }
+            sendJson(res, 502, { ok: false, error: `forward_failed:${response.status}` });
+            return;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (!isLast && routeMode === "auto") {
+              continue;
+            }
+            sendJson(res, 502, { ok: false, error: `forward_failed:${message}` });
+            return;
           }
-        } catch {
-          forwarded = false;
         }
+        sendJson(res, 400, { ok: false, error: "forward_failed:no_route" });
+        return;
       }
-
-      sendJson(res, 200, { ok: true, msgId, forwarded });
+      enqueue(toDeviceId, {
+        id: msgId,
+        ts,
+        from: fromDeviceId,
+        envelope: payload.envelope,
+        ttlMs: payload.ttlMs,
+      });
+      sendJson(res, 200, { ok: true, msgId, forwarded: false });
       return;
     }
 
@@ -318,7 +409,10 @@ export const startOnionController = async (options?: {
   return {
     baseUrl,
     port: assignedPort,
-    setForwardProxy,
+    setTorSocksProxy,
+    setalternateRouteSocksProxy,
+    setTorOnionHost,
+    setalternateRouteAddress,
     close: async () => {
       clearInterval(cleanupTimer);
       await new Promise<void>((resolve) => server.close(() => resolve()));

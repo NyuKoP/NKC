@@ -60,4 +60,15 @@ contextBridge.exposeInMainWorld("nkc", {
     bodyBase64?: string;
     timeoutMs?: number;
   }) => ipcRenderer.invoke("nkc:onionControllerFetch", req) as Promise<unknown>,
+  getTorStatus: () => ipcRenderer.invoke("nkc:getTorStatus") as Promise<unknown>,
+  startTor: () => ipcRenderer.invoke("nkc:startTor") as Promise<unknown>,
+  stopTor: () => ipcRenderer.invoke("nkc:stopTor") as Promise<unknown>,
+  ensureHiddenService: () => ipcRenderer.invoke("nkc:ensureHiddenService") as Promise<unknown>,
+  getMyOnionAddress: () => ipcRenderer.invoke("nkc:getMyOnionAddress") as Promise<string>,
+  getalternateRouteStatus: () => ipcRenderer.invoke("nkc:getalternateRouteStatus") as Promise<unknown>,
+  configurealternateRouteExternal: (payload: { proxyUrl: string; serviceAddress?: string }) =>
+    ipcRenderer.invoke("nkc:configurealternateRouteExternal", payload) as Promise<unknown>,
+  startalternateRoute: () => ipcRenderer.invoke("nkc:startalternateRoute") as Promise<unknown>,
+  stopalternateRoute: () => ipcRenderer.invoke("nkc:stopalternateRoute") as Promise<unknown>,
+  getMyalternateRouteAddress: () => ipcRenderer.invoke("nkc:getMyalternateRouteAddress") as Promise<string>,
 });
