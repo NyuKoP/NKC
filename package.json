@@ -14,7 +14,8 @@
     "test:ui:headed": "playwright test --headed",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "electron ."
+    "start": "electron .",
+    "phase:lock:check": "node scripts/check-phase-lock.mjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
