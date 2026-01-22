@@ -14,7 +14,13 @@ import { useAppStore } from "../app/store";
 import {
   defaultPrivacyPrefs,
   getPrivacyPrefs,
+  getRendezvousBaseUrl,
+  getRendezvousUseOnion,
+  getOnionControllerUrlOverride,
   setPrivacyPrefs,
+  setRendezvousBaseUrl,
+  setRendezvousUseOnion,
+  setOnionControllerUrlOverride,
 } from "../security/preferences";
 import { isPinAvailable } from "../security/pin";
 import {
@@ -33,18 +39,24 @@ import type { NetworkMode } from "../net/mode";
 import type { OnionNetwork } from "../net/netConfig";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import { validateProxyUrl } from "../net/proxyControl";
+import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { encodeBase64Url } from "../security/base64url";
 import { getDhPublicKey, getIdentityPublicKey } from "../security/identityKeys";
+import { OnionInboxClient } from "../net/onionInboxClient";
 import {
   approvePairingRequest,
   createSyncCode,
   onPairingRequest,
   onPairingResult,
   rejectPairingRequest,
+  startRendezvousPairingAsGuest,
+  startRendezvousPairingAsHost,
   submitSyncCode,
   type PairingRequest,
   type PairingResult,
+  type RendezvousPairingSession,
+  type RendezvousPairingStatus,
   type SyncCodeState,
 } from "../devices/devicePairing";
 import {
@@ -61,6 +73,12 @@ import ConfirmDialog from "./ConfirmDialog";
 
 type LocalizedLabel = { ko: string; en: string };
 
+type DirectSignalTransport = ReturnType<typeof createDirectP2PTransport> & {
+  createOfferCode: () => Promise<string>;
+  acceptSignalCode: (code: string) => Promise<void>;
+  onSignalCode: (cb: (code: string) => void) => void;
+};
+
 const themeOptions: { value: "dark" | "light"; label: LocalizedLabel }[] = [
   { value: "dark", label: { ko: "다크", en: "Dark" } },
   { value: "light", label: { ko: "라이트", en: "Light" } },
@@ -71,6 +89,61 @@ const modeOptions: { value: NetworkMode; label: LocalizedLabel }[] = [
   { value: "onionRouter", label: { ko: "릴레이 / Onion", en: "Relay / Onion" } },
   { value: "selfOnion", label: { ko: "내부 Onion", en: "Built-in Onion" } },
 ];
+
+const RENDEZVOUS_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+const toBase32 = (bytes: Uint8Array) => {
+  let bits = 0;
+  let value = 0;
+  let output = "";
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      const index = (value >> (bits - 5)) & 31;
+      output += RENDEZVOUS_CODE_ALPHABET[index];
+      bits -= 5;
+    }
+  }
+  if (bits > 0) {
+    const index = (value << (5 - bits)) & 31;
+    output += RENDEZVOUS_CODE_ALPHABET[index];
+  }
+  return output;
+};
+
+const generateRendezvousCode = () => {
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error("Secure random generator is unavailable.");
+  }
+  const bytes = new Uint8Array(5);
+  globalThis.crypto.getRandomValues(bytes);
+  const raw = toBase32(bytes).slice(0, 6);
+  return `NKC-SYNC1-${raw}`;
+};
+
+const getNkcBridge = () =>
+  (globalThis as {
+    nkc?: {
+      onionFetch?: (req: {
+        url: string;
+        method: string;
+        headers?: Record<string, string>;
+        bodyBase64?: string;
+        timeoutMs?: number;
+      }) => Promise<unknown>;
+      setOnionProxy?: (proxyUrl: string | null) => Promise<unknown>;
+      getOnionControllerUrl?: () => Promise<string>;
+      setOnionForwardProxy?: (proxyUrl: string | null) => Promise<{ ok: boolean }>;
+      onionControllerFetch?: (req: {
+        url: string;
+        method: string;
+        headers?: Record<string, string>;
+        bodyBase64?: string;
+        timeoutMs?: number;
+      }) => Promise<unknown>;
+    };
+  }).nkc;
 
 type SettingsView =
   | "main"
@@ -163,6 +236,15 @@ export default function SettingsDialog({
   const [onionStatus, setOnionStatus] = useState<OnionStatus | null>(null);
   const [proxyUrlDraft, setProxyUrlDraft] = useState(netConfig.onionProxyUrl);
   const [proxyUrlError, setProxyUrlError] = useState("");
+  const [onionControllerLocalUrl, setOnionControllerLocalUrl] = useState("");
+  const [onionControllerOverrideUrl, setOnionControllerOverrideUrl] = useState("");
+  const [onionControllerHealth, setOnionControllerHealth] = useState<{
+    ok: boolean;
+    network: "tor" | "lokinet" | "none";
+    details?: string;
+  } | null>(null);
+  const [onionControllerHealthBusy, setOnionControllerHealthBusy] = useState(false);
+  const [onionForwardProxyDraft, setOnionForwardProxyDraft] = useState("");
   const [torInstallBusy, setTorInstallBusy] = useState(false);
   const [torCheckBusy, setTorCheckBusy] = useState(false);
   const [torApplyBusy, setTorApplyBusy] = useState(false);
@@ -208,6 +290,93 @@ export default function SettingsDialog({
     }
   };
 
+  const handleOnionControllerOverrideChange = (value: string) => {
+    setOnionControllerOverrideUrl(value);
+  };
+
+  const applyOnionControllerOverride = async (value: string) => {
+    try {
+      await setOnionControllerUrlOverride(value);
+    } catch (error) {
+      console.error("Failed to store controller override", error);
+    }
+  };
+
+  const handleUseLocalController = async () => {
+    const local = onionControllerLocalUrl.trim();
+    if (!local) return;
+    setOnionControllerOverrideUrl(local);
+    await applyOnionControllerOverride(local);
+  };
+
+  const handleCheckOnionControllerHealth = async () => {
+    if (onionControllerHealthBusy) return;
+    const baseUrl =
+      onionControllerOverrideUrl.trim() || onionControllerLocalUrl.trim();
+    if (!baseUrl) {
+      setOnionControllerHealth({
+        ok: false,
+        network: "none",
+        details: "Controller URL not set.",
+      });
+      return;
+    }
+    setOnionControllerHealthBusy(true);
+    try {
+      const client = new OnionInboxClient({
+        baseUrl,
+        deviceId: getOrCreateDeviceId(),
+      });
+      const health = await client.health();
+      setOnionControllerHealth(health);
+    } catch (error) {
+      setOnionControllerHealth({
+        ok: false,
+        network: "none",
+        details: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      setOnionControllerHealthBusy(false);
+    }
+  };
+
+  const handleApplyForwardProxy = async () => {
+    const nkc = getNkcBridge();
+    if (!nkc?.setOnionForwardProxy) {
+      setOnionControllerHealth({
+        ok: false,
+        network: "none",
+        details: "Forward proxy API unavailable.",
+      });
+      return;
+    }
+    const trimmed = onionForwardProxyDraft.trim();
+    try {
+      await nkc.setOnionForwardProxy(trimmed || null);
+      setOnionControllerHealth({
+        ok: true,
+        network: trimmed ? "tor" : "none",
+        details: trimmed ? "Forward proxy applied." : "Forward proxy cleared.",
+      });
+    } catch (error) {
+      setOnionControllerHealth({
+        ok: false,
+        network: "none",
+        details: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  const handleRendezvousBaseUrlChange = (value: string) => {
+    setRendezvousBaseUrlDraft(value);
+    void setRendezvousBaseUrl(value.trim());
+  };
+
+  const handleRendezvousUseOnionChange = (value: boolean) => {
+    setRendezvousUseOnionState(value);
+    void setRendezvousUseOnion(value);
+  };
+
   // misc
   const [saveMessage, setSaveMessage] = useState("");
   const [syncCodeState, setSyncCodeState] = useState<SyncCodeState | null>(null);
@@ -223,6 +392,213 @@ export default function SettingsDialog({
   const [linkMessage, setLinkMessage] = useState("");
   const [linkBusy, setLinkBusy] = useState(false);
   const linkTimeoutRef = useRef<number | null>(null);
+  const directTransportRef = useRef<DirectSignalTransport | null>(null);
+  const [directMyCode, setDirectMyCode] = useState("");
+  const [directPeerCode, setDirectPeerCode] = useState("");
+  const [directStatus, setDirectStatus] = useState("idle");
+  const [directSignalError, setDirectSignalError] = useState("");
+  const [directSignalBusy, setDirectSignalBusy] = useState(false);
+  const [rendezvousBaseUrlDraft, setRendezvousBaseUrlDraft] = useState("");
+  const [rendezvousUseOnion, setRendezvousUseOnionState] = useState(false);
+  const [rendezvousSyncCode, setRendezvousSyncCode] = useState("");
+  const [rendezvousJoinCode, setRendezvousJoinCode] = useState("");
+  const [rendezvousStatus, setRendezvousStatus] = useState<RendezvousPairingStatus>("idle");
+  const [rendezvousMessage, setRendezvousMessage] = useState("");
+  const [rendezvousBusy, setRendezvousBusy] = useState(false);
+  const rendezvousSessionRef = useRef<RendezvousPairingSession | null>(null);
+  const rendezvousStatusUnsubRef = useRef<(() => void) | null>(null);
+
+  const ensureDirectTransport = useCallback(async () => {
+    if (!directTransportRef.current) {
+      const transport = createDirectP2PTransport() as DirectSignalTransport;
+      transport.onState((next) => setDirectStatus(next));
+      transport.onSignalCode((code) => {
+        setDirectMyCode((prev) => {
+          const next = prev ? `${prev}\n${code}` : code;
+          const lines = next.split("\n");
+          return lines.slice(-5).join("\n");
+        });
+      });
+      directTransportRef.current = transport;
+    }
+    await directTransportRef.current.start();
+    return directTransportRef.current;
+  }, []);
+
+  const stopRendezvousSession = useCallback(() => {
+    if (rendezvousStatusUnsubRef.current) {
+      rendezvousStatusUnsubRef.current();
+      rendezvousStatusUnsubRef.current = null;
+    }
+    if (rendezvousSessionRef.current) {
+      rendezvousSessionRef.current.stop();
+      rendezvousSessionRef.current = null;
+    }
+    setRendezvousStatus("idle");
+  }, []);
+
+  const attachRendezvousSession = useCallback((session: RendezvousPairingSession) => {
+    if (rendezvousStatusUnsubRef.current) {
+      rendezvousStatusUnsubRef.current();
+    }
+    rendezvousSessionRef.current = session;
+    setRendezvousStatus(session.getStatus());
+    rendezvousStatusUnsubRef.current = session.onStatus((next) =>
+      setRendezvousStatus(next)
+    );
+  }, []);
+
+  const resolveRendezvousOnion = useCallback(async () => {
+    if (!rendezvousUseOnion) return false;
+    const nkc = getNkcBridge();
+    if (!nkc?.onionFetch || !nkc?.setOnionProxy) {
+      setRendezvousMessage("Onion proxy fetch unavailable; using direct fetch.");
+      return false;
+    }
+    try {
+      await nkc.setOnionProxy(netConfig.onionProxyUrl || null);
+      return true;
+    } catch {
+      setRendezvousMessage("Failed to apply onion proxy; using direct fetch.");
+      return false;
+    }
+  }, [netConfig.onionProxyUrl, rendezvousUseOnion]);
+
+  const handleCreateRendezvousCode = () => {
+    setRendezvousMessage("");
+    try {
+      setRendezvousSyncCode(generateRendezvousCode());
+    } catch (error) {
+      console.error("Failed to generate sync code", error);
+      setRendezvousMessage("Failed to generate sync code.");
+    }
+  };
+
+  const handleStartRendezvousHost = async () => {
+    if (rendezvousBusy) return;
+    const baseUrl = rendezvousBaseUrlDraft.trim();
+    if (!baseUrl) {
+      setRendezvousMessage("Rendezvous URL not set. Use manual pairing below.");
+      return;
+    }
+    setRendezvousBusy(true);
+    setRendezvousMessage("");
+    stopRendezvousSession();
+    try {
+      const syncCode = rendezvousSyncCode.trim() || generateRendezvousCode();
+      setRendezvousSyncCode(syncCode);
+      const useOnionProxy = await resolveRendezvousOnion();
+      const session = startRendezvousPairingAsHost({
+        baseUrl,
+        deviceId: getOrCreateDeviceId(),
+        useOnionProxy,
+        onionProxyUrl: useOnionProxy ? netConfig.onionProxyUrl : null,
+        syncCode,
+      });
+      attachRendezvousSession(session);
+    } catch (error) {
+      console.error("Failed to start rendezvous host", error);
+      setRendezvousStatus("error");
+      setRendezvousMessage("Failed to start host pairing.");
+    } finally {
+      setRendezvousBusy(false);
+    }
+  };
+
+  const handleStartRendezvousGuest = async () => {
+    if (rendezvousBusy) return;
+    const baseUrl = rendezvousBaseUrlDraft.trim();
+    if (!baseUrl) {
+      setRendezvousMessage("Rendezvous URL not set. Use manual pairing below.");
+      return;
+    }
+    const syncCode = rendezvousJoinCode.trim();
+    if (!syncCode) {
+      setRendezvousMessage("Enter a sync code to join.");
+      return;
+    }
+    setRendezvousBusy(true);
+    setRendezvousMessage("");
+    stopRendezvousSession();
+    try {
+      const useOnionProxy = await resolveRendezvousOnion();
+      const session = startRendezvousPairingAsGuest({
+        baseUrl,
+        deviceId: getOrCreateDeviceId(),
+        syncCode,
+        useOnionProxy,
+        onionProxyUrl: useOnionProxy ? netConfig.onionProxyUrl : null,
+      });
+      attachRendezvousSession(session);
+    } catch (error) {
+      console.error("Failed to start rendezvous guest", error);
+      setRendezvousStatus("error");
+      setRendezvousMessage("Failed to start join pairing.");
+    } finally {
+      setRendezvousBusy(false);
+    }
+  };
+
+  const handleStopRendezvous = () => {
+    stopRendezvousSession();
+    setRendezvousMessage("");
+  };
+
+  useEffect(() => {
+    return () => {
+      stopRendezvousSession();
+      const transport = directTransportRef.current;
+      if (transport) {
+        void transport.stop();
+        directTransportRef.current = null;
+      }
+    };
+  }, [stopRendezvousSession]);
+
+  useEffect(() => {
+    if (open) return;
+    stopRendezvousSession();
+    const transport = directTransportRef.current;
+    if (transport) {
+      void transport.stop();
+      directTransportRef.current = null;
+    }
+  }, [open, stopRendezvousSession]);
+
+  const handleGenerateDirectOffer = async () => {
+    setDirectSignalError("");
+    setDirectSignalBusy(true);
+    try {
+      const transport = await ensureDirectTransport();
+      const code = await transport.createOfferCode();
+      setDirectMyCode(code);
+    } catch (error) {
+      console.error("Failed to generate Direct P2P offer", error);
+      setDirectSignalError("Failed to generate offer.");
+    } finally {
+      setDirectSignalBusy(false);
+    }
+  };
+
+  const handleApplyDirectCode = async () => {
+    const value = directPeerCode.trim();
+    if (!value) {
+      setDirectSignalError("Paste a peer code first.");
+      return;
+    }
+    setDirectSignalError("");
+    setDirectSignalBusy(true);
+    try {
+      const transport = await ensureDirectTransport();
+      await transport.acceptSignalCode(value);
+      setDirectPeerCode("");
+    } catch (error) {
+      console.error("Failed to apply Direct P2P code", error);
+      setDirectSignalError("Failed to apply code.");
+    } finally {
+      setDirectSignalBusy(false);
+    }
+  };
 
   const handleApprovedResult = useCallback(async (result: PairingResult) => {
     setLinkBusy(false);
@@ -299,9 +675,39 @@ export default function SettingsDialog({
     setOnionNetworkDraft(netConfig.onionSelectedNetwork);
     setProxyUrlDraft(netConfig.onionProxyUrl);
     setProxyUrlError("");
+    setOnionControllerHealth(null);
+    setOnionControllerHealthBusy(false);
+    setOnionForwardProxyDraft("");
+    const nkc = getNkcBridge();
+    if (nkc?.getOnionControllerUrl) {
+      nkc
+        .getOnionControllerUrl()
+        .then((value) => setOnionControllerLocalUrl(value))
+        .catch((e) => console.error("Failed to load local controller url", e));
+    } else {
+      setOnionControllerLocalUrl("");
+    }
+    getOnionControllerUrlOverride()
+      .then((value) => {
+        setOnionControllerOverrideUrl(value);
+        if (!onionControllerLocalUrl && value) {
+          setOnionControllerLocalUrl(value);
+        }
+      })
+      .catch((e) => console.error("Failed to load controller override", e));
     getPrivacyPrefs()
       .then(setPrivacyPrefsState)
       .catch((e) => console.error("Failed to load privacy prefs", e));
+    getRendezvousBaseUrl()
+      .then((value) => setRendezvousBaseUrlDraft(value))
+      .catch((e) => console.error("Failed to load rendezvous url", e));
+    getRendezvousUseOnion()
+      .then((value) => setRendezvousUseOnionState(value))
+      .catch((e) => console.error("Failed to load rendezvous preferences", e));
+    setRendezvousMessage("");
+    setRendezvousStatus("idle");
+    setRendezvousSyncCode("");
+    setRendezvousJoinCode("");
   }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork, netConfig.onionProxyUrl]);
 
   useEffect(() => {
@@ -355,6 +761,24 @@ export default function SettingsDialog({
       .then(setPinAvailable)
       .catch(() => setPinAvailable(false));
   }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const nkc = getNkcBridge();
+    if (!rendezvousUseOnion) {
+      if (nkc?.setOnionProxy) {
+        void nkc.setOnionProxy(null);
+      }
+      return;
+    }
+    if (!nkc?.onionFetch || !nkc?.setOnionProxy) {
+      setRendezvousMessage("Onion proxy fetch unavailable; using direct fetch.");
+      return;
+    }
+    void nkc.setOnionProxy(netConfig.onionProxyUrl || null).catch(() => {
+      setRendezvousMessage("Failed to apply onion proxy; using direct fetch.");
+    });
+  }, [netConfig.onionProxyUrl, open, rendezvousUseOnion]);
 
   useEffect(() => {
     const unsubscribe = onConnectionStatus(setConnectionStatus);
@@ -1285,11 +1709,11 @@ export default function SettingsDialog({
                     </div>
                   </div>
                 ) : null}
-                {showDirectWarning ? (
-                  <div
-                    className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
-                    data-testid="direct-p2p-warning"
-                  >
+              {showDirectWarning ? (
+                <div
+                  className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
+                  data-testid="direct-p2p-warning"
+                >
                     <div>
                       {t(
                         "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 사용하세요.",
@@ -1298,6 +1722,224 @@ export default function SettingsDialog({
                     </div>
                   </div>
                 ) : null}
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
+                  {t("Local Onion Controller", "Local Onion Controller")}
+                </div>
+                <div className="mt-3 grid gap-3 text-xs text-nkc-muted">
+                  <label className="text-xs text-nkc-muted">
+                    {t("Local Onion Controller URL", "Local Onion Controller URL")}
+                    <input
+                      readOnly
+                      value={onionControllerLocalUrl || ""}
+                      placeholder={t("Unavailable", "Unavailable")}
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <label className="text-xs text-nkc-muted">
+                    {t("Onion Controller URL (override)", "Onion Controller URL (override)")}
+                    <input
+                      value={onionControllerOverrideUrl}
+                      onChange={(e) => handleOnionControllerOverrideChange(e.target.value)}
+                      onBlur={(e) => void applyOnionControllerOverride(e.target.value)}
+                      placeholder="http://127.0.0.1:3210"
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleUseLocalController()}
+                      disabled={!onionControllerLocalUrl}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      {t("Use Local Controller", "Use Local Controller")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleCheckOnionControllerHealth()}
+                      disabled={onionControllerHealthBusy}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      {onionControllerHealthBusy
+                        ? t("Checking...", "Checking...")
+                        : t("Check Health", "Check Health")}
+                    </button>
+                  </div>
+                  <label className="text-xs text-nkc-muted">
+                    {t("Forward proxy (SOCKS URL)", "Forward proxy (SOCKS URL)")}
+                    <input
+                      value={onionForwardProxyDraft}
+                      onChange={(e) => setOnionForwardProxyDraft(e.target.value)}
+                      placeholder="socks5://127.0.0.1:9050"
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleApplyForwardProxy()}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                    >
+                      {t("Apply Forward Proxy", "Apply Forward Proxy")}
+                    </button>
+                  </div>
+                  {onionControllerHealth ? (
+                    <div className="text-xs text-nkc-muted">
+                      {t("Network", "Network")}: {onionControllerHealth.network}
+                      {onionControllerHealth.details
+                        ? ` - ${onionControllerHealth.details}`
+                        : ""}
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
+                  Rendezvous signaling
+                </div>
+                <div className="mt-3 grid gap-3">
+                  <label className="text-xs text-nkc-muted">
+                    Rendezvous URL
+                    <input
+                      value={rendezvousBaseUrlDraft}
+                      onChange={(e) => handleRendezvousBaseUrlChange(e.target.value)}
+                      placeholder="https://example.com"
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <label className="flex items-center justify-between text-xs text-nkc-muted">
+                    <span>Use Onion for signaling</span>
+                    <input
+                      type="checkbox"
+                      checked={rendezvousUseOnion}
+                      onChange={(e) => handleRendezvousUseOnionChange(e.target.checked)}
+                    />
+                  </label>
+                  {!rendezvousBaseUrlDraft.trim() ? (
+                    <div className="text-xs text-nkc-muted">
+                      Rendezvous URL not set. Use manual pairing below.
+                    </div>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
+                  Sync Code pairing (Rendezvous)
+                </div>
+                <div className="mt-3 grid gap-3">
+                  <button
+                    type="button"
+                    onClick={handleCreateRendezvousCode}
+                    disabled={rendezvousBusy}
+                    className="w-fit rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                  >
+                    Create Sync Code (Host)
+                  </button>
+                  <label className="text-xs text-nkc-muted">
+                    Sync Code
+                    <input
+                      readOnly
+                      value={rendezvousSyncCode}
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <label className="text-xs text-nkc-muted">
+                    Enter Sync Code (Join)
+                    <input
+                      value={rendezvousJoinCode}
+                      onChange={(event) => setRendezvousJoinCode(event.target.value)}
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleStartRendezvousHost()}
+                      disabled={rendezvousBusy || !rendezvousBaseUrlDraft.trim()}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Start Host
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleStartRendezvousGuest()}
+                      disabled={rendezvousBusy || !rendezvousBaseUrlDraft.trim()}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Join
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleStopRendezvous}
+                      disabled={rendezvousStatus === "idle"}
+                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                    >
+                      Stop
+                    </button>
+                  </div>
+                  <div className="text-xs text-nkc-muted">
+                    Pairing status: {rendezvousStatus}
+                  </div>
+                  {rendezvousMessage ? (
+                    <div className="text-xs text-amber-200">{rendezvousMessage}</div>
+                  ) : null}
+                </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
+                  {t("Manual Direct P2P pairing", "Manual Direct P2P pairing")}
+                </div>
+                <div className="mt-3 grid gap-3">
+                  <button
+                    type="button"
+                    onClick={() => void handleGenerateDirectOffer()}
+                    disabled={directSignalBusy}
+                    className="w-fit rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                  >
+                    Generate Offer
+                  </button>
+                  <label className="text-xs text-nkc-muted">
+                    My Code
+                    <textarea
+                      readOnly
+                      value={directMyCode}
+                      rows={4}
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <label className="text-xs text-nkc-muted">
+                    Paste Peer Code
+                    <textarea
+                      value={directPeerCode}
+                      rows={4}
+                      onChange={(event) => {
+                        setDirectPeerCode(event.target.value);
+                        if (directSignalError) setDirectSignalError("");
+                      }}
+                      className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => void handleApplyDirectCode()}
+                    disabled={directSignalBusy}
+                    className="w-fit rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                  >
+                    Apply Code
+                  </button>
+                  <div className="text-xs text-nkc-muted">
+                    Direct P2P status: {directStatus}
+                  </div>
+                  {directSignalError ? (
+                    <div className="text-xs text-red-300">{directSignalError}</div>
+                  ) : null}
+                </div>
               </section>
 
               {netConfig.mode === "onionRouter" ? (

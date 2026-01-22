@@ -9,6 +9,7 @@ import { readCurrentPointer } from "./main/onion/install/swapperRollback";
 import { OnionRuntime } from "./main/onion/runtime/onionRuntime";
 import { checkUpdates } from "./main/onion/update/checkUpdates";
 import { PinnedHashMissingError } from "./main/onion/errors";
+import { startOnionController, type OnionControllerHandle } from "./main/onionController";
 
 type ProxyApplyPayload = {
   proxyUrl: string;
@@ -21,9 +22,41 @@ type ProxyHealth = {
   message: string;
 };
 
+type OnionFetchRequest = {
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  bodyBase64?: string;
+  timeoutMs?: number;
+};
+
+type OnionFetchResponse = {
+  ok: boolean;
+  status: number;
+  headers: Record<string, string>;
+  bodyBase64: string;
+  error?: string;
+};
+
+type OnionControllerFetchRequest = {
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  bodyBase64?: string;
+  timeoutMs?: number;
+};
+
+type OnionControllerFetchResponse = {
+  status: number;
+  headers: Record<string, string>;
+  bodyBase64: string;
+  error?: string;
+};
+
 const isDev = !app.isPackaged;
 const SECRET_STORE_FILENAME = "secret-store.json";
 const ALLOWED_PROXY_PROTOCOLS = new Set(["socks5:", "socks5h:", "http:", "https:"]);
+const onionSession = session.fromPartition("persist:nkc-onion-fetch");
 
 const isLocalhostHost = (hostname: string) =>
   hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
@@ -60,6 +93,14 @@ const applyProxy = async ({ proxyUrl, enabled, allowRemote }: ProxyApplyPayload)
   await session.defaultSession.setProxy({ proxyRules: normalized });
 };
 
+const setOnionProxy = async (proxyUrl: string | null) => {
+  if (!proxyUrl) {
+    await onionSession.setProxy({ proxyRules: "" });
+    return;
+  }
+  await onionSession.setProxy({ proxyRules: proxyUrl });
+};
+
 const checkProxy = async (): Promise<ProxyHealth> => {
   const resolve = await session.defaultSession.resolveProxy("https://example.com");
   const hasProxy = resolve.includes("PROXY") || resolve.includes("SOCKS");
@@ -81,6 +122,211 @@ export const registerProxyIpc = () => {
   });
   ipcMain.handle("proxy:check", async () => {
     return checkProxy();
+  });
+};
+
+const collectHeaders = (headers: Headers | Record<string, string[] | string | undefined>) => {
+  const out: Record<string, string> = {};
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+  for (const [key, value] of Object.entries(headers)) {
+    if (!value) continue;
+    out[key] = Array.isArray(value) ? value.join(",") : value;
+  }
+  return out;
+};
+
+const decodeBase64 = (value: string) => Buffer.from(value, "base64");
+
+const encodeBase64 = (value: Uint8Array) => Buffer.from(value).toString("base64");
+
+const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchResponse> => {
+  return new Promise((resolve) => {
+    try {
+      const request = net.request({
+        method: req.method,
+        url: req.url,
+        session: onionSession,
+      });
+      if (req.headers) {
+        for (const [key, value] of Object.entries(req.headers)) {
+          request.setHeader(key, value);
+        }
+      }
+      const timeoutMs = req.timeoutMs ?? 10000;
+      const timeout = setTimeout(() => {
+        try {
+          request.abort();
+        } catch {
+          // ignore abort errors
+        }
+        resolve({
+          ok: false,
+          status: 0,
+          headers: {},
+          bodyBase64: "",
+          error: "timeout",
+        });
+      }, timeoutMs);
+      request.on("response", (response) => {
+        const chunks: Buffer[] = [];
+        response.on("data", (chunk) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        response.on("end", () => {
+          clearTimeout(timeout);
+          const body = Buffer.concat(chunks);
+          const status = response.statusCode ?? 0;
+          resolve({
+            ok: status >= 200 && status < 300,
+            status,
+            headers: collectHeaders(response.headers),
+            bodyBase64: body.toString("base64"),
+          });
+        });
+      });
+      request.on("error", (error) => {
+        clearTimeout(timeout);
+        resolve({
+          ok: false,
+          status: 0,
+          headers: {},
+          bodyBase64: "",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      if (req.bodyBase64) {
+        request.write(decodeBase64(req.bodyBase64));
+      }
+      request.end();
+    } catch (error) {
+      resolve({
+        ok: false,
+        status: 0,
+        headers: {},
+        bodyBase64: "",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  });
+};
+
+const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchResponse> => {
+  const controller = new AbortController();
+  const timeoutMs = req.timeoutMs ?? 10000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const fetchWithSession = net.fetch as unknown as (
+      input: string,
+      init?: {
+        method?: string;
+        headers?: Record<string, string>;
+        body?: Uint8Array;
+        signal?: AbortSignal;
+        session?: Electron.Session;
+      }
+    ) => Promise<{
+      ok: boolean;
+      status: number;
+      headers: Headers;
+      arrayBuffer: () => Promise<ArrayBuffer>;
+    }>;
+    const response = await fetchWithSession(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
+      signal: controller.signal,
+      session: onionSession,
+    });
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    return {
+      ok: response.ok,
+      status: response.status,
+      headers: collectHeaders(response.headers),
+      bodyBase64: encodeBase64(buffer),
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return {
+      ok: false,
+      status: 0,
+      headers: {},
+      bodyBase64: "",
+      error: message,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const registerOnionFetchIpc = () => {
+  ipcMain.handle("nkc:setOnionProxy", async (_event, proxyUrl: string | null) => {
+    await setOnionProxy(proxyUrl);
+    return { ok: true };
+  });
+  ipcMain.handle("nkc:onionFetch", async (_event, req: OnionFetchRequest) => {
+    if (!req?.url || !req.method) {
+      return {
+        ok: false,
+        status: 0,
+        headers: {},
+        bodyBase64: "",
+        error: "invalid-request",
+      } satisfies OnionFetchResponse;
+    }
+    if (typeof net.fetch === "function") {
+      return fetchViaNetFetch(req);
+    }
+    return fetchViaNetRequest(req);
+  });
+};
+
+const fetchOnionController = async (
+  req: OnionControllerFetchRequest
+): Promise<OnionControllerFetchResponse> => {
+  if (!req?.url || !req.method) {
+    return { status: 0, headers: {}, bodyBase64: "", error: "invalid-request" };
+  }
+  const controller = new AbortController();
+  const timeoutMs = req.timeoutMs ?? 10000;
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(req.url, {
+      method: req.method,
+      headers: req.headers,
+      body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
+      signal: controller.signal,
+    });
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    return {
+      status: response.status,
+      headers: collectHeaders(response.headers),
+      bodyBase64: encodeBase64(buffer),
+    };
+  } catch (error) {
+    return {
+      status: 0,
+      headers: {},
+      bodyBase64: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+};
+
+const registerOnionControllerIpc = () => {
+  ipcMain.handle("nkc:getOnionControllerUrl", async () => onionControllerUrl);
+  ipcMain.handle("nkc:setOnionForwardProxy", async (_event, proxyUrl: string | null) => {
+    await onionController?.setForwardProxy(proxyUrl);
+    return { ok: true };
+  });
+  ipcMain.handle("nkc:onionControllerFetch", async (_event, req: OnionControllerFetchRequest) => {
+    return fetchOnionController(req);
   });
 };
 
@@ -161,6 +407,8 @@ const onionComponentCache: Record<OnionNetwork, OnionComponentState> = {
   tor: { installed: false, status: "idle" },
   lokinet: { installed: false, status: "idle" },
 };
+let onionController: OnionControllerHandle | null = null;
+let onionControllerUrl = "";
 
 const pruneComponentVersions = async (
   userDataDir: string,
@@ -779,8 +1027,28 @@ app.whenReady().then(() => {
     console.log("[main] VITE_DEV_SERVER_URL =", process.env.VITE_DEV_SERVER_URL ?? "");
   }
   registerProxyIpc();
+  registerOnionFetchIpc();
   registerSecretStoreIpc();
   registerOnionIpc();
+  registerOnionControllerIpc();
+  (async () => {
+    try {
+      onionController = await startOnionController({ port: 3210 });
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code?: unknown }).code ?? "")
+          : "";
+      if (code === "EADDRINUSE") {
+        onionController = await startOnionController({ port: 0 });
+      } else {
+        throw error;
+      }
+    }
+    onionControllerUrl = onionController.baseUrl;
+  })().catch((error) => {
+    console.error("[main] onion controller start failed", error);
+  });
   createMainWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {

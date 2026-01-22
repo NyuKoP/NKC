@@ -1,9 +1,84 @@
 import type { HttpClient } from "../../net/httpClient";
 import type { NetConfig } from "../../net/netConfig";
-import { detectLocalOnionProxy } from "../../net/onionProxyDetect";
+import { OnionInboxClient } from "../../net/onionInboxClient";
+import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
+import { getOrCreateDeviceId } from "../../security/deviceRole";
+import { getOnionControllerUrlOverride } from "../../security/preferences";
 import type { Transport, TransportPacket, TransportState } from "./types";
 
 type Handler<T> = (payload: T) => void;
+
+const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const POLL_INTERVAL_MS = 1000;
+const MAX_SEEN_IDS = 500;
+
+type OnionFetchRequest = {
+  url: string;
+  method: string;
+  headers?: Record<string, string>;
+  bodyBase64?: string;
+  timeoutMs?: number;
+};
+
+type OnionFetchResponse = {
+  ok: boolean;
+  status: number;
+  headers: Record<string, string>;
+  bodyBase64: string;
+  error?: string;
+};
+
+const toBase64 = (bytes: Uint8Array) => {
+  let binary = "";
+  bytes.forEach((value) => {
+    binary += String.fromCharCode(value);
+  });
+  return btoa(binary);
+};
+
+const fromBase64 = (value: string) => {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+};
+
+export async function onionFetch(
+  url: string,
+  init: RequestInit & { timeoutMs?: number } = {}
+): Promise<Response> {
+  const nkc = (
+    globalThis as { nkc?: { onionFetch?: (req: OnionFetchRequest) => Promise<OnionFetchResponse> } }
+  ).nkc;
+  if (!nkc?.onionFetch) {
+    throw new Error("Onion fetch unavailable");
+  }
+  const headers = new Headers(init.headers ?? {});
+  let bodyBase64: string | undefined;
+  if (init.body !== undefined && init.body !== null) {
+    if (typeof init.body === "string") {
+      bodyBase64 = toBase64(new TextEncoder().encode(init.body));
+    } else if (init.body instanceof Uint8Array) {
+      bodyBase64 = toBase64(init.body);
+    } else if (init.body instanceof ArrayBuffer) {
+      bodyBase64 = toBase64(new Uint8Array(init.body));
+    } else {
+      throw new Error("Unsupported onion fetch body");
+    }
+  }
+  const response = await nkc.onionFetch({
+    url,
+    method: init.method ?? "GET",
+    headers: Object.fromEntries(headers.entries()),
+    bodyBase64,
+    timeoutMs: init.timeoutMs,
+  });
+  const body = response.bodyBase64 ? fromBase64(response.bodyBase64) : new Uint8Array();
+  const respHeaders = new Headers(response.headers ?? {});
+  return new Response(body, { status: response.status, headers: respHeaders });
+}
 
 type OnionRouterOptions = {
   httpClient: HttpClient;
@@ -15,7 +90,13 @@ export const createOnionRouterTransport = ({
   config,
 }: OnionRouterOptions): Transport => {
   let state: TransportState = "idle";
-  let activeProxyUrl: string | null = null;
+  let client: OnionInboxClient | null = null;
+  let pollTimer: ReturnType<typeof setInterval> | null = null;
+  let pollCursor: string | null = null;
+  let errorStreak = 0;
+  let pollInFlight = false;
+  const seenIds = new Set<string>();
+  const seenOrder: string[] = [];
   const messageHandlers: Array<Handler<TransportPacket>> = [];
   const ackHandlers: Array<Handler<{ id: string; rttMs: number }>> = [];
   const stateHandlers: Array<Handler<TransportState>> = [];
@@ -25,31 +106,135 @@ export const createOnionRouterTransport = ({
     stateHandlers.forEach((handler) => handler(next));
   };
 
+  const rememberId = (id: string) => {
+    if (seenIds.has(id)) return false;
+    seenIds.add(id);
+    seenOrder.push(id);
+    if (seenOrder.length > MAX_SEEN_IDS) {
+      const overflow = seenOrder.splice(0, seenOrder.length - MAX_SEEN_IDS);
+      overflow.forEach((oldId) => seenIds.delete(oldId));
+    }
+    return true;
+  };
+
+  const updateStateForError = () => {
+    if (errorStreak >= 6) {
+      emitState("failed");
+    } else if (errorStreak >= 3) {
+      emitState("degraded");
+    }
+  };
+
+  const decodeEnvelope = (envelope: string): TransportPacket | null => {
+    try {
+      const json = new TextDecoder().decode(decodeBase64Url(envelope));
+      const parsed = JSON.parse(json) as TransportPacket;
+      if (!parsed || typeof parsed !== "object") return null;
+      return parsed;
+    } catch {
+      return null;
+    }
+  };
+
+  const resolveControllerUrl = async () => {
+    const nkc = (
+      globalThis as { nkc?: { getOnionControllerUrl?: () => Promise<string> } }
+    ).nkc;
+    let localUrl = "";
+    if (nkc?.getOnionControllerUrl) {
+      try {
+        localUrl = await nkc.getOnionControllerUrl();
+      } catch {
+        localUrl = "";
+      }
+    }
+    const override = (await getOnionControllerUrlOverride()).trim();
+    if (override) return override;
+    if (localUrl) return localUrl;
+    return "http://127.0.0.1:3210";
+  };
+
+  const pollInbox = async () => {
+    if (!client || pollInFlight) return;
+    pollInFlight = true;
+    try {
+      const result = await client.poll(pollCursor, 50);
+      if (!result.ok) {
+        errorStreak += 1;
+        updateStateForError();
+        return;
+      }
+      errorStreak = 0;
+      if (state === "degraded" || state === "failed") {
+        emitState("connected");
+      }
+      pollCursor = result.nextAfter ?? pollCursor;
+      result.items.forEach((item) => {
+        if (!rememberId(item.id)) return;
+        const packet = decodeEnvelope(item.envelope);
+        if (!packet) return;
+        messageHandlers.forEach((handler) => handler(packet));
+      });
+    } catch {
+      errorStreak += 1;
+      updateStateForError();
+    } finally {
+      pollInFlight = false;
+    }
+  };
+
   return {
     name: "onionRouter",
     async start() {
+      void httpClient;
+      void config;
       emitState("connecting");
-      const detected = await detectLocalOnionProxy(config);
-      if (!detected) {
+      const baseUrl = await resolveControllerUrl();
+      client = new OnionInboxClient({
+        baseUrl,
+        deviceId: getOrCreateDeviceId(),
+      });
+      const health = await client.health();
+      if (!health.ok) {
         emitState("failed");
-        throw new Error("Onion proxy not reachable");
+        throw new Error(health.details ?? "Onion controller unavailable");
       }
-      activeProxyUrl = detected;
       emitState("connected");
+      pollTimer = setInterval(() => {
+        void pollInbox();
+      }, POLL_INTERVAL_MS);
     },
     async stop() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      pollCursor = null;
+      errorStreak = 0;
+      pollInFlight = false;
+      seenIds.clear();
+      seenOrder.length = 0;
+      client = null;
       emitState("idle");
     },
     async send(packet: TransportPacket) {
-      if (!activeProxyUrl) {
-        throw new Error("Onion proxy is not ready");
+      const to =
+        (packet as { to?: string }).to ??
+        (packet as { route?: { to?: string } }).route?.to ??
+        (packet as { meta?: { to?: string } }).meta?.to;
+      if (!to) {
+        throw new Error("onionRouterTransport: missing destination 'to'");
       }
-      // TODO: send to local onion proxy API once defined.
-      await httpClient.request(new URL("/onion/send", activeProxyUrl).toString(), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(packet),
-      });
+      if (!client) {
+        throw new Error("Onion controller is not ready");
+      }
+      const envelope = encodeBase64Url(
+        new TextEncoder().encode(JSON.stringify(packet))
+      );
+      const result = await client.send(to, envelope, DEFAULT_TTL_MS);
+      if (!result.ok) {
+        throw new Error(result.error ?? "Onion send failed");
+      }
       ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
     },
     onMessage(cb) {

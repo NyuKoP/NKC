@@ -38,3 +38,26 @@ contextBridge.exposeInMainWorld("onion", {
     return () => ipcRenderer.removeListener("onion:progress", handler);
   },
 });
+
+contextBridge.exposeInMainWorld("nkc", {
+  onionFetch: (req: {
+    url: string;
+    method: string;
+    headers?: Record<string, string>;
+    bodyBase64?: string;
+    timeoutMs?: number;
+  }) => ipcRenderer.invoke("nkc:onionFetch", req) as Promise<unknown>,
+  setOnionProxy: (proxyUrl: string | null) =>
+    ipcRenderer.invoke("nkc:setOnionProxy", proxyUrl) as Promise<unknown>,
+  getOnionControllerUrl: () =>
+    ipcRenderer.invoke("nkc:getOnionControllerUrl") as Promise<string>,
+  setOnionForwardProxy: (proxyUrl: string | null) =>
+    ipcRenderer.invoke("nkc:setOnionForwardProxy", proxyUrl) as Promise<{ ok: boolean }>,
+  onionControllerFetch: (req: {
+    url: string;
+    method: string;
+    headers?: Record<string, string>;
+    bodyBase64?: string;
+    timeoutMs?: number;
+  }) => ipcRenderer.invoke("nkc:onionControllerFetch", req) as Promise<unknown>,
+});
