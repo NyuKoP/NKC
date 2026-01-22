@@ -60,20 +60,20 @@ const decodeBase64Url = (value: string) => {
   }
 };
 
-export const normalizeRecoveryKey = (value: string) => {
+export const normalizeStartKey = (value: string) => {
   const trimmed = value.trim();
   if (!NKC_REGEX.test(trimmed)) {
-    throw new Error("Invalid recovery key format.");
+    throw new Error("Invalid start key format.");
   }
   const payload = trimmed.slice(4);
   const bytes = decodeBase64Url(payload);
   if (!bytes || bytes.length !== 32) {
-    throw new Error("Invalid recovery key format.");
+    throw new Error("Invalid start key format.");
   }
   return trimmed;
 };
 
-export const validateRecoveryKey = (value: string) => {
+export const validateStartKey = (value: string) => {
   const trimmed = value.trim();
   if (!NKC_REGEX.test(trimmed)) return false;
   const payload = trimmed.slice(4);
@@ -94,14 +94,14 @@ export const createVaultHeader = async (): Promise<VaultHeader> => {
 };
 
 export const deriveMkm = async (
-  recoveryKey: string,
+  startKey: string,
   header: VaultHeader
 ): Promise<Uint8Array> => {
   const sodium = await getSodium();
   const salt = fromB64(sodium, header.salt_b64);
   return sodium.crypto_pwhash(
     32,
-    normalizeRecoveryKey(recoveryKey),
+    normalizeStartKey(startKey),
     salt,
     header.opslimit,
     header.memlimit,

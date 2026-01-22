@@ -242,9 +242,9 @@ export const ensureVaultHeader = async (): Promise<VaultHeader> => {
   return header;
 };
 
-export const unlockVault = async (recoveryKey: string) => {
+export const unlockVault = async (startKey: string) => {
   const header = await ensureVaultHeader();
-  const mkm = await deriveMkm(recoveryKey, header);
+  const mkm = await deriveMkm(startKey, header);
   const vk = await deriveVk(mkm);
   setVaultKey(vk);
   await setVaultKeyId(vk);
@@ -696,13 +696,13 @@ export const seedVaultData = async (user: UserProfile) => {
 };
 
 export const rotateVaultKeys = async (
-  newRecoveryKey: string,
+  newStartKey: string,
   onProgress?: (value: number) => void
 ) => {
   await ensureDbOpen();
   const oldVk = requireVaultKey();
   const newHeader = await createVaultHeader();
-  const newMkm = await deriveMkm(newRecoveryKey, newHeader);
+  const newMkm = await deriveMkm(newStartKey, newHeader);
   const newVk = await deriveVk(newMkm);
 
   const profiles = await db.profiles.toArray();
