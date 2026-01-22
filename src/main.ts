@@ -58,7 +58,13 @@ type OnionControllerFetchResponse = {
 const isDev = !app.isPackaged;
 const SECRET_STORE_FILENAME = "secret-store.json";
 const ALLOWED_PROXY_PROTOCOLS = new Set(["socks5:", "socks5h:", "http:", "https:"]);
-const onionSession = session.fromPartition("persist:nkc-onion-fetch");
+let onionSession: Electron.Session | null = null;
+const getOnionSession = () => {
+  if (!onionSession) {
+    onionSession = session.fromPartition("persist:nkc-onion-fetch");
+  }
+  return onionSession;
+};
 
 const isLocalhostHost = (hostname: string) =>
   hostname === "127.0.0.1" || hostname === "localhost" || hostname === "::1";
@@ -96,11 +102,12 @@ const applyProxy = async ({ proxyUrl, enabled, allowRemote }: ProxyApplyPayload)
 };
 
 const setOnionProxy = async (proxyUrl: string | null) => {
+  const onionSessionInstance = getOnionSession();
   if (!proxyUrl) {
-    await onionSession.setProxy({ proxyRules: "" });
+    await onionSessionInstance.setProxy({ proxyRules: "" });
     return;
   }
-  await onionSession.setProxy({ proxyRules: proxyUrl });
+  await onionSessionInstance.setProxy({ proxyRules: proxyUrl });
 };
 
 const checkProxy = async (): Promise<ProxyHealth> => {
@@ -152,7 +159,7 @@ const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchRes
       const request = net.request({
         method: req.method,
         url: req.url,
-        session: onionSession,
+        session: getOnionSession(),
       });
       if (req.headers) {
         for (const [key, value] of Object.entries(req.headers)) {
@@ -242,7 +249,7 @@ const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchRespo
       headers: req.headers,
       body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
       signal: controller.signal,
-      session: onionSession,
+      session: getOnionSession(),
     });
     const buffer = new Uint8Array(await response.arrayBuffer());
     return {

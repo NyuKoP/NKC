@@ -28,3 +28,6 @@ export const buildRouteCandidates = (mode: RouteMode, targets: RouteTargets): Ro
   if (tor) candidates.push(tor);
   return candidates;
 };
+
+export const selectRoute = (mode: RouteMode, targets: RouteTargets) =>
+  buildRouteCandidates(mode, targets);

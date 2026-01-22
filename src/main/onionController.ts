@@ -4,7 +4,7 @@ import { URL } from "node:url";
 import type { TorStatus } from "./torManager";
 import type { LokinetStatus } from "./lokinetManager";
 import { socksFetch } from "./socksHttpClient";
-import { buildRouteCandidates, type RouteMode } from "./routePolicy";
+import { selectRoute, type RouteMode } from "./routePolicy";
 
 type InboxItem = {
   id: string;
@@ -68,6 +68,111 @@ const readBody = (req: http.IncomingMessage) =>
     req.on("end", () => finish({ ok: true, body: Buffer.concat(chunks).toString("utf8") }));
     req.on("error", () => finish({ ok: false, error: "read-error" }));
   });
+
+export type OnionSendPayload = {
+  to?: string;
+  from?: string;
+  envelope?: string;
+  ttlMs?: number;
+  toDeviceId?: string;
+  toOnion?: string;
+  fromDeviceId?: string;
+  route?: {
+    mode?: RouteMode;
+    torOnion?: string;
+    lokinet?: string;
+  };
+};
+
+type OnionSendDeps = {
+  socksFetch: typeof socksFetch;
+  selectRoute: typeof selectRoute;
+  now: () => number;
+  uuid: () => string;
+  torProxyUrl: string | null;
+  lokinetProxyUrl: string | null;
+  storeLocal: (deviceId: string, item: Omit<InboxItem, "expiresAt"> & { ttlMs?: number }) => void;
+};
+
+export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSendDeps) => {
+  if (!payload.envelope) {
+    return { status: 400, body: { ok: false, error: "missing-fields" } };
+  }
+  const msgId = deps.uuid();
+  const ts = deps.now();
+  const toOnion =
+    payload.toOnion ??
+    payload.route?.torOnion ??
+    (payload.to?.includes(".onion") ? payload.to : undefined);
+  const toDeviceId = payload.toDeviceId ?? payload.to;
+  const fromDeviceId = payload.fromDeviceId ?? payload.from ?? "";
+  const routeMode = payload.route?.mode ?? "manual";
+  const lokinetAddress = payload.route?.lokinet;
+
+  if (!toDeviceId) {
+    return { status: 400, body: { ok: false, error: "missing-to-device" } };
+  }
+  const hasRouteTargets = Boolean(toOnion || lokinetAddress);
+  if (payload.route || hasRouteTargets) {
+    const candidates = deps.selectRoute(routeMode, {
+      torOnion: toOnion,
+      lokinet: lokinetAddress,
+    });
+    for (let index = 0; index < candidates.length; index += 1) {
+      const candidate = candidates[index];
+      const isLast = index === candidates.length - 1;
+      const proxyUrl = candidate.kind === "tor" ? deps.torProxyUrl : deps.lokinetProxyUrl;
+      if (!proxyUrl) {
+        if (routeMode === "auto") continue;
+        return { status: 400, body: { ok: false, error: "forward_failed:no_proxy" } };
+      }
+      try {
+        const response = await deps.socksFetch(`${candidate.target}/onion/ingest`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: Buffer.from(
+            JSON.stringify({
+              toDeviceId,
+              from: fromDeviceId,
+              envelope: payload.envelope,
+              ts,
+              id: msgId,
+            })
+          ),
+          timeoutMs: 10000,
+          socksProxyUrl: proxyUrl,
+          retry: { attempts: 2, delayMs: 200 },
+        });
+        if (response.status >= 200 && response.status < 300) {
+          return { status: 200, body: { ok: true, msgId, forwarded: true, via: candidate.kind } };
+        }
+        if (!isLast && routeMode === "auto") {
+          continue;
+        }
+        return {
+          status: 502,
+          body: { ok: false, error: `forward_failed:${response.status}` },
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!isLast && routeMode === "auto") {
+          continue;
+        }
+        return { status: 502, body: { ok: false, error: `forward_failed:${message}` } };
+      }
+    }
+    return { status: 400, body: { ok: false, error: "forward_failed:no_route" } };
+  }
+
+  deps.storeLocal(toDeviceId, {
+    id: msgId,
+    ts,
+    from: fromDeviceId,
+    envelope: payload.envelope,
+    ttlMs: payload.ttlMs,
+  });
+  return { status: 200, body: { ok: true, msgId, forwarded: false } };
+};
 
 export const startOnionController = async (options?: {
   port?: number;
@@ -210,117 +315,23 @@ export const startOnionController = async (options?: {
         });
         return;
       }
-      let payload: {
-        to?: string;
-        from?: string;
-        envelope?: string;
-        ttlMs?: number;
-        toDeviceId?: string;
-        toOnion?: string;
-        fromDeviceId?: string;
-        route?: {
-          mode?: RouteMode;
-          torOnion?: string;
-          lokinet?: string;
-        };
-      };
+      let payload: OnionSendPayload;
       try {
-        payload = JSON.parse(parsed.body) as {
-          to?: string;
-          from?: string;
-          envelope?: string;
-          ttlMs?: number;
-          toDeviceId?: string;
-          toOnion?: string;
-          fromDeviceId?: string;
-          route?: {
-            mode?: RouteMode;
-            torOnion?: string;
-            lokinet?: string;
-          };
-        };
+        payload = JSON.parse(parsed.body) as OnionSendPayload;
       } catch {
         sendJson(res, 400, { ok: false, error: "invalid-json" });
         return;
       }
-      if (!payload.envelope) {
-        sendJson(res, 400, { ok: false, error: "missing-fields" });
-        return;
-      }
-      const msgId = randomUUID();
-      const ts = Date.now();
-      const toOnion = payload.toOnion ?? payload.route?.torOnion ?? (payload.to?.includes(".onion") ? payload.to : undefined);
-      const toDeviceId = payload.toDeviceId ?? payload.to;
-      const fromDeviceId = payload.fromDeviceId ?? payload.from ?? "";
-      const routeMode = payload.route?.mode ?? "manual";
-      const lokinetAddress = payload.route?.lokinet;
-
-      if (!toDeviceId) {
-        sendJson(res, 400, { ok: false, error: "missing-to-device" });
-        return;
-      }
-      const hasRouteTargets = Boolean(toOnion || lokinetAddress);
-      if (payload.route || hasRouteTargets) {
-        const candidates = buildRouteCandidates(routeMode, {
-          torOnion: toOnion,
-          lokinet: lokinetAddress,
-        });
-        for (let index = 0; index < candidates.length; index += 1) {
-          const candidate = candidates[index];
-          const isLast = index === candidates.length - 1;
-          const proxyUrl =
-            candidate.kind === "tor" ? torForwarding.proxyUrl : lokinetForwarding.proxyUrl;
-          if (!proxyUrl) {
-            if (routeMode === "auto") continue;
-            sendJson(res, 400, { ok: false, error: "forward_failed:no_proxy" });
-            return;
-          }
-          try {
-            const response = await socksFetch(`${candidate.target}/onion/ingest`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: Buffer.from(
-                JSON.stringify({
-                  toDeviceId,
-                  from: fromDeviceId,
-                  envelope: payload.envelope,
-                  ts,
-                  id: msgId,
-                })
-              ),
-              timeoutMs: 10000,
-              socksProxyUrl: proxyUrl,
-              retry: { attempts: 2, delayMs: 200 },
-            });
-            if (response.status >= 200 && response.status < 300) {
-              sendJson(res, 200, { ok: true, msgId, forwarded: true, route: candidate.kind });
-              return;
-            }
-            if (!isLast && routeMode === "auto") {
-              continue;
-            }
-            sendJson(res, 502, { ok: false, error: `forward_failed:${response.status}` });
-            return;
-          } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (!isLast && routeMode === "auto") {
-              continue;
-            }
-            sendJson(res, 502, { ok: false, error: `forward_failed:${message}` });
-            return;
-          }
-        }
-        sendJson(res, 400, { ok: false, error: "forward_failed:no_route" });
-        return;
-      }
-      enqueue(toDeviceId, {
-        id: msgId,
-        ts,
-        from: fromDeviceId,
-        envelope: payload.envelope,
-        ttlMs: payload.ttlMs,
+      const result = await handleOnionSend(payload, {
+        socksFetch,
+        selectRoute,
+        now: () => Date.now(),
+        uuid: () => randomUUID(),
+        torProxyUrl: torForwarding.proxyUrl,
+        lokinetProxyUrl: lokinetForwarding.proxyUrl,
+        storeLocal: (deviceId, item) => enqueue(deviceId, item),
       });
-      sendJson(res, 200, { ok: true, msgId, forwarded: false });
+      sendJson(res, result.status, result.body);
       return;
     }
 

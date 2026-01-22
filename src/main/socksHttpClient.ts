@@ -11,6 +11,7 @@ type SocksFetchOptions = {
     attempts?: number;
     delayMs?: number;
   };
+  socketFactory?: SocketFactory;
 };
 
 type SocksFetchResponse = {
@@ -36,8 +37,19 @@ const parseSocksUrl = (value: string) => {
   if (!host || !Number.isInteger(port) || port <= 0) {
     throw new Error("invalid_socks_proxy");
   }
-  return { host, port };
+  return { host, port, protocol: url.protocol };
 };
+
+export type SocketLike = {
+  on: (event: "data", listener: (chunk: Buffer) => void) => void;
+  once: (event: "end" | "error", listener: (...args: unknown[]) => void) => void;
+  off: (event: "data", listener: (chunk: Buffer) => void) => void;
+  write: (data: Buffer) => boolean;
+  end: () => void;
+  destroy: () => void;
+};
+
+export type SocketFactory = (opts: { host: string; port: number }) => Promise<SocketLike>;
 
 const readExactly = (socket: net.Socket, size: number) =>
   new Promise<Buffer>((resolve, reject) => {
@@ -57,21 +69,30 @@ const readExactly = (socket: net.Socket, size: number) =>
     socket.once("error", onError);
   });
 
-const connectSocks = async (targetHost: string, targetPort: number, proxyUrl: string) => {
+const connectSocks = async (
+  targetHost: string,
+  targetPort: number,
+  proxyUrl: string,
+  socketFactory?: SocketFactory
+) => {
   const proxy = parseSocksUrl(proxyUrl);
-  const socket = net.connect(proxy.port, proxy.host);
-  await new Promise<void>((resolve, reject) => {
-    socket.once("connect", resolve);
-    socket.once("error", reject);
-  });
+  const socket = socketFactory
+    ? await socketFactory({ host: proxy.host, port: proxy.port })
+    : net.connect(proxy.port, proxy.host);
+  if (!socketFactory) {
+    await new Promise<void>((resolve, reject) => {
+      (socket as net.Socket).once("connect", resolve);
+      (socket as net.Socket).once("error", reject);
+    });
+  }
   socket.write(Buffer.from([0x05, 0x01, 0x00]));
-  const methodReply = await readExactly(socket, 2);
+  const methodReply = await readExactly(socket as net.Socket, 2);
   if (methodReply[0] !== 0x05 || methodReply[1] !== 0x00) {
     socket.destroy();
     throw new Error("socks_auth_failed");
   }
 
-  const ipVersion = net.isIP(targetHost);
+  const ipVersion = proxy.protocol === "socks5h:" ? 0 : net.isIP(targetHost);
   let addrType = 0x03;
   let addrPayload: Buffer;
   if (ipVersion === 4) {
@@ -87,21 +108,21 @@ const connectSocks = async (targetHost: string, targetPort: number, proxyUrl: st
   const req = Buffer.concat([Buffer.from([0x05, 0x01, 0x00, addrType]), addrPayload, portBuf]);
   socket.write(req);
 
-  const replyHead = await readExactly(socket, 4);
+  const replyHead = await readExactly(socket as net.Socket, 4);
   if (replyHead[1] !== 0x00) {
     socket.destroy();
     throw new Error("socks_connect_failed");
   }
   const replyAddrType = replyHead[3];
   if (replyAddrType === 0x01) {
-    await readExactly(socket, 4);
+    await readExactly(socket as net.Socket, 4);
   } else if (replyAddrType === 0x03) {
-    const len = await readExactly(socket, 1);
-    await readExactly(socket, len[0]);
+    const len = await readExactly(socket as net.Socket, 1);
+    await readExactly(socket as net.Socket, len[0]);
   } else if (replyAddrType === 0x04) {
-    await readExactly(socket, 16);
+    await readExactly(socket as net.Socket, 16);
   }
-  await readExactly(socket, 2);
+  await readExactly(socket as net.Socket, 2);
 
   return socket;
 };
@@ -139,7 +160,7 @@ const decodeChunkedBody = (buffer: Buffer) => {
   return Buffer.concat(chunks);
 };
 
-const readHttpResponse = async (socket: net.Socket, timeoutMs: number) => {
+const readHttpResponse = async (socket: SocketLike, timeoutMs: number) => {
   const chunks: Buffer[] = [];
   let total = 0;
   const done = new Promise<void>((resolve, reject) => {
@@ -196,9 +217,9 @@ const socksFetchOnce = async (url: string, opts: SocksFetchOptions): Promise<Soc
   const path = `${parsed.pathname}${parsed.search}`;
   const timeoutMs = opts.timeoutMs ?? 10000;
 
-  const socket = await connectSocks(host, port, opts.socksProxyUrl);
+  const socket = await connectSocks(host, port, opts.socksProxyUrl, opts.socketFactory);
   const transport = isHttps
-    ? tls.connect({ socket, servername: host })
+    ? tls.connect({ socket: socket as net.Socket, servername: host })
     : socket;
 
   const headers: Record<string, string> = {
