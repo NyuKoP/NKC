@@ -357,26 +357,32 @@ export default function SettingsDialog({
   }, [open]);
 
   useEffect(() => {
+    if (!open || view !== "network") return;
+    setConnectionStatus(getConnectionStatus());
     const unsubscribe = onConnectionStatus(setConnectionStatus);
+    const interval = window.setInterval(() => {
+      setConnectionStatus(getConnectionStatus());
+    }, 1500);
     return () => {
       unsubscribe();
+      window.clearInterval(interval);
     };
-  }, []);
+  }, [open, view]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || view !== "network") return;
     const refresh = async () => {
       try {
         const status = await getOnionStatus();
         setOnionStatus(status);
         setComponentState("tor", status.components.tor);
         setComponentState("lokinet", status.components.lokinet);
-      } catch (error) {
-        console.error("Failed to load onion status", error);
+      } catch {
+        // Ignore transient polling errors.
       }
     };
     void refresh();
-    const interval = window.setInterval(refresh, 2500);
+    const interval = window.setInterval(refresh, 1500);
     const unsubscribe = onOnionProgress((payload) => {
       setComponentState(payload.network, payload.status);
       setOnionStatus((prev) =>
@@ -392,7 +398,7 @@ export default function SettingsDialog({
       window.clearInterval(interval);
       unsubscribe();
     };
-  }, [open, setComponentState]);
+  }, [open, setComponentState, view]);
 
   useEffect(() => {
     if (!open) return;
@@ -622,6 +628,18 @@ export default function SettingsDialog({
     }
   };
 
+  const handleCopyAddress = async (value: string, label: string) => {
+    if (!value) return;
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard not available");
+      await navigator.clipboard.writeText(value);
+      addToast({ message: t(`${label} 주소를 복사했습니다.`, `${label} address copied.`) });
+    } catch (error) {
+      console.error("Failed to copy address", error);
+      addToast({ message: t("주소 복사에 실패했습니다.", "Failed to copy address.") });
+    }
+  };
+
   const handleApproveRequest = async () => {
     if (!pairingRequest) return;
     setPairingRequestBusy(true);
@@ -799,18 +817,158 @@ export default function SettingsDialog({
     }
   };
 
+  type DotState = "running" | "starting" | "stopped" | "error";
+
+  const getDotState = (kind: "tor" | "lokinet", status: OnionStatus | null): DotState => {
+    const component = status?.components?.[kind];
+    if (component?.error || component?.status === "failed") return "error";
+    if (status?.runtime?.status === "running" && status.runtime.network === kind) return "running";
+    if (
+      (status?.runtime?.status === "starting" && status.runtime.network === kind) ||
+      component?.status === "downloading" ||
+      component?.status === "installing"
+    ) {
+      return "starting";
+    }
+    return "stopped";
+  };
+
+  const getDotClass = (state: DotState) => {
+    if (state === "running") return "bg-emerald-300";
+    if (state === "starting") return "bg-amber-300 animate-pulse";
+    if (state === "error") return "bg-red-400";
+    return "bg-nkc-muted";
+  };
+
+  const formatActiveRouteLabel = (snapshot: {
+    connection: typeof connectionStatus;
+    runtime?: OnionStatus["runtime"];
+    onionNetwork: OnionNetwork;
+    torState: typeof netConfig.tor;
+    lokinetState: typeof netConfig.lokinet;
+    selfOnionHops: number;
+    torAddress?: string;
+    lokinetAddress?: string;
+  }) => {
+    const {
+      connection,
+      runtime,
+      onionNetwork,
+      torState,
+      lokinetState,
+      selfOnionHops,
+      torAddress,
+      lokinetAddress,
+    } = snapshot;
+    const torFailed = torState.status === "failed" || Boolean(torState.error);
+    const lokinetFailed = lokinetState.status === "failed" || Boolean(lokinetState.error);
+
+    if (connection.transport === "selfOnion") {
+      if (connection.state === "connected") {
+        return t(
+          `경로: 내부 Onion (${selfOnionHops} hops)`,
+          `Route: Built-in Onion (${selfOnionHops} hops)`
+        );
+      }
+      if (connection.state === "failed") {
+        return t("경로: 내부 Onion (실패)", "Route: Built-in Onion (failed)");
+      }
+      if (connection.state === "degraded") {
+        return t("경로: 내부 Onion (불안정)", "Route: Built-in Onion (degraded)");
+      }
+      return t("경로: 내부 Onion (경로 준비 중)", "Route: Built-in Onion (preparing)");
+    }
+
+    if (connection.transport === "directP2P") {
+      if (connection.state === "connected") {
+        return t("경로: Direct P2P", "Route: Direct P2P");
+      }
+      if (connection.state === "connecting") {
+        return t("경로: Direct P2P (연결 중)", "Route: Direct P2P (connecting)");
+      }
+      if (connection.state === "failed") {
+        return t("경로: Direct P2P (실패)", "Route: Direct P2P (failed)");
+      }
+      if (connection.state === "degraded") {
+        return t("경로: Direct P2P (불안정)", "Route: Direct P2P (degraded)");
+      }
+      return t("경로: Direct P2P (대기)", "Route: Direct P2P (idle)");
+    }
+
+    if (connection.transport === "onionRouter") {
+      const network = runtime?.network;
+      const status = runtime?.status;
+      if (network === "tor") {
+        if (status === "running" && onionNetwork === "lokinet" && lokinetFailed) {
+          return t("경로: Tor (Lokinet 실패)", "Route: Tor (Lokinet failed)");
+        }
+        if (status === "running" && torAddress) {
+          return t("경로: Tor Hidden Service", "Route: Tor Hidden Service");
+        }
+        if (status === "running") {
+          return t("경로: Tor (Onion)", "Route: Tor (Onion)");
+        }
+        if (status === "starting") {
+          return t("경로: Tor (연결 중)", "Route: Tor (connecting)");
+        }
+        if (status === "failed") {
+          return t("경로: Tor (실패)", "Route: Tor (failed)");
+        }
+        if (status === "idle") {
+          return t("경로: Tor (대기)", "Route: Tor (idle)");
+        }
+        return t("경로: Tor", "Route: Tor");
+      }
+      if (network === "lokinet") {
+        if (status === "running" && onionNetwork === "tor" && torFailed) {
+          return t("경로: Lokinet (Tor 실패)", "Route: Lokinet (Tor failed)");
+        }
+        if (status === "running" && lokinetAddress) {
+          return t("경로: Lokinet (서비스)", "Route: Lokinet (service)");
+        }
+        if (status === "running") {
+          return t("경로: Lokinet", "Route: Lokinet");
+        }
+        if (status === "starting") {
+          return t("경로: Lokinet (연결 중)", "Route: Lokinet (connecting)");
+        }
+        if (status === "failed") {
+          return t("경로: Lokinet (실패)", "Route: Lokinet (failed)");
+        }
+        if (status === "idle") {
+          return t("경로: Lokinet (대기)", "Route: Lokinet (idle)");
+        }
+        return t("경로: Lokinet", "Route: Lokinet");
+      }
+      if (status === "starting") {
+        return t("경로: Onion (연결 중)", "Route: Onion (connecting)");
+      }
+      if (status === "failed") {
+        return t("경로: Onion (실패)", "Route: Onion (failed)");
+      }
+      if (status === "running") {
+        return t("경로: Onion (연결됨)", "Route: Onion (connected)");
+      }
+    }
+
+    return t("경로: 대기", "Route: idle");
+  };
+
 
   const routeInfo = getRouteInfo(netConfig.mode, netConfig);
   const runtime = onionStatus?.runtime;
-  const runtimeLabel = runtime
-    ? runtime.status === "running"
-      ? t("경로: 연결됨", "Route: connected")
-      : runtime.status === "starting"
-        ? t("경로: 시작 중", "Route: starting")
-        : runtime.status === "failed"
-          ? t("경로: 실패", "Route: failed")
-          : t("경로: 대기", "Route: idle")
-    : t("경로: 확인 필요", "Route: check required");
+  const torAddress = userProfileState?.routingHints?.onionAddr ?? "";
+  const lokinetAddress = userProfileState?.routingHints?.lokinetAddr ?? "";
+  const activeRouteLabel = formatActiveRouteLabel({
+    connection: connectionStatus,
+    runtime,
+    onionNetwork: onionNetworkDraft,
+    torState: netConfig.tor,
+    lokinetState: netConfig.lokinet,
+    selfOnionHops: netConfig.selfOnionMinRelays,
+    torAddress,
+    lokinetAddress,
+  });
   const runtimeStateLabel = runtime
     ? runtime.status === "running"
       ? t("상태: 실행 중", "Status: running")
@@ -898,13 +1056,6 @@ export default function SettingsDialog({
     if (state.status === "failed") return t("실패", "Failed");
     if (state.installed) return t("설치됨", "Installed");
     return t("미설치", "Not installed");
-  };
-
-  const getStatusDotClass = (state: typeof netConfig.tor) => {
-    if (!state.installed) return "bg-nkc-muted";
-    if (state.status === "failed") return "bg-red-400";
-    if (state.status === "downloading" || state.status === "installing") return "bg-amber-300";
-    return "bg-emerald-300";
   };
 
   const isComponentReady = (state: typeof netConfig.tor) =>
@@ -1300,6 +1451,58 @@ export default function SettingsDialog({
                 ) : null}
               </section>
 
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
+                  {t("내 주소", "My Addresses")}
+                </div>
+                <div className="mt-3 grid gap-3">
+                  <div className="grid gap-2">
+                    <div className="text-xs text-nkc-muted">Tor Onion</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        readOnly
+                        value={torAddress}
+                        placeholder={t("(사용 불가)", "(not available)")}
+                        className="min-w-[200px] flex-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text placeholder:text-nkc-muted"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyAddress(torAddress, "Tor Onion")}
+                        disabled={!torAddress}
+                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                      >
+                        {t("복사", "Copy")}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <div className="text-xs text-nkc-muted">Lokinet</div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <input
+                        readOnly
+                        value={lokinetAddress}
+                        placeholder={t("(사용 불가)", "(not available)")}
+                        className="min-w-[200px] flex-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text placeholder:text-nkc-muted"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyAddress(lokinetAddress, "Lokinet")}
+                        disabled={!lokinetAddress}
+                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                      >
+                        {t("복사", "Copy")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-2 text-xs text-nkc-muted">
+                  {t(
+                    "주소는 연결/설치 상태에 따라 비어 있을 수 있습니다.",
+                    "Addresses may be empty depending on connection/install status."
+                  )}
+                </div>
+              </section>
+
               {netConfig.mode === "onionRouter" ? (
                 <>
                   <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
@@ -1376,7 +1579,7 @@ export default function SettingsDialog({
                             {runtimeStatusIcon}
                           </span>
                           <span>
-                            {runtimeLabel}
+                            {activeRouteLabel}
                             {runtimeSocksLabel}
                           </span>
                         </div>
@@ -1402,8 +1605,8 @@ export default function SettingsDialog({
                             Tor
                             <span
                               title={t("Tor 상태", "Tor status")}
-                              className={`inline-flex h-2 w-2 rounded-full ${getStatusDotClass(
-                                netConfig.tor
+                              className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
+                                getDotState("tor", onionStatus)
                               )} cursor-pointer`}
                               tabIndex={0}
                             />
@@ -1511,6 +1714,13 @@ export default function SettingsDialog({
                               onChange={() => setOnionNetworkDraft("lokinet")}
                             />
                             Lokinet{" "}
+                            <span
+                              title={t("Lokinet 상태", "Lokinet status")}
+                              className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
+                                getDotState("lokinet", onionStatus)
+                              )} cursor-pointer`}
+                              tabIndex={0}
+                            />
                             <span className="text-xs text-nkc-muted">
                               {t("⚠ 고급", "⚠ Advanced")}
                             </span>
