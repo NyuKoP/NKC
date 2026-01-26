@@ -72,3 +72,25 @@ contextBridge.exposeInMainWorld("nkc", {
   stopLokinet: () => ipcRenderer.invoke("nkc:stopLokinet") as Promise<unknown>,
   getMyLokinetAddress: () => ipcRenderer.invoke("nkc:getMyLokinetAddress") as Promise<string>,
 });
+
+contextBridge.exposeInMainWorld("prefs", {
+  get: () => ipcRenderer.invoke("prefs:get") as Promise<unknown>,
+  set: (patch: unknown) => ipcRenderer.invoke("prefs:set", patch) as Promise<unknown>,
+});
+
+contextBridge.exposeInMainWorld("appControls", {
+  show: () => ipcRenderer.invoke("app:show") as Promise<void>,
+  hide: () => ipcRenderer.invoke("app:hide") as Promise<void>,
+  quit: () => ipcRenderer.invoke("app:quit") as Promise<void>,
+  syncNow: () => ipcRenderer.invoke("sync:manual") as Promise<void>,
+  onSyncStatus: (cb: (payload: unknown) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
+    ipcRenderer.on("sync:status", handler);
+    return () => ipcRenderer.removeListener("sync:status", handler);
+  },
+  onBackgroundStatus: (cb: (payload: unknown) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
+    ipcRenderer.on("background:status", handler);
+    return () => ipcRenderer.removeListener("background:status", handler);
+  },
+});

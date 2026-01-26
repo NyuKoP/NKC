@@ -27,5 +27,17 @@ declare global {
       applyUpdate: (payload: { network: "tor" | "lokinet" }) => Promise<void>;
       onProgress: (cb: (payload: unknown) => void) => () => void;
     };
+    prefs?: {
+      get: () => Promise<unknown>;
+      set: (patch: unknown) => Promise<unknown>;
+    };
+    appControls?: {
+      show: () => Promise<void>;
+      hide: () => Promise<void>;
+      quit: () => Promise<void>;
+      syncNow: () => Promise<void>;
+      onSyncStatus: (cb: (payload: unknown) => void) => () => void;
+      onBackgroundStatus: (cb: (payload: unknown) => void) => () => void;
+    };
   }
 }

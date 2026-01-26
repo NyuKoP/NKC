@@ -1,4 +1,14 @@
-import { app, BrowserWindow, ipcMain, net, safeStorage, session } from "electron";
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  net,
+  safeStorage,
+  session,
+  Menu,
+  Tray,
+  nativeImage,
+} from "electron";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -12,6 +22,8 @@ import { PinnedHashMissingError } from "./main/onion/errors";
 import { startOnionController, type OnionControllerHandle } from "./main/onionController";
 import { TorManager } from "./main/torManager";
 import { LokinetManager } from "./main/lokinetManager";
+import { readAppPrefs, setAppPrefs } from "./main/preferences";
+import { defaultAppPrefs, type AppPreferences, type AppPreferencesPatch } from "./preferences";
 
 type ProxyApplyPayload = {
   proxyUrl: string;
@@ -53,6 +65,17 @@ type OnionControllerFetchResponse = {
   headers: Record<string, string>;
   bodyBase64: string;
   error?: string;
+};
+
+type SyncStatusPayload = {
+  state: "running" | "ok" | "error";
+  lastSyncAt: number | null;
+  error?: string;
+};
+
+type BackgroundStatusPayload = {
+  state: "connected" | "disconnected";
+  route?: string;
 };
 
 const isDev = !app.isPackaged;
@@ -445,6 +468,30 @@ const registerSecretStoreIpc = () => {
 
   ipcMain.handle("secretStore:isAvailable", async () => {
     return safeStorage.isEncryptionAvailable();
+  });
+};
+
+const registerAppIpc = () => {
+  ipcMain.handle("prefs:get", async () => {
+    return readAppPrefs();
+  });
+  ipcMain.handle("prefs:set", async (_event, patch: AppPreferencesPatch) => {
+    const next = await setAppPrefs(patch ?? {});
+    await applyPrefs(next);
+    return next;
+  });
+  ipcMain.handle("sync:manual", async () => {
+    await backgroundService?.manualSync();
+  });
+  ipcMain.handle("app:show", async () => {
+    if (!focusMainWindow()) createMainWindow();
+  });
+  ipcMain.handle("app:hide", async () => {
+    mainWindow?.hide();
+  });
+  ipcMain.handle("app:quit", async () => {
+    isQuitting = true;
+    app.quit();
   });
 };
 
@@ -901,8 +948,142 @@ const registerOnionIpc = () => {
   );
 };
 
+const sendToAllWindows = (channel: string, payload: unknown) => {
+  BrowserWindow.getAllWindows().forEach((win) => {
+    if (win.isDestroyed()) return;
+    win.webContents.send(channel, payload);
+  });
+};
+
+class BackgroundService {
+  private prefs: AppPreferences = defaultAppPrefs;
+  private intervalId: NodeJS.Timeout | null = null;
+  private syncInFlight = false;
+  private lastSyncAt: number | null = null;
+  private syncStatus: SyncStatusPayload = { state: "ok", lastSyncAt: null };
+  private backgroundStatus: BackgroundStatusPayload = { state: "disconnected", route: "" };
+
+  applyPrefs(prefs: AppPreferences) {
+    this.prefs = prefs;
+    if (!prefs.background.enabled) {
+      this.stopTimers();
+      this.backgroundStatus = { state: "disconnected", route: "" };
+      this.emitBackgroundStatus();
+      return;
+    }
+    this.backgroundStatus = { state: "connected", route: "auto" };
+    this.emitBackgroundStatus();
+    this.scheduleInterval();
+  }
+
+  manualSync() {
+    return this.runSync();
+  }
+
+  emitCurrentStatus() {
+    this.emitBackgroundStatus();
+    this.emitSyncStatus();
+  }
+
+  private stopTimers() {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = null;
+    }
+  }
+
+  private scheduleInterval() {
+    this.stopTimers();
+    if (!this.prefs.background.enabled) return;
+    const minutes = this.prefs.background.syncIntervalMinutes;
+    if (minutes <= 0) return;
+    this.intervalId = setInterval(() => {
+      void this.runSync();
+    }, minutes * 60 * 1000);
+  }
+
+  private async runSync() {
+    if (!this.prefs.background.enabled) return;
+    if (this.syncInFlight) return;
+    this.syncInFlight = true;
+    this.syncStatus = { state: "running", lastSyncAt: this.lastSyncAt };
+    this.emitSyncStatus();
+    try {
+      await this.performSync();
+      this.lastSyncAt = Date.now();
+      this.syncStatus = { state: "ok", lastSyncAt: this.lastSyncAt };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.syncStatus = { state: "error", lastSyncAt: this.lastSyncAt, error: message };
+    } finally {
+      this.syncInFlight = false;
+      this.emitSyncStatus();
+    }
+  }
+
+  private async performSync() {
+    await new Promise((resolve) => setTimeout(resolve, 80));
+  }
+
+  private emitSyncStatus() {
+    sendToAllWindows("sync:status", this.syncStatus);
+  }
+
+  private emitBackgroundStatus() {
+    sendToAllWindows("background:status", this.backgroundStatus);
+    lastBackgroundStatus = this.backgroundStatus;
+    updateTrayMenu();
+  }
+}
+
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow: BrowserWindow | null = null;
+let tray: Tray | null = null;
+let backgroundService: BackgroundService | null = null;
+let isQuitting = false;
+let relayToggle = false;
+let currentPrefs: AppPreferences = defaultAppPrefs;
+let lastBackgroundStatus: BackgroundStatusPayload = { state: "disconnected", route: "" };
+
+const updateTrayMenu = () => {
+  if (!tray) return;
+  const visible = mainWindow?.isVisible() ?? false;
+  const showHideLabel = visible ? "Hide" : "Show";
+  const statusLabel =
+    lastBackgroundStatus.state === "connected"
+      ? "Status: Connected"
+      : "Status: Disconnected";
+  const menu = Menu.buildFromTemplate([
+    {
+      label: showHideLabel,
+      click: () => {
+        if (visible) {
+          mainWindow?.hide();
+        } else if (!focusMainWindow()) {
+          createMainWindow();
+        }
+      },
+    },
+    { label: statusLabel, enabled: false },
+    {
+      label: "Sync now",
+      click: () => {
+        void backgroundService?.manualSync();
+      },
+    },
+    {
+      label: "Relay (placeholder)",
+      type: "checkbox",
+      checked: relayToggle,
+      click: (item) => {
+        relayToggle = item.checked;
+        updateTrayMenu();
+      },
+    },
+    { label: "Quit", click: () => app.quit() },
+  ]);
+  tray.setContextMenu(menu);
+};
 
 const focusMainWindow = () => {
   if (!mainWindow || mainWindow.isDestroyed()) return false;
@@ -910,6 +1091,36 @@ const focusMainWindow = () => {
   mainWindow.show();
   mainWindow.focus();
   return true;
+};
+
+const createTray = () => {
+  if (tray) return tray;
+  const icon = nativeImage.createFromDataURL(
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+lbkAAAAASUVORK5CYII="
+  );
+  tray = new Tray(icon);
+  tray.setToolTip("NKC");
+  tray.on("click", () => {
+    if (mainWindow?.isVisible()) {
+      mainWindow.hide();
+    } else if (!focusMainWindow()) {
+      createMainWindow();
+    }
+    updateTrayMenu();
+  });
+  updateTrayMenu();
+  return tray;
+};
+
+const applyPrefs = async (prefs: AppPreferences) => {
+  currentPrefs = prefs;
+  try {
+    app.setLoginItemSettings({ openAtLogin: prefs.login.autoStartEnabled });
+  } catch (error) {
+    console.warn("[main] failed to update login item settings", error);
+  }
+  backgroundService?.applyPrefs(prefs);
+  updateTrayMenu();
 };
 
 const canReach = async (url: string, timeoutMs = 1200) =>
@@ -953,6 +1164,7 @@ export const createMainWindow = () => {
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
+    show: false,
     webPreferences: {
       preload: preloadExists ? preloadPath : undefined,
       contextIsolation: true,
@@ -1042,12 +1254,28 @@ export const createMainWindow = () => {
     void win.loadFile(path.join(__dirname, "../dist/index.html"));
   };
   void loadRenderer();
+  win.once("ready-to-show", () => {
+    if (!currentPrefs.login.startInTray) {
+      win.show();
+    }
+  });
   if (process.env.OPEN_DEV_TOOLS) {
     win.webContents.openDevTools({ mode: "detach" });
   }
   mainWindow = win;
+  backgroundService?.emitCurrentStatus();
+  win.on("close", (event) => {
+    if (isQuitting) return;
+    if (currentPrefs.login.closeToTray && !currentPrefs.login.closeToExit) {
+      event.preventDefault();
+      win.hide();
+    }
+  });
+  win.on("show", () => updateTrayMenu());
+  win.on("hide", () => updateTrayMenu());
   win.on("closed", () => {
     mainWindow = null;
+    updateTrayMenu();
   });
   return win;
 };
@@ -1080,15 +1308,17 @@ if (process.env.VITE_DEV_SERVER_URL) {
   console.log("[dev] userData =", app.getPath("userData"), "temp =", app.getPath("temp"));
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   if (isDev) {
     console.log("[main] VITE_DEV_SERVER_URL =", process.env.VITE_DEV_SERVER_URL ?? "");
   }
+  backgroundService = new BackgroundService();
   registerProxyIpc();
   registerOnionFetchIpc();
   registerSecretStoreIpc();
   registerOnionIpc();
   registerOnionControllerIpc();
+  registerAppIpc();
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
     lokinetManager = new LokinetManager({ appDataDir: app.getPath("userData") });
@@ -1137,6 +1367,9 @@ app.whenReady().then(() => {
   })().catch((error) => {
     console.error("[main] onion controller start failed", error);
   });
+  const prefs = await readAppPrefs();
+  await applyPrefs(prefs);
+  createTray();
   createMainWindow();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -1145,7 +1378,10 @@ app.whenReady().then(() => {
   });
 });
 
-app.on("before-quit", () => console.log("[main] before-quit"));
+app.on("before-quit", () => {
+  isQuitting = true;
+  console.log("[main] before-quit");
+});
 app.on("will-quit", () => console.log("[main] will-quit"));
 app.on("quit", (_event, code) => console.log("[main] quit", code));
 
