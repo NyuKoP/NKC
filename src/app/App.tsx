@@ -1850,6 +1850,7 @@ export default function App() {
           onSetPin={handleSetPin}
           onDisablePin={handleDisablePin}
           onOpenStartKey={() => navigate("/start-key")}
+          onRotateStartKey={handleRotateStartKey}
           hiddenFriends={friends.filter((friend) => friend.friendStatus === "hidden")}
           blockedFriends={friends.filter((friend) => friend.friendStatus === "blocked")}
           onUnhideFriend={handleFriendUnhide}

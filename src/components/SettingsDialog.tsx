@@ -65,6 +65,7 @@ import {
 } from "../devices/deviceSync";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
+import StartKey from "./StartKey";
 
 type LocalizedLabel = { ko: string; en: string };
 
@@ -137,6 +138,7 @@ type SettingsDialogProps = {
   onSetPin: (pin: string) => Promise<{ ok: boolean; error?: string }>;
   onDisablePin: () => Promise<void>;
   onOpenStartKey: () => void;
+  onRotateStartKey: (key: string) => Promise<void>;
 
   hiddenFriends: UserProfile[];
   blockedFriends: UserProfile[];
@@ -158,6 +160,7 @@ export default function SettingsDialog({
   onSetPin,
   onDisablePin,
   onOpenStartKey,
+  onRotateStartKey,
   hiddenFriends,
   blockedFriends,
   onUnhideFriend,
@@ -1565,6 +1568,15 @@ export default function SettingsDialog({
                 </div>
               </section>
 
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+                <div className="text-sm font-semibold text-nkc-text">
+                  {t("키 / 복구", "Keys / Recovery")}
+                </div>
+                <div className="mt-3">
+                  <StartKey onRotate={onRotateStartKey} onDone={() => {}} />
+                </div>
+              </section>
+
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
                 <div className="flex flex-col">
                   {SETTINGS_ROUTES.map((route, index) => (
@@ -2399,6 +2411,38 @@ export default function SettingsDialog({
                   )}
                 </div>
               </section>
+
+              <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-red-100">
+                      {t("위험 구역", "Danger zone")}
+                    </h3>
+                    <p className="mt-1 text-xs text-red-100/80">
+                      {t(
+                        "로그아웃 또는 데이터 초기화를 진행합니다.",
+                        "Proceed with logout or data reset."
+                      )}
+                    </p>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={onLogout}
+                    className="rounded-nkc border border-red-400/60 px-3 py-2 text-xs text-red-100 hover:bg-red-500/20"
+                  >
+                    {t("로그아웃", "Logout")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onWipe}
+                    className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-red-100 hover:bg-red-500/40"
+                  >
+                    {t("데이터 삭제", "Delete data")}
+                  </button>
+                </div>
+              </section>
             </div>
           )}
 
@@ -2702,43 +2746,6 @@ export default function SettingsDialog({
             </div>
           )}
 
-          {/* DANGER */}
-          {view === "danger" && (
-            <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("위험 구역", "Danger zone"))}
-              <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-6">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-red-100">
-                      {t("위험 구역", "Danger zone")}
-                    </h3>
-                    <p className="mt-1 text-xs text-red-100/80">
-                      {t(
-                        "로그아웃 또는 데이터 초기화를 진행합니다.",
-                        "Proceed with logout or data reset."
-                      )}
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={onLogout}
-                    className="rounded-nkc border border-red-400/60 px-3 py-2 text-xs text-red-100 hover:bg-red-500/20"
-                  >
-                    {t("로그아웃", "Logout")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onWipe}
-                    className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-red-100 hover:bg-red-500/40"
-                  >
-                    {t("데이터 삭제", "Delete data")}
-                  </button>
-                </div>
-              </section>
-            </div>
-          )}
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
