@@ -36,9 +36,6 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
         setConfirmed(isConfirmed);
         if (isConfirmed) {
           setAlreadyConfirmed(true);
-          setStartKey("");
-          setMasked(true);
-          return;
         }
         if (cachedStartKey) {
           setStartKey(cachedStartKey);
@@ -76,7 +73,7 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
   };
 
   return (
-    <div className="flex h-full items-center justify-center bg-nkc-bg px-6 py-10">
+    <div className="flex h-full items-center justify-center px-6 py-10">
       <div className="w-full max-w-2xl rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
         <div className="flex items-center justify-between">
           <div>
@@ -105,22 +102,19 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
               onClick={() => setMasked((value) => !value)}
               aria-label={masked ? "시작 키 보기" : "시작 키 숨기기"}
               className="inline-flex w-fit items-center gap-1 rounded-nkc border border-nkc-border px-3 py-1 text-xs font-medium text-nkc-text hover:bg-nkc-panelMuted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nkc-accent focus-visible:ring-offset-2 focus-visible:ring-offset-nkc-panel"
-              disabled={!startKey || busy || alreadyConfirmed}
+              disabled={!startKey || busy}
             >
               {masked ? <Eye size={14} /> : <EyeOff size={14} />}
               {masked ? "시작 키 보기" : "시작 키 숨기기"}
             </button>
           </div>
           {alreadyConfirmed ? (
-            <div className="mt-2 text-xs text-nkc-muted">
-              시작 키는 이미 확인되어 다시 표시할 수 없습니다.
-            </div>
           ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={handleCopy}
               className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!startKey || busy || alreadyConfirmed}
+              disabled={!startKey || busy}
             >
               <Copy size={14} />
               복사
@@ -146,8 +140,6 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
                 await onRotate(startKey);
                 await setStartKeyConfirmed(true);
                 setAlreadyConfirmed(true);
-                cachedStartKey = null;
-                setStartKey("");
                 setMasked(true);
               } catch (confirmError) {
                 console.error("Failed to confirm start key", confirmError);

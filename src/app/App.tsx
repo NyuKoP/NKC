@@ -349,17 +349,17 @@ export default function App() {
           setPinNeedsReset(pinStatus.needsReset);
         }
 
-        const session = await getStoredSession();
-        if (session?.vaultKey) {
-          setVaultKey(session.vaultKey);
-          await setStoredSession(session.vaultKey);
-          await hydrateVault();
-          return;
-        }
-
         if (pinStatus.enabled && !pinStatus.needsReset) {
           setMode("locked");
         } else {
+          const session = await getStoredSession();
+          if (session?.vaultKey) {
+            setVaultKey(session.vaultKey);
+            await setStoredSession(session.vaultKey, undefined, { remember: true });
+            await hydrateVault();
+            return;
+          }
+
           if (pinStatus.needsReset) {
           addToast({ message: "PIN must be reset. Unlock with the start key." });
           }
@@ -465,7 +465,7 @@ export default function App() {
       };
 
       await withTimeout(seedVaultData(user), "seedVaultData");
-      await withTimeout(setStoredSession(vk), "setStoredSession");
+      await withTimeout(setStoredSession(vk, undefined, { remember: true }), "setStoredSession");
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Vault bootstrap failed", error);
@@ -516,7 +516,7 @@ export default function App() {
         await withTimeout(seedVaultData(user), "seedVaultData");
       }
 
-      await withTimeout(setStoredSession(vk), "setStoredSession");
+      await withTimeout(setStoredSession(vk, undefined, { remember: true }), "setStoredSession");
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Start key unlock failed", error);
@@ -556,7 +556,7 @@ export default function App() {
 
     try {
       setVaultKey(result.vaultKey);
-      await setStoredSession(result.vaultKey);
+      await setStoredSession(result.vaultKey, undefined, { remember: true });
       await hydrateVault();
       navigate("/");
       return { ok: true };
@@ -684,7 +684,7 @@ export default function App() {
 
       await rotateVaultKeys(newKey, () => {});
       const vk = getVaultKey();
-      if (vk) await setStoredSession(vk);
+      if (vk) await setStoredSession(vk, undefined, { remember: true });
 
       await clearPinRecord();
       setPinEnabled(true);
@@ -1849,7 +1849,6 @@ export default function App() {
           pinEnabled={pinEnabled}
           onSetPin={handleSetPin}
           onDisablePin={handleDisablePin}
-          onOpenStartKey={() => navigate("/start-key")}
           onRotateStartKey={handleRotateStartKey}
           hiddenFriends={friends.filter((friend) => friend.friendStatus === "hidden")}
           blockedFriends={friends.filter((friend) => friend.friendStatus === "blocked")}

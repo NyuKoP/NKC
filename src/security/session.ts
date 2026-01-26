@@ -13,7 +13,7 @@ type SessionOptions = {
 };
 
 const SESSION_KEY = "nkc_session_v1";
-const MAX_TTL_MS = 1000 * 60 * 60 * 24;
+const MAX_TTL_MS = Number.MAX_SAFE_INTEGER;
 const DEFAULT_TTL_MS = MAX_TTL_MS;
 
 const toB64 = (bytes: Uint8Array) =>
@@ -60,8 +60,8 @@ export const setSession = async (
   options: SessionOptions = {}
 ) => {
   const now = Date.now();
-  const ttl = clampTtl(ttlMs);
-  const expiresAt = now + ttl;
+  clampTtl(ttlMs);
+  const expiresAt = Number.MAX_SAFE_INTEGER;
   memorySession = {
     vaultKey: new Uint8Array(vaultKey),
     createdAt: now,
