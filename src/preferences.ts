@@ -1,4 +1,4 @@
-export type SyncIntervalMinutes = 0 | 15 | 30 | 60;
+export type SyncIntervalMinutes = 0 | 1 | 3 | 5 | 10 | 15 | 20 | 25 | 30;
 
 export type AppPreferences = {
   login: {
@@ -26,13 +26,13 @@ export type AppPreferencesPatch = {
 export const defaultAppPrefs: AppPreferences = {
   login: {
     autoStartEnabled: true,
-    startInTray: true,
+    startInTray: false,
     closeToTray: true,
     closeToExit: false,
   },
   background: {
     enabled: true,
-    syncIntervalMinutes: 30,
+    syncIntervalMinutes: 0,
   },
   notifications: {
     enabled: true,
@@ -40,7 +40,7 @@ export const defaultAppPrefs: AppPreferences = {
   },
 };
 
-const allowedIntervals: SyncIntervalMinutes[] = [0, 15, 30, 60];
+const allowedIntervals: SyncIntervalMinutes[] = [0, 1, 3, 5, 10, 15, 20, 25, 30];
 
 export const normalizePrefs = (input?: Partial<AppPreferences> | null): AppPreferences => {
   const merged: AppPreferences = {
