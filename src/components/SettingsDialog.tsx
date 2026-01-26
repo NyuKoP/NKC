@@ -77,14 +77,47 @@ type ConnectionChoice = "directP2P" | "selfOnion" | "torOnion" | "lokinetOnion";
 
 type SettingsView =
   | "main"
+  | "notifications"
   | "privacy"
   | "theme"
   | "friends"
   | "danger"
   | "network"
   | "help"
+  | "login"
   | "storage"
   | "devices";
+
+type SettingsRoute = {
+  key:
+    | "settings.notifications"
+    | "settings.friends"
+    | "settings.network"
+    | "settings.devices"
+    | "settings.privacy"
+    | "settings.login"
+    | "settings.theme"
+    | "settings.storage";
+  view: SettingsView;
+  label: LocalizedLabel;
+  testId?: string;
+};
+
+const SETTINGS_ROUTES: SettingsRoute[] = [
+  { key: "settings.notifications", view: "notifications", label: { ko: "알림", en: "Notifications" } },
+  { key: "settings.friends", view: "friends", label: { ko: "친구 관리", en: "Friend management" } },
+  {
+    key: "settings.network",
+    view: "network",
+    label: { ko: "네트워크 설정", en: "Network settings" },
+    testId: "settings-network-button",
+  },
+  { key: "settings.devices", view: "devices", label: { ko: "기기/동기화", en: "Devices / Sync" } },
+  { key: "settings.privacy", view: "privacy", label: { ko: "보안 / 개인정보", en: "Security / Privacy" } },
+  { key: "settings.login", view: "login", label: { ko: "로그인", en: "Login" } },
+  { key: "settings.theme", view: "theme", label: { ko: "테마", en: "Theme" } },
+  { key: "settings.storage", view: "storage", label: { ko: "저장소 관리", en: "Storage management" } },
+];
 
 type SettingsDialogProps = {
   open: boolean;
@@ -195,8 +228,14 @@ export default function SettingsDialog({
   const userProfileState = useAppStore((state) => state.userProfile);
   const addToast = useAppStore((state) => state.addToast);
 
-  const t = (ko: string, en: string) => (language === "en" ? en : ko);
-  const tl = (label: LocalizedLabel) => (language === "en" ? label.en : label.ko);
+  const t = useCallback(
+    (ko: string, en: string) => (language === "en" ? en : ko),
+    [language]
+  );
+  const tl = useCallback(
+    (label: LocalizedLabel) => (language === "en" ? label.en : label.ko),
+    [language]
+  );
 
   const handleProxyUrlChange = (value: string) => {
     setProxyUrlDraft(value);
@@ -1174,6 +1213,257 @@ export default function SettingsDialog({
   const closeToTrayDisabled = appPrefs.login.closeToExit;
   const closeToExitDisabled = appPrefs.login.closeToTray;
 
+  const NotificationsSettings = () => (
+    <div className="mt-6 grid gap-6">
+      {renderBackHeader(t("알림", "Notifications"))}
+      <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
+        <div className="flex flex-col">
+          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("알림 사용", "Notifications enabled")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t("새 메시지 알림을 표시합니다.", "Show new message notifications.")}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={appPrefs.notifications.enabled}
+              disabled={prefsDisabled}
+              onChange={(e) =>
+                void updateAppPrefs({
+                  notifications: { enabled: e.target.checked },
+                })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("알림 내용 숨기기", "Hide notification content")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t("\"새 메시지\"로만 표시합니다.", "Show only \"New message\".")}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={appPrefs.notifications.hideContent}
+              disabled={prefsDisabled || notificationsDisabled}
+              onChange={(e) =>
+                void updateAppPrefs({
+                  notifications: { hideContent: e.target.checked },
+                })
+              }
+            />
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+
+  const LoginSettings = () => (
+    <div className="mt-6 grid gap-6">
+      {renderBackHeader(t("로그인", "Login"))}
+      <div className="text-xs text-nkc-muted">
+        {t("앱 시작 및 실행 동작 설정", "Configure app startup and launch behavior.")}
+      </div>
+      <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
+        <div className="border-b border-nkc-border px-4 py-3">
+          <div className="text-sm font-semibold text-nkc-text">
+            {t("시작", "Startup")}
+          </div>
+        </div>
+        <div className="flex flex-col">
+          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("Windows 자동 시작", "Start with Windows")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t(
+                  "Windows 로그인 시 앱을 자동으로 실행합니다.",
+                  "Launch automatically on Windows login."
+                )}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={appPrefs.login.autoStartEnabled}
+              disabled={prefsDisabled}
+              onChange={(e) =>
+                void updateAppPrefs({
+                  login: { autoStartEnabled: e.target.checked },
+                })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("자동 시작 시 트레이에서 시작", "Start in tray on auto-start")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t(
+                  "Windows 자동 시작으로 실행될 때 창을 표시하지 않습니다.",
+                  "Hide the window when launched by auto-start."
+                )}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={appPrefs.login.startInTray}
+              disabled={prefsDisabled}
+              onChange={(e) =>
+                void updateAppPrefs({
+                  login: { startInTray: e.target.checked },
+                })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("닫기(X) = 트레이로 숨김", "Close (X) = Hide to tray")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t("창 닫기 시 앱을 종료하지 않습니다.", "Keep the app running in the tray.")}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={appPrefs.login.closeToTray}
+              disabled={prefsDisabled || closeToTrayDisabled}
+              onChange={(e) =>
+                void updateAppPrefs({
+                  login: { closeToTray: e.target.checked },
+                })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("닫기(X) = 종료", "Close (X) = Exit")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t(
+                  "앱을 종료하고 백그라운드를 끕니다.",
+                  "Exit the app and disable background mode."
+                )}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={appPrefs.login.closeToExit}
+              disabled={prefsDisabled || closeToExitDisabled}
+              onChange={(e) =>
+                void updateAppPrefs({
+                  login: { closeToExit: e.target.checked },
+                })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("백그라운드 사용", "Background enabled")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t(
+                  "앱을 닫아도 메시지 수신과 동기화를 계속합니다.",
+                  "Continue receiving and syncing even when the app is closed."
+                )}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={appPrefs.background.enabled}
+              disabled={prefsDisabled || appPrefs.login.closeToExit}
+              onChange={(e) =>
+                void updateAppPrefs({
+                  background: { enabled: e.target.checked },
+                })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-6 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("주기적 동기화", "Periodic sync")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t("백그라운드 동기화 간격", "Background sync interval")}
+              </div>
+            </div>
+            <div className="flex flex-col items-end">
+              <select
+                value={appPrefs.background.syncIntervalMinutes}
+                disabled={prefsDisabled || backgroundDisabled}
+                onChange={(e) =>
+                  void updateAppPrefs({
+                    background: {
+                      syncIntervalMinutes: Number(
+                        e.target.value
+                      ) as SyncIntervalMinutes,
+                    },
+                  })
+                }
+                className="rounded-nkc border border-nkc-border bg-nkc-panel px-2 py-1 text-xs text-nkc-text disabled:opacity-50"
+              >
+                <option value={0}>{t("Auto", "Auto")}</option>
+                <option value={1}>1분</option>
+                <option value={3}>3분</option>
+                <option value={5}>5분</option>
+                <option value={10}>10분</option>
+                <option value={15}>15분</option>
+                <option value={20}>20분</option>
+                <option value={25}>25분</option>
+                <option value={30}>30분</option>
+              </select>
+              {appPrefs.background.syncIntervalMinutes === 0 ? (
+                <div className="mt-2 text-xs text-nkc-muted">
+                  {t(
+                    "상태에 따라 동기화 간격이 자동으로 조절됩니다.",
+                    "Sync interval is adjusted automatically based on status."
+                  )}
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-4 px-6 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("수동 동기화", "Manual sync")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t("필요할 때 즉시 동기화합니다.", "Sync immediately when needed.")}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() =>
+                void syncNow().catch((e) => console.error("Manual sync failed", e))
+              }
+              disabled={prefsDisabled || backgroundDisabled}
+              className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+            >
+              {t("지금 동기화", "Sync now")}
+            </button>
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+
   return (
     <>
       <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -1276,288 +1566,25 @@ export default function SettingsDialog({
               </section>
 
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-                <div className="border-b border-nkc-border px-4 py-3">
-                  <div className="text-sm font-semibold text-nkc-text">
-                    {t("로그인", "Login")}
-                  </div>
-                  <div className="text-xs text-nkc-muted">
-                    {t("시작/백그라운드/알림 설정", "Startup, background, and notifications")}
-                  </div>
-                </div>
                 <div className="flex flex-col">
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("Windows 자동 시작", "Start with Windows")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("로그인 시 자동으로 실행합니다.", "Launch automatically on login.")}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={appPrefs.login.autoStartEnabled}
-                      disabled={prefsDisabled}
-                      onChange={(e) =>
-                        void updateAppPrefs({
-                          login: { autoStartEnabled: e.target.checked },
-                        })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("트레이에서 시작", "Start in tray")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("앱 창을 표시하지 않고 시작합니다.", "Start hidden in the system tray.")}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={appPrefs.login.startInTray}
-                      disabled={prefsDisabled}
-                      onChange={(e) =>
-                        void updateAppPrefs({
-                          login: { startInTray: e.target.checked },
-                        })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("닫기(X) = 트레이로 숨기기", "Close (X) = Hide to tray")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("창 닫기 시 앱을 종료하지 않습니다.", "Keep the app running in the tray.")}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={appPrefs.login.closeToTray}
-                      disabled={prefsDisabled || closeToTrayDisabled}
-                      onChange={(e) =>
-                        void updateAppPrefs({
-                          login: { closeToTray: e.target.checked },
-                        })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("닫기(X) = 종료", "Close (X) = Exit")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t(
-                          "앱을 종료하고 백그라운드를 끕니다.",
-                          "Exit the app and disable background mode."
-                        )}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={appPrefs.login.closeToExit}
-                      disabled={prefsDisabled || closeToExitDisabled}
-                      onChange={(e) =>
-                        void updateAppPrefs({
-                          login: { closeToExit: e.target.checked },
-                        })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("백그라운드 사용", "Background enabled")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t(
-                          "연결 유지, 수신/보관, 아웃박스 재시도.",
-                          "Keep connected, receive/store, retry outbox."
-                        )}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={appPrefs.background.enabled}
-                      disabled={prefsDisabled || appPrefs.login.closeToExit}
-                      onChange={(e) =>
-                        void updateAppPrefs({
-                          background: { enabled: e.target.checked },
-                        })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-6 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("주기적 동기화", "Periodic sync")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("저빈도 동기화 간격", "Low-frequency sync interval")}
-                      </div>
-                    </div>
-                    <select
-                      value={appPrefs.background.syncIntervalMinutes}
-                      disabled={prefsDisabled || backgroundDisabled}
-                      onChange={(e) =>
-                        void updateAppPrefs({
-                          background: {
-                            syncIntervalMinutes: Number(
-                              e.target.value
-                            ) as SyncIntervalMinutes,
-                          },
-                        })
-                      }
-                      className="rounded-nkc border border-nkc-border bg-nkc-panel px-2 py-1 text-xs text-nkc-text disabled:opacity-50"
-                    >
-                      <option value={0}>{t("끄기", "Off")}</option>
-                      <option value={15}>15m</option>
-                      <option value={30}>30m</option>
-                      <option value={60}>60m</option>
-                    </select>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-6 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("수동 동기화", "Manual sync")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("필요할 때 즉시 동기화합니다.", "Sync immediately when needed.")}
-                      </div>
-                    </div>
+                  {SETTINGS_ROUTES.map((route, index) => (
                     <button
+                      key={route.key}
                       type="button"
-                      onClick={() =>
-                        void syncNow().catch((e) =>
-                          console.error("Manual sync failed", e)
-                        )
-                      }
-                      disabled={prefsDisabled || backgroundDisabled}
-                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                      onClick={() => setView(route.view)}
+                      data-testid={route.testId}
+                      className={`flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel ${
+                        index === SETTINGS_ROUTES.length - 1
+                          ? ""
+                          : "border-b border-nkc-border"
+                      }`}
                     >
-                      {t("지금 동기화", "Sync now")}
+                      {route.view === "devices" ? (
+                        <Users size={16} className="text-nkc-muted" />
+                      ) : null}
+                      {tl(route.label)}
                     </button>
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("알림 사용", "Notifications enabled")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("새 메시지 알림을 표시합니다.", "Show new message notifications.")}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={appPrefs.notifications.enabled}
-                      disabled={prefsDisabled}
-                      onChange={(e) =>
-                        void updateAppPrefs({
-                          notifications: { enabled: e.target.checked },
-                        })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("알림 내용 숨기기", "Hide notification content")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("\"새 메시지\"로만 표시합니다.", "Show only \"New message\".")}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={appPrefs.notifications.hideContent}
-                      disabled={prefsDisabled || notificationsDisabled}
-                      onChange={(e) =>
-                        void updateAppPrefs({
-                          notifications: { hideContent: e.target.checked },
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-              </section>
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-                <div className="flex flex-col">
-                  <button
-                    type="button"
-                    onClick={() => setView("friends")}
-                    className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                  >
-                    {t("친구 관리", "Friend management")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView("network")}
-                    data-testid="settings-network-button"
-                    className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                  >
-                    {t("네트워크 설정", "Network settings")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView("devices")}
-                    className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                  >
-                    <Users size={16} className="text-nkc-muted" />
-                    {t("기기/동기화", "Devices / Sync")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView("privacy")}
-                    className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                  >
-                    {t("보안 / 개인정보", "Security / Privacy")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView("theme")}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                  >
-                    {t("테마", "Theme")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView("storage")}
-                    className="flex w-full items-center gap-3 border-t border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                  >
-                    {t("저장소 관리", "Storage management")}
-                  </button>
-                </div>
-              </section>
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-                <div className="flex flex-col">
-                  <button
-                    type="button"
-                    onClick={() => setView("help")}
-                    className="flex w-full items-center gap-3 border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                  >
-                    {t("도움말", "Help")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setView("danger")}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-red-200 hover:bg-nkc-panel"
-                  >
-                    {t("위험 구역", "Danger zone")}
-                  </button>
+                  ))}
                 </div>
               </section>
 
@@ -1574,6 +1601,12 @@ export default function SettingsDialog({
               ) : null}
             </div>
           )}
+
+          {/* NOTIFICATIONS */}
+          {view === "notifications" && <NotificationsSettings />}
+
+          {/* LOGIN */}
+          {view === "login" && <LoginSettings />}
 
           {/* THEME */}
           {view === "theme" && (

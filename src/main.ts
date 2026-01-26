@@ -79,6 +79,7 @@ type BackgroundStatusPayload = {
 };
 
 const isDev = !app.isPackaged;
+const isAutoStartLaunch = process.argv.includes("--autostart");
 const SECRET_STORE_FILENAME = "secret-store.json";
 const ALLOWED_PROXY_PROTOCOLS = new Set(["socks5:", "socks5h:", "http:", "https:"]);
 let onionSession: Electron.Session | null = null;
@@ -960,6 +961,7 @@ class BackgroundService {
   private intervalId: NodeJS.Timeout | null = null;
   private syncInFlight = false;
   private lastSyncAt: number | null = null;
+  private lastActivityAt: number | null = null;
   private syncStatus: SyncStatusPayload = { state: "ok", lastSyncAt: null };
   private backgroundStatus: BackgroundStatusPayload = { state: "disconnected", route: "" };
 
@@ -987,7 +989,7 @@ class BackgroundService {
 
   private stopTimers() {
     if (this.intervalId) {
-      clearInterval(this.intervalId);
+      clearTimeout(this.intervalId);
       this.intervalId = null;
     }
   }
@@ -995,11 +997,26 @@ class BackgroundService {
   private scheduleInterval() {
     this.stopTimers();
     if (!this.prefs.background.enabled) return;
-    const minutes = this.prefs.background.syncIntervalMinutes;
-    if (minutes <= 0) return;
-    this.intervalId = setInterval(() => {
+    const minutes =
+      this.prefs.background.syncIntervalMinutes === 0
+        ? this.computeAutoIntervalMinutes()
+        : this.prefs.background.syncIntervalMinutes;
+    const clamped = Math.min(30, Math.max(1, minutes));
+    this.intervalId = setTimeout(() => {
       void this.runSync();
-    }, minutes * 60 * 1000);
+    }, clamped * 60 * 1000);
+  }
+
+  private computeAutoIntervalMinutes() {
+    const now = Date.now();
+    const connected = this.backgroundStatus.state === "connected";
+    if (this.lastActivityAt && now - this.lastActivityAt <= 5 * 60 * 1000) {
+      return 3;
+    }
+    if (this.lastActivityAt && now - this.lastActivityAt <= 15 * 60 * 1000) {
+      return 10;
+    }
+    return connected ? 30 : 5;
   }
 
   private async runSync() {
@@ -1011,6 +1028,7 @@ class BackgroundService {
     try {
       await this.performSync();
       this.lastSyncAt = Date.now();
+      this.lastActivityAt = this.lastSyncAt;
       this.syncStatus = { state: "ok", lastSyncAt: this.lastSyncAt };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -1018,6 +1036,9 @@ class BackgroundService {
     } finally {
       this.syncInFlight = false;
       this.emitSyncStatus();
+      if (this.prefs.background.enabled) {
+        this.scheduleInterval();
+      }
     }
   }
 
@@ -1033,6 +1054,9 @@ class BackgroundService {
     sendToAllWindows("background:status", this.backgroundStatus);
     lastBackgroundStatus = this.backgroundStatus;
     updateTrayMenu();
+    if (this.prefs.background.enabled) {
+      this.scheduleInterval();
+    }
   }
 }
 
@@ -1116,7 +1140,10 @@ const createTray = () => {
 const applyPrefs = async (prefs: AppPreferences) => {
   currentPrefs = prefs;
   try {
-    app.setLoginItemSettings({ openAtLogin: prefs.login.autoStartEnabled });
+    app.setLoginItemSettings({
+      openAtLogin: prefs.login.autoStartEnabled,
+      args: ["--autostart"],
+    });
   } catch (error) {
     console.warn("[main] failed to update login item settings", error);
   }
@@ -1256,7 +1283,8 @@ export const createMainWindow = () => {
   };
   void loadRenderer();
   win.once("ready-to-show", () => {
-    if (!currentPrefs.login.startInTray) {
+    const shouldStartHidden = currentPrefs.login.startInTray && isAutoStartLaunch;
+    if (!shouldStartHidden) {
       win.show();
     }
   });

@@ -326,11 +326,10 @@ const startPolling = (args: {
     } catch (error) {
       backoffIndex = Math.min(backoffIndex + 1, intervals.length - 1);
       args.onError(error);
-    } finally {
-      if (!args.activeRef.current) return;
-      const delay = intervals[backoffIndex];
-      timer = window.setTimeout(tick, delay);
     }
+    if (!args.activeRef.current) return;
+    const delay = intervals[backoffIndex];
+    timer = window.setTimeout(tick, delay);
   };
 
   timer = window.setTimeout(tick, intervals[0]);
