@@ -967,11 +967,11 @@ class BackgroundService {
     this.prefs = prefs;
     if (!prefs.background.enabled) {
       this.stopTimers();
-      this.backgroundStatus = { state: "disconnected", route: "" };
+      this.backgroundStatus = { state: "disconnected", route: "off" };
       this.emitBackgroundStatus();
       return;
     }
-    this.backgroundStatus = { state: "connected", route: "auto" };
+    this.backgroundStatus = { state: "connected", route: "standard" };
     this.emitBackgroundStatus();
     this.scheduleInterval();
   }
@@ -1049,10 +1049,11 @@ const updateTrayMenu = () => {
   if (!tray) return;
   const visible = mainWindow?.isVisible() ?? false;
   const showHideLabel = visible ? "Hide" : "Show";
+  const routeSuffix = lastBackgroundStatus.route ? ` (${lastBackgroundStatus.route})` : "";
   const statusLabel =
     lastBackgroundStatus.state === "connected"
-      ? "Status: Connected"
-      : "Status: Disconnected";
+      ? `Status: Connected${routeSuffix}`
+      : `Status: Disconnected${routeSuffix}`;
   const menu = Menu.buildFromTemplate([
     {
       label: showHideLabel,
