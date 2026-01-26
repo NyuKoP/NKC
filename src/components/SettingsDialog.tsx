@@ -1,6 +1,22 @@
 ﻿import { useCallback, useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { AlertTriangle, Check, ChevronLeft, Clock, KeyRound, Lock, Users } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+import {
+  AlertTriangle,
+  Bell,
+  Check,
+  ChevronLeft,
+  Clock,
+  Globe,
+  HardDrive,
+  Key,
+  KeyRound,
+  Lock,
+  Monitor,
+  Palette,
+  Shield,
+  Users,
+} from "lucide-react";
 import type { UserProfile } from "../db/repo";
 import {
   clearChatHistory,
@@ -80,6 +96,7 @@ type SettingsView =
   | "main"
   | "notifications"
   | "privacy"
+  | "privacyKeys"
   | "theme"
   | "friends"
   | "danger"
@@ -120,6 +137,20 @@ const SETTINGS_ROUTES: SettingsRoute[] = [
   { key: "settings.storage", view: "storage", label: { ko: "저장소 관리", en: "Storage management" } },
 ];
 
+const routeIconByView: Record<
+  Exclude<SettingsView, "main" | "privacyKeys" | "danger" | "help">,
+  LucideIcon
+> = {
+  notifications: Bell,
+  friends: Users,
+  network: Globe,
+  devices: Monitor,
+  privacy: Shield,
+  login: KeyRound,
+  theme: Palette,
+  storage: HardDrive,
+};
+
 type SettingsDialogProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -137,7 +168,6 @@ type SettingsDialogProps = {
   pinEnabled: boolean;
   onSetPin: (pin: string) => Promise<{ ok: boolean; error?: string }>;
   onDisablePin: () => Promise<void>;
-  onOpenStartKey: () => void;
   onRotateStartKey: (key: string) => Promise<void>;
 
   hiddenFriends: UserProfile[];
@@ -159,7 +189,6 @@ export default function SettingsDialog({
   pinEnabled,
   onSetPin,
   onDisablePin,
-  onOpenStartKey,
   onRotateStartKey,
   hiddenFriends,
   blockedFriends,
@@ -1568,37 +1597,60 @@ export default function SettingsDialog({
                 </div>
               </section>
 
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm font-semibold text-nkc-text">
-                  {t("키 / 복구", "Keys / Recovery")}
-                </div>
-                <div className="mt-3">
-                  <StartKey onRotate={onRotateStartKey} onDone={() => {}} />
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
+                <div className="flex flex-col">
+                  {SETTINGS_ROUTES.map((route, idx, list) => (
+                      <button
+                        key={route.key}
+                        type="button"
+                        onClick={() => setView(route.view)}
+                        data-testid={route.testId}
+                        className={`flex w-full items-center gap-[0.7rem] px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel ${
+                          idx === list.length - 1 ? "" : "border-b border-nkc-border"
+                        }`}
+                      >
+                        {(() => {
+                          const RouteIcon = routeIconByView[route.view as keyof typeof routeIconByView];
+                          return RouteIcon ? (
+                            <RouteIcon size={16} className="text-nkc-muted" />
+                          ) : null;
+                        })()}
+                        {tl(route.label)}
+                      </button>
+                    ))}
                 </div>
               </section>
 
+              <div className="h-3" />
+
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
                 <div className="flex flex-col">
-                  {SETTINGS_ROUTES.map((route, index) => (
-                    <button
-                      key={route.key}
-                      type="button"
-                      onClick={() => setView(route.view)}
-                      data-testid={route.testId}
-                      className={`flex w-full items-center gap-3 px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel ${
-                        index === SETTINGS_ROUTES.length - 1
-                          ? ""
-                          : "border-b border-nkc-border"
-                      }`}
-                    >
-                      {route.view === "devices" ? (
-                        <Users size={16} className="text-nkc-muted" />
-                      ) : null}
-                      {tl(route.label)}
-                    </button>
-                  ))}
+                  <div className="px-4 pb-1 pt-3 text-xs font-semibold text-nkc-muted">
+                    {t("복구 / 위험", "Recovery / Danger")}
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setView("privacyKeys")}
+                    className="flex w-full items-center gap-[0.7rem] border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
+                  >
+                    <Key size={16} className="text-nkc-muted" />
+                    {t("시작키 설정", "Start key")}
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setView("danger")}
+                    className="flex w-full items-center gap-[0.7rem] px-4 py-3 text-left text-sm text-nkc-text hover:bg-red-500/20"
+                  >
+                    <AlertTriangle size={16} className="text-red-500" />
+                    <span className="text-red-500 font-semibold">
+                      {t("위험구역", "Danger zone")}
+                    </span>
+                  </button>
                 </div>
               </section>
+
 
               <div className="flex justify-end gap-2">
                 <Dialog.Close asChild>
@@ -2511,16 +2563,28 @@ export default function SettingsDialog({
                   ) : null}
 
                   {pinError ? <div className="text-xs text-red-300">{pinError}</div> : null}
-
-                  <button
-                    type="button"
-                    onClick={onOpenStartKey}
-                    className="flex w-fit items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
-                  >
-                    <KeyRound size={14} />
-                    {t("시작 키 관리", "Manage start key")}
-                  </button>
                 </div>
+              </section>
+
+              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
+                <button
+                  type="button"
+                  onClick={() => setView("privacyKeys")}
+                  className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
+                >
+                  <div>
+                    <div className="text-sm font-medium text-nkc-text">
+                      {t("키 / 복구", "Keys / Recovery")}
+                    </div>
+                    <div className="text-xs text-nkc-muted">
+                      {t(
+                        "시작 키 확인 및 복구 관련 설정",
+                        "View start key and recovery settings."
+                      )}
+                    </div>
+                  </div>
+                  <span className="text-xs text-nkc-muted">{t("열기", "Open")}</span>
+                </button>
               </section>
 
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
@@ -2589,6 +2653,27 @@ export default function SettingsDialog({
             </div>
           )}
 
+          {/* PRIVACY KEYS */}
+          {view === "privacyKeys" && (
+            <div className="mt-6 grid gap-6">
+              <div className="flex items-center justify-between">
+                <button
+                  type="button"
+                  onClick={() => setView("privacy")}
+                  className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                >
+                  <ChevronLeft size={14} />
+                  {t("뒤로", "Back")}
+                </button>
+                <span className="text-sm font-semibold text-nkc-text">
+                  {t("키 / 복구", "Keys / Recovery")}
+                </span>
+                <div className="w-12" />
+              </div>
+              <StartKey onRotate={onRotateStartKey} onDone={() => setView("privacy")} />
+            </div>
+          )}
+
           {/* FRIENDS */}
           {view === "friends" && (
             <div className="mt-6 grid gap-6">
@@ -2654,6 +2739,14 @@ export default function SettingsDialog({
                   </div>
                 </div>
               </section>
+            </div>
+          )}
+
+          {/* DANGER */}
+          {view === "danger" && (
+            <div className="mt-6 grid gap-6">
+              {renderBackHeader(t("위험 구역", "Danger zone"))}
+
             </div>
           )}
 
@@ -2810,6 +2903,3 @@ export default function SettingsDialog({
       </>
     );
   }
-
-
-
