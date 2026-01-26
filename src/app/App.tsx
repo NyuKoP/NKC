@@ -723,78 +723,81 @@ export default function App() {
     await hydrateVault();
   };
 
-  const sendDirectEnvelope = async (
-    conv: Conversation,
-    partner: UserProfile,
-    body: unknown,
-    priority: "high" | "normal" = "high"
-  ) => {
-    if (!partner.dhPub || !partner.identityPub) {
-      throw new Error("Missing peer keys");
-    }
-    const now = Date.now();
-    const friendKeyId = partner.friendId ?? partner.id;
-    const lamport = await nextLamportForConv(conv.id);
-    const header: EnvelopeHeader = {
-      v: 1 as const,
-      eventId: createId(),
-      convId: conv.id,
-      ts: now,
-      lamport,
-      authorDeviceId: getOrCreateDeviceId(),
-    };
-    header.prev = await getLastEventHash(conv.id);
+  const sendDirectEnvelope = useCallback(
+    async (
+      conv: Conversation,
+      partner: UserProfile,
+      body: unknown,
+      priority: "high" | "normal" = "high"
+    ) => {
+      if (!partner.dhPub || !partner.identityPub) {
+        throw new Error("Missing peer keys");
+      }
+      const now = Date.now();
+      const friendKeyId = partner.friendId ?? partner.id;
+      const lamport = await nextLamportForConv(conv.id);
+      const header: EnvelopeHeader = {
+        v: 1 as const,
+        eventId: createId(),
+        convId: conv.id,
+        ts: now,
+        lamport,
+        authorDeviceId: getOrCreateDeviceId(),
+      };
+      header.prev = await getLastEventHash(conv.id);
 
-    const dhPriv = await getDhPrivateKey();
-    const theirDhPub = decodeBase64Url(partner.dhPub);
-    const pskBytes = await getFriendPsk(friendKeyId);
-    const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
-    const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
-    const conversationKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, legacyContextBytes);
-    const ratchetBaseKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, ratchetContextBytes);
+      const dhPriv = await getDhPrivateKey();
+      const theirDhPub = decodeBase64Url(partner.dhPub);
+      const pskBytes = await getFriendPsk(friendKeyId);
+      const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+      const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
+      const conversationKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, legacyContextBytes);
+      const ratchetBaseKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, ratchetContextBytes);
 
-    const myIdentityPriv = await getIdentityPrivateKey();
-    let keyForEnvelope = conversationKey;
-    try {
-      const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
-      header.rk = ratchet.headerRk;
-      keyForEnvelope = ratchet.msgKey;
-    } catch {
+      const myIdentityPriv = await getIdentityPrivateKey();
+      let keyForEnvelope = conversationKey;
       try {
-        const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
+        const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
         header.rk = ratchet.headerRk;
         keyForEnvelope = ratchet.msgKey;
-      } catch (error) {
-        console.warn("[ratchet] send fallback to legacy", error);
+      } catch {
+        try {
+          const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
+          header.rk = ratchet.headerRk;
+          keyForEnvelope = ratchet.msgKey;
+        } catch (error) {
+          console.warn("[ratchet] send fallback to legacy", error);
+        }
       }
-    }
 
-    const envelope = await encryptEnvelope(keyForEnvelope, header, body, myIdentityPriv);
-    const envelopeJson = JSON.stringify(envelope);
-    const eventHash = await computeEnvelopeHash(envelope);
+      const envelope = await encryptEnvelope(keyForEnvelope, header, body, myIdentityPriv);
+      const envelopeJson = JSON.stringify(envelope);
+      const eventHash = await computeEnvelopeHash(envelope);
 
-    await saveEvent({
-      eventId: header.eventId,
-      convId: header.convId,
-      authorDeviceId: header.authorDeviceId,
-      lamport: header.lamport,
-      ts: header.ts,
-      envelopeJson,
-      prevHash: header.prev,
-      eventHash,
-    });
+      await saveEvent({
+        eventId: header.eventId,
+        convId: header.convId,
+        authorDeviceId: header.authorDeviceId,
+        lamport: header.lamport,
+        ts: header.ts,
+        envelopeJson,
+        prevHash: header.prev,
+        eventHash,
+      });
 
-    void sendCiphertext({
-      convId: conv.id,
-      messageId: header.eventId,
-      ciphertext: envelopeJson,
-      priority,
-    }).catch((error) => {
-      console.error("Failed to route message", error);
-    });
+      void sendCiphertext({
+        convId: conv.id,
+        messageId: header.eventId,
+        ciphertext: envelopeJson,
+        priority,
+      }).catch((error) => {
+        console.error("Failed to route message", error);
+      });
 
-    return { header, envelopeJson };
-  };
+      return { header, envelopeJson };
+    },
+    []
+  );
 
   const handleSendMessage = async (text: string) => {
     if (!ui.selectedConvId || !userProfile) return;
