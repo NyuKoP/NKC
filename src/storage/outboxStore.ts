@@ -87,6 +87,18 @@ export const deleteExpiredOutbox = async (now = Date.now()) => {
   return expired.length;
 };
 
+export const deleteFailedOutbox = async (minAttempts = 12) => {
+  await ensureDbOpen();
+  const failed = await db.outbox
+    .where("status")
+    .equals("pending")
+    .filter((record) => (record.attempts ?? 0) >= minAttempts)
+    .toArray();
+  if (!failed.length) return 0;
+  await db.outbox.bulkDelete(failed.map((record) => record.id));
+  return failed.length;
+};
+
 export const listOutboxByConv = async (convId: string) => {
   await ensureDbOpen();
   const items = await db.outbox.toArray();

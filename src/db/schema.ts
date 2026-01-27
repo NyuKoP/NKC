@@ -24,6 +24,9 @@ export type OutboxRecord = {
   id: string;
   convId: string;
   ciphertext: string;
+  toDeviceId?: string;
+  torOnion?: string;
+  lokinet?: string;
   createdAtMs: number;
   expiresAtMs: number;
   lastAttemptAtMs?: number;

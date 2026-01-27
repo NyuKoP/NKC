@@ -163,6 +163,7 @@ export default function SettingsDialog({
   const [pinDraft, setPinDraft] = useState("");
   const [pinError, setPinError] = useState("");
   const [pinAvailable, setPinAvailable] = useState(true);
+  const [pinEnabledUi, setPinEnabledUi] = useState(pinEnabled);
 
   // network
   const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
@@ -381,7 +382,13 @@ export default function SettingsDialog({
     isPinAvailable()
       .then(setPinAvailable)
       .catch(() => setPinAvailable(false));
-  }, [open]);
+    setPinEnabledUi(pinEnabled);
+  }, [open, pinEnabled]);
+
+  useEffect(() => {
+    setPinEnabledUi(pinEnabled);
+  }, [pinEnabled]);
+
 
   useEffect(() => {
     if (!open || view !== "network") return;
@@ -600,7 +607,7 @@ export default function SettingsDialog({
   const handleSaveOnion = async () => {
     try {
       if (netConfig.mode === "onionRouter") {
-        await setOnionMode(true, onionNetworkDraft);
+        await setOnionMode(onionEnabledDraft, onionNetworkDraft);
         setOnionEnabled(onionEnabledDraft);
         setOnionNetwork(onionNetworkDraft);
       } else {
@@ -632,21 +639,49 @@ export default function SettingsDialog({
   const handleConnectionChoiceChange = async (choice: ConnectionChoice) => {
     if (choice === "directP2P") {
       setMode("directP2P");
+      setOnionEnabledDraft(false);
+      setOnionEnabled(false);
+      try {
+        await setOnionMode(false, onionNetworkDraft);
+      } catch (error) {
+        console.error("Failed to stop onion runtime", error);
+      }
       return;
     }
     if (choice === "selfOnion") {
       setMode("selfOnion");
+      setOnionEnabledDraft(false);
+      setOnionEnabled(false);
+      try {
+        await setOnionMode(false, onionNetworkDraft);
+      } catch (error) {
+        console.error("Failed to stop onion runtime", error);
+      }
       return;
     }
     if (choice === "torOnion") {
       setMode("onionRouter");
       setOnionNetwork("tor");
       setOnionNetworkDraft("tor");
+      setOnionEnabledDraft(true);
+      setOnionEnabled(true);
+      try {
+        await setOnionMode(true, "tor");
+      } catch (error) {
+        console.error("Failed to start onion runtime", error);
+      }
       return;
     }
     setMode("onionRouter");
     setOnionNetwork("lokinet");
     setOnionNetworkDraft("lokinet");
+    setOnionEnabledDraft(true);
+    setOnionEnabled(true);
+    try {
+      await setOnionMode(true, "lokinet");
+    } catch (error) {
+      console.error("Failed to start onion runtime", error);
+    }
   };
 
   const formatBytes = (value: number) => {
@@ -872,11 +907,15 @@ export default function SettingsDialog({
       setPinError(t("PIN lock is unavailable on this platform/build.", "PIN lock is unavailable on this platform/build."));
       return;
     }
-    if (!next) {
-      await onDisablePin();
-      setPinDraft("");
-      setSaveMessage(t("PIN이 해제되었습니다.", "PIN disabled."));
+    if (next) {
+      // Show PIN entry UI immediately; persistence happens on "Set PIN".
+      setPinEnabledUi(true);
+      return;
     }
+    await onDisablePin();
+    setPinDraft("");
+    setPinEnabledUi(false);
+    setSaveMessage(t("PIN disabled.", "PIN disabled."));
   };
 
   type DotState = "running" | "starting" | "stopped" | "error";
@@ -1337,7 +1376,7 @@ export default function SettingsDialog({
                   >
                     <AlertTriangle size={16} className="text-red-500" />
                     <span className="text-red-500 font-semibold">
-                      {t("위험구역", "Danger zone")}
+                      {t("\uc704\ud5d8 \uad6c\uc5ed", "Danger zone")}
                     </span>
                   </button>
                 </div>
@@ -1546,8 +1585,6 @@ export default function SettingsDialog({
               linkStatusClass={linkStatusClass}
               linkMessage={linkMessage}
               onSubmitLink={handleSubmitLink}
-              onLogout={onLogout}
-              onWipe={onWipe}
             />
           )}
           {/* PRIVACY */}
@@ -1557,7 +1594,7 @@ export default function SettingsDialog({
               onBack={() => setView("main")}
               onOpenKeys={() => setView("privacyKeys")}
               onLock={onLock}
-              pinEnabled={pinEnabled}
+              pinEnabled={pinEnabledUi}
               pinAvailable={pinAvailable}
               pinDraft={pinDraft}
               setPinDraft={setPinDraft}
@@ -1594,8 +1631,49 @@ export default function SettingsDialog({
           {/* DANGER */}
           {view === "danger" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("위험 구역", "Danger zone"))}
-
+              {renderBackHeader(t("\uc704\ud5d8 \uad6c\uc5ed", "Danger zone"))}
+              <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-6">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-black">
+                      {t("\uc704\ud5d8 \uad6c\uc5ed", "Danger zone")}
+                    </h3>
+                    <p className="mt-1 text-xs text-black/80">
+                      {t("\ub85c\uadf8\uc544\uc6c3 \ub610\ub294 \ub370\uc774\ud130 \uc0ad\uc81c\ub97c \uc9c4\ud589\ud569\ub2c8\ub2e4.", "Proceed with logout or data reset.")}
+                    </p>
+                    <div className="mt-3 space-y-1 text-xs text-black/80">
+                      <div>
+                        {t(
+                          "\uAE30\uC874 \uAE30\uAE30\uAC00 \uC628\uB77C\uC778\uC77C \uB54C\uB9CC \uB3D9\uAE30\uD654/\uAE30\uAE30 \uCD94\uAC00\uAC00 \uAC00\uB2A5\uD569\uB2C8\uB2E4.",
+                          "Syncing and adding devices only works while an existing device is online."
+                        )}
+                      </div>
+                      <div>
+                        {t(
+                          "\uAE30\uC874 \uAE30\uAE30\uB97C \uBD84\uC2E4/\uD30C\uC190\uD558\uBA74 \uC774 \uACC4\uC815\uC740 \uBCF5\uAD6C\uD560 \uC218 \uC5C6\uACE0 \uC0C8 \uACC4\uC815\uC744 \uB9CC\uB4E4\uC5B4\uC57C \uD569\uB2C8\uB2E4.",
+                          "If the existing device is lost or broken, this account cannot be recovered and you must create a new account."
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={onLogout}
+                    className="rounded-nkc border border-red-400/60 px-3 py-2 text-xs text-black hover:bg-red-500/20"
+                  >
+                    {t("\ub85c\uadf8\uc544\uc6c3", "Logout")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onWipe}
+                    className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-black hover:bg-red-500/40"
+                  >
+                    {t("\ub370\uc774\ud130 \uc0ad\uc81c", "Delete data")}
+                  </button>
+                </div>
+              </section>
             </div>
           )}
 

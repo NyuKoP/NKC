@@ -1,6 +1,6 @@
 import { createDeliveryScheduler } from "../delivery/deliveryScheduler";
 import { sendOutboxRecord } from "./router";
-import { ensureOutboxDefaults } from "../storage/outboxStore";
+import { deleteFailedOutbox, ensureOutboxDefaults } from "../storage/outboxStore";
 import { useNetConfigStore } from "./netConfigStore";
 import type { NetMode } from "../delivery/retryPolicy";
 
@@ -18,9 +18,14 @@ export const startOutboxScheduler = () => {
     return "direct";
   };
   scheduler = createDeliveryScheduler(sendOutboxRecord, { getNetMode });
-  void ensureOutboxDefaults().then(() => {
-    scheduler?.start();
-  });
+  void ensureOutboxDefaults()
+    .then(() => deleteFailedOutbox(12))
+    .then((deleted) => {
+      if (deleted > 0) {
+        console.info(`[delivery] cleaned failed outbox records: ${deleted}`);
+      }
+      scheduler?.start();
+    });
 };
 
 export const stopOutboxScheduler = () => {

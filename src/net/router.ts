@@ -5,13 +5,14 @@ import { createHttpClient, type HttpClient } from "./httpClient";
 import type { OutboxRecord } from "../db/schema";
 import { computeExpiresAt } from "../policies/ttl";
 import { enqueueOutgoing, onAckReceived } from "../policies/deliveryPolicy";
-import { putOutbox } from "../storage/outboxStore";
+import { putOutbox, updateOutbox } from "../storage/outboxStore";
 import type { Transport, TransportPacket } from "../adapters/transports/types";
 import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { createSelfOnionTransport } from "../adapters/transports/selfOnionTransport";
 import { createOnionRouterTransport } from "../adapters/transports/onionRouterTransport";
 import { updateConnectionStatus } from "./connectionStatus";
 import { decideRouterTransport } from "./transportPolicy";
+import { useAppStore } from "../app/store";
 
 export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
 
@@ -20,6 +21,11 @@ type SendPayload = {
   messageId: string;
   ciphertext: string;
   priority?: "high" | "normal";
+  toDeviceId?: string;
+  route?: {
+    torOnion?: string;
+    lokinet?: string;
+  };
 };
 
 type SendDeps = {
@@ -34,6 +40,38 @@ const defaultRouteController = createRouteController();
 const defaultHttpClient = createHttpClient();
 const transportCache = new Map<TransportKind, Transport>();
 let transportStarted = new WeakSet<Transport>();
+
+const debugLog = (label: string, payload: Record<string, unknown>) => {
+  try {
+    console.debug(label, JSON.stringify(payload));
+  } catch {
+    console.debug(label, payload);
+  }
+};
+
+const deriveRoutingMetaFromStores = (
+  convId: string
+): { toDeviceId?: string; route?: { torOnion?: string; lokinet?: string } } => {
+  const state = useAppStore.getState();
+  const conv = state.convs.find((item) => item.id === convId);
+  const me = state.userProfile;
+  if (!conv || !me) return {};
+  const isDirect =
+    !(conv.type === "group" || conv.participants.length > 2) &&
+    conv.participants.length === 2;
+  if (!isDirect) return {};
+  const partnerId = conv.participants.find((id) => id && id !== me.id) ?? null;
+  if (!partnerId) return {};
+  const partner = state.friends.find((friend) => friend.id === partnerId) ?? null;
+  if (!partner) return {};
+  return {
+    toDeviceId: partner.friendId ?? partner.id,
+    route: {
+      torOnion: partner.routingHints?.onionAddr,
+      lokinet: partner.routingHints?.lokinetAddr,
+    },
+  };
+};
 
 const attachHandlers = (
   transport: Transport,
@@ -102,11 +140,19 @@ export const sendCiphertext = async (
   const config = deps.config ?? useNetConfigStore.getState().config;
   const controller = deps.routeController ?? defaultRouteController;
   const httpClient = deps.httpClient ?? defaultHttpClient;
+  const derived = payload.toDeviceId
+    ? {}
+    : deriveRoutingMetaFromStores(payload.convId);
+  const toDeviceId = payload.toDeviceId ?? derived.toDeviceId;
+  const route = payload.route ?? derived.route;
   const createdAtMs = Date.now();
   const record: OutboxRecord = {
     id: payload.messageId,
     convId: payload.convId,
     ciphertext: payload.ciphertext,
+    toDeviceId,
+    torOnion: route?.torOnion,
+    lokinet: route?.lokinet,
     createdAtMs,
     expiresAtMs: computeExpiresAt(createdAtMs),
     lastAttemptAtMs: createdAtMs,
@@ -118,6 +164,16 @@ export const sendCiphertext = async (
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolve(config, controller);
+  debugLog("[net] sendCiphertext: chosen transport", {
+    convId: payload.convId,
+    messageId: payload.messageId,
+    chosen,
+    mode: config.mode,
+    onionEnabled: config.onionEnabled,
+    onionSelectedNetwork: config.onionSelectedNetwork,
+    hasToDeviceId: Boolean(toDeviceId),
+    hasRoute: Boolean(route?.torOnion || route?.lokinet),
+  });
   if (config.mode === "onionRouter" && chosen === "directP2P") {
     await putOutbox(record);
     controller.reportSendFail(chosen);
@@ -142,22 +198,49 @@ export const sendCiphertext = async (
     record.attempts += 1;
     record.lastAttemptAtMs = Date.now();
     await putOutbox(record);
-    const packet: TransportPacket = { id: payload.messageId, payload: payload.ciphertext };
+    const packet: TransportPacket = {
+      id: payload.messageId,
+      payload: payload.ciphertext,
+      toDeviceId,
+      route,
+    } as TransportPacket;
     await transport.send(packet);
     return kind;
   };
 
   try {
     const used = await attemptSend(chosen);
+    debugLog("[net] sendCiphertext: send ok", {
+      convId: payload.convId,
+      messageId: payload.messageId,
+      transport: used,
+    });
     return { ok: true, transport: used };
   } catch (error) {
     controller.reportSendFail(chosen);
+    debugLog("[net] sendCiphertext: send failed", {
+      convId: payload.convId,
+      messageId: payload.messageId,
+      chosen,
+      error: error instanceof Error ? error.message : String(error),
+    });
     if (config.mode === "selfOnion" && chosen === "selfOnion") {
       try {
         const used = await attemptSend("onionRouter");
+        debugLog("[net] sendCiphertext: fallback ok", {
+          convId: payload.convId,
+          messageId: payload.messageId,
+          transport: used,
+        });
         return { ok: true, transport: used };
       } catch (fallbackError) {
         controller.reportSendFail("onionRouter");
+        debugLog("[net] sendCiphertext: fallback failed", {
+          convId: payload.convId,
+          messageId: payload.messageId,
+          error:
+            fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        });
         return {
           ok: false,
           transport: "onionRouter",
@@ -180,10 +263,34 @@ export const sendOutboxRecord = async (
   const config = deps.config ?? useNetConfigStore.getState().config;
   const controller = deps.routeController ?? defaultRouteController;
   const httpClient = deps.httpClient ?? defaultHttpClient;
+  const derived = record.toDeviceId
+    ? {}
+    : deriveRoutingMetaFromStores(record.convId);
+  const toDeviceId = record.toDeviceId ?? derived.toDeviceId;
+  const torOnion = record.torOnion ?? derived.route?.torOnion;
+  const lokinet = record.lokinet ?? derived.route?.lokinet;
+
+  if (!record.toDeviceId && toDeviceId) {
+    await updateOutbox(record.id, {
+      toDeviceId,
+      torOnion,
+      lokinet,
+    });
+  }
 
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolve(config, controller);
+  debugLog("[net] sendOutboxRecord: chosen transport", {
+    convId: record.convId,
+    messageId: record.id,
+    chosen,
+    mode: config.mode,
+    onionEnabled: config.onionEnabled,
+    onionSelectedNetwork: config.onionSelectedNetwork,
+    hasToDeviceId: Boolean(toDeviceId),
+    hasRoute: Boolean(torOnion || lokinet),
+  });
 
   if (config.mode === "onionRouter" && chosen === "directP2P") {
     controller.reportSendFail(chosen);
@@ -203,22 +310,50 @@ export const sendOutboxRecord = async (
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
     await ensureStarted(transport);
-    const packet: TransportPacket = { id: record.id, payload: record.ciphertext };
+    const packet: TransportPacket = {
+      id: record.id,
+      payload: record.ciphertext,
+      toDeviceId,
+      route:
+        torOnion || lokinet ? { torOnion, lokinet } : undefined,
+    } as TransportPacket;
     await transport.send(packet);
     return kind;
   };
 
   try {
     await attemptSend(chosen);
+    debugLog("[net] sendOutboxRecord: send ok", {
+      convId: record.convId,
+      messageId: record.id,
+      transport: chosen,
+    });
     return { ok: true as const };
-  } catch {
+  } catch (error) {
     controller.reportSendFail(chosen);
+    debugLog("[net] sendOutboxRecord: send failed", {
+      convId: record.convId,
+      messageId: record.id,
+      chosen,
+      error: error instanceof Error ? error.message : String(error),
+    });
     if (config.mode === "selfOnion" && chosen === "selfOnion") {
       try {
         await attemptSend("onionRouter");
+        debugLog("[net] sendOutboxRecord: fallback ok", {
+          convId: record.convId,
+          messageId: record.id,
+          transport: "onionRouter",
+        });
         return { ok: true as const };
-      } catch {
+      } catch (fallbackError) {
         controller.reportSendFail("onionRouter");
+        debugLog("[net] sendOutboxRecord: fallback failed", {
+          convId: record.convId,
+          messageId: record.id,
+          error:
+            fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+        });
         return { ok: false as const, retryable: true };
       }
     }

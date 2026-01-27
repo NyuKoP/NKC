@@ -570,8 +570,24 @@ export default function App() {
   };
 
   const handleLock = useCallback(async () => {
-    if (!pinEnabled || pinNeedsReset) {
-      if (pinNeedsReset) {
+    let enabled = pinEnabled;
+    let needsReset = pinNeedsReset;
+
+    // Re-sync with the source of truth in case local state is stale.
+    if (!enabled || needsReset) {
+      try {
+        const pinStatus = await getPinStatus();
+        enabled = pinStatus.enabled;
+        needsReset = pinStatus.needsReset;
+        setPinEnabled(enabled);
+        setPinNeedsReset(needsReset);
+      } catch (error) {
+        console.error("Failed to read PIN status before lock", error);
+      }
+    }
+
+    if (!enabled || needsReset) {
+      if (needsReset) {
         addToast({ message: "Reset your PIN to enable lock." });
         return;
       }
@@ -589,7 +605,16 @@ export default function App() {
       console.error("Failed to lock", error);
       addToast({ message: "Lock failed." });
     }
-  }, [addToast, navigate, pinEnabled, pinNeedsReset, resetAppState, setMode]);
+  }, [
+    addToast,
+    navigate,
+    pinEnabled,
+    pinNeedsReset,
+    resetAppState,
+    setMode,
+    setPinEnabled,
+    setPinNeedsReset,
+  ]);
 
   useEffect(() => {
     if (!pinEnabled || pinNeedsReset || ui.mode !== "app") return;
@@ -723,6 +748,15 @@ export default function App() {
     await hydrateVault();
   };
 
+
+  const buildRoutingMeta = (partner: UserProfile) => ({
+    toDeviceId: partner.friendId ?? partner.id,
+    route: {
+      torOnion: partner.routingHints?.onionAddr,
+      lokinet: partner.routingHints?.lokinetAddr,
+    },
+  });
+
   const sendDirectEnvelope = useCallback(
     async (
       conv: Conversation,
@@ -790,6 +824,7 @@ export default function App() {
         messageId: header.eventId,
         ciphertext: envelopeJson,
         priority,
+        ...buildRoutingMeta(partner),
       }).catch((error) => {
         console.error("Failed to route message", error);
       });
@@ -887,6 +922,7 @@ export default function App() {
           messageId: header.eventId,
           ciphertext: envelopeJson,
           priority: "high",
+          ...buildRoutingMeta(partner),
         }).catch((error) => {
           console.error("Failed to route message", error);
         });
@@ -1032,6 +1068,7 @@ export default function App() {
           messageId: header.eventId,
           ciphertext: envelopeJson,
           priority: "high",
+          ...buildRoutingMeta(partner),
         }).catch((error) => {
           console.error("Failed to route message", error);
         });
