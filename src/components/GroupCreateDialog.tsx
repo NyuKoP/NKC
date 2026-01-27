@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ChangeEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import type { UserProfile } from "../db/repo";
 import Avatar from "./Avatar";
@@ -7,7 +7,7 @@ type GroupCreateDialogProps = {
   open: boolean;
   friends: UserProfile[];
   onOpenChange: (open: boolean) => void;
-  onCreate: (payload: { name: string; memberIds: string[] }) => Promise<{
+  onCreate: (payload: { name: string; memberIds: string[]; avatarFile?: File | null }) => Promise<{
     ok: boolean;
     error?: string;
   }>;
@@ -22,6 +22,8 @@ export default function GroupCreateDialog({
   const [name, setName] = useState("");
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [avatarFile, setAvatarFile] = useState<File | null>(null);
+  const [avatarPreview, setAvatarPreview] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -30,10 +32,23 @@ export default function GroupCreateDialog({
       setName("");
       setSearch("");
       setSelected(new Set());
+      setAvatarFile(null);
       setError("");
       setBusy(false);
     }
   }, [open]);
+
+  useEffect(() => {
+    if (!avatarFile) {
+      setAvatarPreview(null);
+      return;
+    }
+    const url = URL.createObjectURL(avatarFile);
+    setAvatarPreview(url);
+    return () => {
+      URL.revokeObjectURL(url);
+    };
+  }, [avatarFile]);
 
   const visibleFriends = useMemo(() => {
     const term = search.trim().toLowerCase();
@@ -43,6 +58,12 @@ export default function GroupCreateDialog({
         term ? friend.displayName.toLowerCase().includes(term) : true
       );
   }, [friends, search]);
+
+  const handleAvatarChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0] ?? null;
+    setAvatarFile(file);
+    event.target.value = "";
+  };
 
   const toggleMember = (id: string) => {
     setSelected((prev) => {
@@ -72,6 +93,7 @@ export default function GroupCreateDialog({
       const result = await onCreate({
         name: trimmed,
         memberIds: Array.from(selected),
+        avatarFile,
       });
       if (!result.ok) {
         setError(result.error || "Failed to create group.");
@@ -99,6 +121,25 @@ export default function GroupCreateDialog({
           </Dialog.Description>
 
           <div className="mt-4 grid gap-3">
+            <div className="flex items-center gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm">
+              <Avatar name={name || "Group"} size={48} className="shrink-0" />
+              {avatarPreview ? (
+                <img
+                  src={avatarPreview}
+                  alt="Group avatar preview"
+                  className="h-12 w-12 rounded-full border border-nkc-border object-cover"
+                />
+              ) : null}
+              <label className="ml-auto text-xs text-nkc-muted">
+                그룹 이미지
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="mt-1 block text-[11px]"
+                  onChange={handleAvatarChange}
+                />
+              </label>
+            </div>
             <label className="text-sm">
               Group name
               <input

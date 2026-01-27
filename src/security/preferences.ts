@@ -16,6 +16,7 @@ const LEGACY_ROUTE_POLICY_KEY = "route_policy_v1";
 const alternateRoute_PROXY_URL_KEY = "alternateRoute_proxy_url_v1";
 const alternateRoute_SERVICE_ADDR_KEY = "alternateRoute_service_addr_v1";
 const LEGACY_alternateRoute_SERVICE_ADDRESS_KEY = "alternateRoute_service_address_v1";
+const GROUP_AVATAR_OVERRIDE_PREFIX = "nkc_group_avatar_override_v1:";
 
 export const defaultPrivacyPrefs: PrivacyPreferences = {
   readReceipts: false,
@@ -139,4 +140,20 @@ export const setalternateRouteServiceAddress = async (value: string) => {
   }
   await store.set(alternateRoute_SERVICE_ADDR_KEY, trimmed);
   await store.remove(LEGACY_alternateRoute_SERVICE_ADDRESS_KEY);
+};
+
+export const getGroupAvatarOverride = async (convId: string) => {
+  const store = getPublicStore();
+  const raw = await store.get(`${GROUP_AVATAR_OVERRIDE_PREFIX}${convId}`);
+  return raw ?? null;
+};
+
+export const setGroupAvatarOverride = async (convId: string, ref: string | null) => {
+  const store = getPublicStore();
+  const key = `${GROUP_AVATAR_OVERRIDE_PREFIX}${convId}`;
+  if (!ref) {
+    await store.remove(key);
+    return;
+  }
+  await store.set(key, ref);
 };

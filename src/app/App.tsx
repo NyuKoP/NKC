@@ -33,6 +33,8 @@ import {
   saveMessageMedia,
   saveProfile,
   saveProfilePhoto,
+  saveGroupPhotoRef,
+  loadAvatarFromRef,
   seedVaultData,
   unlockVault,
   wipeVault,
@@ -88,6 +90,8 @@ import {
   type ConversationTransportStatus,
 } from "../net/transportManager";
 import { putReadCursor } from "../storage/receiptStore";
+import { getGroupAvatarOverride, setGroupAvatarOverride } from "../security/preferences";
+import { parseAvatarRef, resolveGroupAvatarRef } from "../utils/avatarRefs";
 
 const buildNameMap = (profiles: UserProfile[]) =>
   profiles.reduce<Record<string, string>>((acc, profile) => {
@@ -131,6 +135,10 @@ export default function App() {
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [groupInviteOpen, setGroupInviteOpen] = useState(false);
   const [groupInviteConvId, setGroupInviteConvId] = useState<string | null>(null);
+  const [groupAvatarOverrides, setGroupAvatarOverrides] = useState<Record<string, string | null>>(
+    {}
+  );
+  const [groupAvatarOverrideVersion, setGroupAvatarOverrideVersion] = useState(0);
   const [myFriendCode, setMyFriendCode] = useState("");
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
@@ -1273,15 +1281,82 @@ export default function App() {
     [findDirectConvWithFriend, userProfile]
   );
 
+  const fanoutGroupAvatarChunks = useCallback(
+    async (
+      groupId: string,
+      sharedAvatarRef: string | undefined,
+      memberIds: string[],
+      options?: { allowCreateDirect?: boolean }
+    ) => {
+      if (!userProfile || !sharedAvatarRef) return;
+      const allowCreateDirect = Boolean(options?.allowCreateDirect);
+      const blob = await loadAvatarFromRef(sharedAvatarRef);
+      if (!blob) return;
+
+      const buffer = await blob.arrayBuffer();
+      const chunks = chunkBuffer(buffer, INLINE_MEDIA_CHUNK_SIZE);
+      const total = chunks.length;
+      if (!total) return;
+
+      const targets = Array.from(new Set(memberIds)).filter(
+        (id) => id && id !== userProfile.id
+      );
+      for (const memberId of targets) {
+        const friend = friends.find((item) => item.id === memberId);
+        if (!friend?.dhPub || !friend.identityPub) continue;
+        let directConv = findDirectConvWithFriend(memberId) || null;
+        if (!directConv && allowCreateDirect) {
+          directConv = await ensureDirectConvForFanout(friend, Date.now());
+        }
+        if (!directConv) continue;
+
+        const sendChunks = async () => {
+          for (let idx = 0; idx < chunks.length; idx += 1) {
+            await sendDirectEnvelope(
+              directConv,
+              friend,
+              {
+                type: "media",
+                phase: "chunk",
+                ownerType: "group",
+                ownerId: groupId,
+                idx,
+                total,
+                mime: blob.type || "image/png",
+                b64: encodeBase64Url(chunks[idx]),
+              },
+              "normal"
+            );
+            if (idx > 0 && idx % 32 === 0) {
+              await new Promise<void>((resolve) => setTimeout(resolve, 0));
+            }
+          }
+        };
+
+        void sendChunks().catch((error) => {
+          console.error("Failed to fanout group avatar chunks", { memberId }, error);
+        });
+      }
+    },
+    [
+      ensureDirectConvForFanout,
+      findDirectConvWithFriend,
+      friends,
+      sendDirectEnvelope,
+      userProfile,
+    ]
+  );
+
   const fanoutGroupEvent = useCallback(
     async (
       memberIds: string[],
       event: GroupEventPayload,
-      options?: { allowCreateDirect?: boolean; toastOnFailure?: boolean }
+      options?: { allowCreateDirect?: boolean; toastOnFailure?: boolean; sendAvatarChunks?: boolean }
     ) => {
       if (!userProfile) return;
       const allowCreateDirect = Boolean(options?.allowCreateDirect);
       const toastOnFailure = options?.toastOnFailure ?? true;
+      const sendAvatarChunks = options?.sendAvatarChunks ?? true;
       const targets = Array.from(new Set(memberIds)).filter((id) => id && id !== userProfile.id);
       if (!targets.length) return;
 
@@ -1311,8 +1386,22 @@ export default function App() {
       if (failures.length && toastOnFailure) {
         addToast({ message: `Some members could not be notified (${failures.length}).` });
       }
+
+      if (event.kind === "group.create" && event.sharedAvatarRef && sendAvatarChunks) {
+        await fanoutGroupAvatarChunks(event.id, event.sharedAvatarRef, targets, {
+          allowCreateDirect,
+        });
+      }
     },
-    [addToast, ensureDirectConvForFanout, findDirectConvWithFriend, friends, sendDirectEnvelope, userProfile]
+    [
+      addToast,
+      ensureDirectConvForFanout,
+      fanoutGroupAvatarChunks,
+      findDirectConvWithFriend,
+      friends,
+      sendDirectEnvelope,
+      userProfile,
+    ]
   );
 
   const handleSelectFriend = async (friendId: string) => {
@@ -1632,6 +1721,7 @@ export default function App() {
         memberIds: nextParticipants,
         actorId: userProfile.id,
         ts: now,
+        sharedAvatarRef: conv.sharedAvatarRef,
       });
       await fanoutGroupEvent(newMembers, createEvent, {
         allowCreateDirect: true,
@@ -1691,7 +1781,32 @@ export default function App() {
     });
   };
 
-  const handleSubmitGroup = async (payload: { name: string; memberIds: string[] }) => {
+  const handleSetGroupAvatarOverride = useCallback(
+    async (convId: string, file: File | null) => {
+      if (!userProfile) return;
+      if (!file) {
+        await setGroupAvatarOverride(convId, null);
+        setGroupAvatarOverrideVersion((prev) => prev + 1);
+        return;
+      }
+      try {
+        const ownerId = `group-local:${convId}:${userProfile.id}`;
+        const ref = await saveGroupPhotoRef(ownerId, file);
+        await setGroupAvatarOverride(convId, ref);
+        setGroupAvatarOverrideVersion((prev) => prev + 1);
+      } catch (error) {
+        console.error("Failed to set group avatar override", error);
+        addToast({ message: "Failed to update local group image." });
+      }
+    },
+    [addToast, userProfile]
+  );
+
+  const handleSubmitGroup = async (payload: {
+    name: string;
+    memberIds: string[];
+    avatarFile?: File | null;
+  }) => {
     if (!userProfile) return { ok: false as const, error: "User profile missing." };
 
     const members = Array.from(new Set(payload.memberIds)).filter((id) => id && id !== userProfile.id);
@@ -1700,6 +1815,14 @@ export default function App() {
     try {
       const now = Date.now();
       const convId = createId();
+      let sharedAvatarRef: string | undefined;
+      if (payload.avatarFile) {
+        try {
+          sharedAvatarRef = await saveGroupPhotoRef(convId, payload.avatarFile);
+        } catch (avatarError) {
+          console.error("Failed to save group avatar", avatarError);
+        }
+      }
 
       const conv: Conversation = {
         id: convId,
@@ -1713,6 +1836,7 @@ export default function App() {
         lastTs: now,
         lastMessage: "Group created",
         participants: [userProfile.id, ...members],
+        sharedAvatarRef,
       };
 
       await saveConversation(conv);
@@ -1731,6 +1855,7 @@ export default function App() {
         memberIds: conv.participants,
         actorId: userProfile.id,
         ts: now,
+        sharedAvatarRef,
       });
       await fanoutGroupEvent(conv.participants, groupEvent, {
         allowCreateDirect: true,
@@ -1991,6 +2116,48 @@ export default function App() {
     }
     return map;
   }, [friends, userProfile]);
+
+  useEffect(() => {
+    let active = true;
+    const groupConvs = convs.filter(
+      (conv) => conv.type === "group" || conv.participants.length > 2
+    );
+    if (!groupConvs.length) {
+      setGroupAvatarOverrides({});
+      return () => {
+        active = false;
+      };
+    }
+    const load = async () => {
+      const entries = await Promise.all(
+        groupConvs.map(async (conv) => [conv.id, await getGroupAvatarOverride(conv.id)] as const)
+      );
+      if (!active) return;
+      setGroupAvatarOverrides(Object.fromEntries(entries));
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [convs, groupAvatarOverrideVersion]);
+
+  const groupAvatarRefsByConv = useMemo(() => {
+    const map: Record<string, ReturnType<typeof parseAvatarRef>> = {};
+    convs.forEach((conv) => {
+      const resolved = resolveGroupAvatarRef(conv, groupAvatarOverrides[conv.id]);
+      if (resolved) {
+        map[conv.id] = resolved;
+      }
+    });
+    return map;
+  }, [convs, groupAvatarOverrides]);
+
+  const currentGroupAvatarRef = currentConversation
+    ? groupAvatarRefsByConv[currentConversation.id]
+    : undefined;
+  const currentGroupAvatarOverrideRef = currentConversation
+    ? groupAvatarOverrides[currentConversation.id] ?? null
+    : null;
   useEffect(() => {
     const prev = activeSyncConvRef.current;
     if (prev && prev !== ui.selectedConvId) {
@@ -2077,6 +2244,7 @@ export default function App() {
         friends={friends}
         userId={userProfile?.id || null}
         userProfile={userProfile}
+        groupAvatarRefsByConv={groupAvatarRefsByConv}
         selectedConvId={ui.selectedConvId}
         listMode={ui.listMode}
         listFilter={ui.listFilter}
@@ -2132,9 +2300,12 @@ export default function App() {
         friendProfile={partnerProfile}
         currentUserId={userProfile?.id ?? null}
         profilesById={profilesById}
+        groupAvatarRef={currentGroupAvatarRef}
+        groupAvatarOverrideRef={currentGroupAvatarOverrideRef}
         onOpenSettings={() => navigate("/settings")}
         onInviteToGroup={handleInviteToGroup}
         onLeaveGroup={handleLeaveGroup}
+        onSetGroupAvatarOverride={handleSetGroupAvatarOverride}
       />
 
       {userProfile ? (

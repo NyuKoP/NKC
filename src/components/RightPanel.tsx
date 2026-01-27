@@ -1,6 +1,7 @@
-﻿import * as Tabs from "@radix-ui/react-tabs";
+﻿import { useRef, type ChangeEvent } from "react";
+import * as Tabs from "@radix-ui/react-tabs";
 import { Settings, UserPlus, UserX } from "lucide-react";
-import type { Conversation, UserProfile } from "../db/repo";
+import type { AvatarRef, Conversation, UserProfile } from "../db/repo";
 import Avatar from "./Avatar";
 
 const tabs = [
@@ -17,9 +18,12 @@ type RightPanelProps = {
   friendProfile?: UserProfile | null;
   currentUserId: string | null;
   profilesById: Record<string, UserProfile | undefined>;
+  groupAvatarRef?: AvatarRef;
+  groupAvatarOverrideRef?: string | null;
   onOpenSettings: () => void;
   onInviteToGroup: (convId: string) => void;
   onLeaveGroup: (convId: string) => void;
+  onSetGroupAvatarOverride: (convId: string, file: File | null) => void | Promise<void>;
 };
 
 const isTabValue = (value: string): value is RightPanelProps["tab"] =>
@@ -44,9 +48,12 @@ export default function RightPanel({
   friendProfile,
   currentUserId,
   profilesById,
+  groupAvatarRef,
+  groupAvatarOverrideRef,
   onOpenSettings,
   onInviteToGroup,
   onLeaveGroup,
+  onSetGroupAvatarOverride,
 }: RightPanelProps) {
   if (!open) return null;
 
@@ -54,6 +61,13 @@ export default function RightPanel({
   const detail = displayName ? detailsByName[displayName] : undefined;
   const isGroup = isGroupConversation(conversation);
   const memberIds = conversation?.participants ?? [];
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const hasOverride = Boolean(groupAvatarOverrideRef);
+
+  const aboutAvatarRef = isGroup ? groupAvatarRef : friendProfile?.avatarRef;
+  const aboutAvatarName = isGroup
+    ? conversation?.name || "Group"
+    : friendProfile?.displayName || conversation?.name || "";
 
   const members = memberIds.map((id) => {
     const profile = profilesById[id];
@@ -66,6 +80,13 @@ export default function RightPanel({
       isSelf: id === currentUserId,
     };
   });
+
+  const handleOverrideChange = (event: ChangeEvent<HTMLInputElement>) => {
+    if (!conversation || !isGroup) return;
+    const file = event.target.files?.[0] ?? null;
+    void onSetGroupAvatarOverride(conversation.id, file);
+    event.target.value = "";
+  };
 
   return (
     <aside className="hidden h-full w-[320px] rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft lg:block">
@@ -91,11 +112,7 @@ export default function RightPanel({
           {conversation ? (
             <div className="space-y-4 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4">
               <div className="flex items-center gap-3">
-                <Avatar
-                  name={friendProfile?.displayName || conversation.name}
-                  avatarRef={friendProfile?.avatarRef}
-                  size={52}
-                />
+                <Avatar name={aboutAvatarName} avatarRef={aboutAvatarRef} size={52} />
                 <div>
                   <div className="text-sm font-semibold text-nkc-text">
                     {displayName || conversation.name}
@@ -110,6 +127,42 @@ export default function RightPanel({
 
               {isGroup ? (
                 <>
+                  <div className="border-t border-nkc-border pt-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs font-semibold text-nkc-muted">그룹 이미지 (나만)</div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel"
+                        >
+                          변경
+                        </button>
+                        {hasOverride ? (
+                          <button
+                            type="button"
+                            onClick={() => onSetGroupAvatarOverride(conversation.id, null)}
+                            className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-muted hover:bg-nkc-panel"
+                          >
+                            해제
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                    <input
+                      ref={fileInputRef}
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={handleOverrideChange}
+                    />
+                    {hasOverride ? (
+                      <div className="mt-1 text-[11px] text-nkc-muted">
+                        이 설정은 내 기기에서만 보입니다.
+                      </div>
+                    ) : null}
+                  </div>
+
                   <div className="border-t border-nkc-border pt-3">
                     <div className="text-xs font-semibold text-nkc-muted">Members ({members.length})</div>
                     <div className="mt-2 space-y-1">
@@ -133,6 +186,7 @@ export default function RightPanel({
                       ))}
                     </div>
                   </div>
+
                   <div className="flex gap-2">
                     <button
                       type="button"
