@@ -104,3 +104,8 @@ export const listOutboxByConv = async (convId: string) => {
   const items = await db.outbox.toArray();
   return items.filter((record) => record.convId === convId);
 };
+
+export const clearOutboxQueue = async () => {
+  await ensureDbOpen();
+  await db.outbox.clear();
+};

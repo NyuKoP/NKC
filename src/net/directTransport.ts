@@ -1,10 +1,15 @@
 import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import type { TransportPacket, TransportState as AdapterState } from "../adapters/transports/types";
+import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 import { createId } from "../utils/ids";
 import type { PeerHint, Transport, TransportStatus } from "./transport";
 
 const normalizePayload = (payload: TransportPacket["payload"]) => {
   if (payload instanceof Uint8Array) return payload;
+  if (payload && typeof payload === "object" && "b64" in payload) {
+    const b64 = (payload as { b64?: unknown }).b64;
+    if (typeof b64 === "string") return decodeBase64Url(b64);
+  }
   if (typeof payload === "string") return new TextEncoder().encode(payload);
   return null;
 };
@@ -46,7 +51,10 @@ export const createDirectTransport = (): Transport => {
       }
     },
     async send(bytes: Uint8Array) {
-      const packet: TransportPacket = { id: createId(), payload: bytes };
+      const packet: TransportPacket = {
+        id: createId(),
+        payload: { b64: encodeBase64Url(bytes) },
+      };
       await adapter.send(packet);
     },
     onMessage(cb) {
