@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   AlertTriangle,
@@ -10,11 +10,12 @@ import type { UserProfile } from "../db/repo";
 import {
   clearChatHistory,
   deleteAllMedia,
-  getVaultUsage,
   listConversations,
   listMessagesByConv,
   listProfiles,
 } from "../db/repo";
+import { estimateStorageUsage, type StorageUsage } from "../storage/storageUsage";
+import { clearOutboxQueue } from "../storage/outboxStore";
 import { useAppStore } from "../app/store";
 import {
   defaultPrivacyPrefs,
@@ -183,12 +184,28 @@ export default function SettingsDialog({
   const [connectionStatus, setConnectionStatus] = useState(getConnectionStatus());
   const [chatWipeBusy, setChatWipeBusy] = useState(false);
   const [mediaWipeBusy, setMediaWipeBusy] = useState(false);
+  const [pendingWipeBusy, setPendingWipeBusy] = useState(false);
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
-  const [wipeConfirmType, setWipeConfirmType] = useState<"chat" | "media" | null>(
+  const [wipeConfirmType, setWipeConfirmType] = useState<"chat" | "media" | "pending" | null>(
     null
   );
-  const [vaultUsageBytes, setVaultUsageBytes] = useState(0);
-  const [vaultUsageMaxBytes, setVaultUsageMaxBytes] = useState(50 * 1024 * 1024);
+  const [storageUsage, setStorageUsage] = useState<StorageUsage>({
+    chatBytes: 0,
+    mediaBytes: 0,
+    pendingBytes: 0,
+    totalBytes: 0,
+  });
+  const pendingSectionRef = useRef<HTMLDivElement | null>(null);
+  const [pendingFocusRequested, setPendingFocusRequested] = useState(false);
+
+  const refreshStorageUsage = useCallback(async () => {
+    try {
+      const usage = await estimateStorageUsage();
+      setStorageUsage(usage);
+    } catch (error) {
+      console.error("Failed to estimate storage usage", error);
+    }
+  }, []);
 
   const language = useAppStore((state) => state.ui.language);
   const setLanguage = useAppStore((state) => state.setLanguage);
@@ -436,19 +453,8 @@ export default function SettingsDialog({
 
   useEffect(() => {
     if (!open) return;
-    const refreshUsage = async () => {
-      try {
-        const usage = await getVaultUsage();
-        setVaultUsageBytes(usage.bytes);
-        if (usage.bytes > vaultUsageMaxBytes) {
-          setVaultUsageMaxBytes(Math.max(usage.bytes, 50 * 1024 * 1024));
-        }
-      } catch (error) {
-        console.error("Failed to read vault usage", error);
-      }
-    };
-    void refreshUsage();
-  }, [open, vaultUsageMaxBytes]);
+    void refreshStorageUsage();
+  }, [open, refreshStorageUsage]);
 
   useEffect(() => {
     if (!saveMessage) return;
@@ -843,6 +849,16 @@ export default function SettingsDialog({
       setSelectedConv(null);
     }
   };
+
+  useEffect(() => {
+    if (view !== "danger" || !pendingFocusRequested) return;
+    const element = pendingSectionRef.current;
+    if (element) {
+      element.scrollIntoView({ behavior: "smooth", block: "start" });
+      element.focus({ preventScroll: true });
+    }
+    setPendingFocusRequested(false);
+  }, [pendingFocusRequested, view]);
 
   const renderBackHeader = (title: string) => (
     <SettingsBackHeader
@@ -1674,6 +1690,57 @@ export default function SettingsDialog({
                   </button>
                 </div>
               </section>
+              <section
+                ref={pendingSectionRef}
+                tabIndex={-1}
+                className="rounded-nkc border border-red-500/50 bg-red-500/10 p-6 outline-none focus-visible:ring-2 focus-visible:ring-red-400/70"
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <h3 className="text-sm font-semibold text-black">
+                      {t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0 (\uace0\uae09)", "Pending messages (advanced)")}
+                    </h3>
+                    <p className="mt-1 text-xs text-black/80">
+                      {t(
+                        "\uc544\uc9c1 \uc0c1\ub300\ubc29\uc5d0\uac8c \uc804\ub2ec\ub418\uc9c0 \uc54a\uc558\uc744 \uc218 \uc788\ub294 \uc554\ud638\ud654 \uba54\uc2dc\uc9c0\uc785\ub2c8\ub2e4.",
+                        "These may be encrypted messages not yet delivered to the other party."
+                      )}
+                    </p>
+                    <div className="mt-3 space-y-1 text-xs text-black/80">
+                      <div>
+                        {t("\uc0ad\uc81c\ud558\uba74 \uc601\uad6c\uc801\uc73c\ub85c \uc190\uc2e4\ub429\ub2c8\ub2e4.", "Deletion is permanent.")}
+                      </div>
+                      <div>
+                        {t("\ub2e4\ub978 \uae30\uae30\uc5d0\ub294 \uc601\ud5a5\uc744 \uc8fc\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.", "Other devices are not affected.")}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <div className="text-[11px] uppercase tracking-wide text-black/70">
+                      {t("\ud604\uc7ac \ud06c\uae30", "Current size")}
+                    </div>
+                    <div className="text-sm font-semibold text-black">
+                      {formatBytes(storageUsage.pendingBytes)}
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (pendingWipeBusy) return;
+                      setWipeConfirmType("pending");
+                      setWipeConfirmOpen(true);
+                    }}
+                    disabled={pendingWipeBusy}
+                    className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-black hover:bg-red-500/40 disabled:opacity-50"
+                  >
+                    {pendingWipeBusy
+                      ? t("\ucc98\ub9ac \uc911...", "Working...")
+                      : t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0 \uc0ad\uc81c", "Delete pending messages")}
+                  </button>
+                </div>
+              </section>
             </div>
           )}
 
@@ -1682,8 +1749,7 @@ export default function SettingsDialog({
             <StorageSettings
               t={t}
               onBack={() => setView("main")}
-              vaultUsageBytes={vaultUsageBytes}
-              vaultUsageMaxBytes={vaultUsageMaxBytes}
+              storageUsage={storageUsage}
               formatBytes={formatBytes}
               chatWipeBusy={chatWipeBusy}
               mediaWipeBusy={mediaWipeBusy}
@@ -1696,6 +1762,10 @@ export default function SettingsDialog({
                 if (mediaWipeBusy) return;
                 setWipeConfirmType("media");
                 setWipeConfirmOpen(true);
+              }}
+              onNavigateToPending={() => {
+                setView("danger");
+                setPendingFocusRequested(true);
               }}
             />
           )}
@@ -1723,20 +1793,27 @@ export default function SettingsDialog({
       <ConfirmDialog
         open={wipeConfirmOpen}
         title={
-          wipeConfirmType === "media"
-            ? t("미디어 삭제 경고", "Media deletion warning")
-            : t("채팅 삭제 경고", "Chat deletion warning")
+          wipeConfirmType === "pending"
+            ? t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0 \uc0ad\uc81c \uacbd\uace0", "Pending deletion warning")
+            : wipeConfirmType === "media"
+              ? t("미디어 삭제 경고", "Media deletion warning")
+              : t("채팅 삭제 경고", "Chat deletion warning")
         }
         message={
-          wipeConfirmType === "media"
+          wipeConfirmType === "pending"
             ? t(
-                "모든 미디어(첨부파일/아바타)를 초기화합니다. 복구할 수 없으며, 잔여 데이터 복구를 어렵게 하기 위해 암호화로 덮어쓴 뒤 제거합니다. 계속할까요?",
-                "This deletes all media (attachments/avatars). It cannot be undone; remaining data is overwritten with encryption before removal. Continue?"
+                "\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0\ub97c \uc0ad\uc81c\ud569\ub2c8\ub2e4. \uc544\uc9c1 \uc0c1\ub300\ubc29\uc5d0\uac8c \uc804\ub2ec\ub418\uc9c0 \uc54a\uc558\uc744 \uc218 \uc788\ub294 \uc554\ud638\ud654 \uba54\uc2dc\uc9c0\uc785\ub2c8\ub2e4. \uc0ad\uc81c\ud558\uba74 \uc601\uad6c\uc801\uc73c\ub85c \uc190\uc2e4\ub429\ub2c8\ub2e4. \ub2e4\ub978 \uae30\uae30\uc5d0\ub294 \uc601\ud5a5\uc744 \uc8fc\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4. \uacc4\uc18d\ud560\uae4c\uc694?",
+                "This deletes pending messages. They may be encrypted messages not yet delivered to the other party. Deletion is permanent. Other devices are not affected. Continue?"
               )
-            : t(
-                "채팅 내역을 초기화합니다. 복구할 수 없으며, 잔여 데이터 복구를 어렵게 하기 위해 암호화로 덮어쓴 뒤 제거합니다. 계속할까요?",
-                "This resets chat history. It cannot be undone; remaining data is overwritten with encryption before removal. Continue?"
-              )
+            : wipeConfirmType === "media"
+              ? t(
+                  "모든 미디어(첨부파일/아바타)를 초기화합니다. 복구할 수 없으며, 잔여 데이터 복구를 어렵게 하기 위해 암호화로 덮어쓴 뒤 제거합니다. 계속할까요?",
+                  "This deletes all media (attachments/avatars). It cannot be undone; remaining data is overwritten with encryption before removal. Continue?"
+                )
+              : t(
+                  "채팅 내역을 초기화합니다. 복구할 수 없으며, 잔여 데이터 복구를 어렵게 하기 위해 암호화로 덮어쓴 뒤 제거합니다. 계속할까요?",
+                  "This resets chat history. It cannot be undone; remaining data is overwritten with encryption before removal. Continue?"
+                )
         }
         onClose={() => {
           setWipeConfirmOpen(false);
@@ -1744,14 +1821,30 @@ export default function SettingsDialog({
         }}
         onConfirm={async () => {
           if (!wipeConfirmType) return;
+
+          if (wipeConfirmType === "pending") {
+            if (pendingWipeBusy) return;
+            setPendingWipeBusy(true);
+            try {
+              await clearOutboxQueue();
+              await refreshStorageUsage();
+              setSaveMessage(t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0\ub97c \uc0ad\uc81c\ud588\uc2b5\ub2c8\ub2e4.", "Pending messages deleted."));
+            } catch (error) {
+              console.error("Failed to clear pending outbox", error);
+              setSaveMessage(t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0 \uc0ad\uc81c\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.", "Pending delete failed."));
+            } finally {
+              setPendingWipeBusy(false);
+            }
+            return;
+          }
+
           if (wipeConfirmType === "chat") {
             if (chatWipeBusy) return;
             setChatWipeBusy(true);
             try {
               await clearChatHistory();
               await refreshAppData();
-              const usage = await getVaultUsage();
-              setVaultUsageBytes(usage.bytes);
+              await refreshStorageUsage();
               setSaveMessage(t("채팅 내역이 초기화되었습니다.", "Chat history reset."));
             } catch (error) {
               console.error("Failed to clear chat history", error);
@@ -1767,8 +1860,7 @@ export default function SettingsDialog({
           try {
             await deleteAllMedia();
             await refreshAppData();
-            const usage = await getVaultUsage();
-            setVaultUsageBytes(usage.bytes);
+            await refreshStorageUsage();
             setSaveMessage(t("미디어가 초기화되었습니다.", "Media reset."));
           } catch (error) {
             console.error("Failed to delete media", error);
@@ -1777,7 +1869,7 @@ export default function SettingsDialog({
             setMediaWipeBusy(false);
           }
         }}
-        />
+      />
       </>
     );
   }

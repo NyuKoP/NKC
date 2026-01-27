@@ -94,7 +94,7 @@ export type StoredMessageRecord =
 const VAULT_META_KEY = "vault_header_v2";
 const VAULT_KEY_ID_KEY = "vault_key_id_v1";
 const TEXT_ENCODING_FIX_KEY = "text_encoding_fix_v1";
-const MEDIA_CHUNK_SIZE = 256 * 1024;
+const MEDIA_CHUNK_SIZE = 192 * 1024;
 const MEDIA_DECRYPT_CONCURRENCY = 6;
 const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
 const MEDIA_YIELD_MIN_CHUNKS = 24;
@@ -968,7 +968,4 @@ export const clearChatHistory = async () => {
     .toArray();
   await secureEraseMediaChunks(mediaRecords);
 
-  if (db.outbox) {
-    await db.outbox.clear();
-  }
 };
