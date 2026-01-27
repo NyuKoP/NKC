@@ -1274,9 +1274,14 @@ export default function App() {
   );
 
   const fanoutGroupEvent = useCallback(
-    async (memberIds: string[], event: GroupEventPayload, options?: { allowCreateDirect?: boolean }) => {
+    async (
+      memberIds: string[],
+      event: GroupEventPayload,
+      options?: { allowCreateDirect?: boolean; toastOnFailure?: boolean }
+    ) => {
       if (!userProfile) return;
       const allowCreateDirect = Boolean(options?.allowCreateDirect);
+      const toastOnFailure = options?.toastOnFailure ?? true;
       const targets = Array.from(new Set(memberIds)).filter((id) => id && id !== userProfile.id);
       if (!targets.length) return;
 
@@ -1303,7 +1308,7 @@ export default function App() {
         }
       }
 
-      if (failures.length) {
+      if (failures.length && toastOnFailure) {
         addToast({ message: `Some members could not be notified (${failures.length}).` });
       }
     },
@@ -1628,7 +1633,10 @@ export default function App() {
         actorId: userProfile.id,
         ts: now,
       });
-      await fanoutGroupEvent(newMembers, createEvent, { allowCreateDirect: true });
+      await fanoutGroupEvent(newMembers, createEvent, {
+        allowCreateDirect: true,
+        toastOnFailure: false,
+      });
 
       await hydrateVault();
       return { ok: true as const };
@@ -1726,6 +1734,7 @@ export default function App() {
       });
       await fanoutGroupEvent(conv.participants, groupEvent, {
         allowCreateDirect: true,
+        toastOnFailure: false,
       });
       await hydrateVault();
 
