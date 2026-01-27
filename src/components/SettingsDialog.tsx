@@ -1,21 +1,10 @@
-﻿import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import type { LucideIcon } from "lucide-react";
 import {
   AlertTriangle,
-  Bell,
   Check,
-  ChevronLeft,
   Clock,
-  Globe,
-  HardDrive,
   Key,
-  KeyRound,
-  Lock,
-  Monitor,
-  Palette,
-  Shield,
-  Users,
 } from "lucide-react";
 import type { UserProfile } from "../db/repo";
 import {
@@ -37,7 +26,6 @@ import {
   getAppPrefs,
   setAppPrefs,
   type AppPreferencesPatch,
-  type SyncIntervalMinutes,
 } from "../preferences";
 import { syncNow } from "../appControl";
 import { isPinAvailable } from "../security/pin";
@@ -82,74 +70,22 @@ import {
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
 import StartKey from "./StartKey";
-
-type LocalizedLabel = { ko: string; en: string };
-
-const themeOptions: { value: "dark" | "light"; label: LocalizedLabel }[] = [
-  { value: "dark", label: { ko: "다크", en: "Dark" } },
-  { value: "light", label: { ko: "라이트", en: "Light" } },
-];
-
-type ConnectionChoice = "directP2P" | "selfOnion" | "torOnion" | "lokinetOnion";
-
-type SettingsView =
-  | "main"
-  | "notifications"
-  | "privacy"
-  | "privacyKeys"
-  | "theme"
-  | "friends"
-  | "danger"
-  | "network"
-  | "help"
-  | "login"
-  | "storage"
-  | "devices";
-
-type SettingsRoute = {
-  key:
-    | "settings.notifications"
-    | "settings.friends"
-    | "settings.network"
-    | "settings.devices"
-    | "settings.privacy"
-    | "settings.login"
-    | "settings.theme"
-    | "settings.storage";
-  view: SettingsView;
-  label: LocalizedLabel;
-  testId?: string;
-};
-
-const SETTINGS_ROUTES: SettingsRoute[] = [
-  { key: "settings.notifications", view: "notifications", label: { ko: "알림", en: "Notifications" } },
-  { key: "settings.friends", view: "friends", label: { ko: "친구 관리", en: "Friend management" } },
-  {
-    key: "settings.network",
-    view: "network",
-    label: { ko: "네트워크 설정", en: "Network settings" },
-    testId: "settings-network-button",
-  },
-  { key: "settings.devices", view: "devices", label: { ko: "기기/동기화", en: "Devices / Sync" } },
-  { key: "settings.privacy", view: "privacy", label: { ko: "보안 / 개인정보", en: "Security / Privacy" } },
-  { key: "settings.login", view: "login", label: { ko: "로그인", en: "Login" } },
-  { key: "settings.theme", view: "theme", label: { ko: "테마", en: "Theme" } },
-  { key: "settings.storage", view: "storage", label: { ko: "저장소 관리", en: "Storage management" } },
-];
-
-const routeIconByView: Record<
-  Exclude<SettingsView, "main" | "privacyKeys" | "danger" | "help">,
-  LucideIcon
-> = {
-  notifications: Bell,
-  friends: Users,
-  network: Globe,
-  devices: Monitor,
-  privacy: Shield,
-  login: KeyRound,
-  theme: Palette,
-  storage: HardDrive,
-};
+import SettingsBackHeader from "./settings/SettingsBackHeader";
+import DevicesSettings from "./settings/sections/DevicesSettings";
+import LoginSettings from "./settings/sections/LoginSettings";
+import FriendsSettings from "./settings/sections/FriendsSettings";
+import NetworkSettings from "./settings/sections/NetworkSettings";
+import NotificationsSettings from "./settings/sections/NotificationsSettings";
+import PrivacySettings from "./settings/sections/PrivacySettings";
+import StorageSettings from "./settings/sections/StorageSettings";
+import {
+  SETTINGS_ROUTES,
+  routeIconByView,
+  themeOptions,
+  type ConnectionChoice,
+  type LocalizedLabel,
+  type SettingsView,
+} from "./settings/settingsTypes";
 
 type SettingsDialogProps = {
   open: boolean;
@@ -556,6 +492,20 @@ export default function SettingsDialog({
     }
   };
 
+  const handleLokinetStatus = async () => {
+    if (lokinetStatusBusy) return;
+    setLokinetStatusBusy(true);
+    try {
+      await refreshOnionStatus();
+      setSaveMessage(t("Lokinet 상태 확인 완료", "Lokinet status checked"));
+    } catch (error) {
+      console.error("Failed to refresh lokinet status", error);
+      setSaveMessage(t("Lokinet 상태 확인 실패", "Lokinet status check failed"));
+    } finally {
+      setLokinetStatusBusy(false);
+    }
+  };
+
   const handleCheckUpdates = async () => {
     if (torCheckBusy) return;
     setTorCheckBusy(true);
@@ -860,18 +810,11 @@ export default function SettingsDialog({
   };
 
   const renderBackHeader = (title: string) => (
-    <div className="flex items-center justify-between">
-      <button
-        type="button"
-        onClick={() => setView("main")}
-        className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
-      >
-        <ChevronLeft size={14} />
-        {t("뒤로", "Back")}
-      </button>
-      <span className="text-sm font-semibold text-nkc-text">{title}</span>
-      <div className="w-12" />
-    </div>
+    <SettingsBackHeader
+      title={title}
+      backLabel={t("뒤로", "Back")}
+      onBack={() => setView("main")}
+    />
   );
 
   const startEdit = () => {
@@ -1245,257 +1188,6 @@ export default function SettingsDialog({
   const closeToTrayDisabled = appPrefs.login.closeToExit;
   const closeToExitDisabled = appPrefs.login.closeToTray;
 
-  const NotificationsSettings = () => (
-    <div className="mt-6 grid gap-6">
-      {renderBackHeader(t("알림", "Notifications"))}
-      <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-        <div className="flex flex-col">
-          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("알림 사용", "Notifications enabled")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t("새 메시지 알림을 표시합니다.", "Show new message notifications.")}
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={appPrefs.notifications.enabled}
-              disabled={prefsDisabled}
-              onChange={(e) =>
-                void updateAppPrefs({
-                  notifications: { enabled: e.target.checked },
-                })
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("알림 내용 숨기기", "Hide notification content")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t("\"새 메시지\"로만 표시합니다.", "Show only \"New message\".")}
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={appPrefs.notifications.hideContent}
-              disabled={prefsDisabled || notificationsDisabled}
-              onChange={(e) =>
-                void updateAppPrefs({
-                  notifications: { hideContent: e.target.checked },
-                })
-              }
-            />
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-
-  const LoginSettings = () => (
-    <div className="mt-6 grid gap-6">
-      {renderBackHeader(t("로그인", "Login"))}
-      <div className="text-xs text-nkc-muted">
-        {t("앱 시작 및 실행 동작 설정", "Configure app startup and launch behavior.")}
-      </div>
-      <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-        <div className="border-b border-nkc-border px-4 py-3">
-          <div className="text-sm font-semibold text-nkc-text">
-            {t("시작", "Startup")}
-          </div>
-        </div>
-        <div className="flex flex-col">
-          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("Windows 자동 시작", "Start with Windows")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t(
-                  "Windows 로그인 시 앱을 자동으로 실행합니다.",
-                  "Launch automatically on Windows login."
-                )}
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={appPrefs.login.autoStartEnabled}
-              disabled={prefsDisabled}
-              onChange={(e) =>
-                void updateAppPrefs({
-                  login: { autoStartEnabled: e.target.checked },
-                })
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("자동 시작 시 트레이에서 시작", "Start in tray on auto-start")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t(
-                  "Windows 자동 시작으로 실행될 때 창을 표시하지 않습니다.",
-                  "Hide the window when launched by auto-start."
-                )}
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={appPrefs.login.startInTray}
-              disabled={prefsDisabled}
-              onChange={(e) =>
-                void updateAppPrefs({
-                  login: { startInTray: e.target.checked },
-                })
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("닫기(X) = 트레이로 숨김", "Close (X) = Hide to tray")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t("창 닫기 시 앱을 종료하지 않습니다.", "Keep the app running in the tray.")}
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={appPrefs.login.closeToTray}
-              disabled={prefsDisabled || closeToTrayDisabled}
-              onChange={(e) =>
-                void updateAppPrefs({
-                  login: { closeToTray: e.target.checked },
-                })
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("닫기(X) = 종료", "Close (X) = Exit")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t(
-                  "앱을 종료하고 백그라운드를 끕니다.",
-                  "Exit the app and disable background mode."
-                )}
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={appPrefs.login.closeToExit}
-              disabled={prefsDisabled || closeToExitDisabled}
-              onChange={(e) =>
-                void updateAppPrefs({
-                  login: { closeToExit: e.target.checked },
-                })
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("백그라운드 사용", "Background enabled")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t(
-                  "앱을 닫아도 메시지 수신과 동기화를 계속합니다.",
-                  "Continue receiving and syncing even when the app is closed."
-                )}
-              </div>
-            </div>
-            <input
-              type="checkbox"
-              checked={appPrefs.background.enabled}
-              disabled={prefsDisabled || appPrefs.login.closeToExit}
-              onChange={(e) =>
-                void updateAppPrefs({
-                  background: { enabled: e.target.checked },
-                })
-              }
-            />
-          </div>
-
-          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-6 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("주기적 동기화", "Periodic sync")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t("백그라운드 동기화 간격", "Background sync interval")}
-              </div>
-            </div>
-            <div className="flex flex-col items-end">
-              <select
-                value={appPrefs.background.syncIntervalMinutes}
-                disabled={prefsDisabled || backgroundDisabled}
-                onChange={(e) =>
-                  void updateAppPrefs({
-                    background: {
-                      syncIntervalMinutes: Number(
-                        e.target.value
-                      ) as SyncIntervalMinutes,
-                    },
-                  })
-                }
-                className="rounded-nkc border border-nkc-border bg-nkc-panel px-2 py-1 text-xs text-nkc-text disabled:opacity-50"
-              >
-                <option value={0}>{t("Auto", "Auto")}</option>
-                <option value={1}>1분</option>
-                <option value={3}>3분</option>
-                <option value={5}>5분</option>
-                <option value={10}>10분</option>
-                <option value={15}>15분</option>
-                <option value={20}>20분</option>
-                <option value={25}>25분</option>
-                <option value={30}>30분</option>
-              </select>
-              {appPrefs.background.syncIntervalMinutes === 0 ? (
-                <div className="mt-2 text-xs text-nkc-muted">
-                  {t(
-                    "상태에 따라 동기화 간격이 자동으로 조절됩니다.",
-                    "Sync interval is adjusted automatically based on status."
-                  )}
-                </div>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between gap-4 px-6 py-3">
-            <div>
-              <div className="text-sm font-medium text-nkc-text">
-                {t("수동 동기화", "Manual sync")}
-              </div>
-              <div className="text-xs text-nkc-muted">
-                {t("필요할 때 즉시 동기화합니다.", "Sync immediately when needed.")}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={() =>
-                void syncNow().catch((e) => console.error("Manual sync failed", e))
-              }
-              disabled={prefsDisabled || backgroundDisabled}
-              className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-            >
-              {t("지금 동기화", "Sync now")}
-            </button>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-
   return (
     <>
       <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -1667,10 +1359,33 @@ export default function SettingsDialog({
           )}
 
           {/* NOTIFICATIONS */}
-          {view === "notifications" && <NotificationsSettings />}
+          {view === "notifications" && (
+            <NotificationsSettings
+              t={t}
+              onBack={() => setView("main")}
+              appPrefs={appPrefs}
+              prefsDisabled={prefsDisabled}
+              notificationsDisabled={notificationsDisabled}
+              onUpdateAppPrefs={updateAppPrefs}
+            />
+          )}
 
           {/* LOGIN */}
-          {view === "login" && <LoginSettings />}
+          {view === "login" && (
+            <LoginSettings
+              t={t}
+              onBack={() => setView("main")}
+              appPrefs={appPrefs}
+              prefsDisabled={prefsDisabled}
+              backgroundDisabled={backgroundDisabled}
+              closeToTrayDisabled={closeToTrayDisabled}
+              closeToExitDisabled={closeToExitDisabled}
+              onUpdateAppPrefs={updateAppPrefs}
+              onManualSync={() =>
+                void syncNow().catch((e) => console.error("Manual sync failed", e))
+              }
+            />
+          )}
 
           {/* THEME */}
           {view === "theme" && (
@@ -1744,1004 +1459,138 @@ export default function SettingsDialog({
 
           {/* NETWORK */}
           {view === "network" && (
-            <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("네트워크", "Network"))}
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm font-semibold text-nkc-text">
-                  {t("연결 방식", "Connection mode")}
-                </div>
-                <div className="mt-3 grid gap-2">
-                  <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
-                    <div className="flex items-start gap-3">
-                      <input
-                        id="network-mode-directP2P"
-                        type="radio"
-                        name="network-mode"
-                        className="mt-1"
-                        checked={connectionChoice === "directP2P"}
-                        onChange={() => void handleConnectionChoiceChange("directP2P")}
-                        data-testid="network-mode-directP2P"
-                      />
-                      <label htmlFor="network-mode-directP2P">
-                        <div className="text-sm font-medium text-nkc-text">Direct P2P</div>
-                        <div className="text-xs text-nkc-muted">
-                          {t("프록시 없이 직접 연결", "Direct connection without proxy")}
-                        </div>
-                      </label>
-                    </div>
-                  </div>
-
-                  <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3">
-                        <input
-                          id="network-mode-torOnion"
-                          type="radio"
-                          name="network-mode"
-                          className="mt-1"
-                          checked={connectionChoice === "torOnion"}
-                          onChange={() => void handleConnectionChoiceChange("torOnion")}
-                          data-testid="network-mode-torOnion"
-                        />
-                        <div>
-                          <label
-                            htmlFor="network-mode-torOnion"
-                            className="flex items-center gap-2 text-sm font-medium text-nkc-text"
-                          >
-                            <span>Tor Onion</span>
-                            <span
-                              title={t("Tor 상태", "Tor status")}
-                              className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
-                                getDotState("tor", onionStatus)
-                              )} cursor-pointer`}
-                              tabIndex={0}
-                            />
-                          </label>
-                          <div className="text-xs text-nkc-muted">
-                            {t("SOCKS 기반 · 앱 트래픽만", "SOCKS-based · app traffic only")}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {buildComponentLabel(netConfig.tor)}
-                      </div>
-                    </div>
-                    {connectionChoice === "torOnion" ? (
-                      <div className="mt-3 border-t border-nkc-border pt-3">
-                        <div className="flex items-start justify-between gap-4 text-xs text-nkc-muted">
-                          <div className="flex items-center gap-1">
-                            <span
-                              title={runtimeStatusTooltip}
-                              className="inline-flex items-center cursor-pointer"
-                              tabIndex={0}
-                            >
-                              {runtimeStatusIcon}
-                            </span>
-                            <span>
-                              {activeRouteLabel}
-                              {runtimeSocksLabel}
-                            </span>
-                          </div>
-                          <div className="text-right">
-                            <div>
-                              {runtimeStateLabel} · {runtimeNetworkLabel}
-                            </div>
-                            {runtimeErrorLabel ? (
-                              <div className="text-red-300">{runtimeErrorLabel}</div>
-                            ) : null}
-                          </div>
-                        </div>
-                        {torUpdateStatus ? (
-                          <div className="mt-2 max-w-full break-words text-xs text-nkc-muted">
-                            {torUpdateStatus}
-                          </div>
-                        ) : null}
-                        {netConfig.tor.detail ? (
-                          <div className="mt-2 max-h-24 max-w-full overflow-auto overflow-x-hidden whitespace-pre-wrap break-all text-[11px] text-nkc-muted">
-                            {netConfig.tor.detail}
-                          </div>
-                        ) : null}
-                        {torErrorLabel ? (
-                          <div className="mt-2 max-w-full break-words text-xs text-red-300">
-                            {torErrorLabel}
-                          </div>
-                        ) : null}
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {!netConfig.tor.installed ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => void handleInstall("tor")}
-                                disabled={torInstallBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {torInstallBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("Tor 다운로드/설치", "Download/Install Tor")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void handleTorStatus()}
-                                disabled={torStatusBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {torStatusBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("상태 확인", "Check status")}
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => void handleConnectOnion("tor")}
-                                disabled={torInstallBusy || !isComponentReady(netConfig.tor)}
-                                className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
-                              >
-                                {t("연결", "Connect")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void handleCheckUpdates()}
-                                disabled={torCheckBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {torCheckBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("업데이트 확인", "Check updates")}
-                              </button>
-                              {torUpdateAvailable ? (
-                                <button
-                                  type="button"
-                                  onClick={() => void handleApplyUpdate("tor")}
-                                  disabled={torApplyBusy}
-                                  className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
-                                >
-                                  {torApplyBusy
-                                    ? t("처리 중...", "Working...")
-                                    : t("업데이트 적용", "Apply update")}
-                                </button>
-                              ) : null}
-                              <button
-                                type="button"
-                                onClick={() => void handleUninstall("tor")}
-                                disabled={torUninstallBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {torUninstallBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("제거", "Uninstall")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void handleTorStatus()}
-                                disabled={torStatusBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {torStatusBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("상태 확인", "Check status")}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
-                    <div className="flex items-start justify-between gap-3">
-                      <div className="flex items-start gap-3">
-                        <input
-                          id="network-mode-lokinetOnion"
-                          type="radio"
-                          name="network-mode"
-                          className="mt-1"
-                          checked={connectionChoice === "lokinetOnion"}
-                          onChange={() => void handleConnectionChoiceChange("lokinetOnion")}
-                          data-testid="network-mode-lokinetOnion"
-                        />
-                        <div>
-                          <label
-                            htmlFor="network-mode-lokinetOnion"
-                            className="flex items-center gap-2 text-sm font-medium text-nkc-text"
-                          >
-                            <span>Lokinet Onion</span>
-                            <span
-                              title={t("Lokinet 상태", "Lokinet status")}
-                              className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
-                                getDotState("lokinet", onionStatus)
-                              )} cursor-pointer`}
-                              tabIndex={0}
-                            />
-                            <span className="text-xs text-nkc-muted">
-                              {t("⚠ 고급", "⚠ Advanced")}
-                            </span>
-                          </label>
-                          <div className="text-xs text-nkc-muted">
-                            {t("Exit/VPN 기반 · 앱 전용 라우팅", "Exit/VPN based · app-only routing")}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {buildComponentLabel(netConfig.lokinet)}
-                      </div>
-                    </div>
-                    {connectionChoice === "lokinetOnion" ? (
-                      <div className="mt-3 border-t border-nkc-border pt-3">
-                        <div className="flex items-start justify-between gap-4 text-xs text-nkc-muted">
-                          <div className="flex items-center gap-1">
-                            <span
-                              title={runtimeStatusTooltip}
-                              className="inline-flex items-center cursor-pointer"
-                              tabIndex={0}
-                            >
-                              {runtimeStatusIcon}
-                            </span>
-                            <span>
-                              {activeRouteLabel}
-                              {runtimeSocksLabel}
-                            </span>
-                          </div>
-                          <div className="text-right">
-                            <div>
-                              {runtimeStateLabel} · {runtimeNetworkLabel}
-                            </div>
-                            {runtimeErrorLabel ? (
-                              <div className="text-red-300">{runtimeErrorLabel}</div>
-                            ) : null}
-                          </div>
-                        </div>
-                        <div className="mt-2 text-xs text-nkc-muted">
-                          {netConfig.lokinet.installed
-                            ? t("상태: 설치됨", "Status: installed")
-                            : t("상태: 미설치", "Status: not installed")}
-                        </div>
-                        {lokinetUpdateStatus ? (
-                          <div className="mt-2 max-w-full break-words text-xs text-nkc-muted">
-                            {lokinetUpdateStatus}
-                          </div>
-                        ) : null}
-                        {netConfig.lokinet.detail ? (
-                          <div className="mt-2 max-h-24 max-w-full overflow-auto overflow-x-hidden whitespace-pre-wrap break-all text-[11px] text-nkc-muted">
-                            {netConfig.lokinet.detail}
-                          </div>
-                        ) : null}
-                        {lokinetErrorLabel ? (
-                          <div className="mt-2 max-w-full break-words text-xs text-red-300">
-                            {lokinetErrorLabel}
-                          </div>
-                        ) : null}
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          {!netConfig.lokinet.installed ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => void handleInstall("lokinet")}
-                                disabled={lokinetInstallBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {lokinetInstallBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("설치", "Install")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  if (lokinetStatusBusy) return;
-                                  setLokinetStatusBusy(true);
-                                  try {
-                                    await refreshOnionStatus();
-                                    setSaveMessage(
-                                      t("Lokinet 상태 확인 완료", "Lokinet status checked")
-                                    );
-                                  } catch (error) {
-                                    console.error("Failed to refresh lokinet status", error);
-                                    setSaveMessage(
-                                      t("Lokinet 상태 확인 실패", "Lokinet status check failed")
-                                    );
-                                  } finally {
-                                    setLokinetStatusBusy(false);
-                                  }
-                                }}
-                                disabled={lokinetStatusBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {lokinetStatusBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("상태 확인", "Check status")}
-                              </button>
-                            </>
-                          ) : (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => void handleConnectOnion("lokinet")}
-                                disabled={lokinetInstallBusy || !isComponentReady(netConfig.lokinet)}
-                                className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
-                              >
-                                {t("연결", "Connect")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  lokinetUpdateAvailable
-                                    ? void handleApplyUpdate("lokinet")
-                                    : void handleCheckUpdates()
-                                }
-                                disabled={lokinetUpdateAvailable ? lokinetApplyBusy : torCheckBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {lokinetUpdateAvailable
-                                  ? lokinetApplyBusy
-                                    ? t("처리 중...", "Working...")
-                                    : t("업데이트 적용", "Apply update")
-                                  : torCheckBusy
-                                    ? t("처리 중...", "Working...")
-                                    : t("업데이트 확인", "Check updates")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void handleUninstall("lokinet")}
-                                disabled={lokinetUninstallBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {lokinetUninstallBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("제거", "Uninstall")}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={async () => {
-                                  if (lokinetStatusBusy) return;
-                                  setLokinetStatusBusy(true);
-                                  try {
-                                    await refreshOnionStatus();
-                                    setSaveMessage(
-                                      t("Lokinet 상태 확인 완료", "Lokinet status checked")
-                                    );
-                                  } catch (error) {
-                                    console.error("Failed to refresh lokinet status", error);
-                                    setSaveMessage(
-                                      t("Lokinet 상태 확인 실패", "Lokinet status check failed")
-                                    );
-                                  } finally {
-                                    setLokinetStatusBusy(false);
-                                  }
-                                }}
-                                disabled={lokinetStatusBusy}
-                                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                              >
-                                {lokinetStatusBusy
-                                  ? t("처리 중...", "Working...")
-                                  : t("상태 확인", "Check status")}
-                              </button>
-                            </>
-                          )}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-
-                  <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
-                    <div className="flex items-start gap-3">
-                      <input
-                        id="network-mode-selfOnion"
-                        type="radio"
-                        name="network-mode"
-                        className="mt-1"
-                        checked={connectionChoice === "selfOnion"}
-                        onChange={() => void handleConnectionChoiceChange("selfOnion")}
-                        data-testid="network-mode-selfOnion"
-                      />
-                      <label htmlFor="network-mode-selfOnion">
-                        <div className="text-sm font-medium text-nkc-text">
-                          {t("내부 Onion", "Built-in Onion")}
-                        </div>
-                        <div className="text-xs text-nkc-muted">
-                          {t("내장 Onion 경로(N hops)", "Built-in Onion route (N hops)")}
-                        </div>
-                      </label>
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-nkc-muted">
-                  <span
-                    className="rounded-full border border-nkc-border bg-nkc-panel px-2 py-1"
-                    data-testid="effective-mode-label"
-                  >
-                    {routeInfo.pathLabel}
-                  </span>
-                  <span>{routeInfo.description}</span>
-                </div>
-                <div className="mt-3 text-xs text-nkc-muted">{connectionDescription}</div>
-                {netConfig.mode === "selfOnion" ? (
-                  <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <div className="text-sm font-medium text-nkc-text">
-                          {t("Hop 설정", "Hop settings")}
-                        </div>
-                        <div className="text-xs text-nkc-muted">
-                          hops: {selfOnionHopConnected}/{selfOnionHopTarget} · {selfOnionRouteLabel}
-                        </div>
-                      </div>
-                      <select
-                        value={selfOnionHopTarget}
-                        onChange={(e) => setSelfOnionMinRelays(Number(e.target.value))}
-                        className="rounded-nkc border border-nkc-border bg-nkc-panel px-2 py-1 text-xs text-nkc-text"
-                      >
-                        <option value={3}>3 hops</option>
-                        <option value={4}>4 hops</option>
-                      </select>
-                    </div>
-                  </div>
-                ) : null}
-                {showDirectWarning ? (
-                  <div
-                    className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
-                    data-testid="direct-p2p-warning"
-                  >
-                    <div>
-                      {t(
-                        "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 사용하세요.",
-                        "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-              </section>
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm font-semibold text-nkc-text">
-                  {t("내 주소", "My Addresses")}
-                </div>
-                <div className="mt-3 grid gap-3">
-                  <div className="grid gap-2">
-                    <div className="text-xs text-nkc-muted">Tor Onion</div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        readOnly
-                        value={torAddress}
-                        placeholder={t("(사용 불가)", "(not available)")}
-                        className="min-w-[200px] flex-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text placeholder:text-nkc-muted"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void handleCopyAddress(torAddress, "Tor Onion")}
-                        disabled={!torAddress}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {t("복사", "Copy")}
-                      </button>
-                    </div>
-                  </div>
-                  <div className="grid gap-2">
-                    <div className="text-xs text-nkc-muted">Lokinet</div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <input
-                        readOnly
-                        value={lokinetAddress}
-                        placeholder={t("(사용 불가)", "(not available)")}
-                        className="min-w-[200px] flex-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text placeholder:text-nkc-muted"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void handleCopyAddress(lokinetAddress, "Lokinet")}
-                        disabled={!lokinetAddress}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {t("복사", "Copy")}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-2 text-xs text-nkc-muted">
-                  {t(
-                    "주소는 연결/설치 상태에 따라 비어 있을 수 있습니다.",
-                    "Addresses may be empty depending on connection/install status."
-                  )}
-                </div>
-              </section>
-
-              {netConfig.mode === "onionRouter" ? (
-                <>
-                  <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                    <div className="flex items-center justify-between gap-4">
-                      <div>
-                        <div className="text-sm font-medium text-nkc-text">
-                          {t("IP 보호 모드 사용", "Enable IP protection")}
-                        </div>
-                        <div className="text-xs text-nkc-muted">
-                          {t(
-                            "direct P2P를 차단하고, 실패 시 네트워크를 중지합니다.",
-                            "Blocks direct P2P and stops the network on failure."
-                          )}
-                        </div>
-                      </div>
-                      <input
-                        type="checkbox"
-                        checked={onionEnabledDraft}
-                        onChange={(e) => setOnionEnabledDraft(e.target.checked)}
-                      />
-                    </div>
-                  </section>
-
-                  <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                    <div className="flex items-center gap-2 text-sm font-medium text-nkc-text">
-                      <span>{t("프록시 URL", "Proxy URL")}</span>
-                      {proxyAuto ? (
-                        <span
-                          title={t("프록시 미설정/자동", "Proxy unset/auto")}
-                          className="inline-flex items-center cursor-pointer"
-                          tabIndex={0}
-                        >
-                          <Clock size={12} className="text-nkc-muted" />
-                        </span>
-                      ) : null}
-                    </div>
-                    <div className="mt-2">
-                      <input
-                        value={proxyUrlDraft}
-                        onChange={(e) => handleProxyUrlChange(e.target.value)}
-                        placeholder={t("예: socks5://127.0.0.1:9050", "e.g. socks5://127.0.0.1:9050")}
-                        className={`w-full rounded-nkc border bg-nkc-panel px-3 py-2 text-sm text-nkc-text placeholder:text-nkc-muted ${
-                          proxyUrlError ? "border-red-400/60" : "border-nkc-border"
-                        }`}
-                        aria-invalid={proxyUrlError ? "true" : "false"}
-                        data-testid="proxy-url-input"
-                      />
-                      {proxyUrlError ? (
-                        <div className="mt-2 text-xs text-red-300" data-testid="proxy-url-error">
-                          {proxyUrlError}
-                        </div>
-                      ) : null}
-                    </div>
-                    <div className="mt-2 text-xs text-nkc-muted">
-                      {t(
-                        "포트까지 포함한 URL을 입력하세요. 비워두면 자동 감지합니다.",
-                        "Include the port. Leave blank to auto-detect."
-                      )}
-                    </div>
-                  </section>
-
-                </>
-              ) : null}
-
-              <div className="flex justify-end">
-                <button
-                  type="button"
-                  onClick={() => void handleSaveOnion()}
-                  className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
-                  disabled={netConfig.mode === "onionRouter" && onionEnabledDraft && !canSaveOnion}
-                >
-                  {t("저장", "Save")}
-                </button>
-              </div>
-
-              {saveMessage ? (
-                <div className="text-right text-xs text-nkc-muted">{saveMessage}</div>
-              ) : null}
-            </div>
+            <NetworkSettings
+              t={t}
+              onBack={() => setView("main")}
+              connectionChoice={connectionChoice}
+              onConnectionChoiceChange={handleConnectionChoiceChange}
+              onionStatus={onionStatus}
+              getDotState={getDotState}
+              getDotClass={getDotClass}
+              buildComponentLabel={buildComponentLabel}
+              netConfig={netConfig}
+              runtimeStatusTooltip={runtimeStatusTooltip}
+              runtimeStatusIcon={runtimeStatusIcon}
+              activeRouteLabel={activeRouteLabel}
+              runtimeSocksLabel={runtimeSocksLabel}
+              runtimeStateLabel={runtimeStateLabel}
+              runtimeNetworkLabel={runtimeNetworkLabel}
+              runtimeErrorLabel={runtimeErrorLabel}
+              torUpdateStatus={torUpdateStatus}
+              lokinetUpdateStatus={lokinetUpdateStatus}
+              torErrorLabel={torErrorLabel}
+              lokinetErrorLabel={lokinetErrorLabel}
+              torInstallBusy={torInstallBusy}
+              torStatusBusy={torStatusBusy}
+              torCheckBusy={torCheckBusy}
+              torApplyBusy={torApplyBusy}
+              torUninstallBusy={torUninstallBusy}
+              lokinetInstallBusy={lokinetInstallBusy}
+              lokinetStatusBusy={lokinetStatusBusy}
+              lokinetApplyBusy={lokinetApplyBusy}
+              lokinetUninstallBusy={lokinetUninstallBusy}
+              torUpdateAvailable={torUpdateAvailable}
+              lokinetUpdateAvailable={lokinetUpdateAvailable}
+              isComponentReady={isComponentReady}
+              onInstall={handleInstall}
+              onTorStatus={handleTorStatus}
+              onLokinetStatus={handleLokinetStatus}
+              onConnectOnion={handleConnectOnion}
+              onCheckUpdates={handleCheckUpdates}
+              onApplyUpdate={handleApplyUpdate}
+              onUninstall={handleUninstall}
+              routeInfo={routeInfo}
+              connectionDescription={connectionDescription}
+              selfOnionHopConnected={selfOnionHopConnected}
+              selfOnionHopTarget={selfOnionHopTarget}
+              selfOnionRouteLabel={selfOnionRouteLabel}
+              onSelfOnionHopChange={setSelfOnionMinRelays}
+              showDirectWarning={showDirectWarning}
+              torAddress={torAddress}
+              lokinetAddress={lokinetAddress}
+              onCopyAddress={handleCopyAddress}
+              onionEnabledDraft={onionEnabledDraft}
+              setOnionEnabledDraft={setOnionEnabledDraft}
+              proxyAuto={proxyAuto}
+              proxyUrlDraft={proxyUrlDraft}
+              proxyUrlError={proxyUrlError}
+              onProxyUrlChange={handleProxyUrlChange}
+              canSaveOnion={canSaveOnion}
+              onSaveOnion={handleSaveOnion}
+              saveMessage={saveMessage}
+            />
           )}
-
           {/* DEVICES */}
           {view === "devices" && (
-            <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("기기/동기화", "Devices / Sync"))}
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm font-semibold text-nkc-text">
-                  {t("새 기기 추가(코드 생성)", "Add new device (Generate code)")}
-                </div>
-                <div className="mt-2 text-xs text-nkc-muted">
-                  {t(
-                    "기존 기기에서 코드를 생성한 뒤 새 기기에 입력하세요.",
-                    "Generate a code on an existing device and enter it on the new device."
-                  )}
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={handleGenerateSyncCode}
-                    className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg"
-                  >
-                    {t("코드 생성", "Generate code")}
-                  </button>
-                  {syncCodeState ? (
-                    <button
-                      type="button"
-                      onClick={() => void handleCopySyncCode()}
-                      className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
-                    >
-                      {t("코드 복사", "Copy code")}
-                    </button>
-                  ) : null}
-                </div>
-                {syncCodeState ? (
-                  <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
-                    <div className="text-xs text-nkc-muted">{t("동기화 코드", "Sync code")}</div>
-                    <div className="mt-1 font-mono text-lg text-nkc-text">{syncCodeState.code}</div>
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-nkc-muted">
-                      <Clock size={14} />
-                      {syncCodeState.used
-                        ? t("이미 사용됨", "Already used")
-                        : syncCodeExpired
-                          ? t("만료됨", "Expired")
-                          : `${t("남은 시간", "Time left")}: ${formatCountdown(syncCodeRemainingMs)}`}
-                    </div>
-                  </div>
-                ) : null}
-
-                {pairingRequest ? (
-                  <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3">
-                    <div className="text-xs text-nkc-muted">
-                      {t("연결 요청", "Pairing request")}
-                    </div>
-                    <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-sm">
-                      <span className="font-mono text-nkc-text">
-                        {pairingRequest.deviceId.slice(0, 12)}
-                      </span>
-                      <span className="text-xs text-nkc-muted">
-                        {formatTimestamp(pairingRequest.ts)}
-                      </span>
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <button
-                        type="button"
-                        onClick={() => void handleApproveRequest()}
-                        disabled={pairingRequestBusy}
-                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
-                      >
-                        {t("승인", "Approve")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleRejectRequest}
-                        disabled={pairingRequestBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
-                      >
-                        {t("거절", "Reject")}
-                      </button>
-                    </div>
-                    {pairingRequestError ? (
-                      <div className="mt-2 text-xs text-red-300">{pairingRequestError}</div>
-                    ) : null}
-                  </div>
-                ) : null}
-              </section>
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm font-semibold text-nkc-text">
-                  {t("기기 연결(코드 입력)", "Link device (Enter code)")}
-                </div>
-                <div className="mt-2 text-xs text-nkc-muted">
-                  {t(
-                    "새 기기에서 코드를 입력해 연결을 요청합니다.",
-                    "Enter the code on the new device to request linking."
-                  )}
-                </div>
-                <div className="mt-4 grid gap-2">
-                  <input
-                    value={linkCodeDraft}
-                    onChange={(event) => {
-                      setLinkCodeDraft(event.target.value);
-                      if (linkStatus !== "idle") {
-                        setLinkStatus("idle");
-                        setLinkMessage("");
-                      }
-                    }}
-                    placeholder="NKC-SYNC-XXXX-XXXX"
-                    className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void handleSubmitLink()}
-                    disabled={linkBusy}
-                    className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
-                  >
-                    {linkBusy ? t("연결 중...", "Connecting...") : t("연결 요청", "Request link")}
-                  </button>
-                </div>
-                {linkStatus !== "idle" ? (
-                  <div className={`mt-2 text-xs ${linkStatusClass}`}>{linkMessage}</div>
-                ) : null}
-              </section>
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-xs text-nkc-muted">
-                <div>
-                  {t(
-                    "기존 기기가 온라인일 때만 동기화/기기 추가가 가능합니다.",
-                    "Syncing and adding devices only works while an existing device is online."
-                  )}
-                </div>
-                <div className="mt-1">
-                  {t(
-                    "기존 기기를 분실/파손하면 이 계정은 복구할 수 없고 새 계정을 만들어야 합니다.",
-                    "If the existing device is lost or broken, this account cannot be recovered and you must create a new account."
-                  )}
-                </div>
-              </section>
-
-              <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-6">
-                <div className="flex items-start justify-between gap-4">
-                  <div>
-                    <h3 className="text-sm font-semibold text-red-100">
-                      {t("위험 구역", "Danger zone")}
-                    </h3>
-                    <p className="mt-1 text-xs text-red-100/80">
-                      {t(
-                        "로그아웃 또는 데이터 초기화를 진행합니다.",
-                        "Proceed with logout or data reset."
-                      )}
-                    </p>
-                  </div>
-                </div>
-                <div className="mt-4 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={onLogout}
-                    className="rounded-nkc border border-red-400/60 px-3 py-2 text-xs text-red-100 hover:bg-red-500/20"
-                  >
-                    {t("로그아웃", "Logout")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onWipe}
-                    className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-red-100 hover:bg-red-500/40"
-                  >
-                    {t("데이터 삭제", "Delete data")}
-                  </button>
-                </div>
-              </section>
-            </div>
+            <DevicesSettings
+              t={t}
+              onBack={() => setView("main")}
+              onGenerateSyncCode={handleGenerateSyncCode}
+              onCopySyncCode={handleCopySyncCode}
+              syncCodeState={syncCodeState}
+              syncCodeExpired={syncCodeExpired}
+              syncCodeRemainingMs={syncCodeRemainingMs}
+              formatCountdown={formatCountdown}
+              pairingRequest={pairingRequest}
+              formatTimestamp={formatTimestamp}
+              pairingRequestBusy={pairingRequestBusy}
+              pairingRequestError={pairingRequestError}
+              onApproveRequest={handleApproveRequest}
+              onRejectRequest={handleRejectRequest}
+              linkCodeDraft={linkCodeDraft}
+              setLinkCodeDraft={setLinkCodeDraft}
+              linkStatus={linkStatus}
+              setLinkStatus={setLinkStatus}
+              setLinkMessage={setLinkMessage}
+              linkBusy={linkBusy}
+              linkStatusClass={linkStatusClass}
+              linkMessage={linkMessage}
+              onSubmitLink={handleSubmitLink}
+              onLogout={onLogout}
+              onWipe={onWipe}
+            />
           )}
-
           {/* PRIVACY */}
           {view === "privacy" && (
-            <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("보안 / 개인정보", "Security / Privacy"))}
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-nkc-text">
-                    {t("보안", "Security")}
-                  </h3>
-                  <button
-                    type="button"
-                    onClick={onLock}
-                    className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
-                  >
-                    <Lock size={14} />
-                    {t("잠그기", "Lock")}
-                  </button>
-                </div>
-
-                <div className="mt-4 grid gap-3">
-                  <label className="flex items-center justify-between text-sm text-nkc-text">
-                    <span>{t("PIN 잠금", "PIN lock")}</span>
-                    <input
-                      type="checkbox"
-                      checked={pinEnabled}
-                      onChange={(e) => void handleTogglePin(e.target.checked)}
-                      disabled={!pinAvailable}
-                    />
-                  </label>
-
-                  {!pinAvailable ? (
-                    <div className="text-xs text-nkc-muted">
-                      {t(
-                        "PIN lock is unavailable on this platform/build.",
-                        "PIN lock is unavailable on this platform/build."
-                      )}
-                    </div>
-                  ) : null}
-
-                  {pinEnabled ? (
-                    <div className="grid gap-2">
-                      <input
-                        type="password"
-                        inputMode="numeric"
-                        pattern="\\d*"
-                        maxLength={8}
-                        value={pinDraft}
-                        onChange={(e) => setPinDraft(e.target.value)}
-                        placeholder={t("4-8자리", "4-8 digits")}
-                        className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
-                        disabled={!pinAvailable}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => void handleSetPin()}
-                        className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
-                        disabled={!pinDraft || !pinAvailable}
-                      >
-                        {t("PIN 설정", "Set PIN")}
-                      </button>
-                    </div>
-                  ) : null}
-
-                  {pinError ? <div className="text-xs text-red-300">{pinError}</div> : null}
-                </div>
-              </section>
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-                <button
-                  type="button"
-                  onClick={() => setView("privacyKeys")}
-                  className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-                >
-                  <div>
-                    <div className="text-sm font-medium text-nkc-text">
-                      {t("키 / 복구", "Keys / Recovery")}
-                    </div>
-                    <div className="text-xs text-nkc-muted">
-                      {t(
-                        "시작 키 확인 및 복구 관련 설정",
-                        "View start key and recovery settings."
-                      )}
-                    </div>
-                  </div>
-                  <span className="text-xs text-nkc-muted">{t("열기", "Open")}</span>
-                </button>
-              </section>
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-                <div className="flex flex-col">
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("읽음 표시", "Read receipts")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t(
-                          "상대에게 읽음 상태를 공유합니다.",
-                          "Share read status with the other person."
-                        )}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={privacyPrefs.readReceipts}
-                      onChange={(e) =>
-                        void updatePrivacy({ ...privacyPrefs, readReceipts: e.target.checked })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("입력 표시", "Typing indicator")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t(
-                          "상대에게 입력 중 상태를 표시합니다.",
-                          "Show typing status to the other person."
-                        )}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={privacyPrefs.typingIndicator}
-                      onChange={(e) =>
-                        void updatePrivacy({ ...privacyPrefs, typingIndicator: e.target.checked })
-                      }
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between gap-4 px-4 py-3">
-                    <div>
-                      <div className="text-sm font-medium text-nkc-text">
-                        {t("링크 미리보기", "Link preview")}
-                      </div>
-                      <div className="text-xs text-nkc-muted">
-                        {t("링크 카드 표시", "Show link card")}
-                      </div>
-                    </div>
-                    <input
-                      type="checkbox"
-                      checked={privacyPrefs.linkPreviews}
-                      onChange={(e) =>
-                        void updatePrivacy({ ...privacyPrefs, linkPreviews: e.target.checked })
-                      }
-                    />
-                  </div>
-                </div>
-              </section>
-            </div>
+            <PrivacySettings
+              t={t}
+              onBack={() => setView("main")}
+              onOpenKeys={() => setView("privacyKeys")}
+              onLock={onLock}
+              pinEnabled={pinEnabled}
+              pinAvailable={pinAvailable}
+              pinDraft={pinDraft}
+              setPinDraft={setPinDraft}
+              pinError={pinError}
+              onTogglePin={handleTogglePin}
+              onSetPin={handleSetPin}
+              privacyPrefs={privacyPrefs}
+              onUpdatePrivacy={updatePrivacy}
+            />
           )}
-
           {/* PRIVACY KEYS */}
           {view === "privacyKeys" && (
             <div className="mt-6 grid gap-6">
-              <div className="flex items-center justify-between">
-                <button
-                  type="button"
-                  onClick={() => setView("privacy")}
-                  className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
-                >
-                  <ChevronLeft size={14} />
-                  {t("뒤로", "Back")}
-                </button>
-                <span className="text-sm font-semibold text-nkc-text">
-                  {t("키 / 복구", "Keys / Recovery")}
-                </span>
-                <div className="w-12" />
-              </div>
+              <SettingsBackHeader
+                title={t("키 / 복구", "Keys / Recovery")}
+                backLabel={t("뒤로", "Back")}
+                onBack={() => setView("privacy")}
+              />
               <StartKey onRotate={onRotateStartKey} onDone={() => setView("privacy")} />
             </div>
           )}
 
           {/* FRIENDS */}
           {view === "friends" && (
-            <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("친구 관리", "Friend management"))}
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="grid gap-4 text-sm">
-                  <div>
-                    <div className="text-xs text-nkc-muted">
-                      {t("숨김 목록", "Hidden list")}
-                    </div>
-                    {hiddenFriends.length ? (
-                      <div className="mt-2 grid gap-2">
-                        {hiddenFriends.map((friend) => (
-                          <div
-                            key={friend.id}
-                            className="flex items-center justify-between rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs"
-                          >
-                            <span className="text-nkc-text">{friend.displayName}</span>
-                            <button
-                              type="button"
-                              onClick={() => void onUnhideFriend(friend.id)}
-                              className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
-                            >
-                              {t("복원", "Restore")}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mt-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
-                        {t("숨김 친구가 없습니다.", "No hidden friends.")}
-                      </div>
-                    )}
-                  </div>
-
-                  <div>
-                    <div className="text-xs text-nkc-muted">
-                      {t("차단 목록", "Blocked list")}
-                    </div>
-                    {blockedFriends.length ? (
-                      <div className="mt-2 grid gap-2">
-                        {blockedFriends.map((friend) => (
-                          <div
-                            key={friend.id}
-                            className="flex items-center justify-between rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs"
-                          >
-                            <span className="text-nkc-text">{friend.displayName}</span>
-                            <button
-                              type="button"
-                              onClick={() => void onUnblockFriend(friend.id)}
-                              className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
-                            >
-                              {t("차단 해제", "Unblock")}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mt-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
-                        {t("차단된 친구가 없습니다.", "No blocked friends.")}
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </section>
-            </div>
+            <FriendsSettings
+              t={t}
+              onBack={() => setView("main")}
+              hiddenFriends={hiddenFriends}
+              blockedFriends={blockedFriends}
+              onUnhideFriend={onUnhideFriend}
+              onUnblockFriend={onUnblockFriend}
+            />
           )}
-
           {/* DANGER */}
           {view === "danger" && (
             <div className="mt-6 grid gap-6">
@@ -2752,75 +1601,26 @@ export default function SettingsDialog({
 
           {/* STORAGE */}
           {view === "storage" && (
-            <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("저장소 관리", "Storage management"))}
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="text-sm font-semibold text-nkc-text">
-                  {t("저장소 관리", "Storage management")}
-                </div>
-                <div className="mt-2 text-xs text-nkc-muted">
-                  {t(
-                    "삭제 후에는 복구할 수 없습니다. 삭제 시 데이터를 암호화로 덮어씌운 뒤 제거합니다.",
-                    "Deletion cannot be undone. Data is overwritten with encryption before removal."
-                  )}
-                </div>
-                <div className="mt-2 text-xs text-nkc-muted">
-                  {t(
-                    "다른 기기에는 적용되지 않으며, 각 기기에서 별도로 초기화해야 합니다.",
-                    "This does not affect other devices; reset each device separately."
-                  )}
-                </div>
-                <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
-                  <div className="flex items-center justify-between text-xs text-nkc-muted">
-                    <span>{t("저장소 사용량(추정)", "Storage usage (estimate)")}</span>
-                    <span>
-                      {formatBytes(vaultUsageBytes)} / {formatBytes(vaultUsageMaxBytes)}
-                    </span>
-                  </div>
-                  <div className="mt-2 h-2 w-full rounded-full bg-nkc-border">
-                    <div
-                      className="h-2 rounded-full bg-nkc-accent"
-                      style={{
-                        width: `${Math.min(
-                          100,
-                          Math.round((vaultUsageBytes / vaultUsageMaxBytes) * 100)
-                        )}%`,
-                      }}
-                    />
-                  </div>
-                </div>
-                <div className="mt-3 flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (chatWipeBusy) return;
-                      setWipeConfirmType("chat");
-                      setWipeConfirmOpen(true);
-                    }}
-                    disabled={chatWipeBusy}
-                    className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                  >
-                    {chatWipeBusy
-                      ? t("처리 중...", "Working...")
-                      : t("채팅 내역 초기화", "Reset chat history")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (mediaWipeBusy) return;
-                      setWipeConfirmType("media");
-                      setWipeConfirmOpen(true);
-                    }}
-                    disabled={mediaWipeBusy}
-                    className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                  >
-                    {mediaWipeBusy ? t("처리 중...", "Working...") : t("미디어 초기화", "Reset media")}
-                  </button>
-                </div>
-              </section>
-            </div>
+            <StorageSettings
+              t={t}
+              onBack={() => setView("main")}
+              vaultUsageBytes={vaultUsageBytes}
+              vaultUsageMaxBytes={vaultUsageMaxBytes}
+              formatBytes={formatBytes}
+              chatWipeBusy={chatWipeBusy}
+              mediaWipeBusy={mediaWipeBusy}
+              onRequestWipeChat={() => {
+                if (chatWipeBusy) return;
+                setWipeConfirmType("chat");
+                setWipeConfirmOpen(true);
+              }}
+              onRequestWipeMedia={() => {
+                if (mediaWipeBusy) return;
+                setWipeConfirmType("media");
+                setWipeConfirmOpen(true);
+              }}
+            />
           )}
-
           {/* HELP */}
           {view === "help" && (
             <div className="mt-6 grid gap-6">

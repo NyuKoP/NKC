@@ -108,8 +108,6 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
               {masked ? "시작 키 보기" : "시작 키 숨기기"}
             </button>
           </div>
-          {alreadyConfirmed ? (
-          ) : null}
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={handleCopy}
