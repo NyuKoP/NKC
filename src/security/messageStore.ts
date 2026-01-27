@@ -14,7 +14,8 @@ import { decodeBase64Url } from "./base64url";
 import { getDhPrivateKey, getIdentityPublicKey } from "./identityKeys";
 import { getOrCreateDeviceId } from "./deviceRole";
 import { db, ensureDbOpen } from "../db/schema";
-import { putReceipt } from "../storage/receiptStore";
+import { putReadCursor, putReceipt } from "../storage/receiptStore";
+import { applyGroupEvent, isGroupEventPayload } from "../sync/groupSync";
 
 const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
   console.debug(`[msg] ${label}`, meta);
@@ -29,13 +30,19 @@ const resolveSenderId = (
   return header.authorDeviceId === localDeviceId ? currentUserId : friendId;
 };
 
-const storeReadReceipt = async (convId: string, msgId: string, ts: number) => {
+const storeReadReceipt = async (
+  convId: string,
+  msgId: string,
+  ts: number,
+  actorId: string
+) => {
   await putReceipt({
-    id: `read:${msgId}`,
+    id: `read:${msgId}:${actorId}`,
     convId,
     msgId,
     kind: "read",
     ts,
+    actorId,
   });
 };
 
@@ -111,6 +118,8 @@ export const loadConversationMessages = async (
       msgId?: string;
       convId?: string;
       ts?: number;
+      cursorTs?: number;
+      anchorMsgId?: string;
       phase?: string;
       ownerId?: string;
       idx?: number;
@@ -118,6 +127,11 @@ export const loadConversationMessages = async (
       mime?: string;
       b64?: string;
     };
+
+    if (isGroupEventPayload(body)) {
+      await applyGroupEvent(body, senderId, currentUserId);
+      return null;
+    }
 
     if (typed.type === "msg") {
       return {
@@ -131,7 +145,23 @@ export const loadConversationMessages = async (
     }
 
     if (typed.type === "rcpt" && typed.kind === "read" && typeof typed.msgId === "string") {
-      await storeReadReceipt(typed.convId ?? conv.id, typed.msgId, typed.ts ?? ts);
+      await storeReadReceipt(typed.convId ?? conv.id, typed.msgId, typed.ts ?? ts, senderId);
+      return null;
+    }
+
+    if (typed.type === "rcpt" && typed.kind === "read_cursor") {
+      const targetConvId = typed.convId ?? conv.id;
+      const cursorTsCandidate = Number.isFinite(typed.cursorTs)
+        ? Number(typed.cursorTs)
+        : typed.ts ?? ts;
+      if (!Number.isFinite(cursorTsCandidate)) return null;
+      const cursorTs = cursorTsCandidate;
+      await putReadCursor({
+        convId: targetConvId,
+        actorId: senderId,
+        cursorTs,
+        anchorMsgId: typed.anchorMsgId ?? typed.msgId,
+      });
       return null;
     }
 

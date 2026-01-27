@@ -71,8 +71,11 @@ export type ReceiptRecord = {
   id: string;
   convId: string;
   msgId: string;
-  kind: "delivered" | "read";
+  kind: "delivered" | "read" | "read_cursor";
   ts: number;
+  actorId?: string;
+  cursorTs?: number;
+  anchorMsgId?: string;
 };
 export type TombstoneRecord = { id: string; type: string; deletedAt: number };
 
@@ -168,6 +171,21 @@ export class NKCVaultDB extends Dexie {
       mediaIndex: "mediaId, convId, createdAt, complete",
       mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
       receipts: "id, msgId, convId, kind, ts, [convId+msgId], [msgId+kind]",
+      tombstones: "id, type, deletedAt",
+    });
+    this.version(8).stores({
+      meta: "key",
+      profiles: "id, updatedAt",
+      conversations: "id, updatedAt",
+      messages: "id, convId, ts",
+      events: "eventId, convId, ts, lamport, authorDeviceId, [convId+lamport], [convId+ts]",
+      outbox:
+        "id, status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
+      mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+      mediaIndex: "mediaId, convId, createdAt, complete",
+      mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
+      receipts:
+        "id, msgId, convId, kind, actorId, cursorTs, ts, [convId+kind], [convId+actorId+kind], [convId+msgId], [msgId+kind]",
       tombstones: "id, type, deletedAt",
     });
   }

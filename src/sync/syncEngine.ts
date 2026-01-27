@@ -36,6 +36,8 @@ import {
 } from "../net/transportManager";
 import type { PeerHint } from "../net/transport";
 import { sanitizeRoutingHints } from "../net/privacy";
+import { putReadCursor } from "../storage/receiptStore";
+import { applyGroupEvent, isGroupEventPayload } from "./groupSync";
 
 type EnvelopeEvent = {
   eventId: string;
@@ -121,6 +123,28 @@ const perAuthorLamportSeen = new Map<string, number>();
 const perConvLamportSeen = new Map<string, Map<string, number>>();
 const peerContexts = new Map<string, PeerContext>();
 const convSubscriptions = new Map<string, () => void>();
+let localUserIdCache: string | null | undefined;
+
+const resolveLocalUserId = async () => {
+  if (localUserIdCache !== undefined) return localUserIdCache;
+  const profiles = await listProfiles();
+  const user = profiles.find((profile) => profile.kind === "user") || null;
+  localUserIdCache = user?.id ?? null;
+  return localUserIdCache;
+};
+
+const resolveSenderProfileId = async (peerConvId: string) => {
+  const peer = peerContexts.get(peerConvId);
+  if (!peer) return null;
+  const profiles = await listProfiles();
+  const friends = profiles.filter((profile) => profile.kind === "friend");
+  const match =
+    friends.find((friend) => peer.friendKeyId && friend.id === peer.friendKeyId) ||
+    friends.find((friend) => peer.friendKeyId && friend.friendId === peer.friendKeyId) ||
+    friends.find((friend) => peer.identityPub && friend.identityPub === peer.identityPub) ||
+    null;
+  return match?.id ?? null;
+};
 
 const toBytes = (frame: Frame) => textEncoder.encode(JSON.stringify(frame));
 
@@ -232,12 +256,49 @@ const getPeerVerifyKey = async (convId: string, authorDeviceId: string) => {
 };
 
 const applyDecryptedBody = async (
+  peerConvId: string,
   conv: Conversation | null,
   envelope: Envelope,
   body: unknown
 ) => {
   if (!body || typeof body !== "object") return;
-  const typed = body as { type?: string; kind?: string };
+
+  const [senderId, currentUserId] = await Promise.all([
+    resolveSenderProfileId(peerConvId),
+    resolveLocalUserId(),
+  ]);
+
+  if (isGroupEventPayload(body)) {
+    await applyGroupEvent(body, senderId, currentUserId);
+    return;
+  }
+
+  const typed = body as {
+    type?: string;
+    kind?: string;
+    convId?: string;
+    cursorTs?: number;
+    anchorMsgId?: string;
+    msgId?: string;
+    ts?: number;
+  };
+
+  if (typed.type === "rcpt" && typed.kind === "read_cursor") {
+    if (!senderId || typeof typed.convId !== "string") return;
+    const cursorTsCandidate = Number.isFinite(typed.cursorTs)
+      ? Number(typed.cursorTs)
+      : typed.ts ?? envelope.header.ts;
+    if (!Number.isFinite(cursorTsCandidate)) return;
+    const cursorTs = cursorTsCandidate;
+    await putReadCursor({
+      convId: typed.convId,
+      actorId: senderId,
+      cursorTs,
+      anchorMsgId: typed.anchorMsgId ?? typed.msgId,
+    });
+    return;
+  }
+
   if (typed.type === "msg") {
     await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
     return;
@@ -436,7 +497,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           conflict: mismatch || undefined,
         });
         updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
-        await applyDecryptedBody(conv, envelope, body);
+        await applyDecryptedBody(convKeyId, conv, envelope, body);
         continue;
       }
 
@@ -477,7 +538,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
           conflict: mismatch || undefined,
         });
         updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
-        await applyDecryptedBody(conv, envelope, body);
+        await applyDecryptedBody(convKeyId, conv, envelope, body);
         continue;
       }
 
@@ -512,7 +573,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         conflict: mismatch || undefined,
       });
       updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
-      await applyDecryptedBody(conv, envelope, body);
+      await applyDecryptedBody(convKeyId, conv, envelope, body);
     } catch (error) {
       console.warn("[sync] decrypt/apply failed", error);
     }

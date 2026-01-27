@@ -6,6 +6,7 @@ import Unlock from "../components/Unlock";
 import StartKey from "../components/StartKey";
 import FriendAddDialog from "../components/FriendAddDialog";
 import GroupCreateDialog from "../components/GroupCreateDialog";
+import GroupInviteDialog from "../components/GroupInviteDialog";
 import Sidebar from "../components/Sidebar";
 import ChatView from "../components/ChatView";
 import RightPanel from "../components/RightPanel";
@@ -70,7 +71,12 @@ import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
 import { sanitizeRoutingHints } from "../net/privacy";
-import { syncGroupCreate } from "../sync/groupSync";
+import {
+  buildGroupInviteEvent,
+  buildGroupLeaveEvent,
+  syncGroupCreate,
+  type GroupEventPayload,
+} from "../sync/groupSync";
 import {
   connectConversation as connectSyncConversation,
   disconnectConversation as disconnectSyncConversation,
@@ -81,6 +87,7 @@ import {
   setDirectApprovalHandler,
   type ConversationTransportStatus,
 } from "../net/transportManager";
+import { putReadCursor } from "../storage/receiptStore";
 
 const buildNameMap = (profiles: UserProfile[]) =>
   profiles.reduce<Record<string, string>>((acc, profile) => {
@@ -122,6 +129,8 @@ export default function App() {
   const [onboardingError, setOnboardingError] = useState("");
   const [friendAddOpen, setFriendAddOpen] = useState(false);
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
+  const [groupInviteOpen, setGroupInviteOpen] = useState(false);
+  const [groupInviteConvId, setGroupInviteConvId] = useState<string | null>(null);
   const [myFriendCode, setMyFriendCode] = useState("");
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
@@ -1164,36 +1173,140 @@ export default function App() {
   };
 
   const handleSendReadReceipt = useCallback(
-    async (payload: { convId: string; msgId: string }) => {
+    async (payload: { convId: string; msgId: string; msgTs: number }) => {
       if (!userProfile) return;
       const conv = convs.find((item) => item.id === payload.convId);
       if (!conv) return;
+      const cursorTs = payload.msgTs;
+      await putReadCursor({
+        convId: conv.id,
+        actorId: userProfile.id,
+        cursorTs,
+        anchorMsgId: payload.msgId,
+      });
       const isDirect =
         !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
-      if (!isDirect) return;
+      if (isDirect) {
+        const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
+        const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
+        if (!partner?.dhPub || !partner.identityPub) return;
 
-      const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
-      const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
-      if (!partner?.dhPub || !partner.identityPub) return;
+        try {
+          await sendDirectEnvelope(
+            conv,
+            partner,
+            {
+              type: "rcpt",
+              kind: "read_cursor",
+              convId: conv.id,
+              cursorTs,
+              anchorMsgId: payload.msgId,
+              ts: Date.now(),
+            },
+            "normal"
+          );
+        } catch (error) {
+          console.error("Failed to send read cursor", error);
+        }
+        return;
+      }
 
-      try {
-        await sendDirectEnvelope(
-          conv,
-          partner,
-          { type: "rcpt", kind: "read", msgId: payload.msgId, convId: conv.id, ts: Date.now() },
-          "normal"
-        );
-      } catch (error) {
-        console.error("Failed to send read receipt", error);
+      const targets = conv.participants.filter((id) => id && id !== userProfile.id);
+      for (const memberId of targets) {
+        const friend = friends.find((item) => item.id === memberId);
+        if (!friend?.dhPub || !friend.identityPub) continue;
+        const directConv = findDirectConvWithFriend(friend.id);
+        if (!directConv) continue;
+        try {
+          await sendDirectEnvelope(
+            directConv,
+            friend,
+            {
+              type: "rcpt",
+              kind: "read_cursor",
+              convId: conv.id,
+              cursorTs,
+              anchorMsgId: payload.msgId,
+              ts: Date.now(),
+            },
+            "normal"
+          );
+        } catch (error) {
+          console.error("Failed to send group read cursor", { memberId }, error);
+        }
       }
     },
-    [convs, friends, userProfile, sendDirectEnvelope]
+    [convs, findDirectConvWithFriend, friends, sendDirectEnvelope, userProfile]
   );
 
-  const findDirectConvWithFriend = (friendId: string) =>
-    convs.find(
-      (conv) => !(conv.type === "group" || conv.participants.length > 2) && conv.participants.includes(friendId)
+  function findDirectConvWithFriend(friendId: string) {
+    return convs.find(
+      (conv) =>
+        !(conv.type === "group" || conv.participants.length > 2) &&
+        conv.participants.includes(friendId)
     );
+  }
+
+  const ensureDirectConvForFanout = useCallback(
+    async (friend: UserProfile, ts: number) => {
+      if (!userProfile) return null;
+      const existing = findDirectConvWithFriend(friend.id);
+      if (existing) return existing;
+      const directConv: Conversation = {
+        id: createId(),
+        type: "direct",
+        name: friend.displayName || "Direct channel",
+        pinned: false,
+        unread: 0,
+        hidden: true,
+        muted: false,
+        blocked: false,
+        lastTs: ts,
+        lastMessage: "",
+        participants: [userProfile.id, friend.id],
+      };
+      await saveConversation(directConv);
+      return directConv;
+    },
+    [findDirectConvWithFriend, userProfile]
+  );
+
+  const fanoutGroupEvent = useCallback(
+    async (memberIds: string[], event: GroupEventPayload, options?: { allowCreateDirect?: boolean }) => {
+      if (!userProfile) return;
+      const allowCreateDirect = Boolean(options?.allowCreateDirect);
+      const targets = Array.from(new Set(memberIds)).filter((id) => id && id !== userProfile.id);
+      if (!targets.length) return;
+
+      const failures: string[] = [];
+      for (const memberId of targets) {
+        const friend = friends.find((item) => item.id === memberId);
+        if (!friend?.dhPub || !friend.identityPub) {
+          failures.push(memberId);
+          continue;
+        }
+        let directConv = findDirectConvWithFriend(memberId) || null;
+        if (!directConv && allowCreateDirect) {
+          directConv = await ensureDirectConvForFanout(friend, event.ts);
+        }
+        if (!directConv) {
+          failures.push(memberId);
+          continue;
+        }
+        try {
+          await sendDirectEnvelope(directConv, friend, event, "normal");
+        } catch (error) {
+          console.error("Failed to fanout group event", { memberId }, error);
+          failures.push(memberId);
+        }
+      }
+
+      if (failures.length) {
+        addToast({ message: `Some members could not be notified (${failures.length}).` });
+      }
+    },
+    [addToast, ensureDirectConvForFanout, findDirectConvWithFriend, friends, sendDirectEnvelope, userProfile]
+  );
 
   const handleSelectFriend = async (friendId: string) => {
     const existing = findDirectConvWithFriend(friendId);
@@ -1463,6 +1576,111 @@ export default function App() {
     setGroupCreateOpen(true);
   };
 
+  const handleInviteToGroup = (convId: string) => {
+    setGroupInviteConvId(convId);
+    setGroupInviteOpen(true);
+    setRightTab("about");
+    setRightPanelOpen(true);
+  };
+
+  const handleSubmitGroupInvite = async (convId: string, memberIds: string[]) => {
+    if (!userProfile) return { ok: false as const, error: "User profile missing." };
+    const conv = convs.find((item) => item.id === convId);
+    if (!conv || (conv.type !== "group" && conv.participants.length <= 2)) {
+      return { ok: false as const, error: "Group not found." };
+    }
+
+    const prevParticipants = conv.participants;
+    const newMembers = Array.from(new Set(memberIds)).filter(
+      (id) => id && id !== userProfile.id && !prevParticipants.includes(id)
+    );
+    if (!newMembers.length) {
+      return { ok: false as const, error: "Select at least one new member." };
+    }
+
+    try {
+      const now = Date.now();
+      const nextParticipants = Array.from(new Set([...prevParticipants, ...newMembers]));
+      const updated: Conversation = {
+        ...conv,
+        participants: nextParticipants,
+        hidden: false,
+        lastTs: now,
+        lastMessage: "Members invited",
+      };
+      await saveConversation(updated);
+
+      const inviteEvent = buildGroupInviteEvent({
+        groupId: conv.id,
+        memberIds: newMembers,
+        actorId: userProfile.id,
+        ts: now,
+      });
+      const existingRecipients = prevParticipants.filter((id) => id && id !== userProfile.id);
+      await fanoutGroupEvent(existingRecipients, inviteEvent);
+
+      const createEvent = await syncGroupCreate({
+        id: conv.id,
+        name: conv.name,
+        memberIds: nextParticipants,
+        actorId: userProfile.id,
+        ts: now,
+      });
+      await fanoutGroupEvent(newMembers, createEvent, { allowCreateDirect: true });
+
+      await hydrateVault();
+      return { ok: true as const };
+    } catch (error) {
+      console.error("Failed to invite group members", error);
+      return { ok: false as const, error: "Failed to invite members." };
+    }
+  };
+
+  const handleLeaveGroup = (convId: string) => {
+    if (!userProfile) return;
+    const conv = convs.find((item) => item.id === convId);
+    if (!conv || (conv.type !== "group" && conv.participants.length <= 2)) return;
+
+    setConfirm({
+      title: "Leave this group?",
+      message: "You will stop seeing new messages from this group.",
+      onConfirm: async () => {
+        try {
+          const now = Date.now();
+          const remaining = conv.participants.filter((id) => id && id !== userProfile.id);
+          const leaveEvent = buildGroupLeaveEvent({
+            groupId: conv.id,
+            memberIds: [userProfile.id],
+            actorId: userProfile.id,
+            ts: now,
+          });
+
+          await saveConversation({
+            ...conv,
+            participants: remaining,
+            hidden: true,
+            lastTs: now,
+            lastMessage: "Left group",
+          });
+
+          await fanoutGroupEvent(remaining, leaveEvent);
+          await hydrateVault();
+          if (ui.selectedConvId === conv.id) {
+            setSelectedConv(null);
+            setRightPanelOpen(false);
+          }
+          if (groupInviteConvId === conv.id) {
+            setGroupInviteOpen(false);
+            setGroupInviteConvId(null);
+          }
+        } catch (error) {
+          console.error("Failed to leave group", error);
+          addToast({ message: "Failed to leave group." });
+        }
+      },
+    });
+  };
+
   const handleSubmitGroup = async (payload: { name: string; memberIds: string[] }) => {
     if (!userProfile) return { ok: false as const, error: "User profile missing." };
 
@@ -1497,7 +1715,16 @@ export default function App() {
         ts: now,
       });
 
-      await syncGroupCreate({ id: conv.id, name: conv.name, memberIds: conv.participants });
+      const groupEvent = await syncGroupCreate({
+        id: conv.id,
+        name: conv.name,
+        memberIds: conv.participants,
+        actorId: userProfile.id,
+        ts: now,
+      });
+      await fanoutGroupEvent(conv.participants, groupEvent, {
+        allowCreateDirect: true,
+      });
       await hydrateVault();
 
       setSelectedConv(conv.id);
@@ -1733,6 +1960,10 @@ export default function App() {
     ? transportStatusByConv[currentConversation.id] ??
       getTransportStatus(currentConversation.id)
     : null;
+  const groupInviteConversation = groupInviteConvId
+    ? convs.find((conv) => conv.id === groupInviteConvId) || null
+    : null;
+  const groupInviteExistingMemberIds = groupInviteConversation?.participants ?? [];
 
   const nameMap = useMemo(
     () => buildNameMap([...(friends || []), ...(userProfile ? [userProfile] : [])]),
@@ -1782,6 +2013,9 @@ export default function App() {
 
   const partnerProfile = useMemo(() => {
     if (!currentConversation) return null;
+    const isGroup =
+      currentConversation.type === "group" || currentConversation.participants.length > 2;
+    if (isGroup) return null;
     const partnerId = currentConversation.participants.find((id) => id !== userProfile?.id);
     return friends.find((friend) => friend.id === partnerId) || null;
   }, [currentConversation, friends, userProfile]);
@@ -1885,7 +2119,11 @@ export default function App() {
         onTabChange={setRightTab}
         conversation={currentConversation}
         friendProfile={partnerProfile}
+        currentUserId={userProfile?.id ?? null}
+        profilesById={profilesById}
         onOpenSettings={() => navigate("/settings")}
+        onInviteToGroup={handleInviteToGroup}
+        onLeaveGroup={handleLeaveGroup}
       />
 
       {userProfile ? (
@@ -1934,6 +2172,23 @@ export default function App() {
           myCode={myFriendCode}
           onCopyCode={handleCopyFriendCode}
           onAdd={handleAddFriend}
+        />
+      ) : null}
+
+      {userProfile ? (
+        <GroupInviteDialog
+          open={groupInviteOpen && Boolean(groupInviteConversation)}
+          onOpenChange={(open) => {
+            setGroupInviteOpen(open);
+            if (!open) setGroupInviteConvId(null);
+          }}
+          friends={friends}
+          existingMemberIds={groupInviteExistingMemberIds}
+          onSubmit={(memberIds) =>
+            groupInviteConversation
+              ? handleSubmitGroupInvite(groupInviteConversation.id, memberIds)
+              : Promise.resolve({ ok: false as const, error: "Group not found." })
+          }
         />
       ) : null}
 

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { __testApplyEnvelopeEvents, __testResetSyncState, __testSetPeerContext } from "../syncEngine";
 import { encodeBase64Url } from "../../security/base64url";
-import type { Conversation } from "../../db/repo";
+import type { Conversation, UserProfile } from "../../db/repo";
 
 const mocks = vi.hoisted(() => ({
   verifyEnvelopeSignatureMock: vi.fn(async () => false),
@@ -23,8 +23,30 @@ vi.mock("../../db/repo", () => {
     lastMessage: "",
     participants: ["local", "peer"],
   };
+  const profiles: UserProfile[] = [
+    {
+      id: "local",
+      displayName: "Local",
+      status: "",
+      theme: "dark",
+      kind: "user",
+      createdAt: 0,
+      updatedAt: 0,
+    },
+    {
+      id: "peer",
+      friendId: "peer",
+      displayName: "Peer",
+      status: "",
+      theme: "dark",
+      kind: "friend",
+      createdAt: 0,
+      updatedAt: 0,
+    },
+  ];
   return {
     listConversations: vi.fn(async () => [conv]),
+    listProfiles: vi.fn(async () => profiles),
     getEvent: vi.fn(async () => null),
     getLastEventHash: vi.fn(async () => "prev-hash"),
     saveEvent: vi.fn(async () => {}),

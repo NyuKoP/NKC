@@ -1,5 +1,5 @@
-import * as Tabs from "@radix-ui/react-tabs";
-import { Settings } from "lucide-react";
+﻿import * as Tabs from "@radix-ui/react-tabs";
+import { Settings, UserPlus, UserX } from "lucide-react";
 import type { Conversation, UserProfile } from "../db/repo";
 import Avatar from "./Avatar";
 
@@ -15,37 +15,26 @@ type RightPanelProps = {
   onTabChange: (tab: "about" | "media" | "settings") => void;
   conversation: Conversation | null;
   friendProfile?: UserProfile | null;
+  currentUserId: string | null;
+  profilesById: Record<string, UserProfile | undefined>;
   onOpenSettings: () => void;
+  onInviteToGroup: (convId: string) => void;
+  onLeaveGroup: (convId: string) => void;
 };
 
 const isTabValue = (value: string): value is RightPanelProps["tab"] =>
   value === "about" || value === "media" || value === "settings";
 
-const detailsByName: Record<
-  string,
-  { status: string; lastSeen: string; note: string }
-> = {
-  "테스트 친구": {
-    status: "테스트 세션 진행 중",
-    lastSeen: "방금 전",
-    note: "테스트용 프로필입니다. 상태/메모/탭 UI 확인용으로 사용하세요.",
-  },
-  민지: {
+const detailsByName: Record<string, { status: string; lastSeen: string; note: string }> = {
+  Demo: {
     status: "온라인",
-    lastSeen: "2분 전",
-    note: "오늘도 NKC에서 대화를 이어가요.",
-  },
-  리드: {
-    status: "업무 중",
-    lastSeen: "10분 전",
-    note: "점심 이후 회의가 있습니다.",
-  },
-  진아: {
-    status: "자리 비움",
-    lastSeen: "1시간 전",
-    note: "잠시 자리를 비웠어요.",
+    lastSeen: "방금 전",
+    note: "상태/메모는 예시 데이터입니다.",
   },
 };
+
+const isGroupConversation = (conversation: Conversation | null) =>
+  Boolean(conversation && (conversation.type === "group" || conversation.participants.length > 2));
 
 export default function RightPanel({
   open,
@@ -53,12 +42,30 @@ export default function RightPanel({
   onTabChange,
   conversation,
   friendProfile,
+  currentUserId,
+  profilesById,
   onOpenSettings,
+  onInviteToGroup,
+  onLeaveGroup,
 }: RightPanelProps) {
   if (!open) return null;
 
   const displayName = friendProfile?.displayName || conversation?.name || "";
   const detail = displayName ? detailsByName[displayName] : undefined;
+  const isGroup = isGroupConversation(conversation);
+  const memberIds = conversation?.participants ?? [];
+
+  const members = memberIds.map((id) => {
+    const profile = profilesById[id];
+    const fallbackName = id.slice(0, 8);
+    return {
+      id,
+      name: profile?.displayName || (id === currentUserId ? "나" : fallbackName),
+      avatarRef: profile?.avatarRef,
+      status: profile?.status,
+      isSelf: id === currentUserId,
+    };
+  });
 
   return (
     <aside className="hidden h-full w-[320px] rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft lg:block">
@@ -93,34 +100,76 @@ export default function RightPanel({
                   <div className="text-sm font-semibold text-nkc-text">
                     {displayName || conversation.name}
                   </div>
-                  <div className="text-xs text-nkc-muted">
-                    상태: {detail?.status || "활성"}
-                  </div>
+                  <div className="text-xs text-nkc-muted">상태: {detail?.status || "활성"}</div>
                 </div>
               </div>
+              <div className="text-xs text-nkc-muted">마지막 활동: {detail?.lastSeen || "최근"}</div>
               <div className="text-xs text-nkc-muted">
-                마지막 활동: {detail?.lastSeen || "최근 접속"}
+                {detail?.note || "대화 정보가 여기에 표시됩니다."}
               </div>
-              <div className="text-xs text-nkc-muted">
-                {detail?.note || "상세 정보가 준비되어 있습니다."}
-              </div>
+
+              {isGroup ? (
+                <>
+                  <div className="border-t border-nkc-border pt-3">
+                    <div className="text-xs font-semibold text-nkc-muted">Members ({members.length})</div>
+                    <div className="mt-2 space-y-1">
+                      {members.map((member) => (
+                        <div key={member.id} className="flex items-center gap-2 rounded-nkc px-1 py-1.5">
+                          <Avatar name={member.name} avatarRef={member.avatarRef} size={28} />
+                          <div className="min-w-0">
+                            <div className="text-xs font-semibold text-nkc-text line-clamp-1">
+                              {member.name}
+                            </div>
+                            {member.status ? (
+                              <div className="text-[11px] text-nkc-muted line-clamp-1">{member.status}</div>
+                            ) : null}
+                          </div>
+                          {member.isSelf ? (
+                            <span className="ml-auto rounded-full border border-nkc-border px-2 py-0.5 text-[10px] text-nkc-muted">
+                              나
+                            </span>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => onInviteToGroup(conversation.id)}
+                      className="flex flex-1 items-center justify-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                    >
+                      <UserPlus size={14} />
+                      Invite
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onLeaveGroup(conversation.id)}
+                      className="flex flex-1 items-center justify-center gap-2 rounded-nkc border border-red-500/40 px-3 py-2 text-xs text-red-200 hover:bg-red-500/10"
+                    >
+                      <UserX size={14} />
+                      Leave
+                    </button>
+                  </div>
+                </>
+              ) : null}
             </div>
           ) : (
             <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-sm text-nkc-muted">
-              대화를 선택하면 상세 정보를 볼 수 있습니다.
+              대화를 선택하면 상세 정보가 표시됩니다.
             </div>
           )}
         </Tabs.Content>
 
         <Tabs.Content value="media" className="mt-4">
           <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-sm text-nkc-muted">
-            첨부 미디어는 로컬에서 복호화된 상태로 보여집니다.
+            첨부 미디어는 로컬에 암호화된 형태로 저장됩니다.
           </div>
         </Tabs.Content>
 
         <Tabs.Content value="settings" className="mt-4 space-y-3">
           <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-sm text-nkc-muted">
-            채팅별 알림과 차단 설정을 관리하세요.
+            채팅 알림과 차단 설정을 관리합니다.
           </div>
           <button
             onClick={onOpenSettings}
