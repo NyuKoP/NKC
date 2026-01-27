@@ -105,12 +105,15 @@ const scheduleBackoffReset = (convId: string) => {
 
 const shouldProcessIncoming = (convId: string, bytes: Uint8Array) => {
   const size = bytes?.byteLength ?? 0;
+  const state = getState(convId);
+  const mode = state.transport?.kind ?? "unknown";
   if (size > MAX_FRAME_BYTES) {
-    console.warn(`[transport] dropped frame: ${size} bytes (limit ${MAX_FRAME_BYTES})`, { convId });
+    console.warn(
+      `[net] drop frame too large: size=${size} max=${MAX_FRAME_BYTES} mode=${mode} convId=${convId}`
+    );
     return false;
   }
 
-  const state = getState(convId);
   const now = Date.now();
   if (now - state.rateLimit.windowStartMs >= RATE_WINDOW_MS) {
     state.rateLimit.windowStartMs = now;

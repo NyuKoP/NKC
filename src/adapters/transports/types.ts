@@ -2,9 +2,11 @@ export type TransportState = "idle" | "connecting" | "connected" | "degraded" | 
 
 export type TransportName = "directP2P" | "selfOnion" | "onionRouter";
 
+export type PayloadB64 = { b64: string };
+
 export type TransportPacket = {
   id: string;
-  payload: unknown;
+  payload: Uint8Array | string | PayloadB64;
 };
 
 export interface Transport {
