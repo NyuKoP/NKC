@@ -70,6 +70,7 @@ const formatDate = (ts: number) =>
 
 type ChatViewProps = {
   conversation: Conversation | null;
+  conversationDisplayName?: string;
   transportStatus?: ConversationTransportStatus | null;
   messages: Message[];
   currentUserId: string | null;
@@ -91,6 +92,7 @@ type SendState = "queued" | "sent" | "delivered" | "read";
 
 export default function ChatView({
   conversation,
+  conversationDisplayName,
   transportStatus,
   messages,
   currentUserId,
@@ -340,7 +342,9 @@ export default function ChatView({
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
               <div className="text-base font-semibold text-nkc-text line-clamp-1">
-                {conversation ? conversation.name : "대화를 선택하세요"}
+                {conversation
+                  ? conversationDisplayName || conversation.name
+                  : "대화를 선택하세요"}
               </div>
               {conversation && transportLabel ? (
                 <span

@@ -3,6 +3,7 @@ import * as Tabs from "@radix-ui/react-tabs";
 import { Settings, UserPlus, UserX } from "lucide-react";
 import type { AvatarRef, Conversation, UserProfile } from "../db/repo";
 import Avatar from "./Avatar";
+import { resolveDisplayName, resolveFriendDisplayName } from "../utils/displayName";
 
 const tabs = [
   { value: "about", label: "About" },
@@ -20,6 +21,7 @@ type RightPanelProps = {
   profilesById: Record<string, UserProfile | undefined>;
   groupAvatarRef?: AvatarRef;
   groupAvatarOverrideRef?: string | null;
+  friendAliasesById: Record<string, string | undefined>;
   onOpenSettings: () => void;
   onInviteToGroup: (convId: string) => void;
   onLeaveGroup: (convId: string) => void;
@@ -50,6 +52,7 @@ export default function RightPanel({
   profilesById,
   groupAvatarRef,
   groupAvatarOverrideRef,
+  friendAliasesById,
   onOpenSettings,
   onInviteToGroup,
   onLeaveGroup,
@@ -57,7 +60,11 @@ export default function RightPanel({
 }: RightPanelProps) {
   if (!open) return null;
 
-  const displayName = friendProfile?.displayName || conversation?.name || "";
+  const directDisplayName = resolveFriendDisplayName(friendProfile ?? undefined, friendAliasesById);
+  const displayName =
+    conversation && (conversation.type === "group" || conversation.participants.length > 2)
+      ? conversation.name
+      : directDisplayName;
   const detail = displayName ? detailsByName[displayName] : undefined;
   const isGroup = isGroupConversation(conversation);
   const memberIds = conversation?.participants ?? [];
@@ -67,14 +74,21 @@ export default function RightPanel({
   const aboutAvatarRef = isGroup ? groupAvatarRef : friendProfile?.avatarRef;
   const aboutAvatarName = isGroup
     ? conversation?.name || "Group"
-    : friendProfile?.displayName || conversation?.name || "";
+    : directDisplayName;
 
   const members = memberIds.map((id) => {
     const profile = profilesById[id];
-    const fallbackName = id.slice(0, 8);
     return {
       id,
-      name: profile?.displayName || (id === currentUserId ? "나" : fallbackName),
+      name:
+        id === currentUserId
+          ? "나"
+          : resolveDisplayName({
+              alias: profile ? friendAliasesById[profile.id] : undefined,
+              displayName: profile?.displayName,
+              friendId: profile?.friendId,
+              id: profile?.id ?? id,
+            }),
       avatarRef: profile?.avatarRef,
       status: profile?.status,
       isSelf: id === currentUserId,
