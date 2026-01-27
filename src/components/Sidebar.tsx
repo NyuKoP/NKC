@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronDown, ChevronRight, Filter, Lock, Search, Settings, UserPlus, Users } from "lucide-react";
 import type { AvatarRef, Conversation, UserProfile } from "../db/repo";
 import { useAppStore } from "../app/store";
 import OverflowMenu from "./OverflowMenu";
 import FriendOverflowMenu from "./FriendOverflowMenu";
 import Avatar from "./Avatar";
+import { resolveFriendDisplayName } from "../utils/displayName";
 
 const formatTime = (ts: number, locale: string) =>
   new Intl.DateTimeFormat(locale, {
@@ -18,6 +20,7 @@ type SidebarProps = {
   userId: string | null;
   userProfile: UserProfile | null;
   groupAvatarRefsByConv: Record<string, AvatarRef | undefined>;
+  friendAliasesById: Record<string, string | undefined>;
   selectedConvId: string | null;
   listMode: "chats" | "friends";
   listFilter: "all" | "unread" | "favorites";
@@ -32,6 +35,7 @@ type SidebarProps = {
   onFriendHide: (id: string) => void;
   onFriendDelete: (id: string) => void;
   onFriendBlock: (id: string) => void;
+  onSetFriendAlias: (id: string, alias: string | null) => void | Promise<void>;
   onListModeChange: (mode: "chats" | "friends") => void;
   onListFilterChange: (value: "all" | "unread" | "favorites") => void;
   onSettings: () => void;
@@ -49,6 +53,7 @@ export default function Sidebar({
   userId,
   userProfile,
   groupAvatarRefsByConv,
+  friendAliasesById,
   selectedConvId,
   listMode,
   listFilter,
@@ -63,6 +68,7 @@ export default function Sidebar({
   onFriendHide,
   onFriendDelete,
   onFriendBlock,
+  onSetFriendAlias,
   onListModeChange,
   onListFilterChange,
   onSettings,
@@ -81,6 +87,8 @@ export default function Sidebar({
   const [friendsOpen, setFriendsOpen] = useState(true);
   const [pinnedChatsOpen, setPinnedChatsOpen] = useState(true);
   const [chatsOpen, setChatsOpen] = useState(true);
+  const [aliasDialogFriendId, setAliasDialogFriendId] = useState<string | null>(null);
+  const [aliasDraft, setAliasDraft] = useState("");
   const friendClickTimerRef = useRef<number | null>(null);
   const searchLower = search.trim().toLowerCase();
   const friendMap = useMemo(() => new Map(friends.map((f) => [f.id, f])), [friends]);
@@ -145,9 +153,10 @@ export default function Sidebar({
 
   const visibleFriends = friends
     .filter((friend) => friend.friendStatus !== "hidden" && friend.friendStatus !== "blocked")
-    .filter((friend) =>
-      searchLower ? friend.displayName.toLowerCase().includes(searchLower) : true
-    )
+    .filter((friend) => {
+      if (!searchLower) return true;
+      return getFriendDisplayName(friend).toLowerCase().includes(searchLower);
+    })
     .sort((a, b) => {
       if (a.isFavorite === b.isFavorite) {
         const aSeen = getFriendLastSeen(a.id);
@@ -155,7 +164,7 @@ export default function Sidebar({
         if (aSeen !== bSeen) {
           return bSeen - aSeen;
         }
-        return a.displayName.localeCompare(b.displayName);
+        return getFriendDisplayName(a).localeCompare(getFriendDisplayName(b));
       }
       return a.isFavorite ? -1 : 1;
     });
@@ -203,52 +212,65 @@ export default function Sidebar({
     onFriendChat(friendId);
   };
 
-  const renderFriendRow = (friend: UserProfile) => (
-    <div
-      key={friend.id}
-      role="button"
-      tabIndex={0}
-      onClick={(event) => {
-        const target = event.target as HTMLElement | null;
-        if (target?.closest?.('[data-stop-row-click="true"]')) return;
-        handleFriendClick(friend.id);
-      }}
-      onDoubleClick={(event) => {
-        const target = event.target as HTMLElement | null;
-        if (target?.closest?.('[data-stop-row-click="true"]')) return;
-        handleFriendDoubleClick(friend.id);
-      }}
-      onKeyDown={(e) => {
-        const target = e.target as HTMLElement | null;
-        if (target?.closest?.('[data-stop-row-click="true"]')) return;
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onFriendViewProfile(friend.id);
-        }
-      }}
-      className="flex w-full items-start gap-3 rounded-nkc px-3 py-3 hover:bg-nkc-panelMuted"
-    >
-      <Avatar name={friend.displayName} avatarRef={friend.avatarRef} size={42} />
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-semibold text-nkc-text line-clamp-1">
-          {friend.displayName}
+  const getFriendDisplayName = (friend: UserProfile) =>
+    resolveFriendDisplayName(friend, friendAliasesById);
+
+  const openAliasDialog = (friend: UserProfile) => {
+    setAliasDialogFriendId(friend.id);
+    setAliasDraft(friendAliasesById[friend.id] ?? "");
+  };
+
+  const renderFriendRow = (friend: UserProfile) => {
+    const displayName = getFriendDisplayName(friend);
+    return (
+      <div
+        key={friend.id}
+        role="button"
+        tabIndex={0}
+        onClick={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (target?.closest?.('[data-stop-row-click="true"]')) return;
+          handleFriendClick(friend.id);
+        }}
+        onDoubleClick={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (target?.closest?.('[data-stop-row-click="true"]')) return;
+          handleFriendDoubleClick(friend.id);
+        }}
+        onKeyDown={(e) => {
+          const target = e.target as HTMLElement | null;
+          if (target?.closest?.('[data-stop-row-click="true"]')) return;
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            onFriendViewProfile(friend.id);
+          }
+        }}
+        className="flex w-full items-start gap-3 rounded-nkc px-3 py-3 hover:bg-nkc-panelMuted"
+      >
+        <Avatar name={displayName} avatarRef={friend.avatarRef} size={42} />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-semibold text-nkc-text line-clamp-1">
+            {displayName}
+          </div>
+          <div className="text-xs text-nkc-muted line-clamp-1">{getActivityLabel(friend)}</div>
         </div>
-        <div className="text-xs text-nkc-muted line-clamp-1">
-          {getActivityLabel(friend)}
-        </div>
+        <FriendOverflowMenu
+          friendId={friend.id}
+          isFavorite={friend.isFavorite}
+          onChat={() => onFriendChat(friend.id)}
+          onViewProfile={() => onFriendViewProfile(friend.id)}
+          onToggleFavorite={() => onFriendToggleFavorite(friend.id)}
+          onHide={() => onFriendHide(friend.id)}
+          onDelete={() => onFriendDelete(friend.id)}
+          onBlock={() => onFriendBlock(friend.id)}
+          onRenameAlias={() => openAliasDialog(friend)}
+        />
       </div>
-      <FriendOverflowMenu
-        friendId={friend.id}
-        isFavorite={friend.isFavorite}
-        onChat={() => onFriendChat(friend.id)}
-        onViewProfile={() => onFriendViewProfile(friend.id)}
-        onToggleFavorite={() => onFriendToggleFavorite(friend.id)}
-        onHide={() => onFriendHide(friend.id)}
-        onDelete={() => onFriendDelete(friend.id)}
-        onBlock={() => onFriendBlock(friend.id)}
-      />
-    </div>
-  );
+    );
+  };
+
+  const aliasFriend = aliasDialogFriendId ? friendMap.get(aliasDialogFriendId) ?? null : null;
+  const aliasOpen = Boolean(aliasDialogFriendId && aliasFriend);
 
   return (
     <aside className="flex h-full w-[320px] flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft" data-testid="sidebar">
@@ -384,6 +406,7 @@ export default function Sidebar({
                         conv={conv}
                         friend={resolveConvFriend(conv)}
                         groupAvatarRefsByConv={groupAvatarRefsByConv}
+                        friendAliasesById={friendAliasesById}
                         active={selectedConvId === conv.id}
                         locale={locale}
                         t={t}
@@ -419,6 +442,7 @@ export default function Sidebar({
                         conv={conv}
                         friend={resolveConvFriend(conv)}
                         groupAvatarRefsByConv={groupAvatarRefsByConv}
+                        friendAliasesById={friendAliasesById}
                         active={selectedConvId === conv.id}
                         locale={locale}
                         t={t}
@@ -484,6 +508,58 @@ export default function Sidebar({
           </div>
         )}
       </div>
+      <Dialog.Root
+        open={aliasOpen}
+        onOpenChange={(open) => {
+          if (open) return;
+          setAliasDialogFriendId(null);
+          setAliasDraft("");
+        }}
+      >
+        <Dialog.Portal>
+          <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+          <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-nkc border border-nkc-border bg-nkc-panel p-5 shadow-soft">
+            <Dialog.Title className="text-sm font-semibold text-nkc-text">
+              이름 바꾸기 (나만)
+            </Dialog.Title>
+            <Dialog.Description className="mt-1 text-xs text-nkc-muted">
+              별칭은 이 기기에서만 보입니다.
+            </Dialog.Description>
+            <input
+              value={aliasDraft}
+              onChange={(event) => setAliasDraft(event.target.value)}
+              placeholder={aliasFriend ? aliasFriend.displayName : ""}
+              className="mt-3 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text outline-none focus:border-nkc-accent/60"
+              autoFocus
+            />
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setAliasDialogFriendId(null);
+                  setAliasDraft("");
+                }}
+                className="rounded-nkc border border-nkc-border px-3 py-1.5 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+              >
+                취소
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!aliasFriend) return;
+                  const next = aliasDraft.trim();
+                  void onSetFriendAlias(aliasFriend.id, next || null);
+                  setAliasDialogFriendId(null);
+                  setAliasDraft("");
+                }}
+                className="rounded-nkc bg-nkc-accent px-3 py-1.5 text-xs font-semibold text-nkc-bg"
+              >
+                저장
+              </button>
+            </div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </aside>
   );
 }
@@ -492,6 +568,7 @@ type ConversationRowProps = {
   conv: Conversation;
   friend?: UserProfile;
   groupAvatarRefsByConv: Record<string, AvatarRef | undefined>;
+  friendAliasesById: Record<string, string | undefined>;
   active: boolean;
   locale: string;
   t: (ko: string, en: string) => string;
@@ -507,6 +584,7 @@ function ConversationRow({
   conv,
   friend,
   groupAvatarRefsByConv,
+  friendAliasesById,
   active,
   locale,
   t,
@@ -548,13 +626,16 @@ function ConversationRow({
       {(() => {
         const isGroup = conv.type === "group" || conv.participants.length > 2;
         const avatarRef = isGroup ? groupAvatarRefsByConv[conv.id] : friend?.avatarRef;
-        const avatarName = isGroup ? conv.name : friend?.displayName || conv.name;
+        const directName = resolveFriendDisplayName(friend, friendAliasesById);
+        const avatarName = isGroup ? conv.name : directName;
         return <Avatar name={avatarName} avatarRef={avatarRef} size={40} />;
       })()}
       <div className="min-w-0 flex-1 overflow-hidden">
         <div className="flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-sm font-semibold text-nkc-text">
-            {conv.name}
+            {conv.type === "group" || conv.participants.length > 2
+              ? conv.name
+              : resolveFriendDisplayName(friend, friendAliasesById)}
           </span>
           <span className="shrink-0 text-xs text-nkc-muted">
             {formatTime(conv.lastTs, locale)}
@@ -581,7 +662,3 @@ function ConversationRow({
     </div>
   );
 }
-
-
-
-

@@ -92,10 +92,20 @@ import {
 import { putReadCursor } from "../storage/receiptStore";
 import { getGroupAvatarOverride, setGroupAvatarOverride } from "../security/preferences";
 import { parseAvatarRef, resolveGroupAvatarRef } from "../utils/avatarRefs";
+import { listFriendAliases, setFriendAlias } from "../storage/friendStore";
+import { resolveDisplayName, resolveFriendDisplayName } from "../utils/displayName";
 
-const buildNameMap = (profiles: UserProfile[]) =>
+const buildNameMap = (
+  profiles: UserProfile[],
+  aliasesById: Record<string, string | undefined>
+) =>
   profiles.reduce<Record<string, string>>((acc, profile) => {
-    acc[profile.id] = profile.displayName;
+    acc[profile.id] = resolveDisplayName({
+      alias: aliasesById[profile.id],
+      displayName: profile.displayName,
+      friendId: profile.friendId,
+      id: profile.id,
+    });
     return acc;
   }, {});
 
@@ -139,6 +149,10 @@ export default function App() {
     {}
   );
   const [groupAvatarOverrideVersion, setGroupAvatarOverrideVersion] = useState(0);
+  const [friendAliasesById, setFriendAliasesById] = useState<Record<string, string | undefined>>(
+    {}
+  );
+  const [friendAliasVersion, setFriendAliasVersion] = useState(0);
   const [myFriendCode, setMyFriendCode] = useState("");
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
@@ -1802,6 +1816,19 @@ export default function App() {
     [addToast, userProfile]
   );
 
+  const handleSetFriendAlias = useCallback(async (friendId: string, alias: string | null) => {
+    await setFriendAlias(friendId, alias);
+    setFriendAliasVersion((prev) => prev + 1);
+    const nextAlias = alias?.trim() ?? "";
+    setFriendAliasesById((prev) => {
+      if (!nextAlias) {
+        const { [friendId]: _removed, ...rest } = prev;
+        return rest;
+      }
+      return { ...prev, [friendId]: nextAlias };
+    });
+  }, []);
+
   const handleSubmitGroup = async (payload: {
     name: string;
     memberIds: string[];
@@ -2102,8 +2129,12 @@ export default function App() {
   const groupInviteExistingMemberIds = groupInviteConversation?.participants ?? [];
 
   const nameMap = useMemo(
-    () => buildNameMap([...(friends || []), ...(userProfile ? [userProfile] : [])]),
-    [friends, userProfile]
+    () =>
+      buildNameMap(
+        [...(friends || []), ...(userProfile ? [userProfile] : [])],
+        friendAliasesById
+      ),
+    [friendAliasesById, friends, userProfile]
   );
 
   const profilesById = useMemo(() => {
@@ -2140,6 +2171,19 @@ export default function App() {
       active = false;
     };
   }, [convs, groupAvatarOverrideVersion]);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      const map = await listFriendAliases();
+      if (!active) return;
+      setFriendAliasesById(map);
+    };
+    void load();
+    return () => {
+      active = false;
+    };
+  }, [friendAliasVersion]);
 
   const groupAvatarRefsByConv = useMemo(() => {
     const map: Record<string, ReturnType<typeof parseAvatarRef>> = {};
@@ -2198,6 +2242,14 @@ export default function App() {
     return friends.find((friend) => friend.id === partnerId) || null;
   }, [currentConversation, friends, userProfile]);
 
+  const currentConversationDisplayName = useMemo(() => {
+    if (!currentConversation) return "대화를 선택하세요";
+    const isGroup =
+      currentConversation.type === "group" || currentConversation.participants.length > 2;
+    if (isGroup) return currentConversation.name;
+    return resolveFriendDisplayName(partnerProfile ?? undefined, friendAliasesById);
+  }, [currentConversation, friendAliasesById, partnerProfile]);
+
   const handleAcceptRequest = async () => {
     if (!currentConversation || !partnerProfile) return;
     try {
@@ -2245,6 +2297,7 @@ export default function App() {
         userId={userProfile?.id || null}
         userProfile={userProfile}
         groupAvatarRefsByConv={groupAvatarRefsByConv}
+        friendAliasesById={friendAliasesById}
         selectedConvId={ui.selectedConvId}
         listMode={ui.listMode}
         listFilter={ui.listFilter}
@@ -2259,6 +2312,7 @@ export default function App() {
         onFriendHide={handleFriendHide}
         onFriendDelete={handleFriendDelete}
         onFriendBlock={handleFriendBlock}
+        onSetFriendAlias={handleSetFriendAlias}
         onListModeChange={setListMode}
         onListFilterChange={setListFilter}
         onSettings={() => navigate("/settings")}
@@ -2272,6 +2326,7 @@ export default function App() {
 
       <ChatView
         conversation={currentConversation}
+        conversationDisplayName={currentConversationDisplayName}
         transportStatus={currentTransportStatus}
         messages={currentMessages}
         currentUserId={userProfile?.id || null}
@@ -2302,6 +2357,7 @@ export default function App() {
         profilesById={profilesById}
         groupAvatarRef={currentGroupAvatarRef}
         groupAvatarOverrideRef={currentGroupAvatarOverrideRef}
+        friendAliasesById={friendAliasesById}
         onOpenSettings={() => navigate("/settings")}
         onInviteToGroup={handleInviteToGroup}
         onLeaveGroup={handleLeaveGroup}

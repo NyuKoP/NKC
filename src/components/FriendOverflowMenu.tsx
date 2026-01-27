@@ -1,5 +1,5 @@
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
-import { MoreHorizontal, Star, StarOff, User } from "lucide-react";
+import { Edit3, MoreHorizontal, Star, StarOff, User } from "lucide-react";
 import { useRef, useState } from "react";
 
 type FriendOverflowMenuProps = {
@@ -11,6 +11,7 @@ type FriendOverflowMenuProps = {
   onHide: () => void;
   onDelete: () => void;
   onBlock: () => void;
+  onRenameAlias: () => void;
 };
 
 export default function FriendOverflowMenu({
@@ -22,6 +23,7 @@ export default function FriendOverflowMenu({
   onHide,
   onDelete,
   onBlock,
+  onRenameAlias,
 }: FriendOverflowMenuProps) {
   const [open, setOpen] = useState(false);
   // Avoid double-toggles when click/select fire for the same item.
@@ -88,6 +90,18 @@ export default function FriendOverflowMenu({
           >
             {isFavorite ? <StarOff size={14} /> : <Star size={14} />}
             {isFavorite ? "즐겨찾기 해제" : "즐겨찾기"}
+          </DropdownMenu.Item>
+          <DropdownMenu.Item
+            onSelect={(event) => {
+              event.stopPropagation();
+              onRenameAlias();
+              setOpen(false);
+            }}
+            data-stop-row-click="true"
+            className="flex cursor-pointer items-center gap-2 rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
+          >
+            <Edit3 size={14} />
+            이름 바꾸기(나만)
           </DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={(event) => {

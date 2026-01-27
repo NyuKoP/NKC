@@ -78,6 +78,11 @@ export type ReceiptRecord = {
   anchorMsgId?: string;
 };
 export type TombstoneRecord = { id: string; type: string; deletedAt: number };
+export type FriendAliasRecord = {
+  friendId: string;
+  alias: string;
+  updatedAt: number;
+};
 
 export class NKCVaultDB extends Dexie {
   meta!: Table<MetaRecord, string>;
@@ -91,6 +96,7 @@ export class NKCVaultDB extends Dexie {
   mediaPayloadChunks!: Table<MediaPayloadChunkRecord, [string, number]>;
   receipts!: Table<ReceiptRecord, string>;
   tombstones!: Table<TombstoneRecord, string>;
+  friendAliases!: Table<FriendAliasRecord, string>;
 
   constructor() {
     super("nkc_vault");
@@ -202,6 +208,22 @@ export class NKCVaultDB extends Dexie {
       receipts:
         "id, msgId, convId, kind, actorId, cursorTs, ts, [convId+kind], [convId+actorId+kind], [convId+msgId], [msgId+kind]",
       tombstones: "id, type, deletedAt",
+    });
+    this.version(10).stores({
+      meta: "key",
+      profiles: "id, updatedAt",
+      conversations: "id, updatedAt",
+      messages: "id, convId, ts",
+      events: "eventId, convId, ts, lamport, authorDeviceId, [convId+lamport], [convId+ts]",
+      outbox:
+        "id, status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
+      mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+      mediaIndex: "mediaId, convId, createdAt, complete",
+      mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
+      receipts:
+        "id, msgId, convId, kind, actorId, cursorTs, ts, [convId+kind], [convId+actorId+kind], [convId+msgId], [msgId+kind]",
+      tombstones: "id, type, deletedAt",
+      friendAliases: "friendId, updatedAt",
     });
   }
 }
