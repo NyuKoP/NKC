@@ -981,6 +981,11 @@ export default function App() {
     if (!vk) return;
 
     const sendSingleMedia = async (file: File) => {
+      if (file.size > INLINE_MEDIA_MAX_BYTES) {
+        addToast({ message: "Attachment too large (max 500MB)." });
+        return;
+      }
+
       const isDirect =
         !(conv.type === "group" || conv.participants.length > 2) &&
         conv.participants.length === 2;
@@ -990,11 +995,6 @@ export default function App() {
         const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
 
         if (partner?.dhPub && partner.identityPub) {
-          const inlineAllowed = file.size <= INLINE_MEDIA_MAX_BYTES;
-          if (!inlineAllowed) {
-            addToast({ message: "Attachment too large (max 500MB)." });
-          }
-
           const now = Date.now();
           const friendKeyId = partner.friendId ?? partner.id;
           const lamport = await nextLamportForConv(conv.id);
@@ -1007,9 +1007,11 @@ export default function App() {
             authorDeviceId: getOrCreateDeviceId(),
           };
 
-          const media = inlineAllowed
-            ? await saveMessageMedia(header.eventId, file, INLINE_MEDIA_CHUNK_SIZE)
-            : await saveMessageMedia(header.eventId, file);
+          const media = await saveMessageMedia(
+            header.eventId,
+            file,
+            INLINE_MEDIA_CHUNK_SIZE
+          );
           const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
 
           const dhPriv = await getDhPrivateKey();
@@ -1085,30 +1087,31 @@ export default function App() {
           await saveConversation(updatedConv);
           await hydrateVault();
 
-          if (inlineAllowed) {
-            const sendChunks = async () => {
-              const buffer = await file.arrayBuffer();
-              const chunks = chunkBuffer(buffer, INLINE_MEDIA_CHUNK_SIZE);
-              const total = chunks.length;
-              for (let idx = 0; idx < chunks.length; idx += 1) {
-                const chunkBody = {
-                  type: "media",
-                  phase: "chunk",
-                  ownerId: header.eventId,
-                  idx,
-                  total,
-                  mime: media.mime,
-                  name: media.name,
-                  size: media.size,
-                  b64: encodeBase64Url(chunks[idx]),
-                };
-                await sendDirectEnvelope(conv, partner, chunkBody, "normal");
+          const sendChunks = async () => {
+            const buffer = await file.arrayBuffer();
+            const chunks = chunkBuffer(buffer, INLINE_MEDIA_CHUNK_SIZE);
+            const total = chunks.length;
+            for (let idx = 0; idx < chunks.length; idx += 1) {
+              const chunkBody = {
+                type: "media",
+                phase: "chunk",
+                ownerId: header.eventId,
+                idx,
+                total,
+                mime: media.mime,
+                name: media.name,
+                size: media.size,
+                b64: encodeBase64Url(chunks[idx]),
+              };
+              await sendDirectEnvelope(conv, partner, chunkBody, "normal");
+              if (idx > 0 && idx % 32 === 0) {
+                await new Promise<void>((resolve) => setTimeout(resolve, 0));
               }
-            };
-            void sendChunks().catch((error) => {
-              console.error("Failed to send media chunks", error);
-            });
-          }
+            }
+          };
+          void sendChunks().catch((error) => {
+            console.error("Failed to send media chunks", error);
+          });
           return;
         }
       }
