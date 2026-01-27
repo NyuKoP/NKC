@@ -1172,6 +1172,16 @@ export default function App() {
     }
   };
 
+  const findDirectConvWithFriend = useCallback(
+    (friendId: string) =>
+      convs.find(
+        (conv) =>
+          !(conv.type === "group" || conv.participants.length > 2) &&
+          conv.participants.includes(friendId)
+      ),
+    [convs]
+  );
+
   const handleSendReadReceipt = useCallback(
     async (payload: { convId: string; msgId: string; msgTs: number }) => {
       if (!userProfile) return;
@@ -1238,14 +1248,6 @@ export default function App() {
     },
     [convs, findDirectConvWithFriend, friends, sendDirectEnvelope, userProfile]
   );
-
-  function findDirectConvWithFriend(friendId: string) {
-    return convs.find(
-      (conv) =>
-        !(conv.type === "group" || conv.participants.length > 2) &&
-        conv.participants.includes(friendId)
-    );
-  }
 
   const ensureDirectConvForFanout = useCallback(
     async (friend: UserProfile, ts: number) => {
