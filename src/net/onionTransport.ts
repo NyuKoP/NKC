@@ -10,7 +10,13 @@ const normalizePayload = (payload: TransportPacket["payload"]) => {
   if (payload instanceof Uint8Array) return payload;
   if (payload && typeof payload === "object" && "b64" in payload) {
     const b64 = (payload as { b64?: unknown }).b64;
-    if (typeof b64 === "string") return decodeBase64Url(b64);
+    if (typeof b64 === "string") {
+      try {
+        return decodeBase64Url(b64);
+      } catch {
+        return null;
+      }
+    }
   }
   if (typeof payload === "string") return new TextEncoder().encode(payload);
   return null;
