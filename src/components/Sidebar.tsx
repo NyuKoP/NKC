@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import { ChevronDown, ChevronRight, Filter, Lock, Search, Settings, UserPlus, Users } from "lucide-react";
-import type { Conversation, UserProfile } from "../db/repo";
+import type { AvatarRef, Conversation, UserProfile } from "../db/repo";
 import { useAppStore } from "../app/store";
 import OverflowMenu from "./OverflowMenu";
 import FriendOverflowMenu from "./FriendOverflowMenu";
@@ -17,6 +17,7 @@ type SidebarProps = {
   friends: UserProfile[];
   userId: string | null;
   userProfile: UserProfile | null;
+  groupAvatarRefsByConv: Record<string, AvatarRef | undefined>;
   selectedConvId: string | null;
   listMode: "chats" | "friends";
   listFilter: "all" | "unread" | "favorites";
@@ -47,6 +48,7 @@ export default function Sidebar({
   friends,
   userId,
   userProfile,
+  groupAvatarRefsByConv,
   selectedConvId,
   listMode,
   listFilter,
@@ -381,6 +383,7 @@ export default function Sidebar({
                         key={conv.id}
                         conv={conv}
                         friend={resolveConvFriend(conv)}
+                        groupAvatarRefsByConv={groupAvatarRefsByConv}
                         active={selectedConvId === conv.id}
                         locale={locale}
                         t={t}
@@ -415,6 +418,7 @@ export default function Sidebar({
                         key={conv.id}
                         conv={conv}
                         friend={resolveConvFriend(conv)}
+                        groupAvatarRefsByConv={groupAvatarRefsByConv}
                         active={selectedConvId === conv.id}
                         locale={locale}
                         t={t}
@@ -487,6 +491,7 @@ export default function Sidebar({
 type ConversationRowProps = {
   conv: Conversation;
   friend?: UserProfile;
+  groupAvatarRefsByConv: Record<string, AvatarRef | undefined>;
   active: boolean;
   locale: string;
   t: (ko: string, en: string) => string;
@@ -501,6 +506,7 @@ type ConversationRowProps = {
 function ConversationRow({
   conv,
   friend,
+  groupAvatarRefsByConv,
   active,
   locale,
   t,
@@ -539,7 +545,12 @@ function ConversationRow({
       data-conversation-id={conv.id}
       data-selected={active ? "true" : "false"}
     >
-      <Avatar name={friend?.displayName || conv.name} avatarRef={friend?.avatarRef} size={40} />
+      {(() => {
+        const isGroup = conv.type === "group" || conv.participants.length > 2;
+        const avatarRef = isGroup ? groupAvatarRefsByConv[conv.id] : friend?.avatarRef;
+        const avatarName = isGroup ? conv.name : friend?.displayName || conv.name;
+        return <Avatar name={avatarName} avatarRef={avatarRef} size={40} />;
+      })()}
       <div className="min-w-0 flex-1 overflow-hidden">
         <div className="flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-sm font-semibold text-nkc-text">
@@ -570,9 +581,6 @@ function ConversationRow({
     </div>
   );
 }
-
-
-
 
 
 

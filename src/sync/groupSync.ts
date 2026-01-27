@@ -6,6 +6,7 @@ export type GroupCreatePayload = {
   memberIds: string[];
   actorId: string;
   ts: number;
+  sharedAvatarRef?: string;
 };
 
 export type GroupInvitePayload = {
@@ -70,6 +71,7 @@ const buildBaseConversation = (
     ts: number;
     lastMessage: string;
     hidden: boolean;
+    sharedAvatarRef?: string;
   }
 ): Conversation => ({
   id: next.id,
@@ -84,6 +86,7 @@ const buildBaseConversation = (
   lastTs: Math.max(existing?.lastTs ?? 0, next.ts),
   lastMessage: next.lastMessage || existing?.lastMessage || "",
   participants: next.participants,
+  sharedAvatarRef: next.sharedAvatarRef ?? existing?.sharedAvatarRef,
 });
 
 export const applyGroupEvent = async (
@@ -107,6 +110,7 @@ export const applyGroupEvent = async (
       ts: payload.ts,
       lastMessage: "Group created",
       hidden: false,
+      sharedAvatarRef: payload.sharedAvatarRef,
     });
     await saveConversation(next);
     return;

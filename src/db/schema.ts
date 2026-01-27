@@ -38,7 +38,7 @@ export type OutboxRecord = {
 };
 export type MediaChunkRecord = {
   id: string;
-  ownerType: "profile" | "message";
+  ownerType: "profile" | "message" | "group";
   ownerId: string;
   idx: number;
   enc_b64: string;
@@ -174,6 +174,21 @@ export class NKCVaultDB extends Dexie {
       tombstones: "id, type, deletedAt",
     });
     this.version(8).stores({
+      meta: "key",
+      profiles: "id, updatedAt",
+      conversations: "id, updatedAt",
+      messages: "id, convId, ts",
+      events: "eventId, convId, ts, lamport, authorDeviceId, [convId+lamport], [convId+ts]",
+      outbox:
+        "id, status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
+      mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+      mediaIndex: "mediaId, convId, createdAt, complete",
+      mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
+      receipts:
+        "id, msgId, convId, kind, actorId, cursorTs, ts, [convId+kind], [convId+actorId+kind], [convId+msgId], [msgId+kind]",
+      tombstones: "id, type, deletedAt",
+    });
+    this.version(9).stores({
       meta: "key",
       profiles: "id, updatedAt",
       conversations: "id, updatedAt",

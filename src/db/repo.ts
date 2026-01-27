@@ -16,9 +16,10 @@ import {
 import { clearVaultKey, getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
 import { createId } from "../utils/ids";
 import { mapLimit } from "../utils/async";
+import { parseAvatarRef, serializeAvatarRef } from "../utils/avatarRefs";
 
 export type AvatarRef = {
-  ownerType: "profile";
+  ownerType: "profile" | "group";
   ownerId: string;
   mime: string;
   total: number;
@@ -67,6 +68,7 @@ export type Conversation = {
   lastTs: number;
   lastMessage: string;
   participants: string[];
+  sharedAvatarRef?: string;
 };
 
 export type Message = {
@@ -477,15 +479,67 @@ export const saveProfilePhoto = async (ownerId: string, file: File) => {
   return avatarRef;
 };
 
+const saveAvatarPhoto = async (ownerType: AvatarRef["ownerType"], ownerId: string, file: File) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  await db.mediaChunks
+    .where("ownerId")
+    .equals(ownerId)
+    .and((chunk) => chunk.ownerType === ownerType)
+    .delete();
+
+  const buffer = await file.arrayBuffer();
+  const chunks = chunkBuffer(buffer, MEDIA_CHUNK_SIZE);
+  const total = chunks.length;
+  const now = Date.now();
+  const records: MediaChunkRecord[] = [];
+
+  for (let idx = 0; idx < chunks.length; idx += 1) {
+    const chunkId = `${ownerId}:${idx}`;
+    const enc_b64 = await encodeBinaryEnvelope(vk, chunkId, "mediaChunk", chunks[idx]);
+    records.push({
+      id: chunkId,
+      ownerType,
+      ownerId,
+      idx,
+      enc_b64,
+      mime: file.type || "application/octet-stream",
+      total,
+      updatedAt: now,
+    });
+    if (shouldYieldMedia(idx, total)) {
+      await yieldToEventLoop();
+    }
+  }
+
+  await db.mediaChunks.bulkPut(records);
+
+  const avatarRef: AvatarRef = {
+    ownerType,
+    ownerId,
+    mime: file.type || "application/octet-stream",
+    total,
+    chunkSize: MEDIA_CHUNK_SIZE,
+  };
+
+  return avatarRef;
+};
+
+export const saveGroupPhotoRef = async (ownerId: string, file: File) => {
+  const avatarRef = await saveAvatarPhoto("group", ownerId, file);
+  return serializeAvatarRef(avatarRef);
+};
+
 export const loadProfilePhoto = async (avatarRef?: AvatarRef) => {
   try {
     await ensureDbOpen();
     if (!avatarRef) return null;
     const vk = requireVaultKey();
+    const ownerType = avatarRef.ownerType === "group" ? "group" : "profile";
     const chunks = await db.mediaChunks
       .where("ownerId")
       .equals(avatarRef.ownerId)
-      .and((chunk) => chunk.ownerType === "profile")
+      .and((chunk) => chunk.ownerType === ownerType)
       .sortBy("idx");
 
     if (!chunks.length) return null;
@@ -503,6 +557,12 @@ export const loadProfilePhoto = async (avatarRef?: AvatarRef) => {
   } catch {
     return null;
   }
+};
+
+export const loadAvatarFromRef = async (ref?: string | null) => {
+  const parsed = parseAvatarRef(ref);
+  if (!parsed) return null;
+  return loadProfilePhoto(parsed);
 };
 
 export const saveMessageMedia = async (

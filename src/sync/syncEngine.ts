@@ -397,6 +397,7 @@ const applyConversationEvent = async (body: { type: "conv"; conv: Conversation }
     lastTs: incoming.lastTs ?? existing?.lastTs ?? Date.now(),
     lastMessage: incoming.lastMessage ?? existing?.lastMessage ?? "",
     participants: incoming.participants ?? existing?.participants ?? [],
+    sharedAvatarRef: incoming.sharedAvatarRef ?? existing?.sharedAvatarRef,
   };
   await saveConversation(merged);
 };
@@ -936,6 +937,7 @@ const buildConversationEvents = async (convId: string) => {
           lastTs: conversation.lastTs,
           lastMessage: conversation.lastMessage,
           participants: conversation.participants,
+          sharedAvatarRef: conversation.sharedAvatarRef,
         },
       },
       identityPriv

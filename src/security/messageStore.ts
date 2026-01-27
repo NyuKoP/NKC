@@ -55,6 +55,7 @@ const storeReadReceipt = async (
 };
 
 const storeMediaChunk = async (payload: {
+  ownerType?: "message" | "group";
   ownerId: string;
   idx: number;
   total: number;
@@ -65,18 +66,19 @@ const storeMediaChunk = async (payload: {
   if (!vk) return;
   if (!Number.isFinite(payload.idx) || !Number.isFinite(payload.total)) return;
   if (payload.idx < 0 || payload.total <= 0) return;
+  const ownerType = payload.ownerType === "group" ? "group" : "message";
   let bytes: Uint8Array;
   try {
     bytes = decodeBase64Url(payload.b64);
   } catch {
     return;
   }
-  const chunkId = `${payload.ownerId}:${payload.idx}`;
+  const chunkId = `${ownerType}:${payload.ownerId}:${payload.idx}`;
   await ensureDbOpen();
   const enc_b64 = await encodeBinaryEnvelope(vk, chunkId, "mediaChunk", bytes);
   await db.mediaChunks.put({
     id: chunkId,
-    ownerType: "message",
+    ownerType,
     ownerId: payload.ownerId,
     idx: payload.idx,
     enc_b64,
@@ -129,6 +131,7 @@ export const loadConversationMessages = async (
       cursorTs?: number;
       anchorMsgId?: string;
       phase?: string;
+      ownerType?: string;
       ownerId?: string;
       idx?: number;
       total?: number;
@@ -180,6 +183,7 @@ export const loadConversationMessages = async (
       typeof typed.b64 === "string"
     ) {
       await storeMediaChunk({
+        ownerType: typed.ownerType === "group" ? "group" : "message",
         ownerId: typed.ownerId,
         idx: Number(typed.idx),
         total: Number(typed.total),
