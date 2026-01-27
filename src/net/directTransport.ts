@@ -4,9 +4,12 @@ import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 import { createId } from "../utils/ids";
 import type { PeerHint, Transport, TransportStatus } from "./transport";
 
-const normalizePayload = (payload: TransportPacket["payload"]) => {
+const hasOwn = (value: object, key: PropertyKey) =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+export const normalizePayload = (payload: TransportPacket["payload"]) => {
   if (payload instanceof Uint8Array) return payload;
-  if (payload && typeof payload === "object" && "b64" in payload) {
+  if (payload && typeof payload === "object" && hasOwn(payload, "b64")) {
     const b64 = (payload as { b64?: unknown }).b64;
     if (typeof b64 === "string") {
       try {
