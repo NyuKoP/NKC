@@ -12,7 +12,6 @@ import { getVaultKey } from "../crypto/sessionKeyring";
 import { getFriendPsk } from "./pskStore";
 import { decodeBase64Url } from "./base64url";
 import { getDhPrivateKey, getIdentityPublicKey } from "./identityKeys";
-import { getOrCreateDeviceId } from "./deviceRole";
 import { db, ensureDbOpen } from "../db/schema";
 import { putReadCursor, putReceipt } from "../storage/receiptStore";
 import { applyGroupEvent, isGroupEventPayload } from "../sync/groupSync";
@@ -21,13 +20,22 @@ const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode
   console.debug(`[msg] ${label}`, meta);
 };
 
-const resolveSenderId = (
-  header: Envelope["header"],
+type SenderResolution = { senderId: string; verifyKey: Uint8Array } | null;
+
+const determineSenderAndKey = async (
+  envelope: Envelope,
   currentUserId: string,
-  friendId: string
-) => {
-  const localDeviceId = getOrCreateDeviceId();
-  return header.authorDeviceId === localDeviceId ? currentUserId : friendId;
+  friendId: string,
+  myIdentityPub: Uint8Array,
+  theirIdentityPub: Uint8Array
+): Promise<SenderResolution> => {
+  if (await verifyEnvelopeSignature(envelope, myIdentityPub)) {
+    return { senderId: currentUserId, verifyKey: myIdentityPub };
+  }
+  if (await verifyEnvelopeSignature(envelope, theirIdentityPub)) {
+    return { senderId: friendId, verifyKey: theirIdentityPub };
+  }
+  return null;
 };
 
 const storeReadReceipt = async (
@@ -193,17 +201,25 @@ export const loadConversationMessages = async (
       continue;
     }
 
-    const senderId = resolveSenderId(envelope.header, currentUserId, friend.id);
-    const verifyKey = senderId === currentUserId ? myIdentityPub : theirIdentityPub;
+    const resolved = await determineSenderAndKey(
+      envelope,
+      currentUserId,
+      friend.id,
+      myIdentityPub,
+      theirIdentityPub
+    );
+    if (!resolved) {
+      console.warn("[msg] signature invalid for both keys", {
+        convId: record.convId,
+        eventId: record.eventId,
+      });
+      continue;
+    }
+    const { senderId, verifyKey } = resolved;
 
     try {
       const rk = envelope.header.rk;
       if (rk && rk.v === 2 && Number.isFinite(rk.i) && typeof rk.dh === "string") {
-        const verified = await verifyEnvelopeSignature(envelope, verifyKey);
-        if (!verified) {
-          console.warn("[msg] signature invalid", { convId: record.convId, eventId: record.eventId });
-          continue;
-        }
         logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "v2" });
         const recv = await tryRecvDhKey(conv.id, ratchetBaseKey, rk);
         if ("deferred" in recv) {
@@ -236,11 +252,6 @@ export const loadConversationMessages = async (
       }
 
       if (rk && rk.v === 1 && Number.isFinite(rk.i)) {
-        const verified = await verifyEnvelopeSignature(envelope, verifyKey);
-        if (!verified) {
-          console.warn("[msg] signature invalid", { convId: record.convId, eventId: record.eventId });
-          continue;
-        }
         logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "v1" });
         const recv = await tryRecvKey(conv.id, ratchetBaseKey, rk.i);
         if ("deferred" in recv) {
