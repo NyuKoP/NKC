@@ -15,7 +15,7 @@ import type { Conversation, MediaRef, Message, UserProfile } from "../db/repo";
 import { loadMessageMedia } from "../db/repo";
 import type { ConversationTransportStatus } from "../net/transportManager";
 import { getOutbox } from "../storage/outboxStore";
-import { getReceiptState } from "../storage/receiptStore";
+import { getReadCursors, getReceiptState } from "../storage/receiptStore";
 import { getPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
 
@@ -79,7 +79,7 @@ type ChatViewProps = {
   onComposingChange: (value: boolean) => void;
   onSend: (text: string) => void;
   onSendMedia: (files: File[]) => void;
-  onSendReadReceipt?: (payload: { convId: string; msgId: string }) => void;
+  onSendReadReceipt?: (payload: { convId: string; msgId: string; msgTs: number }) => void;
   onAcceptRequest?: () => void;
   onDeclineRequest?: () => void;
   onBack: () => void;
@@ -110,18 +110,23 @@ export default function ChatView({
   const [atBottom, setAtBottom] = useState(true);
   const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(false);
   const [sendStates, setSendStates] = useState<Record<string, SendState>>({});
+  const [readCursors, setReadCursors] = useState<Record<string, number>>({});
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const lastReadReceiptSentRef = useRef<Record<string, number>>({});
+  const isGroup = Boolean(
+    conversation && (conversation.type === "group" || conversation.participants.length > 2)
+  );
 
   const peerProfile = useMemo(() => {
-    if (!conversation || !currentUserId) return null;
+    if (!conversation || !currentUserId || isGroup) return null;
     const partnerId = conversation.participants.find((id) => id !== currentUserId);
     return partnerId ? profilesById[partnerId] ?? null : null;
-  }, [conversation, currentUserId, profilesById]);
+  }, [conversation, currentUserId, isGroup, profilesById]);
 
   const requestIncoming =
-    Boolean(conversation?.pendingAcceptance) || peerProfile?.friendStatus === "request_in";
-  const requestOutgoing = peerProfile?.friendStatus === "request_out";
+    !isGroup &&
+    (Boolean(conversation?.pendingAcceptance) || peerProfile?.friendStatus === "request_in");
+  const requestOutgoing = !isGroup && peerProfile?.friendStatus === "request_out";
 
   const grouped = useMemo(
     () => groupMessages(messages, currentUserId, nameMap),
@@ -190,6 +195,31 @@ export default function ChatView({
     };
   }, [refreshSendStates]);
 
+  const refreshReadCursors = useCallback(async () => {
+    if (!conversation) {
+      setReadCursors({});
+      return;
+    }
+    const next = await getReadCursors(conversation.id);
+    setReadCursors(next);
+  }, [conversation]);
+
+  useEffect(() => {
+    let active = true;
+    const run = async () => {
+      if (!active) return;
+      await refreshReadCursors();
+    };
+    void run();
+    const timer = window.setInterval(() => {
+      void refreshReadCursors();
+    }, 2000);
+    return () => {
+      active = false;
+      window.clearInterval(timer);
+    };
+  }, [refreshReadCursors]);
+
   useEffect(() => {
     if (!conversation || !currentUserId || !readReceiptsEnabled || !onSendReadReceipt) return;
     if (requestIncoming) return;
@@ -200,10 +230,19 @@ export default function ChatView({
 
     let active = true;
     const sendReceipt = async () => {
-      const state = await getReceiptState(latestIncoming.id);
+      const [state, cursors] = await Promise.all([
+        getReceiptState(latestIncoming.id),
+        getReadCursors(conversation.id),
+      ]);
       if (!active) return;
       if (state.read) return;
-      await onSendReadReceipt({ convId: conversation.id, msgId: latestIncoming.id });
+      const ownCursor = currentUserId ? cursors[currentUserId] ?? 0 : 0;
+      if (ownCursor >= latestIncoming.ts) return;
+      await onSendReadReceipt({
+        convId: conversation.id,
+        msgId: latestIncoming.id,
+        msgTs: latestIncoming.ts,
+      });
       lastReadReceiptSentRef.current[conversation.id] = Date.now();
     };
     void sendReceipt();
@@ -247,6 +286,26 @@ export default function ChatView({
     if (state === "sent") return <Check size={12} className="text-nkc-muted" />;
     if (state === "delivered") return <CheckCheck size={12} className="text-nkc-muted" />;
     return <CheckCheck size={12} className="text-nkc-accent" />;
+  };
+
+  const participants = conversation?.participants ?? [];
+  const totalOthers = currentUserId
+    ? participants.filter((id) => id && id !== currentUserId).length
+    : 0;
+
+  const getSeenInfo = (message: Message) => {
+    if (!conversation || !currentUserId || !readReceiptsEnabled) return null;
+    if (message.senderId !== currentUserId) return null;
+    if (totalOthers <= 0) return null;
+    let seenCount = 0;
+    Object.entries(readCursors).forEach(([actorId, cursorTs]) => {
+      if (actorId === currentUserId) return;
+      if (!Number.isFinite(cursorTs)) return;
+      if (cursorTs >= message.ts) {
+        seenCount += 1;
+      }
+    });
+    return { seenCount, totalOthers };
   };
 
   return (
@@ -373,28 +432,38 @@ export default function ChatView({
                       {group.senderId !== currentUserId ? (
                         <span className="text-xs text-nkc-muted">{senderName}</span>
                       ) : null}
-                      {group.messages.map((message) => (
-                        <div
-                          key={message.id}
-                          className={`rounded-nkc border px-4 py-3 text-sm leading-relaxed ${
-                            group.senderId === currentUserId
-                              ? "border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
-                              : "border-nkc-border bg-nkc-panel text-nkc-text"
-                          }`}
-                        >
-                          {message.media ? (
-                            <MediaAttachment media={message.media} />
-                          ) : (
-                            message.text
-                          )}
-                          <div className="mt-2 flex items-center gap-1 text-[11px] text-nkc-muted">
-                            <span>{formatTime(message.ts)}</span>
-                            {group.senderId === currentUserId
-                              ? renderSendState(sendStates[message.id])
-                              : null}
+                      {group.messages.map((message) => {
+                        const seenInfo = getSeenInfo(message);
+                        return (
+                          <div
+                            key={message.id}
+                            className={`rounded-nkc border px-4 py-3 text-sm leading-relaxed ${
+                              group.senderId === currentUserId
+                                ? "border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
+                                : "border-nkc-border bg-nkc-panel text-nkc-text"
+                            }`}
+                          >
+                            {message.media ? (
+                              <MediaAttachment media={message.media} />
+                            ) : (
+                              message.text
+                            )}
+                            <div className="mt-2 flex items-center gap-1 text-[11px] text-nkc-muted">
+                              <span>{formatTime(message.ts)}</span>
+                              {group.senderId === currentUserId && seenInfo ? (
+                                <span className="ml-1">
+                                  {isGroup
+                                    ? `읽음 ${seenInfo.seenCount}/${seenInfo.totalOthers}`
+                                    : `읽음 ${seenInfo.seenCount}`}
+                                </span>
+                              ) : null}
+                              {group.senderId === currentUserId
+                                ? renderSendState(sendStates[message.id])
+                                : null}
+                            </div>
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   </div>
                 </div>
