@@ -114,10 +114,16 @@ export default function ChatView({
   const [sendStates, setSendStates] = useState<Record<string, SendState>>({});
   const [readCursors, setReadCursors] = useState<Record<string, number>>({});
   const timelineRef = useRef<HTMLDivElement | null>(null);
-  const lastReadReceiptSentRef = useRef<Record<string, number>>({});
+  const latestIncomingRef = useRef<HTMLDivElement | null>(null);
   const isGroup = Boolean(
     conversation && (conversation.type === "group" || conversation.participants.length > 2)
   );
+  const [isWindowActive, setIsWindowActive] = useState(() => {
+    if (typeof document === "undefined") return true;
+    const visible = document.visibilityState === "visible";
+    const focused = typeof document.hasFocus === "function" ? document.hasFocus() : true;
+    return visible && focused;
+  });
 
   const peerProfile = useMemo(() => {
     if (!conversation || !currentUserId || isGroup) return null;
@@ -134,6 +140,12 @@ export default function ChatView({
     () => groupMessages(messages, currentUserId, nameMap),
     [messages, currentUserId, nameMap]
   );
+  const latestIncoming = useMemo(() => {
+    if (!conversation || !currentUserId) return null;
+    return (
+      [...messages].reverse().find((message) => message.senderId !== currentUserId) ?? null
+    );
+  }, [conversation, currentUserId, messages]);
 
   useEffect(() => {
     let active = true;
@@ -223,35 +235,77 @@ export default function ChatView({
   }, [refreshReadCursors]);
 
   useEffect(() => {
+    if (!conversation) return;
+    const updateWindowActive = () => {
+      const visible = document.visibilityState === "visible";
+      const focused = typeof document.hasFocus === "function" ? document.hasFocus() : true;
+      setIsWindowActive(visible && focused);
+    };
+    updateWindowActive();
+    window.addEventListener("focus", updateWindowActive);
+    window.addEventListener("blur", updateWindowActive);
+    document.addEventListener("visibilitychange", updateWindowActive);
+    return () => {
+      window.removeEventListener("focus", updateWindowActive);
+      window.removeEventListener("blur", updateWindowActive);
+      document.removeEventListener("visibilitychange", updateWindowActive);
+    };
+  }, [conversation?.id]);
+
+  useEffect(() => {
     if (!conversation || !currentUserId || !readReceiptsEnabled || !onSendReadReceipt) return;
     if (requestIncoming) return;
-    const latestIncoming = [...messages].reverse().find((message) => message.senderId !== currentUserId);
     if (!latestIncoming) return;
-    const lastSentAt = lastReadReceiptSentRef.current[conversation.id] ?? 0;
-    if (Date.now() - lastSentAt < 2000) return;
+    if (!isWindowActive) return;
 
-    let active = true;
     const sendReceipt = async () => {
-      const [state, cursors] = await Promise.all([
-        getReceiptState(latestIncoming.id),
-        getReadCursors(conversation.id),
-      ]);
-      if (!active) return;
+      const state = await getReceiptState(latestIncoming.id);
       if (state.read) return;
-      const ownCursor = currentUserId ? cursors[currentUserId] ?? 0 : 0;
+      const ownCursor = readCursors[currentUserId] ?? 0;
       if (ownCursor >= latestIncoming.ts) return;
       await onSendReadReceipt({
         convId: conversation.id,
         msgId: latestIncoming.id,
         msgTs: latestIncoming.ts,
       });
-      lastReadReceiptSentRef.current[conversation.id] = Date.now();
     };
-    void sendReceipt();
+
+    const root = timelineRef.current;
+    const target = latestIncomingRef.current;
+    if (!target) return;
+
+    if (typeof IntersectionObserver === "undefined") {
+      void sendReceipt();
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry?.isIntersecting) return;
+        observer.disconnect();
+        void sendReceipt();
+      },
+      {
+        root,
+        threshold: 0.6,
+      }
+    );
+
+    observer.observe(target);
     return () => {
-      active = false;
+      observer.disconnect();
     };
-  }, [conversation, currentUserId, messages, onSendReadReceipt, readReceiptsEnabled, requestIncoming]);
+  }, [
+    conversation,
+    currentUserId,
+    isWindowActive,
+    latestIncoming,
+    onSendReadReceipt,
+    readCursors,
+    readReceiptsEnabled,
+    requestIncoming,
+  ]);
 
   useEffect(() => {
     if (conversation) {
@@ -438,9 +492,15 @@ export default function ChatView({
                       ) : null}
                       {group.messages.map((message) => {
                         const seenInfo = getSeenInfo(message);
+                        const isLatestIncoming =
+                          latestIncoming &&
+                          currentUserId &&
+                          message.senderId !== currentUserId &&
+                          message.id === latestIncoming.id;
                         return (
                           <div
                             key={message.id}
+                            ref={isLatestIncoming ? latestIncomingRef : undefined}
                             className={`rounded-nkc border px-4 py-3 text-sm leading-relaxed ${
                               group.senderId === currentUserId
                                 ? "border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"

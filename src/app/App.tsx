@@ -111,6 +111,7 @@ const buildNameMap = (
 
 const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
 const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
+const READ_CURSOR_THROTTLE_MS = 1500;
 
 export default function App() {
   const ui = useAppStore((state) => state.ui);
@@ -164,6 +165,12 @@ export default function App() {
   const bootGuardRef = useRef<Promise<void> | null>(null);
   const outboxSchedulerStarted = useRef(false);
   const activeSyncConvRef = useRef<string | null>(null);
+  const lastReadCursorSentAtRef = useRef<Record<string, number>>({});
+  const lastReadCursorSentTsRef = useRef<Record<string, number>>({});
+  const pendingReadCursorRef = useRef<
+    Record<string, { cursorTs: number; anchorMsgId: string } | undefined>
+  >({});
+  const readCursorThrottleTimerRef = useRef<Record<string, number | undefined>>({});
 
   const connectionToastShown = useRef(false);
   const connectionToastKey = "nkc.sessionConnectedToastShown";
@@ -1216,57 +1223,101 @@ export default function App() {
         cursorTs,
         anchorMsgId: payload.msgId,
       });
-      const isDirect =
-        !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
-      if (isDirect) {
-        const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
-        const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
-        if (!partner?.dhPub || !partner.identityPub) return;
 
-        try {
-          await sendDirectEnvelope(
-            conv,
-            partner,
-            {
-              type: "rcpt",
-              kind: "read_cursor",
-              convId: conv.id,
-              cursorTs,
-              anchorMsgId: payload.msgId,
-              ts: Date.now(),
-            },
-            "normal"
-          );
-        } catch (error) {
-          console.error("Failed to send read cursor", error);
+      const sendNow = async (targetConv: Conversation, targetCursorTs: number, anchorMsgId: string) => {
+        lastReadCursorSentAtRef.current[targetConv.id] = Date.now();
+        lastReadCursorSentTsRef.current[targetConv.id] = targetCursorTs;
+
+        const isDirect =
+          !(targetConv.type === "group" || targetConv.participants.length > 2) &&
+          targetConv.participants.length === 2;
+        if (isDirect) {
+          const partnerId =
+            targetConv.participants.find((id) => id && id !== userProfile.id) || null;
+          const partner = partnerId
+            ? friends.find((friend) => friend.id === partnerId) || null
+            : null;
+          if (!partner?.dhPub || !partner.identityPub) return;
+
+          try {
+            await sendDirectEnvelope(
+              targetConv,
+              partner,
+              {
+                type: "rcpt",
+                kind: "read_cursor",
+                convId: targetConv.id,
+                cursorTs: targetCursorTs,
+                anchorMsgId,
+                ts: Date.now(),
+              },
+              "normal"
+            );
+          } catch (error) {
+            console.error("Failed to send read cursor", error);
+          }
+          return;
+        }
+
+        const targets = targetConv.participants.filter((id) => id && id !== userProfile.id);
+        for (const memberId of targets) {
+          const friend = friends.find((item) => item.id === memberId);
+          if (!friend?.dhPub || !friend.identityPub) continue;
+          const directConv = findDirectConvWithFriend(friend.id);
+          if (!directConv) continue;
+          try {
+            await sendDirectEnvelope(
+              directConv,
+              friend,
+              {
+                type: "rcpt",
+                kind: "read_cursor",
+                convId: targetConv.id,
+                cursorTs: targetCursorTs,
+                anchorMsgId,
+                ts: Date.now(),
+              },
+              "normal"
+            );
+          } catch (error) {
+            console.error("Failed to send group read cursor", { memberId }, error);
+          }
+        }
+      };
+
+      const lastCursorTs = lastReadCursorSentTsRef.current[conv.id] ?? 0;
+      if (cursorTs <= lastCursorTs) return;
+
+      const now = Date.now();
+      const lastSentAt = lastReadCursorSentAtRef.current[conv.id] ?? 0;
+      const elapsed = now - lastSentAt;
+      if (elapsed < READ_CURSOR_THROTTLE_MS) {
+        const pending = pendingReadCursorRef.current[conv.id];
+        if (!pending || cursorTs > pending.cursorTs) {
+          pendingReadCursorRef.current[conv.id] = { cursorTs, anchorMsgId: payload.msgId };
+        }
+        if (!readCursorThrottleTimerRef.current[conv.id]) {
+          const waitMs = Math.max(READ_CURSOR_THROTTLE_MS - elapsed, 0);
+          readCursorThrottleTimerRef.current[conv.id] = window.setTimeout(() => {
+            readCursorThrottleTimerRef.current[conv.id] = undefined;
+            const next = pendingReadCursorRef.current[conv.id];
+            if (!next) return;
+            const latestConv = convs.find((item) => item.id === conv.id);
+            if (!latestConv) return;
+            const sentTs = lastReadCursorSentTsRef.current[conv.id] ?? 0;
+            if (next.cursorTs <= sentTs) {
+              pendingReadCursorRef.current[conv.id] = undefined;
+              return;
+            }
+            pendingReadCursorRef.current[conv.id] = undefined;
+            void sendNow(latestConv, next.cursorTs, next.anchorMsgId);
+          }, waitMs);
         }
         return;
       }
 
-      const targets = conv.participants.filter((id) => id && id !== userProfile.id);
-      for (const memberId of targets) {
-        const friend = friends.find((item) => item.id === memberId);
-        if (!friend?.dhPub || !friend.identityPub) continue;
-        const directConv = findDirectConvWithFriend(friend.id);
-        if (!directConv) continue;
-        try {
-          await sendDirectEnvelope(
-            directConv,
-            friend,
-            {
-              type: "rcpt",
-              kind: "read_cursor",
-              convId: conv.id,
-              cursorTs,
-              anchorMsgId: payload.msgId,
-              ts: Date.now(),
-            },
-            "normal"
-          );
-        } catch (error) {
-          console.error("Failed to send group read cursor", { memberId }, error);
-        }
-      }
+      pendingReadCursorRef.current[conv.id] = undefined;
+      void sendNow(conv, cursorTs, payload.msgId);
     },
     [convs, findDirectConvWithFriend, friends, sendDirectEnvelope, userProfile]
   );
@@ -1822,7 +1873,8 @@ export default function App() {
     const nextAlias = alias?.trim() ?? "";
     setFriendAliasesById((prev) => {
       if (!nextAlias) {
-        const { [friendId]: _removed, ...rest } = prev;
+        const rest = { ...prev };
+        delete rest[friendId];
         return rest;
       }
       return { ...prev, [friendId]: nextAlias };
