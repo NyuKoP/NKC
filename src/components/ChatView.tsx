@@ -35,6 +35,11 @@ const computeAttachmentTotals = (files: File[]) => {
 };
 
 const validateAttachmentTotals = (files: File[]) => {
+  const oversized = files.find((file) => (file.size || 0) > MAX_ATTACH_TOTAL_BYTES);
+  if (oversized) {
+    window.alert("단일 첨부는 500MB를 초과할 수 없습니다.");
+    return false;
+  }
   const { totalBytes, imageCount, totalCount } = computeAttachmentTotals(files);
   if (totalCount > MAX_ATTACH_TOTAL_COUNT) {
     window.alert(`첨부는 한 번에 최대 ${MAX_ATTACH_TOTAL_COUNT}개까지 가능합니다.`);
@@ -248,11 +253,18 @@ export default function ChatView({
     <section
       className="flex h-full flex-1 flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft"
       data-testid="chat-view"
+      onDragEnter={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       onDragOver={(event) => {
         event.preventDefault();
+        event.stopPropagation();
       }}
       onDrop={(event) => {
         event.preventDefault();
+        event.stopPropagation();
+        if (!conversation || requestIncoming) return;
         const files = Array.from(event.dataTransfer?.files ?? []);
         if (!files.length) return;
         window.dispatchEvent(new CustomEvent("nkc:attach-files", { detail: { files } }));
