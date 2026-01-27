@@ -20,6 +20,36 @@ import { getPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
 
 const GROUP_WINDOW_MS = 1000 * 60 * 2;
+const MAX_ATTACH_TOTAL_BYTES = 500 * 1024 * 1024;
+const MAX_ATTACH_IMAGE_COUNT = 30;
+const MAX_ATTACH_TOTAL_COUNT = 30;
+
+const computeAttachmentTotals = (files: File[]) => {
+  const totalBytes = files.reduce((sum, file) => sum + (file.size || 0), 0);
+  const imageCount = files.reduce(
+    (sum, file) => sum + (file.type?.startsWith("image/") ? 1 : 0),
+    0
+  );
+  const totalCount = files.length;
+  return { totalBytes, imageCount, totalCount };
+};
+
+const validateAttachmentTotals = (files: File[]) => {
+  const { totalBytes, imageCount, totalCount } = computeAttachmentTotals(files);
+  if (totalCount > MAX_ATTACH_TOTAL_COUNT) {
+    window.alert(`첨부는 한 번에 최대 ${MAX_ATTACH_TOTAL_COUNT}개까지 가능합니다.`);
+    return false;
+  }
+  if (imageCount > MAX_ATTACH_IMAGE_COUNT) {
+    window.alert(`사진은 한 번에 최대 ${MAX_ATTACH_IMAGE_COUNT}장까지 가능합니다.`);
+    return false;
+  }
+  if (totalBytes > MAX_ATTACH_TOTAL_BYTES) {
+    window.alert("첨부 총 용량은 500MB를 초과할 수 없습니다.");
+    return false;
+  }
+  return true;
+};
 
 const formatTime = (ts: number) =>
   new Intl.DateTimeFormat("ko-KR", {
@@ -43,7 +73,7 @@ type ChatViewProps = {
   isComposing: boolean;
   onComposingChange: (value: boolean) => void;
   onSend: (text: string) => void;
-  onSendMedia: (file: File) => void;
+  onSendMedia: (files: File[]) => void;
   onSendReadReceipt?: (payload: { convId: string; msgId: string }) => void;
   onAcceptRequest?: () => void;
   onDeclineRequest?: () => void;
@@ -218,6 +248,15 @@ export default function ChatView({
     <section
       className="flex h-full flex-1 flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft"
       data-testid="chat-view"
+      onDragOver={(event) => {
+        event.preventDefault();
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        const files = Array.from(event.dataTransfer?.files ?? []);
+        if (!files.length) return;
+        window.dispatchEvent(new CustomEvent("nkc:attach-files", { detail: { files } }));
+      }}
     >
       <header className="flex items-center justify-between border-b border-nkc-border px-6 py-5">
         <div className="flex min-w-0 items-center gap-3">
@@ -388,7 +427,7 @@ type MessageComposerProps = {
   isComposing: boolean;
   onComposingChange: (value: boolean) => void;
   onSend: (text: string) => void;
-  onSendMedia: (file: File) => void;
+  onSendMedia: (files: File[]) => void;
 };
 
 const MessageComposer = ({
@@ -400,6 +439,7 @@ const MessageComposer = ({
   onSendMedia,
 }: MessageComposerProps) => {
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<File[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
@@ -411,21 +451,55 @@ const MessageComposer = ({
     )}px`;
   }, [text]);
 
+  const addFilesToQueue = useCallback((incoming: File[]) => {
+    if (!incoming.length) return;
+    setAttachments((prev) => {
+      const merged = [...prev, ...incoming];
+      if (!validateAttachmentTotals(merged)) return prev;
+      return merged;
+    });
+  }, []);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      if (!conversation || disabled) return;
+      const custom = event as CustomEvent<{ files?: File[] }>;
+      const files = custom.detail?.files ?? [];
+      addFilesToQueue(files);
+    };
+    window.addEventListener("nkc:attach-files", handler as EventListener);
+    return () => {
+      window.removeEventListener("nkc:attach-files", handler as EventListener);
+    };
+  }, [addFilesToQueue, conversation, disabled]);
+
   const handleSend = () => {
     if (!conversation || disabled) return;
     const trimmed = text.trim();
-    if (!trimmed) return;
-    onSend(trimmed);
-    setText("");
+    const hasText = Boolean(trimmed);
+    const hasAttachments = attachments.length > 0;
+    if (!hasText && !hasAttachments) return;
+
+    if (hasText) {
+      onSend(trimmed);
+      setText("");
+    }
+    if (hasAttachments) {
+      onSendMedia(attachments);
+      setAttachments([]);
+    }
   };
 
   const handleMediaSelect = (event: ChangeEvent<HTMLInputElement>) => {
     if (!conversation || disabled) return;
-    const file = event.target.files?.[0];
-    if (!file) return;
-    onSendMedia(file);
+    const files = Array.from(event.target.files ?? []);
+    addFilesToQueue(files);
     event.target.value = "";
   };
+
+  const attachmentImageCount = attachments.filter((file) =>
+    file.type?.startsWith("image/")
+  ).length;
 
   return (
     <form
@@ -439,6 +513,11 @@ const MessageComposer = ({
       }`}
     >
       <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3">
+        {attachments.length ? (
+          <div className="mb-2 text-xs text-nkc-muted">
+            첨부 {attachments.length}개 / 사진 {attachmentImageCount}장
+          </div>
+        ) : null}
         <textarea
           ref={textareaRef}
           disabled={!conversation || disabled}
@@ -472,7 +551,8 @@ const MessageComposer = ({
               <Paperclip size={14} />
               <input
                 type="file"
-                accept="image/*,video/*,audio/*"
+                multiple
+                accept="*/*"
                 className="hidden"
                 onChange={handleMediaSelect}
                 disabled={!conversation || disabled}
@@ -483,7 +563,7 @@ const MessageComposer = ({
           </div>
           <button
             type="submit"
-            disabled={!conversation || disabled || !text.trim()}
+            disabled={!conversation || disabled || (!text.trim() && attachments.length === 0)}
             className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
           >
             전송

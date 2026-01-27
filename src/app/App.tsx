@@ -88,7 +88,7 @@ const buildNameMap = (profiles: UserProfile[]) =>
     return acc;
   }, {});
 
-const INLINE_MEDIA_MAX_BYTES = 2 * 1024 * 1024;
+const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
 const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
 
 export default function App() {
@@ -972,7 +972,7 @@ export default function App() {
     await hydrateVault();
   };
 
-  const handleSendMedia = async (file: File) => {
+  const handleSendMedia = async (files: File[]) => {
     if (!ui.selectedConvId || !userProfile) return;
     const conv = convs.find((item) => item.id === ui.selectedConvId);
     if (!conv) return;
@@ -980,172 +980,184 @@ export default function App() {
     const vk = getVaultKey();
     if (!vk) return;
 
-    const isDirect =
-      !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
+    const sendSingleMedia = async (file: File) => {
+      const isDirect =
+        !(conv.type === "group" || conv.participants.length > 2) &&
+        conv.participants.length === 2;
 
-    if (isDirect) {
-      const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
-      const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
+      if (isDirect) {
+        const partnerId = conv.participants.find((id) => id && id !== userProfile.id) || null;
+        const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
 
-      if (partner?.dhPub && partner.identityPub) {
-        const inlineAllowed = file.size <= INLINE_MEDIA_MAX_BYTES;
-        if (!inlineAllowed) {
-          addToast({ message: "Attachment too large for inline transfer (MVP limit 2MB)." });
-        }
+        if (partner?.dhPub && partner.identityPub) {
+          const inlineAllowed = file.size <= INLINE_MEDIA_MAX_BYTES;
+          if (!inlineAllowed) {
+            addToast({ message: "Attachment too large (max 500MB)." });
+          }
 
-        const now = Date.now();
-        const friendKeyId = partner.friendId ?? partner.id;
-        const lamport = await nextLamportForConv(conv.id);
-        const header: EnvelopeHeader = {
-          v: 1 as const,
-          eventId: createId(),
-          convId: conv.id,
-          ts: now,
-          lamport,
-          authorDeviceId: getOrCreateDeviceId(),
-        };
+          const now = Date.now();
+          const friendKeyId = partner.friendId ?? partner.id;
+          const lamport = await nextLamportForConv(conv.id);
+          const header: EnvelopeHeader = {
+            v: 1 as const,
+            eventId: createId(),
+            convId: conv.id,
+            ts: now,
+            lamport,
+            authorDeviceId: getOrCreateDeviceId(),
+          };
 
-        const media = inlineAllowed
-          ? await saveMessageMedia(header.eventId, file, INLINE_MEDIA_CHUNK_SIZE)
-          : await saveMessageMedia(header.eventId, file);
-        const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
+          const media = inlineAllowed
+            ? await saveMessageMedia(header.eventId, file, INLINE_MEDIA_CHUNK_SIZE)
+            : await saveMessageMedia(header.eventId, file);
+          const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
 
-        const dhPriv = await getDhPrivateKey();
-        const theirDhPub = decodeBase64Url(partner.dhPub);
-        const pskBytes = await getFriendPsk(friendKeyId);
-        const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
-        const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
-        const conversationKey = await deriveConversationKey(
-          dhPriv,
-          theirDhPub,
-          pskBytes,
-          legacyContextBytes
-        );
-        const ratchetBaseKey = await deriveConversationKey(
-          dhPriv,
-          theirDhPub,
-          pskBytes,
-          ratchetContextBytes
-        );
+          const dhPriv = await getDhPrivateKey();
+          const theirDhPub = decodeBase64Url(partner.dhPub);
+          const pskBytes = await getFriendPsk(friendKeyId);
+          const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+          const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
+          const conversationKey = await deriveConversationKey(
+            dhPriv,
+            theirDhPub,
+            pskBytes,
+            legacyContextBytes
+          );
+          const ratchetBaseKey = await deriveConversationKey(
+            dhPriv,
+            theirDhPub,
+            pskBytes,
+            ratchetContextBytes
+          );
 
-        const myIdentityPriv = await getIdentityPrivateKey();
-        let keyForEnvelope = conversationKey;
-        try {
-          const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
-          header.rk = ratchet.headerRk;
-          keyForEnvelope = ratchet.msgKey;
-        } catch {
+          const myIdentityPriv = await getIdentityPrivateKey();
+          let keyForEnvelope = conversationKey;
           try {
-            const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
+            const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
             header.rk = ratchet.headerRk;
             keyForEnvelope = ratchet.msgKey;
-          } catch (error) {
-            console.warn("[ratchet] send fallback to legacy", error);
-          }
-        }
-        const envelope = await encryptEnvelope(
-          keyForEnvelope,
-          header,
-          { type: "msg", text: label, media },
-          myIdentityPriv
-        );
-        const envelopeJson = JSON.stringify(envelope);
-        const eventHash = await computeEnvelopeHash(envelope);
-
-        await saveEvent({
-          eventId: header.eventId,
-          convId: header.convId,
-          authorDeviceId: header.authorDeviceId,
-          lamport: header.lamport,
-          ts: header.ts,
-          envelopeJson,
-          prevHash: header.prev,
-          eventHash,
-        });
-
-        void sendCiphertext({
-          convId: conv.id,
-          messageId: header.eventId,
-          ciphertext: envelopeJson,
-          priority: "high",
-          ...buildRoutingMeta(partner),
-        }).catch((error) => {
-          console.error("Failed to route message", error);
-        });
-
-        const updatedConv: Conversation = {
-          ...conv,
-          lastMessage: label,
-          lastTs: now,
-          unread: 0,
-        };
-
-        await saveConversation(updatedConv);
-        await hydrateVault();
-
-        if (inlineAllowed) {
-          const sendChunks = async () => {
-            const buffer = await file.arrayBuffer();
-            const chunks = chunkBuffer(buffer, INLINE_MEDIA_CHUNK_SIZE);
-            const total = chunks.length;
-            for (let idx = 0; idx < chunks.length; idx += 1) {
-              const chunkBody = {
-                type: "media",
-                phase: "chunk",
-                ownerId: header.eventId,
-                idx,
-                total,
-                mime: media.mime,
-                name: media.name,
-                size: media.size,
-                b64: encodeBase64Url(chunks[idx]),
-              };
-              await sendDirectEnvelope(conv, partner, chunkBody, "normal");
+          } catch {
+            try {
+              const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
+              header.rk = ratchet.headerRk;
+              keyForEnvelope = ratchet.msgKey;
+            } catch (error) {
+              console.warn("[ratchet] send fallback to legacy", error);
             }
-          };
-          void sendChunks().catch((error) => {
-            console.error("Failed to send media chunks", error);
+          }
+          const envelope = await encryptEnvelope(
+            keyForEnvelope,
+            header,
+            { type: "msg", text: label, media },
+            myIdentityPriv
+          );
+          const envelopeJson = JSON.stringify(envelope);
+          const eventHash = await computeEnvelopeHash(envelope);
+
+          await saveEvent({
+            eventId: header.eventId,
+            convId: header.convId,
+            authorDeviceId: header.authorDeviceId,
+            lamport: header.lamport,
+            ts: header.ts,
+            envelopeJson,
+            prevHash: header.prev,
+            eventHash,
           });
+
+          void sendCiphertext({
+            convId: conv.id,
+            messageId: header.eventId,
+            ciphertext: envelopeJson,
+            priority: "high",
+            ...buildRoutingMeta(partner),
+          }).catch((error) => {
+            console.error("Failed to route message", error);
+          });
+
+          const updatedConv: Conversation = {
+            ...conv,
+            lastMessage: label,
+            lastTs: now,
+            unread: 0,
+          };
+
+          await saveConversation(updatedConv);
+          await hydrateVault();
+
+          if (inlineAllowed) {
+            const sendChunks = async () => {
+              const buffer = await file.arrayBuffer();
+              const chunks = chunkBuffer(buffer, INLINE_MEDIA_CHUNK_SIZE);
+              const total = chunks.length;
+              for (let idx = 0; idx < chunks.length; idx += 1) {
+                const chunkBody = {
+                  type: "media",
+                  phase: "chunk",
+                  ownerId: header.eventId,
+                  idx,
+                  total,
+                  mime: media.mime,
+                  name: media.name,
+                  size: media.size,
+                  b64: encodeBase64Url(chunks[idx]),
+                };
+                await sendDirectEnvelope(conv, partner, chunkBody, "normal");
+              }
+            };
+            void sendChunks().catch((error) => {
+              console.error("Failed to send media chunks", error);
+            });
+          }
+          return;
         }
-        return;
+      }
+
+      const messageId = createId();
+      const media = await saveMessageMedia(messageId, file);
+      const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
+
+      const message: Message = {
+        id: messageId,
+        convId: conv.id,
+        senderId: userProfile.id,
+        text: label,
+        ts: Date.now(),
+        media,
+      };
+
+      const ciphertext = await encryptJsonRecord(vk, message.id, "message", message);
+
+      await saveMessage(message);
+
+      void sendCiphertext({
+        convId: conv.id,
+        messageId: message.id,
+        ciphertext,
+        priority: "high",
+      }).catch((error) => {
+        console.error("Failed to route message", error);
+      });
+
+      const updatedConv: Conversation = {
+        ...conv,
+        lastMessage: label,
+        lastTs: message.ts,
+        unread: 0,
+      };
+
+      await saveConversation(updatedConv);
+      await hydrateVault();
+    };
+
+    for (const file of files) {
+      try {
+        await sendSingleMedia(file);
+      } catch (error) {
+        console.error("Failed to send media", error);
+        addToast({ message: "Failed to send attachment." });
       }
     }
-
-    const messageId = createId();
-    const media = await saveMessageMedia(messageId, file);
-    const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
-
-    const message: Message = {
-      id: messageId,
-      convId: conv.id,
-      senderId: userProfile.id,
-      text: label,
-      ts: Date.now(),
-      media,
-    };
-
-    const ciphertext = await encryptJsonRecord(vk, message.id, "message", message);
-
-    await saveMessage(message);
-
-    void sendCiphertext({
-      convId: conv.id,
-      messageId: message.id,
-      ciphertext,
-      priority: "high",
-    }).catch((error) => {
-      console.error("Failed to route message", error);
-    });
-
-    const updatedConv: Conversation = {
-      ...conv,
-      lastMessage: label,
-      lastTs: message.ts,
-      unread: 0,
-    };
-
-    await saveConversation(updatedConv);
-    await hydrateVault();
   };
 
   const handleSendReadReceipt = useCallback(
