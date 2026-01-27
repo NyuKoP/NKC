@@ -13,12 +13,12 @@ describe("directTransport.normalizePayload", () => {
   });
 
   it("returns null for invalid b64", () => {
-    const out = normalizePayload({ b64: "!!!!" } as TransportPacket["payload"]);
+    const out = normalizePayload({ b64: "!!!!" } as unknown as TransportPacket["payload"]);
     expect(out).toBeNull();
   });
 
   it("returns null when b64 is not a string", () => {
-    const out = normalizePayload({ b64: 123 } as TransportPacket["payload"]);
+    const out = normalizePayload({ b64: 123 } as unknown as TransportPacket["payload"]);
     expect(out).toBeNull();
   });
 });

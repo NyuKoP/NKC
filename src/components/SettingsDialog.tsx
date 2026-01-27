@@ -1392,7 +1392,7 @@ export default function SettingsDialog({
                   >
                     <AlertTriangle size={16} className="text-red-500" />
                     <span className="text-red-500 font-semibold">
-                      {t("\uc704\ud5d8 \uad6c\uc5ed", "Danger zone")}
+                      {t("위험 구역", "Danger zone")}
                     </span>
                   </button>
                 </div>
@@ -1647,26 +1647,26 @@ export default function SettingsDialog({
           {/* DANGER */}
           {view === "danger" && (
             <div className="mt-6 grid gap-6">
-              {renderBackHeader(t("\uc704\ud5d8 \uad6c\uc5ed", "Danger zone"))}
+              {renderBackHeader(t("위험 구역", "Danger zone"))}
               <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-6">
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <h3 className="text-sm font-semibold text-black">
-                      {t("\uc704\ud5d8 \uad6c\uc5ed", "Danger zone")}
+                      {t("위험 구역", "Danger zone")}
                     </h3>
                     <p className="mt-1 text-xs text-black/80">
-                      {t("\ub85c\uadf8\uc544\uc6c3 \ub610\ub294 \ub370\uc774\ud130 \uc0ad\uc81c\ub97c \uc9c4\ud589\ud569\ub2c8\ub2e4.", "Proceed with logout or data reset.")}
+                      {t("로그아웃 또는 데이터 삭제를 진행합니다.", "Proceed with logout or data reset.")}
                     </p>
                     <div className="mt-3 space-y-1 text-xs text-black/80">
                       <div>
                         {t(
-                          "\uAE30\uC874 \uAE30\uAE30\uAC00 \uC628\uB77C\uC778\uC77C \uB54C\uB9CC \uB3D9\uAE30\uD654/\uAE30\uAE30 \uCD94\uAC00\uAC00 \uAC00\uB2A5\uD569\uB2C8\uB2E4.",
+                          "기존 기기가 온라인일 때만 동기화/기기 추가가 가능합니다.",
                           "Syncing and adding devices only works while an existing device is online."
                         )}
                       </div>
                       <div>
                         {t(
-                          "\uAE30\uC874 \uAE30\uAE30\uB97C \uBD84\uC2E4/\uD30C\uC190\uD558\uBA74 \uC774 \uACC4\uC815\uC740 \uBCF5\uAD6C\uD560 \uC218 \uC5C6\uACE0 \uC0C8 \uACC4\uC815\uC744 \uB9CC\uB4E4\uC5B4\uC57C \uD569\uB2C8\uB2E4.",
+                          "기존 기기를 분실/파손하면 이 계정은 복구할 수 없고 새 계정을 만들어야 합니다.",
                           "If the existing device is lost or broken, this account cannot be recovered and you must create a new account."
                         )}
                       </div>
@@ -1679,14 +1679,14 @@ export default function SettingsDialog({
                     onClick={onLogout}
                     className="rounded-nkc border border-red-400/60 px-3 py-2 text-xs text-black hover:bg-red-500/20"
                   >
-                    {t("\ub85c\uadf8\uc544\uc6c3", "Logout")}
+                    {t("로그아웃", "Logout")}
                   </button>
                   <button
                     type="button"
                     onClick={onWipe}
                     className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-black hover:bg-red-500/40"
                   >
-                    {t("\ub370\uc774\ud130 \uc0ad\uc81c", "Delete data")}
+                    {t("데이터 삭제", "Delete data")}
                   </button>
                 </div>
               </section>
@@ -1698,26 +1698,26 @@ export default function SettingsDialog({
                 <div className="flex items-start justify-between gap-4">
                   <div>
                     <h3 className="text-sm font-semibold text-black">
-                      {t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0 (\uace0\uae09)", "Pending messages (advanced)")}
+                      {t("전송 대기 메시지 (고급)", "Pending messages (advanced)")}
                     </h3>
                     <p className="mt-1 text-xs text-black/80">
                       {t(
-                        "\uc544\uc9c1 \uc0c1\ub300\ubc29\uc5d0\uac8c \uc804\ub2ec\ub418\uc9c0 \uc54a\uc558\uc744 \uc218 \uc788\ub294 \uc554\ud638\ud654 \uba54\uc2dc\uc9c0\uc785\ub2c8\ub2e4.",
+                        "아직 상대방에게 전달되지 않았을 수 있는 암호화 메시지입니다.",
                         "These may be encrypted messages not yet delivered to the other party."
                       )}
                     </p>
                     <div className="mt-3 space-y-1 text-xs text-black/80">
                       <div>
-                        {t("\uc0ad\uc81c\ud558\uba74 \uc601\uad6c\uc801\uc73c\ub85c \uc190\uc2e4\ub429\ub2c8\ub2e4.", "Deletion is permanent.")}
+                        {t("삭제하면 영구적으로 손실됩니다.", "Deletion is permanent.")}
                       </div>
                       <div>
-                        {t("\ub2e4\ub978 \uae30\uae30\uc5d0\ub294 \uc601\ud5a5\uc744 \uc8fc\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4.", "Other devices are not affected.")}
+                        {t("다른 기기에는 영향을 주지 않습니다.", "Other devices are not affected.")}
                       </div>
                     </div>
                   </div>
                   <div className="text-right">
                     <div className="text-[11px] uppercase tracking-wide text-black/70">
-                      {t("\ud604\uc7ac \ud06c\uae30", "Current size")}
+                      {t("현재 크기", "Current size")}
                     </div>
                     <div className="text-sm font-semibold text-black">
                       {formatBytes(storageUsage.pendingBytes)}
@@ -1736,8 +1736,8 @@ export default function SettingsDialog({
                     className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-black hover:bg-red-500/40 disabled:opacity-50"
                   >
                     {pendingWipeBusy
-                      ? t("\ucc98\ub9ac \uc911...", "Working...")
-                      : t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0 \uc0ad\uc81c", "Delete pending messages")}
+                      ? t("처리 중...", "Working...")
+                      : t("전송 대기 메시지 삭제", "Delete pending messages")}
                   </button>
                 </div>
               </section>
@@ -1794,7 +1794,7 @@ export default function SettingsDialog({
         open={wipeConfirmOpen}
         title={
           wipeConfirmType === "pending"
-            ? t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0 \uc0ad\uc81c \uacbd\uace0", "Pending deletion warning")
+            ? t("전송 대기 메시지 삭제 경고", "Pending deletion warning")
             : wipeConfirmType === "media"
               ? t("미디어 삭제 경고", "Media deletion warning")
               : t("채팅 삭제 경고", "Chat deletion warning")
@@ -1802,7 +1802,7 @@ export default function SettingsDialog({
         message={
           wipeConfirmType === "pending"
             ? t(
-                "\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0\ub97c \uc0ad\uc81c\ud569\ub2c8\ub2e4. \uc544\uc9c1 \uc0c1\ub300\ubc29\uc5d0\uac8c \uc804\ub2ec\ub418\uc9c0 \uc54a\uc558\uc744 \uc218 \uc788\ub294 \uc554\ud638\ud654 \uba54\uc2dc\uc9c0\uc785\ub2c8\ub2e4. \uc0ad\uc81c\ud558\uba74 \uc601\uad6c\uc801\uc73c\ub85c \uc190\uc2e4\ub429\ub2c8\ub2e4. \ub2e4\ub978 \uae30\uae30\uc5d0\ub294 \uc601\ud5a5\uc744 \uc8fc\uc9c0 \uc54a\uc2b5\ub2c8\ub2e4. \uacc4\uc18d\ud560\uae4c\uc694?",
+                "전송 대기 메시지를 삭제합니다. 아직 상대방에게 전달되지 않았을 수 있는 암호화 메시지입니다. 삭제하면 영구적으로 손실됩니다. 다른 기기에는 영향을 주지 않습니다. 계속할까요?",
                 "This deletes pending messages. They may be encrypted messages not yet delivered to the other party. Deletion is permanent. Other devices are not affected. Continue?"
               )
             : wipeConfirmType === "media"
@@ -1828,10 +1828,10 @@ export default function SettingsDialog({
             try {
               await clearOutboxQueue();
               await refreshStorageUsage();
-              setSaveMessage(t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0\ub97c \uc0ad\uc81c\ud588\uc2b5\ub2c8\ub2e4.", "Pending messages deleted."));
+              setSaveMessage(t("전송 대기 메시지를 삭제했습니다.", "Pending messages deleted."));
             } catch (error) {
               console.error("Failed to clear pending outbox", error);
-              setSaveMessage(t("\uc804\uc1a1 \ub300\uae30 \uba54\uc2dc\uc9c0 \uc0ad\uc81c\uc5d0 \uc2e4\ud328\ud588\uc2b5\ub2c8\ub2e4.", "Pending delete failed."));
+              setSaveMessage(t("전송 대기 메시지 삭제에 실패했습니다.", "Pending delete failed."));
             } finally {
               setPendingWipeBusy(false);
             }
