@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "./store";
 import Onboarding from "../components/Onboarding";
@@ -58,6 +58,7 @@ import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin a
 import { loadConversationMessages } from "../security/messageStore";
 import { clearFriendPsk, getFriendPsk, setFriendPsk } from "../security/pskStore";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
+import { getSodium } from "../security/sodium";
 import {
   getDhPrivateKey,
   getDhPublicKey,
@@ -66,7 +67,7 @@ import {
   getOrCreateDhKeypair,
   getOrCreateIdentityKeypair,
 } from "../security/identityKeys";
-import { getOrCreateDeviceId } from "../security/deviceRole";
+import { getOrCreateDeviceId, getRoleEpoch } from "../security/deviceRole";
 import { computeEnvelopeHash, deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
 import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
 import { sendCiphertext } from "../net/router";
@@ -112,6 +113,58 @@ const buildNameMap = (
 const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
 const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
 const READ_CURSOR_THROTTLE_MS = 1500;
+type TrustState = "UNVERIFIED" | "VERIFIED" | "KEY_CHANGED";
+
+type TrustRecord = {
+  peerIdentityKey?: string;
+  trustState: TrustState;
+  mkc?: {
+    sessionEpoch: number;
+    localNonce: string;
+    localSig?: string;
+    lastRunAt: number;
+  };
+};
+
+const TRUST_STORE_KEY = "nkc_trust_state_v1";
+
+const readTrustStore = () => {
+  if (typeof window === "undefined") return {} as Record<string, TrustRecord>;
+  try {
+    const raw = window.localStorage.getItem(TRUST_STORE_KEY);
+    if (!raw) return {} as Record<string, TrustRecord>;
+    const parsed = JSON.parse(raw) as Record<string, TrustRecord>;
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {} as Record<string, TrustRecord>;
+  }
+};
+
+const writeTrustStore = (value: Record<string, TrustRecord>) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(TRUST_STORE_KEY, JSON.stringify(value));
+  } catch {
+    // ignore storage errors
+  }
+};
+
+const createNonce = () => {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  }
+  return encodeBase64Url(bytes);
+};
+
+const signMkcPayload = async (payload: Record<string, unknown>) => {
+  const encoder = new TextEncoder();
+  const sodium = await getSodium();
+  const identityPriv = await getIdentityPrivateKey();
+  const bytes = encoder.encode(JSON.stringify(payload));
+  const sig = sodium.crypto_sign_detached(bytes, identityPriv);
+  return encodeBase64Url(sig);
+};
 
 export default function App() {
   const ui = useAppStore((state) => state.ui);
@@ -160,6 +213,10 @@ export default function App() {
   >({});
   const [directApprovalOpen, setDirectApprovalOpen] = useState(false);
   const directApprovalResolveRef = useRef<((approved: boolean) => void) | null>(null);
+  const [trustByFriendId, setTrustByFriendId] = useState<Record<string, TrustRecord>>({});
+  const mkcRunRef = useRef<Record<string, number>>({});
+  const mkcInFlightRef = useRef<Record<string, boolean>>({});
+  const mkcConnectedRef = useRef<Record<string, boolean>>({});
 
   const onboardingLockRef = useRef(false);
   const bootGuardRef = useRef<Promise<void> | null>(null);
@@ -246,6 +303,44 @@ export default function App() {
       unsubscribe();
     };
   }, []);
+  useEffect(() => {
+    setTrustByFriendId(readTrustStore());
+  }, []);
+
+  useEffect(() => {
+    writeTrustStore(trustByFriendId);
+  }, [trustByFriendId]);
+
+  useEffect(() => {
+    if (!friends.length) return;
+    setTrustByFriendId((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const friend of friends) {
+        if (!friend.identityPub) continue;
+        const existing = next[friend.id];
+        if (!existing) {
+          next[friend.id] = { peerIdentityKey: friend.identityPub, trustState: "UNVERIFIED" };
+          changed = true;
+          continue;
+        }
+        if (!existing.peerIdentityKey) {
+          next[friend.id] = {
+            ...existing,
+            peerIdentityKey: friend.identityPub,
+            trustState: existing.trustState ?? "UNVERIFIED",
+          };
+          changed = true;
+          continue;
+        }
+        if (existing.peerIdentityKey !== friend.identityPub && existing.trustState !== "KEY_CHANGED") {
+          next[friend.id] = { ...existing, trustState: "KEY_CHANGED" };
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [friends]);
 
   const withTimeout = useCallback(
     async <T,>(promise: Promise<T>, label: string, ms = 15000) => {
@@ -353,7 +448,7 @@ export default function App() {
         setMode("onboarding");
       }
 
-      addToast({ message: "세션이 만료되었으니 다시 로그인해 주세요." });
+      addToast({ message: "?몄뀡??留뚮즺?섏뿀?쇰땲 ?ㅼ떆 濡쒓렇?명빐 二쇱꽭??" });
     }
   }, [
     addToast,
@@ -406,7 +501,7 @@ export default function App() {
         }
       } catch (error) {
         console.error("Boot failed", error);
-        addToast({ message: "초기화에 실패했습니다." });
+        addToast({ message: "珥덇린?붿뿉 ?ㅽ뙣?덉뒿?덈떎." });
         setMode("onboarding");
       }
     };
@@ -427,7 +522,7 @@ export default function App() {
     outboxSchedulerStarted.current = true;
   }, [ui.mode]);
 
-  // cleanup 타입 문제(EffectCallback) + unsubscribe 방어
+  // cleanup ???臾몄젣(EffectCallback) + unsubscribe 諛⑹뼱
   useEffect(() => {
     if (typeof window !== "undefined") {
       connectionToastShown.current = window.sessionStorage.getItem(connectionToastKey) === "1";
@@ -451,7 +546,7 @@ export default function App() {
         return;
       }
 
-      addToast({ message: "세션이 연결되었습니다." });
+      addToast({ message: "?몄뀡???곌껐?섏뿀?듬땲??" });
       connectionToastShown.current = true;
 
       if (typeof window !== "undefined") {
@@ -507,9 +602,9 @@ export default function App() {
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Vault bootstrap failed", error);
-      setOnboardingError(error instanceof Error ? error.message : "금고 초기화에 실패했습니다.");
+      setOnboardingError(error instanceof Error ? error.message : "湲덇퀬 珥덇린?붿뿉 ?ㅽ뙣?덉뒿?덈떎.");
       lockVault();
-      addToast({ message: "금고 초기화에 실패했습니다." });
+      addToast({ message: "湲덇퀬 珥덇린?붿뿉 ?ㅽ뙣?덉뒿?덈떎." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -520,7 +615,7 @@ export default function App() {
     onboardingLockRef.current = true;
 
     if (!validateStartKey(startKey)) {
-      addToast({ message: "시작 키 형식이 올바르지 않습니다. (예: NKC-...)" });
+      addToast({ message: "?쒖옉 ???뺤떇???щ컮瑜댁? ?딆뒿?덈떎. (?? NKC-...)" });
       onboardingLockRef.current = false;
       return;
     }
@@ -559,7 +654,7 @@ export default function App() {
     } catch (error) {
       console.error("Start key unlock failed", error);
       lockVault();
-      addToast({ message: "시작 키로 잠금 해제에 실패했습니다." });
+      addToast({ message: "?쒖옉 ?ㅻ줈 ?좉툑 ?댁젣???ㅽ뙣?덉뒿?덈떎." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -695,7 +790,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to logout", error);
-      addToast({ message: "로그아웃에 실패했습니다." });
+      addToast({ message: "濡쒓렇?꾩썐???ㅽ뙣?덉뒿?덈떎." });
     }
   };
 
@@ -741,7 +836,7 @@ export default function App() {
   const handleRotateStartKey = async (newKey: string) => {
     try {
       if (!validateStartKey(newKey)) {
-        addToast({ message: "시작 키 형식이 올바르지 않습니다. (예: NKC-...)" });
+        addToast({ message: "?쒖옉 ???뺤떇???щ컮瑜댁? ?딆뒿?덈떎. (?? NKC-...)" });
         return;
       }
 
@@ -753,10 +848,10 @@ export default function App() {
       setPinEnabled(true);
       setPinNeedsReset(true);
 
-      addToast({ message: "시작 키가 변경되었습니다. PIN을 다시 설정해 주세요." });
+      addToast({ message: "?쒖옉 ?ㅺ? 蹂寃쎈릺?덉뒿?덈떎. PIN???ㅼ떆 ?ㅼ젙??二쇱꽭??" });
     } catch (error) {
       console.error("Failed to rotate start key", error);
-      addToast({ message: "시작 키 변경에 실패했습니다." });
+      addToast({ message: "?쒖옉 ??蹂寃쎌뿉 ?ㅽ뙣?덉뒿?덈떎." });
       throw error;
     }
   };
@@ -1485,14 +1580,14 @@ export default function App() {
     const newConv: Conversation = {
       id: createId(),
       type: "direct",
-      name: friend?.displayName || "새 채팅",
+      name: friend?.displayName || "??梨꾪똿",
       pinned: friend?.isFavorite ?? false,
       unread: 0,
       hidden: false,
       muted: false,
       blocked: false,
       lastTs: now,
-      lastMessage: "채팅을 시작했어요.",
+      lastMessage: "梨꾪똿???쒖옉?덉뼱??",
       participants: [userProfile.id, friendId],
     };
 
@@ -1502,7 +1597,7 @@ export default function App() {
       id: createId(),
       convId: newConv.id,
       senderId: userProfile.id,
-      text: "채팅을 시작했어요.",
+      text: "梨꾪똿???쒖옉?덉뼱??",
       ts: now,
     });
 
@@ -1539,12 +1634,12 @@ export default function App() {
 
   const handleDelete = (convId: string) => {
     setConfirm({
-      title: "채팅을 삭제할까요?",
-      message: "삭제하면 복구할 수 없습니다.",
+      title: "梨꾪똿????젣?좉퉴??",
+      message: "??젣?섎㈃ 蹂듦뎄?????놁뒿?덈떎.",
       onConfirm: async () => {
         await updateConversation(convId, { hidden: true });
         addToast({
-          message: "채팅을 삭제했어요.",
+          message: "梨꾪똿????젣?덉뼱??",
           actionLabel: "Undo",
           onAction: () => {
             void updateConversation(convId, { hidden: false });
@@ -1579,7 +1674,7 @@ export default function App() {
       setListFilter("all");
     } catch (error) {
       console.error("Failed to open chat", error);
-      addToast({ message: "채팅 열기에 실패했습니다." });
+      addToast({ message: "梨꾪똿 ?닿린???ㅽ뙣?덉뒿?덈떎." });
     }
   };
 
@@ -1592,7 +1687,7 @@ export default function App() {
       setRightPanelOpen(true);
     } catch (error) {
       console.error("Failed to open profile", error);
-      addToast({ message: "프로필 열기에 실패했습니다." });
+      addToast({ message: "?꾨줈???닿린???ㅽ뙣?덉뒿?덈떎." });
     }
   };
 
@@ -1611,7 +1706,7 @@ export default function App() {
       await hydrateVault();
     } catch (error) {
       console.error("Failed to update friend", error);
-      addToast({ message: "친구 변경에 실패했습니다." });
+      addToast({ message: "移쒓뎄 蹂寃쎌뿉 ?ㅽ뙣?덉뒿?덈떎." });
     }
   };
 
@@ -1629,7 +1724,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to toggle favorite", error);
-      addToast({ message: "즐겨찾기 변경에 실패했습니다." });
+      addToast({ message: "利먭꺼李얘린 蹂寃쎌뿉 ?ㅽ뙣?덉뒿?덈떎." });
     }
   };
 
@@ -1711,10 +1806,10 @@ export default function App() {
     try {
       if (!myFriendCode) return;
       await navigator.clipboard.writeText(myFriendCode);
-      addToast({ message: "친구 코드가 복사되었습니다." });
+      addToast({ message: "移쒓뎄 肄붾뱶媛 蹂듭궗?섏뿀?듬땲??" });
     } catch (error) {
       console.error("Failed to copy friend code", error);
-      addToast({ message: "친구 코드 복사에 실패했습니다." });
+      addToast({ message: "移쒓뎄 肄붾뱶 蹂듭궗???ㅽ뙣?덉뒿?덈떎." });
     }
   };
 
@@ -2294,8 +2389,81 @@ export default function App() {
     return friends.find((friend) => friend.id === partnerId) || null;
   }, [currentConversation, friends, userProfile]);
 
+  const currentTrustState = useMemo(() => {
+    if (!partnerProfile) return "UNVERIFIED" as TrustState;
+    return trustByFriendId[partnerProfile.id]?.trustState ?? "UNVERIFIED";
+  }, [partnerProfile, trustByFriendId]);
+
+  useEffect(() => {
+    if (!currentConversation || !partnerProfile?.identityPub) return;
+    const isDirect =
+      !(currentConversation.type === "group" || currentConversation.participants.length > 2) &&
+      currentConversation.participants.length === 2;
+    if (!isDirect) return;
+
+    const isConnected = currentTransportStatus?.state === "connected";
+    const prevConnected = mkcConnectedRef.current[currentConversation.id] ?? false;
+    if (!isConnected) {
+      mkcConnectedRef.current[currentConversation.id] = false;
+      return;
+    }
+    mkcConnectedRef.current[currentConversation.id] = true;
+
+    const trustRecord = trustByFriendId[partnerProfile.id];
+    if (trustRecord?.trustState === "KEY_CHANGED") return;
+
+    const sessionEpoch = getRoleEpoch();
+    const shouldRun = !prevConnected || mkcRunRef.current[currentConversation.id] !== sessionEpoch;
+    if (!shouldRun) return;
+    if (mkcInFlightRef.current[currentConversation.id]) return;
+    mkcInFlightRef.current[currentConversation.id] = true;
+
+    const run = async () => {
+      const localIdentityPub = await getIdentityPublicKey();
+      const localIdentityPubB64 = encodeBase64Url(localIdentityPub);
+      const localNonce = createNonce();
+      const payload = {
+        type: "MKC",
+        convId: currentConversation.id,
+        localIdentityPub: localIdentityPubB64,
+        peerIdentityPub: partnerProfile.identityPub,
+        sessionEpoch,
+        localNonce,
+      };
+      let localSig: string | undefined;
+      try {
+        localSig = await signMkcPayload(payload);
+      } catch (error) {
+        console.warn("Failed to sign MKC payload", error);
+      }
+
+      setTrustByFriendId((prev) => {
+        const existing = prev[partnerProfile.id];
+        if (existing?.trustState === "KEY_CHANGED") return prev;
+        const next: TrustRecord = {
+          peerIdentityKey: existing?.peerIdentityKey ?? partnerProfile.identityPub,
+          trustState: "VERIFIED",
+          mkc: {
+            sessionEpoch,
+            localNonce,
+            localSig,
+            lastRunAt: Date.now(),
+          },
+        };
+        return { ...prev, [partnerProfile.id]: next };
+      });
+    };
+
+    run()
+      .catch((error) => console.warn("MKC failed", error))
+      .finally(() => {
+        mkcRunRef.current[currentConversation.id] = sessionEpoch;
+        mkcInFlightRef.current[currentConversation.id] = false;
+      });
+  }, [currentConversation, currentTransportStatus, partnerProfile, trustByFriendId]);
+
   const currentConversationDisplayName = useMemo(() => {
-    if (!currentConversation) return "대화를 선택하세요";
+    if (!currentConversation) return "대화를 선택해주세요.";
     const isGroup =
       currentConversation.type === "group" || currentConversation.participants.length > 2;
     if (isGroup) return currentConversation.name;
@@ -2309,7 +2477,7 @@ export default function App() {
       await updateConversation(currentConversation.id, { hidden: false, pendingAcceptance: false });
     } catch (error) {
       console.error("Failed to accept request", error);
-      addToast({ message: "메시지 요청 수락에 실패했습니다." });
+      addToast({ message: "硫붿떆吏 ?붿껌 ?섎씫???ㅽ뙣?덉뒿?덈떎." });
     }
   };
 
@@ -2323,7 +2491,7 @@ export default function App() {
       });
     } catch (error) {
       console.error("Failed to decline request", error);
-      addToast({ message: "메시지 요청 거절에 실패했습니다." });
+      addToast({ message: "硫붿떆吏 ?붿껌 嫄곗젅???ㅽ뙣?덉뒿?덈떎." });
     }
   };
 
@@ -2410,10 +2578,15 @@ export default function App() {
         groupAvatarRef={currentGroupAvatarRef}
         groupAvatarOverrideRef={currentGroupAvatarOverrideRef}
         friendAliasesById={friendAliasesById}
+        trustState={currentTrustState}
         onOpenSettings={() => navigate("/settings")}
         onInviteToGroup={handleInviteToGroup}
         onLeaveGroup={handleLeaveGroup}
         onSetGroupAvatarOverride={handleSetGroupAvatarOverride}
+        onToggleMute={handleMute}
+        onTogglePin={handleTogglePin}
+        onHideConversation={handleHide}
+        onToggleBlock={handleBlock}
       />
 
       {userProfile ? (
@@ -2436,15 +2609,15 @@ export default function App() {
           onUnblockFriend={handleFriendUnblock}
           onLogout={() =>
             setConfirm({
-              title: "로그아웃할까요?",
-              message: "세션을 종료하고 로컬 데이터는 유지됩니다.",
+              title: "濡쒓렇?꾩썐?좉퉴??",
+              message: "?몄뀡??醫낅즺?섍퀬 濡쒖뺄 ?곗씠?곕뒗 ?좎??⑸땲??",
               onConfirm: handleLogout,
             })
           }
           onWipe={() =>
             setConfirm({
-              title: "데이터를 삭제할까요?",
-              message: "로컬 금고가 초기화됩니다.",
+              title: "?곗씠?곕? ??젣?좉퉴??",
+              message: "濡쒖뺄 湲덇퀬媛 珥덇린?붾맗?덈떎.",
               onConfirm: async () => {
                 await clearStoredSession();
                 await wipeVault();
@@ -2522,7 +2695,7 @@ export default function App() {
         title={confirm?.title || ""}
         message={confirm?.message || ""}
         onConfirm={() => {
-          // confirm?.onConfirm()이 Promise를 반환해도 UI는 void 처리
+          // confirm?.onConfirm()??Promise瑜?諛섑솚?대룄 UI??void 泥섎━
           void confirm?.onConfirm?.();
         }}
         onClose={() => setConfirm(null)}
@@ -2530,8 +2703,8 @@ export default function App() {
 
       <ConfirmDialog
         open={directApprovalOpen}
-        title="Direct 연결 허용"
-        message="Direct 연결은 상대방에게 IP가 노출될 수 있습니다. 허용할까요?"
+        title="Direct ?곌껐 ?덉슜"
+        message="Direct ?곌껐? ?곷?諛⑹뿉寃?IP媛 ?몄텧?????덉뒿?덈떎. ?덉슜?좉퉴??"
         onConfirm={() => resolveDirectApproval(true)}
         onClose={() => resolveDirectApproval(false)}
       />
@@ -2540,5 +2713,17 @@ export default function App() {
     </>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
 
 
