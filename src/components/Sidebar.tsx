@@ -151,6 +151,9 @@ export default function Sidebar({
   const pinned = filteredConvs.filter((conv) => conv.pinned);
   const regular = filteredConvs.filter((conv) => !conv.pinned);
 
+  const getFriendDisplayName = (friend: UserProfile) =>
+    resolveFriendDisplayName(friend, friendAliasesById);
+
   const visibleFriends = friends
     .filter((friend) => friend.friendStatus !== "hidden" && friend.friendStatus !== "blocked")
     .filter((friend) => {
@@ -211,9 +214,6 @@ export default function Sidebar({
     }
     onFriendChat(friendId);
   };
-
-  const getFriendDisplayName = (friend: UserProfile) =>
-    resolveFriendDisplayName(friend, friendAliasesById);
 
   const openAliasDialog = (friend: UserProfile) => {
     setAliasDialogFriendId(friend.id);
