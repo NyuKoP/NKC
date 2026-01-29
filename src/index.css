@@ -52,4 +52,12 @@
   .scrollbar-thin::-webkit-scrollbar-track {
     background: transparent;
   }
+
+  .scrollbar-hidden {
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hidden::-webkit-scrollbar {
+    display: none;
+  }
 }

@@ -16,6 +16,7 @@ type MessageGroupBubbleProps<T extends ChatMessageLike> = {
   isMine: boolean;
   onOpenMedia?: (items: T[], index: number) => void;
   footer?: ReactNode;
+  highlightQuery?: string;
 };
 
 const formatBytes = (bytes: number) => {
@@ -122,6 +123,7 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
   isMine,
   onOpenMedia,
   footer,
+  highlightQuery,
 }: MessageGroupBubbleProps<T>) {
   const textItems = group.items.filter((item) => item.kind === "text" && item.text);
   const mediaItems = group.items.filter((item) => item.kind === "media" && item.media);
@@ -135,13 +137,41 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
   const bubbleWidthClass = mediaItems.length
     ? getMediaBubbleClass(mediaItems.length)
     : getTextBubbleClass(textBlob);
+  const bubbleMinWidthClass = mediaItems.length ? "" : "min-w-[170px]";
   const bubblePaddingClass = mediaItems.length ? "px-3 py-3" : "px-4 py-3";
   const gridCols = imageItems.length >= 3 ? 3 : imageItems.length;
   const thumbAspect = imageItems.length <= 4 ? "aspect-square h-20" : "aspect-[4/3] h-16";
+  const highlight = highlightQuery?.trim();
+
+  const renderHighlightedText = (text: string) => {
+    if (!highlight) return text;
+    const lowerText = text.toLowerCase();
+    const lowerQuery = highlight.toLowerCase();
+    if (!lowerQuery) return text;
+    const parts: ReactNode[] = [];
+    let cursor = 0;
+    while (cursor < text.length) {
+      const idx = lowerText.indexOf(lowerQuery, cursor);
+      if (idx === -1) {
+        parts.push(text.slice(cursor));
+        break;
+      }
+      if (idx > cursor) {
+        parts.push(text.slice(cursor, idx));
+      }
+      parts.push(
+        <span key={`${idx}-${cursor}`} className="rounded-sm bg-yellow-200/40 px-0.5 text-nkc-text">
+          {text.slice(idx, idx + lowerQuery.length)}
+        </span>
+      );
+      cursor = idx + lowerQuery.length;
+    }
+    return parts;
+  };
 
   return (
     <div
-      className={`w-fit rounded-nkc border text-sm leading-relaxed ${bubblePaddingClass} ${bubbleWidthClass} overflow-hidden ${
+      className={`w-fit rounded-nkc border text-sm leading-relaxed ${bubblePaddingClass} ${bubbleWidthClass} ${bubbleMinWidthClass} overflow-hidden ${
         isMine
           ? "ml-auto border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
           : "border-nkc-border bg-nkc-panel text-nkc-text"
@@ -150,8 +180,8 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
       {textItems.length ? (
         <div className="space-y-2">
           {textItems.map((item) => (
-            <div key={item.id} className="whitespace-pre-wrap">
-              {item.text}
+            <div key={item.id} data-msg-id={item.id} className="whitespace-pre-wrap">
+              {renderHighlightedText(item.text)}
             </div>
           ))}
         </div>
@@ -183,7 +213,11 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
         </div>
       ) : null}
 
-      {footer ? <div className="mt-2 flex items-center gap-1 text-[11px] text-nkc-muted">{footer}</div> : null}
+      {footer ? (
+        <div className="mt-2 flex flex-nowrap items-center gap-1 text-[11px] text-nkc-muted whitespace-nowrap">
+          {footer}
+        </div>
+      ) : null}
     </div>
   );
 }
