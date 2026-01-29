@@ -112,7 +112,6 @@ export default function RightPanel({
   const hasOverride = Boolean(groupAvatarOverrideRef);
   const [mediaMessages, setMediaMessages] = useState<Message[]>([]);
   const [mediaFilter, setMediaFilter] = useState<MediaFilter>("images");
-  const [mediaQuery, setMediaQuery] = useState("");
   const [mediaLoading, setMediaLoading] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [mediaFailures, setMediaFailures] = useState<Record<string, string>>({});
@@ -181,20 +180,19 @@ export default function RightPanel({
   }, [conversation, tab]);
 
   const filteredMedia = useMemo(() => {
-    const query = mediaQuery.trim().toLowerCase();
     return mediaMessages.filter((message) => {
       const media = message.media;
       if (!media) return false;
       const mime = media.mime || "";
       const isImage = mime.startsWith("image/");
       const isVideo = mime.startsWith("video/");
-      const matchesType =
-        mediaFilter === "images" ? isImage : mediaFilter === "videos" ? isVideo : !isImage && !isVideo;
-      if (!matchesType) return false;
-      if (!query) return true;
-      return media.name?.toLowerCase().includes(query);
+      return mediaFilter === "images"
+        ? isImage
+        : mediaFilter === "videos"
+          ? isVideo
+          : !isImage && !isVideo;
     });
-  }, [mediaFilter, mediaMessages, mediaQuery]);
+  }, [mediaFilter, mediaMessages]);
 
   const groupedMedia = useMemo<MediaSection[]>(() => {
     const sections = new Map<
@@ -380,6 +378,7 @@ export default function RightPanel({
         onValueChange={(value) => {
           if (isTabValue(value)) onTabChange(value);
         }}
+        className="flex h-full min-h-0 flex-col"
       >
         <Tabs.List className="grid grid-cols-3 gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
           {tabs.map((item) => (
@@ -393,7 +392,7 @@ export default function RightPanel({
           ))}
         </Tabs.List>
 
-        <Tabs.Content value="about" className="mt-4 space-y-4">
+        <Tabs.Content value="about" className="mt-4 flex-1 overflow-y-auto space-y-4 pr-1 scrollbar-hidden">
           {conversation ? (
             <div className="space-y-4 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4">
               <div className="flex items-center gap-3">
@@ -531,7 +530,7 @@ export default function RightPanel({
             </div>
           )}
         </Tabs.Content>
-        <Tabs.Content value="media" className="mt-4">
+        <Tabs.Content value="media" className="mt-4 flex min-h-0 flex-1 flex-col">
           <div className="space-y-3">
             <div className="flex items-center gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
               {([
@@ -553,12 +552,8 @@ export default function RightPanel({
                 </button>
               ))}
             </div>
-            <input
-              value={mediaQuery}
-              onChange={(event) => setMediaQuery(event.target.value)}
-              placeholder="검색"
-              className="w-full rounded-nkc border border-nkc-border bg-nkc-panelMuted px-3 py-2 text-xs text-nkc-text placeholder:text-nkc-muted"
-            />
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hidden">
             {mediaLoading ? (
               <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
                 미디어를 불러오는 중...
@@ -785,7 +780,7 @@ export default function RightPanel({
           ) : null}
         </Tabs.Content>
 
-        <Tabs.Content value="settings" className="mt-4 space-y-3">
+        <Tabs.Content value="settings" className="mt-4 flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-hidden">
           <div className="space-y-3 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-xs text-nkc-muted">
             <div className="flex items-center justify-between">
               <div>

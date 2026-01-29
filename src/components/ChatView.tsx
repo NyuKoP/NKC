@@ -10,6 +10,7 @@ import {
   FileText,
   PanelRight,
   Paperclip,
+  Search,
 } from "lucide-react";
 import type { Conversation, MediaRef, Message, UserProfile } from "../db/repo";
 import { loadMessageMedia } from "../db/repo";
@@ -117,6 +118,9 @@ export default function ChatView({
   const isGroup = Boolean(
     conversation && (conversation.type === "group" || conversation.participants.length > 2)
   );
+  const chatColumnClass = rightPanelOpen
+    ? "max-w-[clamp(760px,65vw,980px)]"
+    : "max-w-[clamp(920px,85vw,1320px)]";
   const [isWindowActive, setIsWindowActive] = useState(() => {
     if (typeof document === "undefined") return true;
     const visible = document.visibilityState === "visible";
@@ -141,6 +145,10 @@ export default function ChatView({
   const viewerRunRef = useRef(0);
   const viewerUrlsRef = useRef<Record<string, string>>({});
   const viewerBusyRef = useRef<Record<string, boolean>>({});
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchIndex, setSearchIndex] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   const groupedBatches = useMemo(() => {
     const items: ChatMessageLike[] = messages.map((message) => ({
@@ -184,6 +192,13 @@ export default function ChatView({
       [...messages].reverse().find((message) => message.senderId !== currentUserId) ?? null
     );
   }, [conversation, currentUserId, messages]);
+  const searchMatches = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+    if (!query) return [];
+    return messages
+      .filter((message) => message.text?.toLowerCase().includes(query))
+      .map((message) => message.id);
+  }, [messages, searchQuery]);
 
   useEffect(() => {
     viewerUrlsRef.current = viewerUrls;
@@ -237,6 +252,49 @@ export default function ChatView({
       Object.values(viewerUrlsRef.current).forEach((url) => URL.revokeObjectURL(url));
     };
   }, []);
+
+  useEffect(() => {
+    if (!conversation) return;
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchIndex(0);
+  }, [conversation?.id]);
+
+  useEffect(() => {
+    setSearchIndex(0);
+  }, [searchQuery]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    if (!searchInputRef.current) return;
+    requestAnimationFrame(() => searchInputRef.current?.focus());
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setSearchOpen(false);
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [searchOpen]);
+
+  useEffect(() => {
+    if (!searchOpen) return;
+    if (!searchMatches.length) return;
+    const targetId = searchMatches[Math.min(searchIndex, searchMatches.length - 1)];
+    if (!targetId) return;
+    const target = timelineRef.current?.querySelector(
+      `[data-msg-id="${targetId}"]`
+    ) as HTMLElement | null;
+    if (target) {
+      target.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
+  }, [searchIndex, searchMatches, searchOpen]);
 
   useEffect(() => {
     let active = true;
@@ -435,6 +493,14 @@ export default function ChatView({
     return <CheckCheck size={12} className="text-nkc-accent" />;
   };
 
+  const goToSearchResult = (direction: 1 | -1) => {
+    if (!searchMatches.length) return;
+    setSearchIndex((prev) => {
+      const next = (prev + direction + searchMatches.length) % searchMatches.length;
+      return next;
+    });
+  };
+
   const participants = conversation?.participants ?? [];
   const totalOthers = currentUserId
     ? participants.filter((id) => id && id !== currentUserId).length
@@ -514,23 +580,97 @@ export default function ChatView({
             </div>
           </div>
         </div>
-        <button
-          onClick={onToggleRight}
-          className="flex h-9 items-center gap-2 rounded-nkc border border-nkc-border px-3 text-xs text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text"
-          disabled={!conversation}
-        >
-          <PanelRight size={14} />
-          {rightPanelOpen ? "닫기" : "정보"}
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setSearchOpen((prev) => !prev)}
+            className="flex h-9 w-9 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text"
+            disabled={!conversation}
+            aria-label="채팅 검색"
+          >
+            <Search size={14} />
+          </button>
+          <button
+            onClick={onToggleRight}
+            className="flex h-9 items-center gap-2 rounded-nkc border border-nkc-border px-3 text-xs text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text"
+            disabled={!conversation}
+          >
+            <PanelRight size={14} />
+            {rightPanelOpen ? "닫기" : "정보"}
+          </button>
+        </div>
       </header>
+      {searchOpen && conversation ? (
+        <div className="border-b border-nkc-border bg-nkc-panel px-6 py-3">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-nkc-muted">
+            <div className="flex flex-1 items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panelMuted px-2 py-1">
+              <Search size={12} />
+              <input
+                ref={searchInputRef}
+                value={searchQuery}
+                onChange={(event) => setSearchQuery(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    goToSearchResult(event.shiftKey ? -1 : 1);
+                  }
+                  if (event.key === "Escape") {
+                    setSearchOpen(false);
+                  }
+                }}
+                placeholder="채팅 기록 검색"
+                className="w-full bg-transparent text-xs text-nkc-text placeholder:text-nkc-muted focus:outline-none"
+              />
+            </div>
+            <div className="flex items-center gap-2">
+              {searchQuery.trim() && searchMatches.length === 0 ? (
+                <span className="rounded-full border border-nkc-border px-2 py-0.5 text-[10px] text-nkc-muted">
+                  없음
+                </span>
+              ) : null}
+              <span>
+                {searchMatches.length
+                  ? `${Math.min(searchIndex + 1, searchMatches.length)}/${searchMatches.length}`
+                  : "0/0"}
+              </span>
+              <button
+                type="button"
+                onClick={() => goToSearchResult(-1)}
+                disabled={!searchMatches.length}
+                className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+              >
+                이전
+              </button>
+              <button
+                type="button"
+                onClick={() => goToSearchResult(1)}
+                disabled={!searchMatches.length}
+                className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+              >
+                다음
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchOpen(false);
+                  setSearchQuery("");
+                }}
+                className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+              >
+                닫기
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <div
         ref={timelineRef}
         onScroll={handleScroll}
-        className="scrollbar-thin relative flex-1 overflow-y-auto bg-nkc-panelMuted"
+        className="scrollbar-hidden relative flex-1 overflow-y-auto bg-nkc-panelMuted"
       >
         {conversation ? (
-          <div className="mx-auto flex w-full max-w-[1100px] flex-col gap-4 px-8 py-6">
+          <div className="ml-auto mr-0 flex w-full max-w-[min(100%,1800px)] flex-col gap-4 px-8 py-6">
             {requestIncoming ? (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3 text-sm">
                 <div className="text-nkc-text">메시지 요청</div>
@@ -589,7 +729,7 @@ export default function ChatView({
                         className="mt-1"
                       />
                     ) : null}
-                    <div className="flex max-w-chat flex-col gap-2">
+                    <div className={`flex ${chatColumnClass} flex-col gap-2`}>
                       {group.senderId !== currentUserId && showSender ? (
                         <span className="text-xs text-nkc-muted">{senderName}</span>
                       ) : null}
@@ -601,15 +741,15 @@ export default function ChatView({
                             setViewerGroup(items);
                             setViewerIndex(index);
                           }}
+                          highlightQuery={searchOpen ? searchQuery : ""}
                           footer={
                             <>
                               <span>{formatTime(lastMessage.ts)}</span>
-                              {group.senderId === currentUserId && seenInfo ? (
-                                <span className="ml-1">
-                                  {isGroup
-                                    ? `읽음 ${seenInfo.seenCount}/${seenInfo.totalOthers}`
-                                    : `읽음 ${seenInfo.seenCount}`}
-                                </span>
+                              {group.senderId === currentUserId && seenInfo && isGroup ? (
+                                seenInfo.totalOthers > 0 &&
+                                seenInfo.seenCount >= seenInfo.totalOthers ? (
+                                  <span className="ml-1">읽음</span>
+                                ) : null
                               ) : null}
                               {group.senderId === currentUserId
                                 ? renderSendState(sendStates[lastMessage.id])

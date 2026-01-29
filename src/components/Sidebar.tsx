@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+﻿import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronDown, ChevronRight, Filter, Lock, Search, Settings, UserPlus, Users } from "lucide-react";
 import type { AvatarRef, Conversation, UserProfile } from "../db/repo";
@@ -290,7 +290,7 @@ export default function Sidebar({
                 {userProfile?.displayName || "NKC"}
               </div>
               <div className="text-xs text-nkc-muted line-clamp-1">
-                {userProfile?.status || t("검색어 없음", "No status")}
+                {userProfile?.status || t("상태 없음", "No status")}
               </div>
             </div>
           </button>
@@ -349,7 +349,7 @@ export default function Sidebar({
         </div>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+      <div className="border-b border-nkc-border px-6 py-4 space-y-3">
         <div className="flex items-center justify-between text-xs font-semibold text-nkc-muted">
           <span>{t("필터", "Filter")}</span>
           <div className="flex items-center gap-2">
@@ -384,123 +384,146 @@ export default function Sidebar({
             </button>
           ))}
         </div>
-
+      </div>
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 pt-0 space-y-6 scrollbar-hidden">
         {listMode === "chats" ? (
-          <div className="space-y-4">
+          <div className="space-y-0">
             {pinned.length > 0 && (
-              <div className="border-t border-nkc-border">
-                <button
-                  onClick={() => setPinnedChatsOpen((prev) => !prev)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
-                >
-                  <span>{t("고정된 채팅", "Pinned chats")} ({pinned.length})</span>
-                  <span className="text-nkc-muted">
-                    {pinnedChatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  </span>
-                </button>
+              <div className="border-t border-nkc-border -mx-4">
+                <div className="px-6">
+                  <button
+                    onClick={() => setPinnedChatsOpen((prev) => !prev)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
+                  >
+                    <span>{t("고정된 채팅", "Pinned chats")} ({pinned.length})</span>
+                    <span className="text-nkc-muted">
+                      {pinnedChatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    </span>
+                  </button>
+                </div>
                 {pinnedChatsOpen && (
                   <div className="divide-y border-t border-nkc-border">
                     {pinned.map((conv) => (
-                      <ConversationRow
-                        key={conv.id}
-                        conv={conv}
-                        friend={resolveConvFriend(conv)}
-                        groupAvatarRefsByConv={groupAvatarRefsByConv}
-                        friendAliasesById={friendAliasesById}
-                        active={selectedConvId === conv.id}
-                        locale={locale}
-                        t={t}
-                        onSelect={() => onSelectConv(conv.id)}
-                        onHide={() => onHide(conv.id)}
-                        onDelete={() => onDelete(conv.id)}
-                        onMute={() => onMute(conv.id)}
-                        onBlock={() => onBlock(conv.id)}
-                        onTogglePin={() => onTogglePin(conv.id)}
-                      />
+                      <div key={conv.id} className="px-6">
+                        <ConversationRow
+                          conv={conv}
+                          friend={resolveConvFriend(conv)}
+                          groupAvatarRefsByConv={groupAvatarRefsByConv}
+                          friendAliasesById={friendAliasesById}
+                          active={selectedConvId === conv.id}
+                          locale={locale}
+                          t={t}
+                          onSelect={() => onSelectConv(conv.id)}
+                          onHide={() => onHide(conv.id)}
+                          onDelete={() => onDelete(conv.id)}
+                          onMute={() => onMute(conv.id)}
+                          onBlock={() => onBlock(conv.id)}
+                          onTogglePin={() => onTogglePin(conv.id)}
+                        />
+                      </div>
                     ))}
                   </div>
                 )}
               </div>
             )}
 
-            <div className="border-t border-nkc-border">
-              <button
-                onClick={() => setChatsOpen((prev) => !prev)}
-                className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
-              >
-                <span>{t("채팅", "Chats")} ({regular.length})</span>
-                <span className="text-nkc-muted">
-                  {chatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                </span>
-              </button>
+            <div className="border-t border-nkc-border -mx-4">
+              <div className="px-6">
+                <button
+                  onClick={() => setChatsOpen((prev) => !prev)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
+                >
+                  <span>{t("채팅", "Chats")} ({regular.length})</span>
+                  <span className="text-nkc-muted">
+                    {chatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </span>
+                </button>
+              </div>
               {chatsOpen && (
                 regular.length > 0 ? (
                   <div className="divide-y border-t border-nkc-border">
                     {regular.map((conv) => (
-                      <ConversationRow
-                        key={conv.id}
-                        conv={conv}
-                        friend={resolveConvFriend(conv)}
-                        groupAvatarRefsByConv={groupAvatarRefsByConv}
-                        friendAliasesById={friendAliasesById}
-                        active={selectedConvId === conv.id}
-                        locale={locale}
-                        t={t}
-                        onSelect={() => onSelectConv(conv.id)}
-                        onHide={() => onHide(conv.id)}
-                        onDelete={() => onDelete(conv.id)}
-                        onMute={() => onMute(conv.id)}
-                        onBlock={() => onBlock(conv.id)}
-                        onTogglePin={() => onTogglePin(conv.id)}
-                      />
+                      <div key={conv.id} className="px-6">
+                        <ConversationRow
+                          conv={conv}
+                          friend={resolveConvFriend(conv)}
+                          groupAvatarRefsByConv={groupAvatarRefsByConv}
+                          friendAliasesById={friendAliasesById}
+                          active={selectedConvId === conv.id}
+                          locale={locale}
+                          t={t}
+                          onSelect={() => onSelectConv(conv.id)}
+                          onHide={() => onHide(conv.id)}
+                          onDelete={() => onDelete(conv.id)}
+                          onMute={() => onMute(conv.id)}
+                          onBlock={() => onBlock(conv.id)}
+                          onTogglePin={() => onTogglePin(conv.id)}
+                        />
+                      </div>
                     ))}
                   </div>
                 ) : (
-                  <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
-                    {t("대화가 없습니다.", "No conversations.")}
+                  <div className="px-6 py-4">
+                    <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
+                      {t("대화가 없습니다.", "No conversations.")}
+                    </div>
                   </div>
                 )
               )}
             </div>
           </div>
         ) : (
-          <div className="space-y-4">
+          <div className="space-y-0">
             {favoriteFriends.length > 0 && (
-              <div className="border-t border-nkc-border">
-                <button
-                  onClick={() => setFavoritesOpen((prev) => !prev)}
-                  className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
-                >
-                  <span>{t("즐겨찾는 친구", "Favorite friends")} ({favoriteFriends.length})</span>
-                  <span className="text-nkc-muted">
-                    {favoritesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                  </span>
-                </button>
+              <div className="border-t border-nkc-border -mx-4">
+                <div className="px-6">
+                  <button
+                    onClick={() => setFavoritesOpen((prev) => !prev)}
+                    className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
+                  >
+                    <span>{t("즐겨찾는 친구", "Favorite friends")} ({favoriteFriends.length})</span>
+                    <span className="text-nkc-muted">
+                      {favoritesOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    </span>
+                  </button>
+                </div>
                 {favoritesOpen && (
                   <div className="divide-y border-t border-nkc-border">
-                    {favoriteFriends.map(renderFriendRow)}
+                    {favoriteFriends.map((friend) => (
+                      <div key={friend.id} className="px-6">
+                        {renderFriendRow(friend)}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
             )}
-            <div className="border-t border-nkc-border">
-              <button
-                onClick={() => setFriendsOpen((prev) => !prev)}
-                className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
-              >
-                <span>{t("친구", "Friends")} ({regularFriends.length})</span>
-                <span className="text-nkc-muted">
-                  {friendsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-                </span>
-              </button>
+            <div className="border-t border-nkc-border -mx-4">
+              <div className="px-6">
+                <button
+                  onClick={() => setFriendsOpen((prev) => !prev)}
+                  className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-nkc-text"
+                >
+                  <span>{t("친구", "Friends")} ({regularFriends.length})</span>
+                  <span className="text-nkc-muted">
+                    {friendsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                  </span>
+                </button>
+              </div>
               {friendsOpen && (
                 regularFriends.length > 0 ? (
                   <div className="divide-y border-t border-nkc-border">
-                    {regularFriends.map(renderFriendRow)}
+                    {regularFriends.map((friend) => (
+                      <div key={friend.id} className="px-6">
+                        {renderFriendRow(friend)}
+                      </div>
+                    ))}
                   </div>
                 ) : (
-                  <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
-                    {t("표시할 친구가 없습니다.", "No friends to show.")}
+                  <div className="px-6 py-4">
+                    <div className="rounded-nkc border border-dashed border-nkc-border px-4 py-4 text-xs text-nkc-muted">
+                      {t("표시할 친구가 없습니다.", "No friends to show.")}
+                    </div>
                   </div>
                 )
               )}
@@ -520,10 +543,10 @@ export default function Sidebar({
           <Dialog.Overlay className="fixed inset-0 bg-black/60" />
           <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-nkc border border-nkc-border bg-nkc-panel p-5 shadow-soft">
             <Dialog.Title className="text-sm font-semibold text-nkc-text">
-              이름 바꾸기 (나만)
+              별명 바꾸기(나만)
             </Dialog.Title>
             <Dialog.Description className="mt-1 text-xs text-nkc-muted">
-              별칭은 이 기기에서만 보입니다.
+              별명은 내 기기에서만 보입니다.
             </Dialog.Description>
             <input
               value={aliasDraft}
@@ -643,7 +666,6 @@ function ConversationRow({
         </div>
         <div className="mt-1 text-xs text-nkc-muted line-clamp-2">{conv.lastMessage}</div>
         <div className="mt-2 flex gap-2 text-[11px] text-nkc-muted">
-          {conv.muted && <span>{t("음소거", "Muted")}</span>}
           {conv.blocked && <span>{t("차단됨", "Blocked")}</span>}
         </div>
       </div>
@@ -662,3 +684,11 @@ function ConversationRow({
     </div>
   );
 }
+
+
+
+
+
+
+
+
