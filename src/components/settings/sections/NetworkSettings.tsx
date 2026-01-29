@@ -46,6 +46,7 @@ type NetworkSettingsProps = {
   onTorStatus: () => void | Promise<void>;
   onLokinetStatus: () => void | Promise<void>;
   onConnectOnion: (network?: OnionNetwork) => void | Promise<void>;
+  onDisconnectOnion: (network?: OnionNetwork) => void | Promise<void>;
   onCheckUpdates: () => void | Promise<void>;
   onApplyUpdate: (network: OnionNetwork) => void | Promise<void>;
   onUninstall: (network: OnionNetwork) => void | Promise<void>;
@@ -107,6 +108,7 @@ export default function NetworkSettings({
   onTorStatus,
   onLokinetStatus,
   onConnectOnion,
+  onDisconnectOnion,
   onCheckUpdates,
   onApplyUpdate,
   onUninstall,
@@ -130,6 +132,10 @@ export default function NetworkSettings({
   onSaveOnion,
   saveMessage,
 }: NetworkSettingsProps) {
+  const runtime = onionStatus?.runtime;
+  const torConnected = runtime?.status === "running" && runtime.network === "tor";
+  const lokinetConnected = runtime?.status === "running" && runtime.network === "lokinet";
+
   return (
     <div className="mt-6 grid gap-6">
       <SettingsBackHeader title={t("네트워크", "Network")} backLabel={t("뒤로", "Back")} onBack={onBack} />
@@ -244,11 +250,13 @@ export default function NetworkSettings({
                     <>
                       <button
                         type="button"
-                        onClick={() => void onConnectOnion("tor")}
-                        disabled={torInstallBusy || !isComponentReady(netConfig.tor)}
+                        onClick={() =>
+                          void (torConnected ? onDisconnectOnion("tor") : onConnectOnion("tor"))
+                        }
+                        disabled={torConnected ? torInstallBusy : torInstallBusy || !isComponentReady(netConfig.tor)}
                         className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                       >
-                        {t("연결", "Connect")}
+                        {torConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
                       </button>
                       <button
                         type="button"
@@ -382,11 +390,17 @@ export default function NetworkSettings({
                     <>
                       <button
                         type="button"
-                        onClick={() => void onConnectOnion("lokinet")}
-                        disabled={lokinetInstallBusy || !isComponentReady(netConfig.lokinet)}
+                        onClick={() =>
+                          void (lokinetConnected ? onDisconnectOnion("lokinet") : onConnectOnion("lokinet"))
+                        }
+                        disabled={
+                          lokinetConnected
+                            ? lokinetInstallBusy
+                            : lokinetInstallBusy || !isComponentReady(netConfig.lokinet)
+                        }
                         className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                       >
-                        {t("연결", "Connect")}
+                        {lokinetConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
                       </button>
                       <button
                         type="button"
@@ -489,56 +503,6 @@ export default function NetworkSettings({
         ) : null}
       </section>
 
-      <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-        <div className="text-sm font-semibold text-nkc-text">{t("내 주소", "My Addresses")}</div>
-        <div className="mt-3 grid gap-3">
-          <div className="grid gap-2">
-            <div className="text-xs text-nkc-muted">Tor Onion</div>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                readOnly
-                value={torAddress}
-                placeholder={t("(사용 불가)", "(not available)")}
-                className="min-w-[200px] flex-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text placeholder:text-nkc-muted"
-              />
-              <button
-                type="button"
-                onClick={() => void onCopyAddress(torAddress, "Tor Onion")}
-                disabled={!torAddress}
-                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-              >
-                {t("복사", "Copy")}
-              </button>
-            </div>
-          </div>
-          <div className="grid gap-2">
-            <div className="text-xs text-nkc-muted">Lokinet</div>
-            <div className="flex flex-wrap items-center gap-2">
-              <input
-                readOnly
-                value={lokinetAddress}
-                placeholder={t("(사용 불가)", "(not available)")}
-                className="min-w-[200px] flex-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs text-nkc-text placeholder:text-nkc-muted"
-              />
-              <button
-                type="button"
-                onClick={() => void onCopyAddress(lokinetAddress, "Lokinet")}
-                disabled={!lokinetAddress}
-                className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-              >
-                {t("복사", "Copy")}
-              </button>
-            </div>
-          </div>
-        </div>
-        <div className="mt-2 text-xs text-nkc-muted">
-          {t(
-            "주소는 연결/설치 상태에 따라 비어 있을 수 있습니다.",
-            "Addresses may be empty depending on connection/install status."
-          )}
-        </div>
-      </section>
-
       {netConfig.mode === "onionRouter" ? (
         <>
           <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
@@ -617,4 +581,3 @@ export default function NetworkSettings({
     </div>
   );
 }
-

@@ -642,6 +642,21 @@ export default function SettingsDialog({
     }
   };
 
+  const handleDisconnectOnion = async (network?: OnionNetwork) => {
+    try {
+      const nextNetwork = network ?? onionNetworkDraft;
+      setOnionNetworkDraft(nextNetwork);
+      setOnionEnabledDraft(false);
+      setOnionEnabled(false);
+      await setOnionMode(false, nextNetwork);
+      setSaveMessage(t("연결 해제 중...", "Disconnecting..."));
+      await refreshOnionStatus();
+    } catch (error) {
+      console.error("Failed to stop onion runtime", error);
+      setSaveMessage(t("연결 해제 실패", "Disconnect failed"));
+    }
+  };
+
   const handleConnectionChoiceChange = async (choice: ConnectionChoice) => {
     if (choice === "directP2P") {
       setMode("directP2P");
@@ -1551,6 +1566,7 @@ export default function SettingsDialog({
               onTorStatus={handleTorStatus}
               onLokinetStatus={handleLokinetStatus}
               onConnectOnion={handleConnectOnion}
+              onDisconnectOnion={handleDisconnectOnion}
               onCheckUpdates={handleCheckUpdates}
               onApplyUpdate={handleApplyUpdate}
               onUninstall={handleUninstall}
