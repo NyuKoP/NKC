@@ -124,6 +124,7 @@ export const loadConversationMessages = async (
       type?: string;
       text?: string;
       media?: Message["media"];
+      clientBatchId?: string;
       kind?: string;
       msgId?: string;
       convId?: string;
@@ -152,6 +153,7 @@ export const loadConversationMessages = async (
         text: typed.text ?? "",
         ts,
         media: typed.media,
+        clientBatchId: typed.clientBatchId,
       };
     }
 
@@ -241,6 +243,7 @@ export const loadConversationMessages = async (
           type: "msg";
           text: string;
           media?: Message["media"];
+          clientBatchId?: string;
         }>(recv.msgKey, envelope, verifyKey);
 
         logDecrypt("commit", { convId: record.convId, eventId: record.eventId, mode: "v2" });
@@ -273,6 +276,7 @@ export const loadConversationMessages = async (
           type: "msg";
           text: string;
           media?: Message["media"];
+          clientBatchId?: string;
         }>(recv.msgKey, envelope, verifyKey);
 
         logDecrypt("ok", { convId: record.convId, eventId: record.eventId, mode: "v1" });
@@ -291,6 +295,7 @@ export const loadConversationMessages = async (
         type: "msg";
         text: string;
         media?: Message["media"];
+        clientBatchId?: string;
       }>(legacyKey, envelope, verifyKey);
 
       logDecrypt("ok", { convId: record.convId, eventId: record.eventId, mode: "legacy" });

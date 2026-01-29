@@ -78,6 +78,7 @@ export type Message = {
   text: string;
   ts: number;
   media?: MediaRef;
+  clientBatchId?: string;
 };
 
 export type MessageEnvelopeRecord = {

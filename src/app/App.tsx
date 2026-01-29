@@ -157,6 +157,17 @@ const createNonce = () => {
   return encodeBase64Url(bytes);
 };
 
+const newClientBatchId = () => {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  }
+  return encodeBase64Url(bytes);
+};
+
 const signMkcPayload = async (payload: Record<string, unknown>) => {
   const encoder = new TextEncoder();
   const sodium = await getSodium();
@@ -967,7 +978,7 @@ export default function App() {
     []
   );
 
-  const handleSendMessage = async (text: string) => {
+  const handleSendMessage = async (text: string, clientBatchId: string) => {
     if (!ui.selectedConvId || !userProfile) return;
     const conv = convs.find((item) => item.id === ui.selectedConvId);
     if (!conv) return;
@@ -1033,7 +1044,7 @@ export default function App() {
         const envelope = await encryptEnvelope(
           keyForEnvelope,
           header,
-          { type: "msg", text },
+          { type: "msg", text, clientBatchId },
           myIdentityPriv
         );
         const envelopeJson = JSON.stringify(envelope);
@@ -1079,6 +1090,7 @@ export default function App() {
       senderId: userProfile.id,
       text,
       ts: Date.now(),
+      clientBatchId,
     };
 
     const ciphertext = await encryptJsonRecord(vk, message.id, "message", message);
@@ -1105,7 +1117,7 @@ export default function App() {
     await hydrateVault();
   };
 
-  const handleSendMedia = async (files: File[]) => {
+  const handleSendMedia = async (files: File[], clientBatchId: string) => {
     if (!ui.selectedConvId || !userProfile) return;
     const conv = convs.find((item) => item.id === ui.selectedConvId);
     if (!conv) return;
@@ -1183,7 +1195,7 @@ export default function App() {
           const envelope = await encryptEnvelope(
             keyForEnvelope,
             header,
-            { type: "msg", text: label, media },
+            { type: "msg", text: label, media, clientBatchId },
             myIdentityPriv
           );
           const envelopeJson = JSON.stringify(envelope);
@@ -1235,6 +1247,7 @@ export default function App() {
                 name: media.name,
                 size: media.size,
                 b64: encodeBase64Url(chunks[idx]),
+                clientBatchId,
               };
               await sendDirectEnvelope(conv, partner, chunkBody, "normal");
               if (idx > 0 && idx % 32 === 0) {
@@ -1260,6 +1273,7 @@ export default function App() {
         text: label,
         ts: Date.now(),
         media,
+        clientBatchId,
       };
 
       const ciphertext = await encryptJsonRecord(vk, message.id, "message", message);
@@ -1293,6 +1307,20 @@ export default function App() {
         console.error("Failed to send media", error);
         addToast({ message: "Failed to send attachment." });
       }
+    }
+  };
+
+  const handleSendBatch = async (payload: { text: string; files: File[] }) => {
+    const trimmed = payload.text.trim();
+    const hasText = Boolean(trimmed);
+    const hasFiles = payload.files.length > 0;
+    if (!hasText && !hasFiles) return;
+    const clientBatchId = newClientBatchId();
+    if (hasText) {
+      await handleSendMessage(trimmed, clientBatchId);
+    }
+    if (hasFiles) {
+      await handleSendMedia(payload.files, clientBatchId);
     }
   };
 
@@ -2554,8 +2582,7 @@ export default function App() {
         profilesById={profilesById}
         isComposing={ui.isComposing}
         onComposingChange={setIsComposing}
-        onSend={handleSendMessage}
-        onSendMedia={handleSendMedia}
+        onSendBatch={handleSendBatch}
         onSendReadReceipt={handleSendReadReceipt}
         onAcceptRequest={handleAcceptRequest}
         onDeclineRequest={handleDeclineRequest}

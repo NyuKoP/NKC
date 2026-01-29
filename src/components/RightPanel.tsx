@@ -11,6 +11,7 @@ import {
 } from "../db/repo";
 import Avatar from "./Avatar";
 import { resolveDisplayName, resolveFriendDisplayName } from "../utils/displayName";
+import { groupMessages } from "../ui/groupMessages";
 
 const tabs = [
   { value: "about", label: "About" },
@@ -196,35 +197,47 @@ export default function RightPanel({
   }, [mediaFilter, mediaMessages, mediaQuery]);
 
   const groupedMedia = useMemo<MediaSection[]>(() => {
-    const sections = new Map<string, MediaSection>();
-    const sorted = [...filteredMedia].sort((a, b) => b.ts - a.ts);
-    const burstMs = 5000;
-    const maxGroupSize = 30;
-    for (const message of sorted) {
-      if (!message.media) continue;
-      const date = new Date(message.ts);
+    const sections = new Map<
+      string,
+      { section: MediaSection; groupMap: Map<string, MediaGroup> }
+    >();
+    const grouped = groupMessages(
+      filteredMedia.map((message) => ({
+        ...message,
+        createdAt: message.ts,
+        kind: "media",
+      }))
+    );
+    const ordered = [...grouped].sort((a, b) => {
+      const timeDelta = b.createdAt - a.createdAt;
+      if (timeDelta !== 0) return timeDelta;
+      return a.key.localeCompare(b.key);
+    });
+
+    for (const group of ordered) {
+      const date = new Date(group.createdAt);
       const sectionKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
       const sectionLabel = sectionKey;
-      let section = sections.get(sectionKey);
-      if (!section) {
-        section = { key: sectionKey, label: sectionLabel, groups: [] };
-        sections.set(sectionKey, section);
+      let entry = sections.get(sectionKey);
+      if (!entry) {
+        entry = {
+          section: { key: sectionKey, label: sectionLabel, groups: [] },
+          groupMap: new Map<string, MediaGroup>(),
+        };
+        sections.set(sectionKey, entry);
       }
-      const lastGroup = section.groups[section.groups.length - 1];
-      const lastItem = lastGroup?.items[lastGroup.items.length - 1];
-      const sameSender = lastItem?.message.senderId === message.senderId;
-      const closeInTime =
-        lastItem && Math.abs((lastItem.message.ts ?? 0) - (message.ts ?? 0)) <= burstMs;
-      if (lastGroup && sameSender && closeInTime && lastGroup.items.length < maxGroupSize) {
-        lastGroup.items.push({ message, media: message.media });
-      } else {
-        section.groups.push({
-          id: `${message.id}`,
-          items: [{ message, media: message.media }],
-        });
+      let mediaGroup = entry.groupMap.get(group.key);
+      if (!mediaGroup) {
+        mediaGroup = { id: group.key, items: [] };
+        entry.groupMap.set(group.key, mediaGroup);
+        entry.section.groups.push(mediaGroup);
       }
+      group.items.forEach((item) => {
+        if (!item.media) return;
+        mediaGroup?.items.push({ message: item, media: item.media });
+      });
     }
-    return Array.from(sections.values());
+    return Array.from(sections.values()).map((entry) => entry.section);
   }, [filteredMedia]);
 
   useEffect(() => {
