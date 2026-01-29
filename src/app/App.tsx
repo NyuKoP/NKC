@@ -25,6 +25,7 @@ import {
   verifyVaultKeyId,
   rotateVaultKeys,
   deleteProfile,
+  deleteMessagesById,
   nextLamportForConv,
   getLastEventHash,
   saveConversation,
@@ -1324,6 +1325,71 @@ export default function App() {
     }
   };
 
+  const handleDeleteMessages = useCallback(
+    (payload: { convId: string; messageIds: string[] }) => {
+      if (!payload.messageIds.length) return;
+      setConfirm({
+        title: "메시지 삭제",
+        message:
+          "이 메시지는 내 기기에서만 삭제됩니다. 삭제 후 복구할 수 없습니다. 계속할까요?",
+        onConfirm: async () => {
+          try {
+            await deleteMessagesById(payload.messageIds);
+            const messageIdSet = new Set(payload.messageIds);
+            const existing = messagesByConv[payload.convId] || [];
+            const remaining = existing.filter((msg) => !messageIdSet.has(msg.id));
+            const updatedMessagesByConv = {
+              ...messagesByConv,
+              [payload.convId]: remaining,
+            };
+            let updatedConvs = convs;
+            const conv = convs.find((item) => item.id === payload.convId);
+            if (conv) {
+              const last = remaining[remaining.length - 1];
+              const lastMessage = last
+                ? last.text?.trim()
+                  ? last.text
+                  : last.media
+                    ? last.media.mime.startsWith("image/")
+                      ? "사진"
+                      : last.media.name || "파일"
+                    : ""
+                : "";
+              const lastTs = last?.ts ?? 0;
+              if (lastMessage !== conv.lastMessage || lastTs !== conv.lastTs) {
+                const updatedConv: Conversation = {
+                  ...conv,
+                  lastMessage,
+                  lastTs,
+                };
+                await saveConversation(updatedConv);
+                updatedConvs = convs.map((item) =>
+                  item.id === updatedConv.id ? updatedConv : item
+                );
+              }
+            }
+            setData({
+              user: userProfile,
+              friends,
+              convs: updatedConvs,
+              messagesByConv: updatedMessagesByConv,
+            });
+            window.dispatchEvent(
+              new CustomEvent("nkc:messages-updated", {
+                detail: { convId: payload.convId },
+              })
+            );
+            addToast({ message: "메시지를 삭제했습니다." });
+          } catch (error) {
+            console.error("Failed to delete message", error);
+            addToast({ message: "메시지 삭제에 실패했습니다." });
+          }
+        },
+      });
+    },
+    [addToast, convs, friends, messagesByConv, setConfirm, setData, userProfile]
+  );
+
   const findDirectConvWithFriend = useCallback(
     (friendId: string) =>
       convs.find(
@@ -2586,6 +2652,8 @@ export default function App() {
         onSendReadReceipt={handleSendReadReceipt}
         onAcceptRequest={handleAcceptRequest}
         onDeclineRequest={handleDeclineRequest}
+        onDeleteMessages={handleDeleteMessages}
+        onToast={(message) => addToast({ message })}
         onBack={() => {
           setSelectedConv(null);
           setRightPanelOpen(false);

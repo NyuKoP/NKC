@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { ChevronDown, ChevronRight, Filter, Lock, Search, Settings, UserPlus, Users } from "lucide-react";
+import { ChevronDown, ChevronRight, Lock, Search, Settings, UserPlus, Users } from "lucide-react";
 import type { AvatarRef, Conversation, UserProfile } from "../db/repo";
 import { useAppStore } from "../app/store";
 import OverflowMenu from "./OverflowMenu";
@@ -172,10 +172,7 @@ export default function Sidebar({
       return a.isFavorite ? -1 : 1;
     });
 
-  const filteredFriends =
-    listMode === "friends" && listFilter === "favorites"
-      ? visibleFriends.filter((friend) => friend.isFavorite)
-      : visibleFriends;
+  const filteredFriends = visibleFriends;
 
   const favoriteFriends = filteredFriends.filter((friend) => friend.isFavorite);
   const regularFriends = filteredFriends.filter((friend) => !friend.isFavorite);
@@ -186,10 +183,7 @@ export default function Sidebar({
           { value: "all", label: t("전체", "All") },
           { value: "unread", label: t("읽지 않음", "Unread") },
         ]
-      : [
-          { value: "all", label: t("전체", "All") },
-          { value: "favorites", label: t("즐겨찾기만 보기", "Favorites only") },
-        ];
+      : [{ value: "all", label: t("전체", "All") }];
 
   const resolveConvFriend = (conv: Conversation) => {
     if (conv.type === "group" || conv.participants.length > 2) return undefined;
@@ -350,10 +344,25 @@ export default function Sidebar({
       </div>
 
       <div className="border-b border-nkc-border px-6 py-4 space-y-3">
-        <div className="flex items-center justify-between text-xs font-semibold text-nkc-muted">
-          <span>{t("필터", "Filter")}</span>
-          <div className="flex items-center gap-2">
-            <Filter size={14} />
+        <div className="flex items-center justify-between gap-2 text-xs font-semibold text-nkc-muted">
+          {listMode === "chats" ? (
+            <div className="flex items-center gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-[11px]">
+              {filterOptions.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => onListFilterChange(option.value)}
+                  className={`rounded-nkc px-3 py-2 font-semibold ${
+                    listFilter === option.value ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
+                  }`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <div />
+          )}
+          <div className="flex items-center gap-1.5">
             <button
               onClick={onAddFriend}
               className="flex h-7 w-7 items-center justify-center rounded-full border border-nkc-border hover:bg-nkc-panelMuted"
@@ -369,20 +378,6 @@ export default function Sidebar({
               <Users size={14} />
             </button>
           </div>
-        </div>
-
-        <div className="grid grid-cols-2 gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-[11px]">
-          {filterOptions.map((option) => (
-            <button
-              key={option.value}
-              onClick={() => onListFilterChange(option.value)}
-              className={`rounded-nkc px-3 py-2 font-semibold ${
-                listFilter === option.value ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
-              }`}
-            >
-              {option.label}
-            </button>
-          ))}
         </div>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 pt-0 space-y-6 scrollbar-hidden">
