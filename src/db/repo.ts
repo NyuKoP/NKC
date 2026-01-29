@@ -964,6 +964,27 @@ const secureEraseMediaChunks = async (records: MediaChunkRecord[]) => {
   await db.mediaChunks.bulkDelete(records.map((record) => record.id));
 };
 
+export const deleteMessagesById = async (messageIds: string[]) => {
+  if (!messageIds.length) return;
+  await ensureDbOpen();
+  requireVaultKey();
+  const uniqueIds = Array.from(new Set(messageIds));
+  const now = Date.now();
+  const messageRecords = (await db.messages.bulkGet(uniqueIds)).filter(
+    (record): record is MessageRecord => Boolean(record)
+  );
+  await secureEraseMessages(messageRecords);
+  const mediaRecords = await db.mediaChunks
+    .where("ownerId")
+    .anyOf(uniqueIds)
+    .and((chunk) => chunk.ownerType === "message")
+    .toArray();
+  await secureEraseMediaChunks(mediaRecords);
+  await db.tombstones.bulkPut(
+    uniqueIds.map((id) => ({ id, type: "message", deletedAt: now }))
+  );
+};
+
 export const deleteAllMedia = async () => {
   await ensureDbOpen();
   requireVaultKey();

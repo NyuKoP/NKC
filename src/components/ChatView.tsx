@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useCallback } from "react";
 import {
   AlertTriangle,
@@ -87,6 +87,8 @@ type ChatViewProps = {
   onBack: () => void;
   onToggleRight: () => void;
   rightPanelOpen: boolean;
+  onDeleteMessages?: (payload: { convId: string; messageIds: string[] }) => void;
+  onToast?: (message: string) => void;
 };
 
 type SendState = "queued" | "sent" | "delivered" | "read";
@@ -108,6 +110,8 @@ export default function ChatView({
   onBack,
   onToggleRight,
   rightPanelOpen,
+  onDeleteMessages,
+  onToast,
 }: ChatViewProps) {
   const [atBottom, setAtBottom] = useState(true);
   const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(false);
@@ -115,6 +119,12 @@ export default function ChatView({
   const [readCursors, setReadCursors] = useState<Record<string, number>>({});
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const latestIncomingRef = useRef<HTMLDivElement | null>(null);
+  const [messageMenu, setMessageMenu] = useState<{
+    group: MessageGroup<ChatMessageLike>;
+    x: number;
+    y: number;
+  } | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const isGroup = Boolean(
     conversation && (conversation.type === "group" || conversation.participants.length > 2)
   );
@@ -127,6 +137,83 @@ export default function ChatView({
     const focused = typeof document.hasFocus === "function" ? document.hasFocus() : true;
     return visible && focused;
   });
+
+  const openMessageMenu = useCallback(
+    (group: MessageGroup<ChatMessageLike>, event: ReactMouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const menuWidth = 180;
+      const menuHeight = 100;
+      const padding = 8;
+      const x = Math.min(event.clientX, window.innerWidth - menuWidth - padding);
+      const y = Math.min(event.clientY, window.innerHeight - menuHeight - padding);
+      setMessageMenu({ group, x, y });
+    },
+    []
+  );
+
+  const handleCopyGroup = useCallback(
+    async (group: MessageGroup<ChatMessageLike>) => {
+      const textParts = group.items
+        .filter((item) => item.kind === "text" && item.text)
+        .map((item) => item.text.trim())
+        .filter(Boolean);
+      const mediaParts = group.items
+        .filter((item) => item.kind === "media" && item.media)
+        .map((item) => item.media?.name || "")
+        .filter(Boolean);
+      const payload = [...textParts, ...mediaParts].join("\n").trim();
+      if (!payload) {
+        onToast?.("복사할 내용이 없습니다.");
+        return;
+      }
+      try {
+        if (navigator.clipboard?.writeText) {
+          await navigator.clipboard.writeText(payload);
+        } else {
+          const textarea = document.createElement("textarea");
+          textarea.value = payload;
+          textarea.style.position = "fixed";
+          textarea.style.opacity = "0";
+          document.body.appendChild(textarea);
+          textarea.select();
+          document.execCommand("copy");
+          document.body.removeChild(textarea);
+        }
+        onToast?.("복사했습니다.");
+      } catch (error) {
+        console.error("Failed to copy message", error);
+        onToast?.("복사에 실패했습니다.");
+      }
+    },
+    [onToast]
+  );
+
+  useEffect(() => {
+    setMessageMenu(null);
+  }, [conversation?.id]);
+
+  useEffect(() => {
+    if (!messageMenu) return;
+    const handleClick = (event: MouseEvent) => {
+      if (menuRef.current && menuRef.current.contains(event.target as Node)) return;
+      setMessageMenu(null);
+    };
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setMessageMenu(null);
+    };
+    const handleScroll = () => setMessageMenu(null);
+    window.addEventListener("click", handleClick);
+    window.addEventListener("resize", handleScroll);
+    window.addEventListener("keydown", handleKey);
+    window.addEventListener("scroll", handleScroll, true);
+    return () => {
+      window.removeEventListener("click", handleClick);
+      window.removeEventListener("resize", handleScroll);
+      window.removeEventListener("keydown", handleKey);
+      window.removeEventListener("scroll", handleScroll, true);
+    };
+  }, [messageMenu]);
 
   const peerProfile = useMemo(() => {
     if (!conversation || !currentUserId || isGroup) return null;
@@ -741,6 +828,7 @@ export default function ChatView({
                             setViewerGroup(items);
                             setViewerIndex(index);
                           }}
+                          onRequestMenu={(event) => openMessageMenu(group, event)}
                           highlightQuery={searchOpen ? searchQuery : ""}
                           footer={
                             <>
@@ -782,6 +870,45 @@ export default function ChatView({
           </button>
         ) : null}
       </div>
+
+      {messageMenu ? (
+        <div className="fixed inset-0 z-50">
+          <div
+            ref={menuRef}
+            className="fixed min-w-[140px] rounded-nkc border border-nkc-border bg-nkc-panel p-1 text-xs shadow-soft"
+            style={{ left: messageMenu.x, top: messageMenu.y }}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <button
+              type="button"
+              className="flex w-full items-center rounded-nkc px-2 py-1.5 text-left text-nkc-text hover:bg-nkc-panelMuted"
+              onClick={() => {
+                void handleCopyGroup(messageMenu.group);
+                setMessageMenu(null);
+              }}
+            >
+              복사
+            </button>
+            {onDeleteMessages ? (
+              <button
+                type="button"
+                className="flex w-full items-center rounded-nkc px-2 py-1.5 text-left text-red-400 hover:bg-red-500/10"
+                onClick={() => {
+                  const convId =
+                    messageMenu.group.items[0]?.convId || conversation?.id || "";
+                  const messageIds = messageMenu.group.items.map((item) => item.id);
+                  if (convId && messageIds.length) {
+                    onDeleteMessages({ convId, messageIds });
+                  }
+                  setMessageMenu(null);
+                }}
+              >
+                삭제
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
 
       {viewerGroup ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -1104,3 +1231,6 @@ const scrollToBottom = (el: HTMLDivElement | null) => {
   if (!el) return;
   el.scrollTop = el.scrollHeight;
 };
+
+
+

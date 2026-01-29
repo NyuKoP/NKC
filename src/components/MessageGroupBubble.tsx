@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+﻿import { useEffect, useMemo, useState, type ReactNode, type MouseEvent as ReactMouseEvent } from "react";
 import { FileText } from "lucide-react";
 import type { MediaRef } from "../db/repo";
 import { loadMessageMedia } from "../db/repo";
@@ -17,6 +17,7 @@ type MessageGroupBubbleProps<T extends ChatMessageLike> = {
   onOpenMedia?: (items: T[], index: number) => void;
   footer?: ReactNode;
   highlightQuery?: string;
+  onRequestMenu?: (event: ReactMouseEvent) => void;
 };
 
 const formatBytes = (bytes: number) => {
@@ -124,6 +125,7 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
   onOpenMedia,
   footer,
   highlightQuery,
+  onRequestMenu,
 }: MessageGroupBubbleProps<T>) {
   const textItems = group.items.filter((item) => item.kind === "text" && item.text);
   const mediaItems = group.items.filter((item) => item.kind === "media" && item.media);
@@ -171,7 +173,12 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
 
   return (
     <div
-      className={`w-fit rounded-nkc border text-sm leading-relaxed ${bubblePaddingClass} ${bubbleWidthClass} ${bubbleMinWidthClass} overflow-hidden ${
+      onContextMenu={(event) => {
+        if (!onRequestMenu) return;
+        event.preventDefault();
+        onRequestMenu(event);
+      }}
+      className={`group relative w-fit rounded-nkc border text-sm leading-relaxed ${bubblePaddingClass} ${bubbleWidthClass} ${bubbleMinWidthClass} overflow-hidden ${
         isMine
           ? "ml-auto border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
           : "border-nkc-border bg-nkc-panel text-nkc-text"
@@ -221,3 +228,4 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
     </div>
   );
 }
+

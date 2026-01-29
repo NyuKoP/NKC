@@ -105,22 +105,6 @@ export default function PrivacySettings({
       </section>
 
       <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-        <button
-          type="button"
-          onClick={onOpenKeys}
-          className="flex w-full items-center justify-between gap-4 px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
-        >
-          <div>
-            <div className="text-sm font-medium text-nkc-text">{t("키 / 복구", "Keys / Recovery")}</div>
-            <div className="text-xs text-nkc-muted">
-              {t("시작 키 확인 및 복구 관련 설정", "View start key and recovery settings.")}
-            </div>
-          </div>
-          <span className="text-xs text-nkc-muted">{t("열기", "Open")}</span>
-        </button>
-      </section>
-
-      <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
         <div className="flex flex-col">
           <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
             <div>

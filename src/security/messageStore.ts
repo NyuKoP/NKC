@@ -94,9 +94,18 @@ export const loadConversationMessages = async (
   currentUserId: string
 ) => {
   const legacy = await listMessagesByConv(conv.id).catch(() => []);
+  await ensureDbOpen();
+  const tombstones = await db.tombstones
+    .where("type")
+    .equals("message")
+    .toArray()
+    .catch(() => []);
+  const tombstoneIds = new Set(tombstones.map((item) => item.id));
 
   if (!friend?.dhPub || !friend?.identityPub) {
-    return legacy;
+    return tombstoneIds.size
+      ? legacy.filter((message) => !tombstoneIds.has(message.id))
+      : legacy;
   }
 
   const dhPriv = await getDhPrivateKey();
@@ -316,5 +325,7 @@ export const loadConversationMessages = async (
   }
 
   messages.sort((a, b) => a.ts - b.ts);
-  return messages;
+  return tombstoneIds.size
+    ? messages.filter((message) => !tombstoneIds.has(message.id))
+    : messages;
 };

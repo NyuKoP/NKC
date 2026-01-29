@@ -120,6 +120,7 @@ export default function RightPanel({
   const mediaPreviewRunRef = useRef(0);
   const mediaPreviewUrlsRef = useRef<Record<string, string>>({});
   const mediaPreviewBusyRef = useRef<Record<string, boolean>>({});
+  const [mediaRefreshKey, setMediaRefreshKey] = useState(0);
   const [viewerGroup, setViewerGroup] = useState<MediaGroup | null>(null);
   const [viewerIndex, setViewerIndex] = useState(0);
 
@@ -177,7 +178,19 @@ export default function RightPanel({
     return () => {
       active = false;
     };
-  }, [conversation, tab]);
+  }, [conversation, tab, mediaRefreshKey]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent).detail as { convId?: string } | undefined;
+      if (detail?.convId && conversation && detail.convId !== conversation.id) return;
+      setMediaRefreshKey(Date.now());
+    };
+    window.addEventListener("nkc:messages-updated", handler as EventListener);
+    return () => {
+      window.removeEventListener("nkc:messages-updated", handler as EventListener);
+    };
+  }, [conversation]);
 
   const filteredMedia = useMemo(() => {
     return mediaMessages.filter((message) => {
