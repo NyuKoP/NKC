@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { FileText } from "lucide-react";
 import type { MediaRef } from "../db/repo";
 import { loadMessageMedia } from "../db/repo";
-import type { MessageGroup, MessageLike } from "./groupMessages";
+import type { MessageGroup, MessageLike } from "../ui/groupMessages";
 
 export type ChatMessageLike = MessageLike & {
   convId: string;

@@ -18,7 +18,7 @@ import { getOutbox } from "../storage/outboxStore";
 import { getReadCursors, getReceiptState } from "../storage/receiptStore";
 import { getPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
-import MessageGroupBubble, { type ChatMessageLike } from "../ui/MessageGroupBubble";
+import MessageGroupBubble, { type ChatMessageLike } from "./MessageGroupBubble";
 import { groupMessages, type MessageGroup } from "../ui/groupMessages";
 
 const MAX_ATTACH_TOTAL_BYTES = 500 * 1024 * 1024;
