@@ -1,4 +1,4 @@
-import { listConversations, saveConversation, type Conversation } from "../db/repo";
+import { listConversations, listProfiles, saveConversation, saveMessage, type Conversation } from "../db/repo";
 
 export type GroupCreatePayload = {
   id: string;
@@ -144,13 +144,41 @@ export const applyGroupEvent = async (
   const currentUserRemoved = targets.includes(currentUserKey);
   if (!currentUserWasMember && !currentUserRemoved) return;
   const hidden = currentUserRemoved ? true : existing.hidden;
+  const profiles = await listProfiles().catch(() => []);
+  const resolveName = (id: string) => {
+    if (id === currentUserId) return "나";
+    const profile =
+      profiles.find((item) => item.id === id || item.friendId === id) || null;
+    return profile?.displayName || "알 수 없음";
+  };
+  const firstTarget = targets[0];
+  const leaveLabel = firstTarget
+    ? `${resolveName(firstTarget)}님이 나갔습니다.`
+    : "멤버가 나갔습니다.";
   const next = buildBaseConversation(existing, {
     id: existing.id,
     name: existing.name,
     participants: remaining,
     ts: payload.ts,
-    lastMessage: "Member left",
+    lastMessage: leaveLabel,
     hidden,
   });
   await saveConversation(next);
+
+  await Promise.all(
+    targets.map(async (targetId) => {
+      const text =
+        targetId === currentUserId
+          ? "내가 나갔습니다."
+          : `${resolveName(targetId)}님이 나갔습니다.`;
+      const messageId = `system:group.leave:${existing.id}:${payload.ts}:${targetId}`;
+      await saveMessage({
+        id: messageId,
+        convId: existing.id,
+        senderId: "system",
+        text,
+        ts: payload.ts,
+      });
+    })
+  );
 };

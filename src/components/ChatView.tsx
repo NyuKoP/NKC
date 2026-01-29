@@ -785,6 +785,7 @@ export default function ChatView({
                 group.senderId === currentUserId
                   ? "나"
                   : nameMap[group.senderId] || senderProfile?.displayName || "알 수 없음";
+              const isSystem = group.senderId === "system";
               const lastMessage = group.items.reduce((latest, item) =>
                 item.ts > latest.ts ? item : latest
               );
@@ -803,6 +804,14 @@ export default function ChatView({
                       </span>
                     </div>
                   ) : null}
+                  {isSystem ? (
+                    <div className="flex justify-center">
+                      <span className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-xs text-nkc-muted">
+                        {group.items.map((item) => item.text).filter(Boolean).join(" ")}
+                      </span>
+                    </div>
+                  ) : null}
+                  {isSystem ? null : (
                   <div
                     className={`flex gap-3 ${
                       group.senderId === currentUserId ? "justify-end" : "justify-start"
@@ -848,6 +857,7 @@ export default function ChatView({
                       </div>
                     </div>
                   </div>
+                  )}
                 </div>
               );
             })}

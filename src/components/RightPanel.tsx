@@ -566,7 +566,7 @@ export default function RightPanel({
               ))}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hidden">
+          <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hidden">
             {mediaLoading ? (
               <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
                 미디어를 불러오는 중...
@@ -861,7 +861,6 @@ export default function RightPanel({
     </aside>
   );
 }
-
 
 
 
