@@ -18,8 +18,9 @@ import { getOutbox } from "../storage/outboxStore";
 import { getReadCursors, getReceiptState } from "../storage/receiptStore";
 import { getPrivacyPrefs } from "../security/preferences";
 import Avatar from "./Avatar";
+import MessageGroupBubble, { type ChatMessageLike } from "../ui/MessageGroupBubble";
+import { groupMessages, type MessageGroup } from "../ui/groupMessages";
 
-const GROUP_WINDOW_MS = 1000 * 60 * 2;
 const MAX_ATTACH_TOTAL_BYTES = 500 * 1024 * 1024;
 const MAX_ATTACH_IMAGE_COUNT = 30;
 const MAX_ATTACH_TOTAL_COUNT = 30;
@@ -78,8 +79,7 @@ type ChatViewProps = {
   profilesById: Record<string, UserProfile | undefined>;
   isComposing: boolean;
   onComposingChange: (value: boolean) => void;
-  onSend: (text: string) => void;
-  onSendMedia: (files: File[]) => void;
+  onSendBatch: (payload: { text: string; files: File[] }) => void;
   onSendReadReceipt?: (payload: { convId: string; msgId: string; msgTs: number }) => void;
   onAcceptRequest?: () => void;
   onDeclineRequest?: () => void;
@@ -100,8 +100,7 @@ export default function ChatView({
   profilesById,
   isComposing,
   onComposingChange,
-  onSend,
-  onSendMedia,
+  onSendBatch,
   onSendReadReceipt,
   onAcceptRequest,
   onDeclineRequest,
@@ -135,7 +134,7 @@ export default function ChatView({
     !isGroup &&
     (Boolean(conversation?.pendingAcceptance) || peerProfile?.friendStatus === "request_in");
   const requestOutgoing = !isGroup && peerProfile?.friendStatus === "request_out";
-  const [viewerGroup, setViewerGroup] = useState<Message[] | null>(null);
+  const [viewerGroup, setViewerGroup] = useState<ChatMessageLike[] | null>(null);
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerUrls, setViewerUrls] = useState<Record<string, string>>({});
   const [viewerBusy, setViewerBusy] = useState<Record<string, boolean>>({});
@@ -143,10 +142,42 @@ export default function ChatView({
   const viewerUrlsRef = useRef<Record<string, string>>({});
   const viewerBusyRef = useRef<Record<string, boolean>>({});
 
-  const grouped = useMemo(
-    () => groupMessages(messages, currentUserId, nameMap),
-    [messages, currentUserId, nameMap]
-  );
+  const groupedBatches = useMemo(() => {
+    const items: ChatMessageLike[] = messages.map((message) => ({
+      ...message,
+      createdAt: message.ts,
+      kind: message.media ? "media" : "text",
+    }));
+    return groupMessages(items);
+  }, [messages]);
+  const renderGroups = useMemo(() => {
+    const results: Array<{
+      group: MessageGroup<ChatMessageLike>;
+      dateLabel?: string;
+      showSender: boolean;
+    }> = [];
+    let lastDate = "";
+    let lastSender: string | null = null;
+    groupedBatches.forEach((group) => {
+      const dateLabel = formatDate(group.createdAt);
+      const isNewDate = dateLabel !== lastDate;
+      if (isNewDate) {
+        lastDate = dateLabel;
+        lastSender = null;
+      }
+      const isMine = group.senderId === currentUserId;
+      const showSender = !isMine && group.senderId !== lastSender;
+      if (!isMine) {
+        lastSender = group.senderId;
+      }
+      results.push({
+        group,
+        dateLabel: isNewDate ? dateLabel : undefined,
+        showSender,
+      });
+    });
+    return results;
+  }, [currentUserId, groupedBatches]);
   const latestIncoming = useMemo(() => {
     if (!conversation || !currentUserId) return null;
     return (
@@ -521,15 +552,27 @@ export default function ChatView({
                 </div>
               </div>
             ) : null}
-            {grouped.map((group) => {
+            {renderGroups.map(({ group, dateLabel, showSender }) => {
               const senderProfile = profilesById[group.senderId];
-              const senderName = senderProfile?.displayName || group.senderName;
+              const senderName =
+                group.senderId === currentUserId
+                  ? "나"
+                  : nameMap[group.senderId] || senderProfile?.displayName || "알 수 없음";
+              const lastMessage = group.items.reduce((latest, item) =>
+                item.ts > latest.ts ? item : latest
+              );
+              const seenInfo = getSeenInfo(lastMessage);
+              const isLatestIncoming =
+                latestIncoming &&
+                currentUserId &&
+                group.senderId !== currentUserId &&
+                group.items.some((item) => item.id === latestIncoming.id);
               return (
                 <div key={group.key} className="space-y-2">
-                  {group.dateLabel ? (
+                  {dateLabel ? (
                     <div className="flex justify-center">
                       <span className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-xs font-medium text-nkc-muted">
-                        {group.dateLabel}
+                        {dateLabel}
                       </span>
                     </div>
                   ) : null}
@@ -547,88 +590,20 @@ export default function ChatView({
                       />
                     ) : null}
                     <div className="flex max-w-chat flex-col gap-2">
-                      {group.senderId !== currentUserId ? (
+                      {group.senderId !== currentUserId && showSender ? (
                         <span className="text-xs text-nkc-muted">{senderName}</span>
                       ) : null}
-                      {buildMessageRuns(group.messages).map((run, idx) => {
-                        if (run.type === "media") {
-                          const lastMessage = run.items[run.items.length - 1];
-                          const seenInfo = getSeenInfo(lastMessage);
-                          const isLatestIncoming =
-                            latestIncoming &&
-                            currentUserId &&
-                            lastMessage.senderId !== currentUserId &&
-                            run.items.some((item) => item.id === latestIncoming.id);
-                          const gridCols = run.items.length >= 3 ? 3 : run.items.length;
-                          const thumbAspect =
-                            run.items.length <= 4
-                              ? "aspect-square h-20"
-                              : "aspect-[4/3] h-16";
-                          return (
-                            <div
-                              key={`media-${run.items[0].id}-${idx}`}
-                              ref={isLatestIncoming ? latestIncomingRef : undefined}
-                              className={`w-fit rounded-nkc border px-3 py-3 text-sm leading-relaxed ${getMediaBubbleClass(run.items.length)} ${
-                                group.senderId === currentUserId
-                                  ? "ml-auto border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
-                                  : "border-nkc-border bg-nkc-panel text-nkc-text"
-                              }`}
-                            >
-                              <div
-                                className="grid gap-2"
-                                style={{ gridTemplateColumns: `repeat(${gridCols}, minmax(0, 1fr))` }}
-                              >
-                                {run.items.map((message, index) => (
-                                  <button
-                                    key={message.id}
-                                    type="button"
-                                    onClick={() => {
-                                      setViewerGroup(run.items);
-                                      setViewerIndex(index);
-                                    }}
-                                    className="relative"
-                                  >
-                                    <MediaThumb media={message.media!} className={thumbAspect} />
-                                  </button>
-                                ))}
-                              </div>
-                              <div className="mt-2 flex items-center gap-1 text-[11px] text-nkc-muted">
-                                <span>{formatTime(lastMessage.ts)}</span>
-                                {group.senderId === currentUserId && seenInfo ? (
-                                  <span className="ml-1">
-                                    {isGroup
-                                      ? `읽음 ${seenInfo.seenCount}/${seenInfo.totalOthers}`
-                                      : `읽음 ${seenInfo.seenCount}`}
-                                  </span>
-                                ) : null}
-                                {group.senderId === currentUserId
-                                  ? renderSendState(sendStates[lastMessage.id])
-                                  : null}
-                              </div>
-                            </div>
-                          );
-                        }
-
-                        const message = run.message;
-                        const seenInfo = getSeenInfo(message);
-                        const isLatestIncoming =
-                          latestIncoming &&
-                          currentUserId &&
-                          message.senderId !== currentUserId &&
-                          message.id === latestIncoming.id;
-                        return (
-                          <div
-                            key={message.id}
-                            ref={isLatestIncoming ? latestIncomingRef : undefined}
-                            className={`w-fit rounded-nkc border px-4 py-3 text-sm leading-relaxed ${getTextBubbleClass(message.text)} ${
-                              group.senderId === currentUserId
-                                ? "ml-auto border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
-                                : "border-nkc-border bg-nkc-panel text-nkc-text"
-                            }`}
-                          >
-                            {message.media ? <MediaAttachment media={message.media} /> : message.text}
-                            <div className="mt-2 flex items-center gap-1 text-[11px] text-nkc-muted">
-                              <span>{formatTime(message.ts)}</span>
+                      <div ref={isLatestIncoming ? latestIncomingRef : undefined}>
+                        <MessageGroupBubble
+                          group={group}
+                          isMine={group.senderId === currentUserId}
+                          onOpenMedia={(items, index) => {
+                            setViewerGroup(items);
+                            setViewerIndex(index);
+                          }}
+                          footer={
+                            <>
+                              <span>{formatTime(lastMessage.ts)}</span>
                               {group.senderId === currentUserId && seenInfo ? (
                                 <span className="ml-1">
                                   {isGroup
@@ -637,12 +612,12 @@ export default function ChatView({
                                 </span>
                               ) : null}
                               {group.senderId === currentUserId
-                                ? renderSendState(sendStates[message.id])
+                                ? renderSendState(sendStates[lastMessage.id])
                                 : null}
-                            </div>
-                          </div>
-                        );
-                      })}
+                            </>
+                          }
+                        />
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -774,8 +749,7 @@ export default function ChatView({
         disabled={requestIncoming}
         isComposing={isComposing}
         onComposingChange={onComposingChange}
-        onSend={onSend}
-        onSendMedia={onSendMedia}
+        onSendBatch={onSendBatch}
       />
     </section>
   );
@@ -786,8 +760,7 @@ type MessageComposerProps = {
   disabled?: boolean;
   isComposing: boolean;
   onComposingChange: (value: boolean) => void;
-  onSend: (text: string) => void;
-  onSendMedia: (files: File[]) => void;
+  onSendBatch: (payload: { text: string; files: File[] }) => void;
 };
 
 const MessageComposer = ({
@@ -795,12 +768,26 @@ const MessageComposer = ({
   disabled = false,
   isComposing,
   onComposingChange,
-  onSend,
-  onSendMedia,
+  onSendBatch,
 }: MessageComposerProps) => {
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<File[]>([]);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const previews = useMemo(
+    () =>
+      attachments.map((file) => ({
+        file,
+        url: URL.createObjectURL(file),
+        isImage: file.type.startsWith("image/"),
+      })),
+    [attachments]
+  );
+
+  useEffect(() => {
+    return () => {
+      previews.forEach((preview) => URL.revokeObjectURL(preview.url));
+    };
+  }, [previews]);
 
   useEffect(() => {
     if (!textareaRef.current) return;
@@ -840,14 +827,9 @@ const MessageComposer = ({
     const hasAttachments = attachments.length > 0;
     if (!hasText && !hasAttachments) return;
 
-    if (hasText) {
-      onSend(trimmed);
-      setText("");
-    }
-    if (hasAttachments) {
-      onSendMedia(attachments);
-      setAttachments([]);
-    }
+    onSendBatch({ text: trimmed, files: attachments });
+    if (hasText) setText("");
+    if (hasAttachments) setAttachments([]);
   };
 
   const handleMediaSelect = (event: ChangeEvent<HTMLInputElement>) => {
@@ -874,8 +856,49 @@ const MessageComposer = ({
     >
       <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3">
         {attachments.length ? (
-          <div className="mb-2 text-xs text-nkc-muted">
-            첨부 {attachments.length}개 / 사진 {attachmentImageCount}장
+          <div className="mb-2 flex items-center justify-between text-xs text-nkc-muted">
+            <span>
+              첨부 {attachments.length}개 / 사진 {attachmentImageCount}장
+            </span>
+            <button
+              type="button"
+              onClick={() => setAttachments([])}
+              className="text-red-200 hover:text-red-100"
+            >
+              첨부 취소
+            </button>
+          </div>
+        ) : null}
+        {previews.length ? (
+          <div className="mb-3 flex gap-2 overflow-x-auto pb-1">
+            {previews.map((preview) => (
+              <div
+                key={`${preview.file.name}-${preview.file.lastModified}`}
+                className="relative h-20 w-20 flex-shrink-0 rounded-md border border-nkc-border bg-nkc-panelMuted"
+              >
+                {preview.isImage ? (
+                  <img
+                    src={preview.url}
+                    alt={preview.file.name}
+                    className="h-full w-full rounded-md object-cover"
+                  />
+                ) : (
+                  <div className="flex h-full w-full flex-col items-center justify-center gap-1 px-2 text-[10px] text-nkc-muted">
+                    <FileText size={16} className="text-nkc-muted" />
+                    <span className="line-clamp-2 text-center">{preview.file.name}</span>
+                  </div>
+                )}
+                <button
+                  type="button"
+                  onClick={() =>
+                    setAttachments((prev) => prev.filter((file) => file !== preview.file))
+                  }
+                  className="absolute right-1 top-1 rounded-full border border-nkc-border bg-nkc-panel px-1 text-[10px] text-nkc-text hover:bg-nkc-panelMuted"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
           </div>
         ) : null}
         <textarea
@@ -934,246 +957,8 @@ const MessageComposer = ({
   );
 };
 
-type MediaAttachmentProps = {
-  media: MediaRef;
-};
-
-type MediaThumbProps = {
-  media: MediaRef;
-  className?: string;
-};
-
-const MediaThumb = ({ media, className }: MediaThumbProps) => {
-  const [blob, setBlob] = useState<Blob | null>(null);
-  const isImage = media.mime.startsWith("image/");
-  const previewUrl = useMemo(
-    () => (isImage && blob ? URL.createObjectURL(blob) : null),
-    [isImage, blob]
-  );
-
-  useEffect(() => {
-    if (!isImage) return;
-    let active = true;
-
-    const load = async () => {
-      try {
-        const nextBlob = await loadMessageMedia(media);
-        if (!nextBlob || !active) return;
-        setBlob(nextBlob);
-      } catch (error) {
-        console.error("Failed to load media thumb", error);
-      }
-    };
-
-    void load();
-
-    return () => {
-      active = false;
-    };
-  }, [isImage, media]);
-
-  useEffect(() => {
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
-  }, [previewUrl]);
-
-  const baseClass = className
-    ? `${className} w-full rounded-nkc border border-nkc-border object-cover`
-    : "aspect-square w-full rounded-nkc border border-nkc-border object-cover";
-
-  if (!isImage) {
-    return <div className={`${baseClass} bg-nkc-panelMuted`} />;
-  }
-
-  return previewUrl ? (
-    <img
-      src={previewUrl}
-      alt={media.name}
-      className={baseClass}
-    />
-  ) : (
-    <div className={`${baseClass} bg-nkc-panelMuted`} />
-  );
-};
-
-const MediaAttachment = ({ media }: MediaAttachmentProps) => {
-  const [blob, setBlob] = useState<Blob | null>(null);
-  const isImage = media.mime.startsWith("image/");
-  const previewUrl = useMemo(
-    () => (isImage && blob ? URL.createObjectURL(blob) : null),
-    [isImage, blob]
-  );
-
-  useEffect(() => {
-    if (!isImage) return;
-    let active = true;
-
-    const load = async () => {
-      try {
-        const nextBlob = await loadMessageMedia(media);
-        if (!nextBlob || !active) return;
-        setBlob(nextBlob);
-      } catch (error) {
-        console.error("Failed to load media", error);
-      }
-    };
-
-    void load();
-
-    return () => {
-      active = false;
-    };
-  }, [isImage, media]);
-
-  useEffect(() => {
-    return () => {
-      if (previewUrl) URL.revokeObjectURL(previewUrl);
-    };
-  }, [previewUrl]);
-
-  if (isImage) {
-    return previewUrl ? (
-      <img
-        src={previewUrl}
-        alt={media.name}
-        className="max-h-48 w-full rounded-nkc border border-nkc-border object-cover"
-        data-testid="media-message-bubble"
-      />
-    ) : (
-      <div
-        className="h-32 w-full rounded-nkc border border-nkc-border bg-nkc-panelMuted"
-        data-testid="media-message-bubble"
-      />
-    );
-  }
-
-  return (
-    <div
-      className="flex items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-xs"
-      data-testid="media-message-bubble"
-    >
-      <FileText size={14} className="text-nkc-muted" />
-      <div className="min-w-0">
-        <div className="text-nkc-text line-clamp-1">{media.name}</div>
-        <div className="text-[11px] text-nkc-muted">{formatBytes(media.size)}</div>
-      </div>
-    </div>
-  );
-};
-
-const formatBytes = (bytes: number) => {
-  if (!Number.isFinite(bytes)) return "";
-  const units = ["B", "KB", "MB", "GB"];
-  let size = bytes;
-  let unit = 0;
-  while (size >= 1024 && unit < units.length - 1) {
-    size /= 1024;
-    unit += 1;
-  }
-  const digits = size >= 10 || unit === 0 ? 0 : 1;
-  return `${size.toFixed(digits)} ${units[unit]}`;
-};
-
-type GroupedMessage = {
-  key: string;
-  senderId: string;
-  senderName: string;
-  dateLabel?: string;
-  messages: Message[];
-};
-
-type MessageRun =
-  | { type: "media"; items: Message[] }
-  | { type: "single"; message: Message };
 
 const isPreviewableMedia = (media: MediaRef) => media.mime.startsWith("image/");
-
-const getTextBubbleClass = (text: string) => {
-  const len = text.trim().length;
-  if (len <= 6) return "max-w-[140px]";
-  if (len <= 16) return "max-w-[220px]";
-  if (len <= 32) return "max-w-[320px]";
-  return "max-w-[420px]";
-};
-
-const getMediaBubbleClass = (count: number) => {
-  if (count <= 2) return "max-w-[240px]";
-  if (count <= 4) return "max-w-[320px]";
-  if (count <= 9) return "max-w-[420px]";
-  return "max-w-[520px]";
-};
-
-const buildMessageRuns = (messages: Message[]) => {
-  const runs: MessageRun[] = [];
-  const burstMs = 5000;
-  const maxGroupSize = 30;
-  let index = 0;
-
-  while (index < messages.length) {
-    const current = messages[index];
-    if (current.media && isPreviewableMedia(current.media)) {
-      const items: Message[] = [current];
-      let cursor = index + 1;
-      while (cursor < messages.length && items.length < maxGroupSize) {
-        const next = messages[cursor];
-        if (!next.media || !isPreviewableMedia(next.media)) break;
-        const prev = messages[cursor - 1];
-        if (Math.abs(next.ts - prev.ts) > burstMs) break;
-        items.push(next);
-        cursor += 1;
-      }
-      if (items.length > 1) {
-        runs.push({ type: "media", items });
-        index = cursor;
-        continue;
-      }
-    }
-    runs.push({ type: "single", message: current });
-    index += 1;
-  }
-
-  return runs;
-};
-
-const groupMessages = (
-  messages: Message[],
-  currentUserId: string | null,
-  nameMap: Record<string, string>
-): GroupedMessage[] => {
-  const groups: GroupedMessage[] = [];
-  let lastDate = "";
-
-  messages.forEach((message) => {
-    const dateLabel = formatDate(message.ts);
-    const lastGroup = groups[groups.length - 1];
-    const canGroup =
-      lastGroup &&
-      lastGroup.senderId === message.senderId &&
-      message.ts - lastGroup.messages[lastGroup.messages.length - 1].ts <=
-        GROUP_WINDOW_MS;
-
-    if (canGroup) {
-      lastGroup.messages.push(message);
-      return;
-    }
-
-    const withDate = dateLabel !== lastDate ? dateLabel : undefined;
-    lastDate = dateLabel;
-    groups.push({
-      key: message.id,
-      senderId: message.senderId,
-      senderName:
-        message.senderId === currentUserId
-          ? "나"
-          : nameMap[message.senderId] || "알 수 없음",
-      dateLabel: withDate,
-      messages: [message],
-    });
-  });
-
-  return groups;
-};
 
 const scrollToBottom = (el: HTMLDivElement | null) => {
   if (!el) return;
