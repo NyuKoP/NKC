@@ -167,7 +167,7 @@ const newClientBatchId = () => {
     globalThis.crypto.getRandomValues(bytes);
   }
   return encodeBase64Url(bytes);
-};
+};      
 
 const signMkcPayload = async (payload: Record<string, unknown>) => {
   const encoder = new TextEncoder();
@@ -460,7 +460,7 @@ export default function App() {
         setMode("onboarding");
       }
 
-      addToast({ message: "?몄뀡??留뚮즺?섏뿀?쇰땲 ?ㅼ떆 濡쒓렇?명빐 二쇱꽭??" });
+      addToast({ message: "세션이 만료되었으니 다시 로그인해 주세요." });
     }
   }, [
     addToast,
@@ -513,7 +513,7 @@ export default function App() {
         }
       } catch (error) {
         console.error("Boot failed", error);
-        addToast({ message: "珥덇린?붿뿉 ?ㅽ뙣?덉뒿?덈떎." });
+        addToast({ message: "초기화에 실패했습니다." });
         setMode("onboarding");
       }
     };
@@ -534,7 +534,7 @@ export default function App() {
     outboxSchedulerStarted.current = true;
   }, [ui.mode]);
 
-  // cleanup ???臾몄젣(EffectCallback) + unsubscribe 諛⑹뼱
+  // cleanup 메모리 문제(EffectCallback) + unsubscribe 방어
   useEffect(() => {
     if (typeof window !== "undefined") {
       connectionToastShown.current = window.sessionStorage.getItem(connectionToastKey) === "1";
@@ -558,7 +558,7 @@ export default function App() {
         return;
       }
 
-      addToast({ message: "?몄뀡???곌껐?섏뿀?듬땲??" });
+      addToast({ message: "세션이 연결되었습니다." });
       connectionToastShown.current = true;
 
       if (typeof window !== "undefined") {
@@ -614,9 +614,9 @@ export default function App() {
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Vault bootstrap failed", error);
-      setOnboardingError(error instanceof Error ? error.message : "湲덇퀬 珥덇린?붿뿉 ?ㅽ뙣?덉뒿?덈떎.");
+      setOnboardingError(error instanceof Error ? error.message : "금고 초기화에 실패했습니다.");
       lockVault();
-      addToast({ message: "湲덇퀬 珥덇린?붿뿉 ?ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "금고 초기화에 실패했습니다." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -627,7 +627,7 @@ export default function App() {
     onboardingLockRef.current = true;
 
     if (!validateStartKey(startKey)) {
-      addToast({ message: "?쒖옉 ???뺤떇???щ컮瑜댁? ?딆뒿?덈떎. (?? NKC-...)" });
+      addToast({ message: "시작 키 형식이 올바르지 않습니다. (예: NKC-...)" });
       onboardingLockRef.current = false;
       return;
     }
@@ -666,7 +666,7 @@ export default function App() {
     } catch (error) {
       console.error("Start key unlock failed", error);
       lockVault();
-      addToast({ message: "?쒖옉 ?ㅻ줈 ?좉툑 ?댁젣???ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "시작 키로 잠금 해제에 실패했습니다." });
     } finally {
       onboardingLockRef.current = false;
     }
@@ -802,7 +802,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to logout", error);
-      addToast({ message: "濡쒓렇?꾩썐???ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "로그아웃에 실패했습니다." });
     }
   };
 
@@ -848,7 +848,7 @@ export default function App() {
   const handleRotateStartKey = async (newKey: string) => {
     try {
       if (!validateStartKey(newKey)) {
-        addToast({ message: "?쒖옉 ???뺤떇???щ컮瑜댁? ?딆뒿?덈떎. (?? NKC-...)" });
+        addToast({ message: "시작 키 형식이 올바르지 않습니다. (예: NKC-...)" });
         return;
       }
 
@@ -860,10 +860,10 @@ export default function App() {
       setPinEnabled(true);
       setPinNeedsReset(true);
 
-      addToast({ message: "?쒖옉 ?ㅺ? 蹂寃쎈릺?덉뒿?덈떎. PIN???ㅼ떆 ?ㅼ젙??二쇱꽭??" });
+      addToast({ message: "시작 키가 변경되었습니다. PIN을 다시 설정해 주세요." });
     } catch (error) {
       console.error("Failed to rotate start key", error);
-      addToast({ message: "?쒖옉 ??蹂寃쎌뿉 ?ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "시작 키 변경에 실패했습니다." });
       throw error;
     }
   };
@@ -1674,14 +1674,14 @@ export default function App() {
     const newConv: Conversation = {
       id: createId(),
       type: "direct",
-      name: friend?.displayName || "??梨꾪똿",
+      name: friend?.displayName || "새 채팅",
       pinned: friend?.isFavorite ?? false,
       unread: 0,
       hidden: false,
       muted: false,
       blocked: false,
       lastTs: now,
-      lastMessage: "梨꾪똿???쒖옉?덉뼱??",
+      lastMessage: "채팅을 시작했어요.",
       participants: [userProfile.id, friendId],
     };
 
@@ -1691,7 +1691,7 @@ export default function App() {
       id: createId(),
       convId: newConv.id,
       senderId: userProfile.id,
-      text: "梨꾪똿???쒖옉?덉뼱??",
+      text: "채팅을 시작했어요.",
       ts: now,
     });
 
@@ -1728,12 +1728,12 @@ export default function App() {
 
   const handleDelete = (convId: string) => {
     setConfirm({
-      title: "梨꾪똿????젣?좉퉴??",
-      message: "??젣?섎㈃ 蹂듦뎄?????놁뒿?덈떎.",
+      title: "채팅을 삭제할까요?",
+      message: "삭제하면 복구할 수 없습니다.",
       onConfirm: async () => {
         await updateConversation(convId, { hidden: true });
         addToast({
-          message: "梨꾪똿????젣?덉뼱??",
+          message: "채팅을 삭제했어요.",
           actionLabel: "Undo",
           onAction: () => {
             void updateConversation(convId, { hidden: false });
@@ -1768,7 +1768,7 @@ export default function App() {
       setListFilter("all");
     } catch (error) {
       console.error("Failed to open chat", error);
-      addToast({ message: "梨꾪똿 ?닿린???ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "채팅 열기에 실패했습니다." });
     }
   };
 
@@ -1781,7 +1781,7 @@ export default function App() {
       setRightPanelOpen(true);
     } catch (error) {
       console.error("Failed to open profile", error);
-      addToast({ message: "?꾨줈???닿린???ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "프로필 열기에 실패했습니다." });
     }
   };
 
@@ -1800,7 +1800,7 @@ export default function App() {
       await hydrateVault();
     } catch (error) {
       console.error("Failed to update friend", error);
-      addToast({ message: "移쒓뎄 蹂寃쎌뿉 ?ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "친구 변경에 실패했습니다." });
     }
   };
 
@@ -1818,7 +1818,7 @@ export default function App() {
       }
     } catch (error) {
       console.error("Failed to toggle favorite", error);
-      addToast({ message: "利먭꺼李얘린 蹂寃쎌뿉 ?ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "즐겨찾기 변경에 실패했습니다." });
     }
   };
 
@@ -1900,13 +1900,12 @@ export default function App() {
     try {
       if (!myFriendCode) return;
       await navigator.clipboard.writeText(myFriendCode);
-      addToast({ message: "移쒓뎄 肄붾뱶媛 蹂듭궗?섏뿀?듬땲??" });
+      addToast({ message: "친구 코드가 복사되었습니다." });
     } catch (error) {
       console.error("Failed to copy friend code", error);
-      addToast({ message: "移쒓뎄 肄붾뱶 蹂듭궗???ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "친구 코드 복사에 실패했습니다." });
     }
   };
-
   const normalizeInviteCode = (value: string) =>
     value.trim().replace(/\s+/g, "").toUpperCase();
 
@@ -2571,7 +2570,7 @@ export default function App() {
       await updateConversation(currentConversation.id, { hidden: false, pendingAcceptance: false });
     } catch (error) {
       console.error("Failed to accept request", error);
-      addToast({ message: "硫붿떆吏 ?붿껌 ?섎씫???ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "메시지 요청 수락에 실패했습니다." });
     }
   };
 
@@ -2585,7 +2584,7 @@ export default function App() {
       });
     } catch (error) {
       console.error("Failed to decline request", error);
-      addToast({ message: "硫붿떆吏 ?붿껌 嫄곗젅???ㅽ뙣?덉뒿?덈떎." });
+      addToast({ message: "메시지 요청 거절에 실패했습니다." });
     }
   };
 
@@ -2704,15 +2703,15 @@ export default function App() {
           onUnblockFriend={handleFriendUnblock}
           onLogout={() =>
             setConfirm({
-              title: "濡쒓렇?꾩썐?좉퉴??",
-              message: "?몄뀡??醫낅즺?섍퀬 濡쒖뺄 ?곗씠?곕뒗 ?좎??⑸땲??",
+              title: "로그아웃할까요?",
+              message: "세션을 종료하고 로컬 데이터는 유지됩니다.",
               onConfirm: handleLogout,
             })
           }
           onWipe={() =>
             setConfirm({
-              title: "?곗씠?곕? ??젣?좉퉴??",
-              message: "濡쒖뺄 湲덇퀬媛 珥덇린?붾맗?덈떎.",
+              title: "데이터를 삭제할까요?",
+              message: "로컬 금고가 초기화됩니다.",
               onConfirm: async () => {
                 await clearStoredSession();
                 await wipeVault();
@@ -2790,7 +2789,7 @@ export default function App() {
         title={confirm?.title || ""}
         message={confirm?.message || ""}
         onConfirm={() => {
-          // confirm?.onConfirm()??Promise瑜?諛섑솚?대룄 UI??void 泥섎━
+          // confirm?.onConfirm()가 Promise를 반환해도 UI는 void 처리
           void confirm?.onConfirm?.();
         }}
         onClose={() => setConfirm(null)}
@@ -2798,8 +2797,8 @@ export default function App() {
 
       <ConfirmDialog
         open={directApprovalOpen}
-        title="Direct ?곌껐 ?덉슜"
-        message="Direct ?곌껐? ?곷?諛⑹뿉寃?IP媛 ?몄텧?????덉뒿?덈떎. ?덉슜?좉퉴??"
+        title="Direct 연결 허용"
+        message="Direct 연결은 상대방에게 IP가 노출될 수 있습니다. 허용할까요?"
         onConfirm={() => resolveDirectApproval(true)}
         onClose={() => resolveDirectApproval(false)}
       />
@@ -2808,6 +2807,9 @@ export default function App() {
     </>
   );
 }
+
+
+
 
 
 
