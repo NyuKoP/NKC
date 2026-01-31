@@ -17,9 +17,12 @@ type OutboxRecord = {
   ackDeadlineMs?: number;
 };
 
-const createTransport = (sendImpl?: () => Promise<void>): Transport => {
+const createTransport = (
+  name: Transport["name"] = "selfOnion",
+  sendImpl?: () => Promise<void>
+): Transport => {
   const transport: Transport = {
-    name: "directP2P",
+    name,
     start: vi.fn().mockResolvedValue(undefined),
     stop: vi.fn().mockResolvedValue(undefined),
     send: vi.fn(async () => {
@@ -41,56 +44,6 @@ describe("router", () => {
     __testResetRouter();
   });
 
-  it("blocks direct P2P when onionRouter mode is active", async () => {
-    const store = new Map<string, OutboxRecord>();
-    vi.doMock("../../storage/outboxStore", () => {
-      return {
-        putOutbox: async (record: OutboxRecord) => {
-          store.set(record.id, record);
-        },
-        deleteOutbox: async (id: string) => {
-          store.delete(id);
-        },
-        deleteExpiredOutbox: async () => 0,
-      };
-    });
-
-    const router = await import("../router");
-    const directTransport = createTransport();
-    const result = await router.sendCiphertext(
-      {
-        convId: "c1",
-        messageId: "m1",
-        ciphertext: "enc",
-        priority: "high",
-      },
-      {
-        resolveTransport: () => "directP2P",
-        config: {
-          mode: "onionRouter",
-          onionProxyEnabled: true,
-          onionProxyUrl: "socks5://127.0.0.1:9050",
-          webrtcRelayOnly: true,
-          disableLinkPreview: true,
-          selfOnionEnabled: true,
-          selfOnionMinRelays: 5,
-          allowRemoteProxy: false,
-          onionEnabled: false,
-          onionSelectedNetwork: "tor",
-          tor: { installed: true, status: "ready", version: "1.0.0" },
-          lokinet: { installed: false, status: "idle" },
-          lastUpdateCheckAtMs: undefined,
-        },
-        transports: { directP2P: directTransport },
-      }
-    );
-
-    expect(result.ok).toBe(false);
-    expect(result.error).toMatch("Direct P2P blocked");
-    expect(directTransport.send).not.toHaveBeenCalled();
-    expect(store.size).toBe(1);
-  });
-
   it("retries onionRouter once after selfOnion failure in built-in onion mode", async () => {
     const store = new Map<string, OutboxRecord>();
     vi.doMock("../../storage/outboxStore", () => {
@@ -109,8 +62,8 @@ describe("router", () => {
     const failSend = vi.fn(async () => {
       throw new Error("self-onion failed");
     });
-    const selfOnionTransport = createTransport(failSend);
-    const onionRouterTransport = createTransport();
+    const selfOnionTransport = createTransport("selfOnion", failSend);
+    const onionRouterTransport = createTransport("onionRouter");
 
     const reported: string[] = [];
     const routeController = createRouteController();
@@ -182,8 +135,8 @@ describe("router", () => {
     });
 
     const router = await import("../router");
-    const selfOnionTransport = createTransport();
-    const onionRouterTransport = createTransport();
+    const selfOnionTransport = createTransport("selfOnion");
+    const onionRouterTransport = createTransport("onionRouter");
     const result = await router.sendCiphertext(
       {
         convId: "c1",

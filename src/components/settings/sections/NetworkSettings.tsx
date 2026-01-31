@@ -56,7 +56,6 @@ type NetworkSettingsProps = {
   selfOnionHopTarget: number;
   selfOnionRouteLabel: string;
   onSelfOnionHopChange: (value: number) => void;
-  showDirectWarning: boolean;
   torAddress: string;
   lokinetAddress: string;
   onCopyAddress: (value: string, label: string) => void | Promise<void>;
@@ -118,7 +117,6 @@ export default function NetworkSettings({
   selfOnionHopTarget,
   selfOnionRouteLabel,
   onSelfOnionHopChange,
-  showDirectWarning,
   torAddress,
   lokinetAddress,
   onCopyAddress,
@@ -143,28 +141,6 @@ export default function NetworkSettings({
       <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
         <div className="text-sm font-semibold text-nkc-text">{t("?곌껐 諛⑹떇", "Connection mode")}</div>
         <div className="mt-3 grid gap-2">
-          <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text opacity-60">
-            <div className="flex items-start gap-3">
-              <input
-                id="network-mode-directP2P"
-                type="radio"
-                name="network-mode"
-                className="mt-1"
-                checked={connectionChoice === "directP2P"}
-                onChange={() => void onConnectionChoiceChange("directP2P")}
-                disabled
-                data-testid="network-mode-directP2P"
-              />
-              <label htmlFor="network-mode-directP2P">
-                <div className="text-sm font-medium text-nkc-text">Direct P2P</div>
-                <div className="text-xs text-nkc-muted">
-                  {t("?꾨줉???놁씠 吏곸젒 ?곌껐", "Direct connection without proxy")}
-                </div>
-                <div className="text-xs text-red-300">Direct P2P disabled</div>
-              </label>
-            </div>
-          </div>
-
           <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
@@ -514,19 +490,6 @@ export default function NetworkSettings({
             </div>
           </div>
         ) : null}
-        {showDirectWarning ? (
-          <div
-            className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
-            data-testid="direct-p2p-warning"
-          >
-            <div>
-              {t(
-                "Direct P2P???곷??먭쾶 IP媛 ?몄텧?????덉뒿?덈떎. ?꾪뿕???댄빐?섎뒗 寃쎌슦?먮쭔 ?ъ슜?섏꽭??",
-                "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
-              )}
-            </div>
-          </div>
-        ) : null}
       </section>
 
       {netConfig.mode === "onionRouter" ? (
@@ -535,12 +498,12 @@ export default function NetworkSettings({
             <div className="flex items-center justify-between gap-4">
               <div>
                 <div className="text-sm font-medium text-nkc-text">
-                  {t("IP 蹂댄샇 紐⑤뱶 ?ъ슜", "Enable IP protection")}
+                  {t("IP 보호 모드 사용", "Enable IP protection")}
                 </div>
                 <div className="text-xs text-nkc-muted">
                   {t(
-                    "direct P2P瑜?李⑤떒?섍퀬, ?ㅽ뙣 ???ㅽ듃?뚰겕瑜?以묒??⑸땲??",
-                    "Blocks direct P2P and stops the network on failure."
+                    "Onion 경로로 IP를 보호하며, 실패 시 네트워크를 중지합니다.",
+                    "Protects IP via Onion routes and stops the network on failure."
                   )}
                 </div>
               </div>

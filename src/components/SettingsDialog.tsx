@@ -658,17 +658,6 @@ export default function SettingsDialog({
   };
 
   const handleConnectionChoiceChange = async (choice: ConnectionChoice) => {
-    if (choice === "directP2P") {
-      setMode("directP2P");
-      setOnionEnabledDraft(false);
-      setOnionEnabled(false);
-      try {
-        await setOnionMode(false, onionNetworkDraft);
-      } catch (error) {
-        console.error("Failed to stop onion runtime", error);
-      }
-      return;
-    }
     if (choice === "selfOnion") {
       setMode("selfOnion");
       setOnionEnabledDraft(false);
@@ -1011,22 +1000,6 @@ export default function SettingsDialog({
       return t("경로: 내부 Onion (경로 준비 중)", "Route: Built-in Onion (preparing)");
     }
 
-    if (connection.transport === "directP2P") {
-      if (connection.state === "connected") {
-        return t("경로: Direct P2P", "Route: Direct P2P");
-      }
-      if (connection.state === "connecting") {
-        return t("경로: Direct P2P (연결 중)", "Route: Direct P2P (connecting)");
-      }
-      if (connection.state === "failed") {
-        return t("경로: Direct P2P (실패)", "Route: Direct P2P (failed)");
-      }
-      if (connection.state === "degraded") {
-        return t("경로: Direct P2P (불안정)", "Route: Direct P2P (degraded)");
-      }
-      return t("경로: Direct P2P (대기)", "Route: Direct P2P (idle)");
-    }
-
     if (connection.transport === "onionRouter") {
       const network = runtime?.network;
       const status = runtime?.status;
@@ -1221,9 +1194,7 @@ export default function SettingsDialog({
       ? netConfig.onionSelectedNetwork === "lokinet"
         ? "lokinetOnion"
         : "torOnion"
-      : netConfig.mode === "selfOnion"
-        ? "selfOnion"
-        : "directP2P";
+      : "selfOnion";
   const canSaveOnion =
     !onionEnabledDraft ||
     (onionNetworkDraft === "tor" ? netConfig.tor.installed : netConfig.lokinet.installed);
@@ -1234,14 +1205,8 @@ export default function SettingsDialog({
           "외부 Onion: Tor 또는 Lokinet 경로를 사용합니다.",
           "External Onion: uses a Tor or Lokinet route."
         )
-      : netConfig.mode === "directP2P"
-        ? t(
-            "Direct P2P: 프록시 없이 직접 연결을 시도합니다.",
-            "Direct P2P: attempts a direct connection without a proxy."
-          )
       : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
   const proxyAuto = !proxyUrlDraft.trim();
-  const showDirectWarning = netConfig.mode === "directP2P";
   const syncCodeRemainingMs = syncCodeState
     ? Math.max(0, syncCodeState.expiresAt - syncCodeNow)
     : 0;
@@ -1576,7 +1541,6 @@ export default function SettingsDialog({
               selfOnionHopTarget={selfOnionHopTarget}
               selfOnionRouteLabel={selfOnionRouteLabel}
               onSelfOnionHopChange={setSelfOnionMinRelays}
-              showDirectWarning={showDirectWarning}
               torAddress={torAddress}
               lokinetAddress={lokinetAddress}
               onCopyAddress={handleCopyAddress}

@@ -1,7 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useCallback } from "react";
 import {
-  AlertTriangle,
   ArrowDown,
   ArrowLeft,
   Check,
@@ -117,7 +116,9 @@ export default function ChatView({
   const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(false);
   const [sendStates, setSendStates] = useState<Record<string, SendState>>({});
   const [readCursors, setReadCursors] = useState<Record<string, number>>({});
+  const [codeCopied, setCodeCopied] = useState(false);
   const timelineRef = useRef<HTMLDivElement | null>(null);
+  const copyTimerRef = useRef<number | null>(null);
   const latestIncomingRef = useRef<HTMLDivElement | null>(null);
   const [messageMenu, setMessageMenu] = useState<{
     group: MessageGroup<ChatMessageLike>;
@@ -226,6 +227,10 @@ export default function ChatView({
     (Boolean(conversation?.pendingAcceptance) || peerProfile?.friendStatus === "request_in");
   const requestOutgoing = !isGroup && peerProfile?.friendStatus === "request_out";
   const pendingTextOnly = requestIncoming || requestOutgoing;
+  const pendingFriendCode = peerProfile?.profileVcard?.friendCode;
+  const pendingSenderName = peerProfile
+    ? nameMap[peerProfile.id] || peerProfile.displayName || "알 수 없음"
+    : "알 수 없음";
   const [viewerGroup, setViewerGroup] = useState<ChatMessageLike[] | null>(null);
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerUrls, setViewerUrls] = useState<Record<string, string>>({});
@@ -334,6 +339,35 @@ export default function ChatView({
     };
     void load();
   }, [viewerGroup]);
+
+  useEffect(() => {
+    return () => {
+      if (copyTimerRef.current) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    setCodeCopied(false);
+  }, [pendingFriendCode, conversation?.id]);
+
+  const handleCopyFriendCode = useCallback(async () => {
+    if (!pendingFriendCode) return;
+    try {
+      await navigator.clipboard.writeText(pendingFriendCode);
+      setCodeCopied(true);
+      if (copyTimerRef.current) {
+        window.clearTimeout(copyTimerRef.current);
+      }
+      copyTimerRef.current = window.setTimeout(() => {
+        setCodeCopied(false);
+      }, 1500);
+    } catch (error) {
+      console.warn("Failed to copy friend code", error);
+      onToast?.("복사에 실패했습니다.");
+    }
+  }, [onToast, pendingFriendCode]);
 
   useEffect(() => {
     return () => {
@@ -566,12 +600,7 @@ export default function ChatView({
     setAtBottom(isBottom);
   };
 
-  const transportLabel =
-    transportStatus?.kind === "direct"
-      ? "Direct"
-      : transportStatus?.kind === "onion"
-        ? "Onion"
-        : null;
+  const transportLabel = transportStatus?.kind === "onion" ? "Onion" : null;
 
   const renderSendState = (state?: SendState) => {
     if (!state) return null;
@@ -647,13 +676,8 @@ export default function ChatView({
               </div>
               {conversation && transportLabel ? (
                 <span
-                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] ${
-                    transportStatus?.kind === "direct"
-                      ? "border-red-400/40 text-red-200"
-                      : "border-nkc-border text-nkc-muted"
-                  }`}
+                  className="inline-flex items-center gap-1 rounded-full border border-nkc-border px-2 py-1 text-[11px] text-nkc-muted"
                 >
-                  {transportStatus?.kind === "direct" ? <AlertTriangle size={12} /> : null}
                   {transportLabel}
                 </span>
               ) : null}
@@ -761,7 +785,34 @@ export default function ChatView({
           <div className="ml-auto mr-0 flex w-full max-w-[min(100%,1800px)] flex-col gap-4 px-8 py-6">
             {requestIncoming ? (
               <div className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3 text-sm">
-                <div className="text-nkc-text">메시지 요청</div>
+                <div className="space-y-2">
+                  <div className="text-nkc-text">메시지 요청</div>
+                  <div className="text-xs text-nkc-muted">
+                    <div>
+                      보낸 사람: <span className="text-nkc-text">{pendingSenderName}</span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-2">
+                      <span>코드:</span>
+                      {pendingFriendCode ? (
+                        <>
+                          <span className="font-mono text-nkc-text">{pendingFriendCode}</span>
+                          <button
+                            type="button"
+                            onClick={handleCopyFriendCode}
+                            className="rounded-nkc border border-nkc-border px-2 py-0.5 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                          >
+                            복사
+                          </button>
+                          {codeCopied ? (
+                            <span className="text-[11px] text-nkc-muted">복사됨</span>
+                          ) : null}
+                        </>
+                      ) : (
+                        <span className="text-nkc-muted">알 수 없음</span>
+                      )}
+                    </div>
+                  </div>
+                </div>
                 <div className="flex gap-2">
                   <button
                     type="button"

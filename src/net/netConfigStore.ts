@@ -13,9 +13,10 @@ const getStorage = () => {
   return undefined;
 };
 
-const migrateMode = (mode?: NetworkMode): NetworkMode => {
+const migrateMode = (mode?: string): NetworkMode => {
   if (!mode) return DEFAULT_NET_CONFIG.mode;
-  if (mode === "selfOnion" || mode === "onionRouter" || mode === "directP2P") return mode;
+  if (mode === "selfOnion" || mode === "onionRouter") return mode;
+  if (mode === "directP2P") return "selfOnion";
   return DEFAULT_NET_CONFIG.mode;
 };
 
@@ -28,7 +29,7 @@ const loadStoredConfig = (): NetConfig => {
   if (!raw) return DEFAULT_NET_CONFIG;
   try {
     const parsed = JSON.parse(raw) as Partial<NetConfig>;
-    const migratedMode = migrateMode(parsed.mode as NetworkMode | undefined);
+    const migratedMode = migrateMode(parsed.mode as string | undefined);
     const next = { ...DEFAULT_NET_CONFIG, ...parsed, mode: migratedMode };
     return { ...next, selfOnionMinRelays: clampSelfOnionRelays(next.selfOnionMinRelays) };
   } catch (error) {

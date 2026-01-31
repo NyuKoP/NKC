@@ -1,6 +1,5 @@
 import type { PeerHint, Transport, TransportKind, TransportStatus } from "./transport";
 import { createOnionTransport } from "./onionTransport";
-import { createDirectTransport } from "./directTransport";
 import { redactIPs } from "./privacy";
 import { decideConversationTransport } from "./transportPolicy";
 
@@ -202,19 +201,6 @@ export const connectConversation = async (convId: string, peerHint?: PeerHint) =
     if (!decision.fallback) {
       scheduleRetry(convId);
       return;
-    }
-
-    const direct = createDirectTransport();
-    try {
-      await connectTransport(direct, peerHint);
-      state.transport = direct;
-      attachHandlers(state, direct);
-      setStatus(convId, { state: "connected", kind: "direct", warning: true });
-      scheduleBackoffReset(convId);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      setStatus(convId, { state: "failed", kind: "direct", detail });
-      scheduleRetry(convId);
     }
   })()
     .catch((error) => {

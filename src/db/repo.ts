@@ -62,7 +62,13 @@ export type UserProfile = {
     nextAttemptAt?: number;
     lastAttemptAt?: number;
   };
-  profileVcard?: { displayName?: string; status?: string; avatarRef?: AvatarRef; updatedAt?: number };
+  profileVcard?: {
+    displayName?: string;
+    status?: string;
+    avatarRef?: AvatarRef;
+    friendCode?: string;
+    updatedAt?: number;
+  };
   pskHint?: boolean;
   friendStatus?: "request_in" | "request_out" | "normal" | "hidden" | "blocked";
   isFavorite?: boolean;

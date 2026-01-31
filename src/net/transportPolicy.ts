@@ -2,7 +2,7 @@ import type { NetConfig } from "./netConfig";
 import type { RouteController } from "./routeController";
 import type { TransportKind as ConversationTransportKind } from "./transport";
 
-export type RouterTransportKind = "directP2P" | "selfOnion" | "onionRouter";
+export type RouterTransportKind = "selfOnion" | "onionRouter";
 
 type ConversationPolicyInput = {
   allowDirect: boolean;
@@ -24,6 +24,5 @@ export const decideRouterTransport = (
   if (config.onionEnabled) return "onionRouter";
   if (config.mode === "onionRouter") return "onionRouter";
   if (config.mode === "selfOnion") return "selfOnion";
-  const chosen = controller.decideTransport(config);
-  return chosen === "directP2P" ? "selfOnion" : chosen;
+  return controller.decideTransport(config);
 };

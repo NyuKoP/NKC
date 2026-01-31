@@ -7,14 +7,13 @@ import { computeExpiresAt } from "../policies/ttl";
 import { enqueueOutgoing, onAckReceived } from "../policies/deliveryPolicy";
 import { putOutbox, updateOutbox } from "../storage/outboxStore";
 import type { Transport, TransportPacket } from "../adapters/transports/types";
-import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { createSelfOnionTransport } from "../adapters/transports/selfOnionTransport";
 import { createOnionRouterTransport } from "../adapters/transports/onionRouterTransport";
 import { updateConnectionStatus } from "./connectionStatus";
 import { decideRouterTransport } from "./transportPolicy";
 import { useAppStore } from "../app/store";
 
-export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
+export type TransportKind = "selfOnion" | "onionRouter";
 
 type SendPayload = {
   convId: string;
@@ -103,9 +102,7 @@ const getTransport = (
   if (transportCache.has(kind)) return transportCache.get(kind) as Transport;
 
   let transport: Transport;
-  if (kind === "directP2P") {
-    transport = createDirectP2PTransport();
-  } else if (kind === "selfOnion") {
+  if (kind === "selfOnion") {
     transport = createSelfOnionTransport({ routeController: controller });
   } else {
     transport = createOnionRouterTransport({ httpClient, config });
@@ -202,22 +199,9 @@ export const sendCiphertext = async (
     hasToDeviceId: Boolean(toDeviceId),
     hasRoute: Boolean(route?.torOnion || route?.lokinet),
   });
-  if (config.mode === "onionRouter" && chosen === "directP2P") {
-    await putOutbox(record);
-    controller.reportSendFail(chosen);
-    return {
-      ok: false,
-      transport: chosen,
-      error: "Direct P2P blocked in onion router mode",
-    };
-  }
-
   await enqueueOutgoing(record);
 
   const attemptSend = async (kind: TransportKind) => {
-    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "directP2P") {
-      throw new Error("Direct P2P blocked in onion router mode");
-    }
     if (config.onionEnabled && kind === "selfOnion") {
       throw new Error("Self-onion blocked while onion router is enabled");
     }
@@ -320,19 +304,12 @@ export const sendOutboxRecord = async (
     hasRoute: Boolean(torOnion || lokinet),
   });
 
-  if (config.mode === "onionRouter" && chosen === "directP2P") {
-    controller.reportSendFail(chosen);
-    return { ok: false as const, retryable: false };
-  }
   if (config.onionEnabled && chosen === "selfOnion") {
     controller.reportSendFail(chosen);
     return { ok: false as const, retryable: false };
   }
 
   const attemptSend = async (kind: TransportKind) => {
-    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "directP2P") {
-      throw new Error("Direct P2P blocked in onion router mode");
-    }
     if (config.onionEnabled && kind === "selfOnion") {
       throw new Error("Self-onion blocked while onion router is enabled");
     }

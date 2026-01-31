@@ -88,7 +88,6 @@ import {
 import {
   getTransportStatus,
   onTransportStatusChange,
-  setDirectApprovalHandler,
   type ConversationTransportStatus,
 } from "../net/transportManager";
 import { putReadCursor } from "../storage/receiptStore";
@@ -225,8 +224,6 @@ export default function App() {
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
   >({});
-  const [directApprovalOpen, setDirectApprovalOpen] = useState(false);
-  const directApprovalResolveRef = useRef<((approved: boolean) => void) | null>(null);
   const [trustByFriendId, setTrustByFriendId] = useState<Record<string, TrustRecord>>({});
   const mkcRunRef = useRef<Record<string, number>>({});
   const mkcInFlightRef = useRef<Record<string, boolean>>({});
@@ -286,30 +283,6 @@ export default function App() {
       .then(setMyFriendCode)
       .catch((error) => console.error("Failed to compute friend code", error));
   }, [friendAddOpen, userProfile]);
-
-  const resolveDirectApproval = useCallback((approved: boolean) => {
-    const resolver = directApprovalResolveRef.current;
-    if (resolver) {
-      resolver(approved);
-    }
-    directApprovalResolveRef.current = null;
-    setDirectApprovalOpen(false);
-  }, []);
-
-  const requestDirectApproval = useCallback(async () => {
-    if (directApprovalResolveRef.current) return false;
-    return new Promise<boolean>((resolve) => {
-      directApprovalResolveRef.current = resolve;
-      setDirectApprovalOpen(true);
-    });
-  }, []);
-
-  useEffect(() => {
-    setDirectApprovalHandler(requestDirectApproval);
-    return () => {
-      setDirectApprovalHandler(null);
-    };
-  }, [requestDirectApproval]);
 
   useEffect(() => {
     const unsubscribe = onTransportStatusChange((convId, status) => {
@@ -3018,14 +2991,6 @@ export default function App() {
           void confirm?.onConfirm?.();
         }}
         onClose={() => setConfirm(null)}
-      />
-
-      <ConfirmDialog
-        open={directApprovalOpen}
-        title="Direct 연결 허용"
-        message="Direct 연결은 상대방에게 IP가 노출될 수 있습니다. 허용할까요?"
-        onConfirm={() => resolveDirectApproval(true)}
-        onClose={() => resolveDirectApproval(false)}
       />
 
       <Toasts />
