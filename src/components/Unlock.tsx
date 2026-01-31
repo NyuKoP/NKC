@@ -2,7 +2,7 @@
 import { wipeVault } from "../db/repo";
 import { clearSession as clearStoredSession } from "../security/session";
 
-type UnlockResult = {
+export type UnlockResult = {
   ok: boolean;
   error?: string;
   retryAfterMs?: number;
