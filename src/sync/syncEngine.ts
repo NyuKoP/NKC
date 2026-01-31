@@ -268,6 +268,31 @@ const upsertFriendFromRequest = async (
         lastError: "Missing deviceId in friend request",
       };
 
+  const incomingTs = payload.ts ?? now;
+  const existingVcard = existing?.profileVcard;
+  const shouldUpdateVcard =
+    !existingVcard?.updatedAt || existingVcard.updatedAt <= incomingTs;
+  const nextVcard = (() => {
+    if (!shouldUpdateVcard && existingVcard) return existingVcard;
+    const next: UserProfile["profileVcard"] = {
+      ...(existingVcard ?? {}),
+      updatedAt: incomingTs,
+    };
+    if (payload.profile?.displayName !== undefined) {
+      next.displayName = payload.profile.displayName;
+    }
+    if (payload.profile?.status !== undefined) {
+      next.status = payload.profile.status;
+    }
+    if (payload.profile?.avatarRef !== undefined) {
+      next.avatarRef = payload.profile.avatarRef;
+    }
+    if (payload.from?.friendCode !== undefined) {
+      next.friendCode = payload.from.friendCode;
+    }
+    return next;
+  })();
+
   const profile: UserProfile = {
     id: existing?.id ?? createId(),
     friendId,
@@ -284,14 +309,7 @@ const upsertFriendFromRequest = async (
     trust: existing?.trust ?? { pinnedAt: now, status: "trusted" },
     verification: existing?.verification ?? { status: "unverified" },
     reachability,
-    profileVcard: payload.profile
-      ? {
-          displayName: payload.profile.displayName,
-          status: payload.profile.status,
-          avatarRef: payload.profile.avatarRef,
-          updatedAt: payload.ts ?? now,
-        }
-      : existing?.profileVcard,
+    profileVcard: nextVcard,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };

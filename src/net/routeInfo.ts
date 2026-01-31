@@ -8,20 +8,7 @@ export type RouteInfo = {
 };
 
 export const getRouteInfo = (mode: NetworkMode, config: NetConfig): RouteInfo => {
-  if (mode === "directP2P") {
-    if (config.webrtcRelayOnly) {
-      return {
-        mode,
-        description: "가능한 경우 릴레이(TURN)로 IP를 보호합니다.",
-        pathLabel: "나 → 릴레이 → 상대 (1 hop)",
-      };
-    }
-    return {
-      mode,
-      description: "상대와 직접 연결합니다.",
-      pathLabel: "나 → 상대 (0 hops)",
-    };
-  }
+  void config;
   if (mode === "selfOnion") {
     return {
       mode,
