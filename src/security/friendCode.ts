@@ -5,6 +5,7 @@ export type FriendCodeV1 = {
   v: 1;
   identityPub: string;
   dhPub: string;
+  deviceId?: string;
   onionAddr?: string;
   lokinetAddr?: string;
 };
@@ -39,6 +40,7 @@ export const encodeFriendCodeV1 = (data: FriendCodeV1) => {
     v: 1,
     identityPub: data.identityPub,
     dhPub: data.dhPub,
+    deviceId: data.deviceId,
     onionAddr: data.onionAddr,
     lokinetAddr: data.lokinetAddr,
   };
@@ -101,10 +103,23 @@ export const decodeFriendCodeV1 = (
     return { error: "Invalid public keys in friend code." };
   }
 
+  const deviceId =
+    typeof payload.deviceId === "string" && payload.deviceId.length > 0
+      ? payload.deviceId
+      : undefined;
+  if (deviceId) {
+    const uuidPattern =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidPattern.test(deviceId)) {
+      return { error: "Invalid deviceId in friend code." };
+    }
+  }
+
   return {
     v: 1,
     identityPub: payload.identityPub,
     dhPub: payload.dhPub,
+    deviceId,
     onionAddr: typeof payload.onionAddr === "string" ? payload.onionAddr : undefined,
     lokinetAddr: typeof payload.lokinetAddr === "string" ? payload.lokinetAddr : undefined,
   };
@@ -112,4 +127,3 @@ export const decodeFriendCodeV1 = (
 
 export const computeFriendId = (identityPubBytes: Uint8Array) =>
   encodeBase64Url(hash32Bytes(identityPubBytes)).slice(0, 16);
-

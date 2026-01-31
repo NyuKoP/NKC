@@ -12,9 +12,8 @@ export const decideConversationTransport = (
   input: ConversationPolicyInput
 ) => {
   const primary: ConversationTransportKind = "onion";
-  const fallback: ConversationTransportKind | undefined = input.allowDirect
-    ? "direct"
-    : undefined;
+  void input;
+  const fallback: ConversationTransportKind | undefined = undefined;
   return { primary, fallback };
 };
 
@@ -23,7 +22,8 @@ export const decideRouterTransport = (
   controller: RouteController
 ): RouterTransportKind => {
   if (config.onionEnabled) return "onionRouter";
-  if (config.mode === "directP2P") return "directP2P";
   if (config.mode === "onionRouter") return "onionRouter";
-  return controller.decideTransport(config);
+  if (config.mode === "selfOnion") return "selfOnion";
+  const chosen = controller.decideTransport(config);
+  return chosen === "directP2P" ? "selfOnion" : chosen;
 };

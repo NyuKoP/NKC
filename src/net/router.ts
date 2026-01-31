@@ -65,7 +65,12 @@ const deriveRoutingMetaFromStores = (
   const partner = state.friends.find((friend) => friend.id === partnerId) ?? null;
   if (!partner) return {};
   return {
-    toDeviceId: partner.friendId ?? partner.id,
+    toDeviceId:
+      partner.routingHints?.deviceId ??
+      partner.primaryDeviceId ??
+      partner.deviceId ??
+      partner.friendId ??
+      partner.id,
     route: {
       torOnion: partner.routingHints?.onionAddr,
       lokinet: partner.routingHints?.lokinetAddr,
@@ -131,6 +136,29 @@ const warnOnionRouterGuards = (config: NetConfig) => {
   if (!config.disableLinkPreview || !config.webrtcRelayOnly) {
     console.warn("[net] Onion router guards should be enabled.");
   }
+};
+
+const inboundHandlers = new Set<(packet: TransportPacket) => void>();
+let inboundAttached = false;
+let inboundStartPromise: Promise<void> | null = null;
+
+const ensureInboundListener = async () => {
+  if (inboundStartPromise) return inboundStartPromise;
+  const config = useNetConfigStore.getState().config;
+  const controller = defaultRouteController;
+  const httpClient = defaultHttpClient;
+  const transport = getTransport("onionRouter", config, controller, httpClient);
+  if (!inboundAttached) {
+    transport.onMessage((packet) => {
+      inboundHandlers.forEach((handler) => handler(packet));
+    });
+    inboundAttached = true;
+  }
+  inboundStartPromise = ensureStarted(transport).catch((error) => {
+    inboundStartPromise = null;
+    console.warn("[net] inbound listener failed to start", error);
+  });
+  return inboundStartPromise;
 };
 
 export const sendCiphertext = async (
@@ -359,4 +387,12 @@ export const sendOutboxRecord = async (
     }
     return { ok: false as const, retryable: true };
   }
+};
+
+export const onIncomingPacket = (handler: (packet: TransportPacket) => void) => {
+  inboundHandlers.add(handler);
+  void ensureInboundListener();
+  return () => {
+    inboundHandlers.delete(handler);
+  };
 };

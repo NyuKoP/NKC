@@ -1,7 +1,6 @@
 import type { PeerHint, Transport, TransportKind, TransportStatus } from "./transport";
 import { createOnionTransport } from "./onionTransport";
 import { createDirectTransport } from "./directTransport";
-import { getConvAllowDirect, setConvAllowDirect } from "../security/preferences";
 import { redactIPs } from "./privacy";
 import { decideConversationTransport } from "./transportPolicy";
 
@@ -31,8 +30,6 @@ type ConversationState = {
   messageUnsubs: Array<() => void>;
   rateLimit: RateLimitState;
 };
-
-let approvalHandler: ((convId: string) => Promise<boolean>) | null = null;
 
 const states = new Map<string, ConversationState>();
 const listeners = new Set<StatusListener>();
@@ -163,7 +160,7 @@ const attachHandlers = (state: ConversationState, transport: Transport) => {
 export const setDirectApprovalHandler = (
   handler: ((convId: string) => Promise<boolean>) | null
 ) => {
-  approvalHandler = handler;
+  void handler;
 };
 
 export const onTransportStatusChange = (listener: StatusListener) => {
@@ -201,16 +198,7 @@ export const connectConversation = async (convId: string, peerHint?: PeerHint) =
       setStatus(convId, { state: "failed", kind: "onion", detail });
     }
 
-    const allowDirect = await getConvAllowDirect(convId);
-    let approved = allowDirect;
-    if (!approved && approvalHandler) {
-      approved = await approvalHandler(convId);
-      if (approved) {
-        await setConvAllowDirect(convId, true);
-      }
-    }
-
-    const decision = decideConversationTransport({ allowDirect: approved });
+    const decision = decideConversationTransport({ allowDirect: false });
     if (!decision.fallback) {
       scheduleRetry(convId);
       return;

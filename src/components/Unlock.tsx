@@ -6,18 +6,21 @@ type UnlockResult = {
   ok: boolean;
   error?: string;
   retryAfterMs?: number;
+  reason?: "not_set" | "locked" | "mismatch" | "unavailable";
 };
 
 type UnlockProps = {
   onUnlock: (pin: string) => Promise<UnlockResult>;
+  onUseStartKey?: () => void | Promise<void>;
 };
 
-export default function Unlock({ onUnlock }: UnlockProps) {
+export default function Unlock({ onUnlock, onUseStartKey }: UnlockProps) {
   const [pin, setPin] = useState("");
   const [error, setError] = useState("");
   const [retryAt, setRetryAt] = useState<number | null>(null);
   const [now, setNow] = useState(Date.now());
   const [busy, setBusy] = useState(false);
+  const [reason, setReason] = useState<UnlockResult["reason"] | null>(null);
 
   useEffect(() => {
     if (!retryAt) return;
@@ -43,11 +46,13 @@ export default function Unlock({ onUnlock }: UnlockProps) {
 
   const handleUnlock = async () => {
     setError("");
+    setReason(null);
     setBusy(true);
     try {
       const result = await onUnlock(pin);
       if (!result.ok) {
         setError(result.error || "PIN 형식이 올바르지 않습니다.");
+        setReason(result.reason ?? null);
         if (result.retryAfterMs) {
           setRetryAt(Date.now() + result.retryAfterMs);
         }
@@ -98,6 +103,14 @@ export default function Unlock({ onUnlock }: UnlockProps) {
         >
           잠금 해제
         </button>
+        {reason === "not_set" && onUseStartKey ? (
+          <button
+            onClick={() => void onUseStartKey()}
+            className="mt-3 w-full rounded-nkc border border-nkc-border px-4 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+          >
+            시작 키로 재설정
+          </button>
+        ) : null}
         <button
           onClick={handleReset}
           className="mt-3 w-full rounded-nkc border border-nkc-border px-4 py-2 text-xs text-nkc-muted hover:bg-nkc-panel"

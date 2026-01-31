@@ -24,6 +24,18 @@ type InstallResult = {
   rollback: () => Promise<void>;
 };
 
+const ensureExecutable = async (binaryPath: string) => {
+  if (process.platform === "win32") return;
+  try {
+    await fs.chmod(binaryPath, 0o755);
+  } catch (error) {
+    console.warn("[onion] failed to chmod lokinet binary", {
+      binaryPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
 const runInstaller = async (filePath: string) => {
   if (process.platform !== "win32") {
     throw new Error("Installer execution is only supported on Windows");
@@ -202,6 +214,7 @@ export const installLokinet = async (
     if (!fsSync.existsSync(binaryPath)) {
       throw new Error(`BINARY_MISSING: ${binaryPath}`);
     }
+    await ensureExecutable(binaryPath);
     onProgress?.({ step: "activate", message: "Activating Lokinet" });
     const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
     return { version, installPath, rollback };

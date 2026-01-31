@@ -1,4 +1,4 @@
-import {
+﻿import {
   computeEnvelopeHash,
   decryptEnvelope,
   deriveConversationKey,
@@ -7,6 +7,7 @@ import {
   type EnvelopeHeader,
   verifyEnvelopeSignature,
 } from "../crypto/box";
+import { canonicalBytes } from "../crypto/canonicalJson";
 import { nextSendDhKey, nextSendKey, tryRecvDhKey, tryRecvKey } from "../crypto/ratchet";
 import {
   getEvent,
@@ -25,6 +26,8 @@ import { getDhPrivateKey, getIdentityPrivateKey, getIdentityPublicKey } from "..
 import { getFriendPsk } from "../security/pskStore";
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { applyTOFU } from "../security/trust";
+import { computeFriendId } from "../security/friendCode";
+import { getPrivacyPrefs } from "../security/preferences";
 import { updateFromRoleEvent, type RoleChangeEvent } from "../devices/deviceRegistry";
 import { getDeviceApproval } from "../devices/deviceApprovals";
 import { createId } from "../utils/ids";
@@ -38,6 +41,7 @@ import type { PeerHint } from "../net/transport";
 import { sanitizeRoutingHints } from "../net/privacy";
 import { putReadCursor } from "../storage/receiptStore";
 import { applyGroupEvent, isGroupEventPayload } from "./groupSync";
+import { getSodium } from "../security/sodium";
 
 type EnvelopeEvent = {
   eventId: string;
@@ -52,6 +56,17 @@ type HelloFrame = {
   type: "HELLO";
   deviceId: string;
   identityPub: string;
+  nonce: string;
+  sig: string;
+  profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
+};
+
+type AckFrame = {
+  type: "ACK";
+  deviceId: string;
+  identityPub: string;
+  nonce: string;
+  sig: string;
 };
 
 type SyncReqFrame = {
@@ -69,7 +84,7 @@ type SyncResFrame = {
   next: Record<string, number>;
 };
 
-type Frame = HelloFrame | SyncReqFrame | SyncResFrame;
+type Frame = HelloFrame | AckFrame | SyncReqFrame | SyncResFrame;
 
 export type PeerContext = PeerHint & {
   friendKeyId?: string;
@@ -144,6 +159,243 @@ const resolveSenderProfileId = async (peerConvId: string) => {
     friends.find((friend) => peer.identityPub && friend.identityPub === peer.identityPub) ||
     null;
   return match?.id ?? null;
+};
+
+const createNonce = () => {
+  const bytes = new Uint8Array(16);
+  if (globalThis.crypto?.getRandomValues) {
+    globalThis.crypto.getRandomValues(bytes);
+  }
+  return encodeBase64Url(bytes);
+};
+
+const signHandshake = async (payload: Record<string, unknown>) => {
+  const sodium = await getSodium();
+  const identityPriv = await getIdentityPrivateKey();
+  const sig = sodium.crypto_sign_detached(canonicalBytes(payload), identityPriv);
+  return encodeBase64Url(sig);
+};
+
+const verifyHandshake = async (
+  payload: Record<string, unknown>,
+  sigB64: string,
+  identityPubB64: string
+) => {
+  try {
+    const sodium = await getSodium();
+    const sig = decodeBase64Url(sigB64);
+    const verifyKey = decodeBase64Url(identityPubB64);
+    return sodium.crypto_sign_verify_detached(sig, canonicalBytes(payload), verifyKey);
+  } catch {
+    return false;
+  }
+};
+
+const formatSafetyNumber = (encoded: string) => {
+  const compact = encoded.replace(/[^a-zA-Z0-9]/g, "");
+  const a = compact.slice(0, 6);
+  const b = compact.slice(6, 11);
+  const c = compact.slice(11, 17);
+  return [a, b, c].filter(Boolean).join("-");
+};
+
+const computeSafetyNumber = async (identityA: string, identityB: string) => {
+  const sodium = await getSodium();
+  const a = decodeBase64Url(identityA);
+  const b = decodeBase64Url(identityB);
+  const pair = [a, b].sort((lhs, rhs) => {
+    const la = lhs.length;
+    const lb = rhs.length;
+    const min = Math.min(la, lb);
+    for (let i = 0; i < min; i += 1) {
+      if (lhs[i] !== rhs[i]) return lhs[i] - rhs[i];
+    }
+    return la - lb;
+  });
+  const hash = sodium.crypto_generichash(16, new Uint8Array([...pair[0], ...pair[1]]));
+  return formatSafetyNumber(encodeBase64Url(hash));
+};
+
+type FriendRequestFrame = {
+  type: "friend_req";
+  convId?: string;
+  from: { identityPub: string; dhPub: string; deviceId?: string; friendCode?: string };
+  profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
+  ts?: number;
+};
+
+type FriendResponseFrame = {
+  type: "friend_accept" | "friend_decline";
+  convId?: string;
+  from: { identityPub: string; dhPub: string; deviceId?: string };
+  profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
+  ts?: number;
+};
+
+const resolveFriendByIdentity = async (identityPub?: string) => {
+  if (!identityPub) return null;
+  const profiles = await listProfiles();
+  return profiles.find((profile) => profile.identityPub === identityPub) ?? null;
+};
+
+const upsertFriendFromRequest = async (
+  convId: string,
+  payload: FriendRequestFrame
+) => {
+  if (!payload.from?.identityPub || !payload.from?.dhPub) return;
+  const privacyPrefs = await getPrivacyPrefs();
+  const profiles = await listProfiles();
+  const existing = profiles.find(
+    (profile) =>
+      profile.identityPub === payload.from.identityPub ||
+      (profile.friendId &&
+        profile.identityPub &&
+        profile.identityPub === payload.from.identityPub)
+  );
+  if (!existing && privacyPrefs.autoRejectUnknownRequests) {
+    console.info("[friend] auto-rejected unknown friend request");
+    return;
+  }
+
+  const identityBytes = decodeBase64Url(payload.from.identityPub);
+  const friendId = computeFriendId(identityBytes);
+  const now = Date.now();
+  const routingHints = sanitizeRoutingHints({ deviceId: payload.from.deviceId });
+  const reachability = payload.from.deviceId
+    ? { status: "ok" as const }
+    : {
+        status: "unreachable" as const,
+        lastError: "Missing deviceId in friend request",
+      };
+
+  const profile: UserProfile = {
+    id: existing?.id ?? createId(),
+    friendId,
+    displayName: payload.profile?.displayName ?? existing?.displayName ?? "Friend",
+    status: payload.profile?.status ?? existing?.status ?? "",
+    theme: existing?.theme ?? "dark",
+    kind: "friend",
+    friendStatus: "request_in",
+    isFavorite: existing?.isFavorite ?? false,
+    identityPub: payload.from.identityPub,
+    dhPub: payload.from.dhPub,
+    routingHints: routingHints ?? existing?.routingHints,
+    primaryDeviceId: payload.from.deviceId ?? existing?.primaryDeviceId,
+    trust: existing?.trust ?? { pinnedAt: now, status: "trusted" },
+    verification: existing?.verification ?? { status: "unverified" },
+    reachability,
+    profileVcard: payload.profile
+      ? {
+          displayName: payload.profile.displayName,
+          status: payload.profile.status,
+          avatarRef: payload.profile.avatarRef,
+          updatedAt: payload.ts ?? now,
+        }
+      : existing?.profileVcard,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  await saveProfile(profile);
+
+  const requestConvId = payload.convId ?? convId;
+  const currentUserId = await resolveLocalUserId();
+  if (!currentUserId) return;
+  const convs = await listConversations();
+  const existingConv =
+    convs.find((conv) => conv.id === requestConvId) ??
+    convs.find(
+      (conv) =>
+        !(conv.type === "group" || conv.participants.length > 2) &&
+        conv.participants.includes(profile.id)
+    ) ??
+    null;
+
+  if (existingConv) {
+    const updated: Conversation = {
+      ...existingConv,
+      pendingAcceptance: true,
+      pendingOutgoing: false,
+      hidden: false,
+    };
+    await saveConversation(updated);
+    return;
+  }
+
+  const newConv: Conversation = {
+    id: requestConvId,
+    type: "direct",
+    name: profile.displayName ?? "Friend",
+    pinned: false,
+    unread: 0,
+    hidden: false,
+    muted: false,
+    blocked: false,
+    pendingAcceptance: true,
+    pendingOutgoing: false,
+    lastTs: payload.ts ?? now,
+    lastMessage: "친구 요청",
+    participants: [currentUserId, profile.id],
+  };
+  await saveConversation(newConv);
+};
+
+const applyFriendResponse = async (convId: string, payload: FriendResponseFrame) => {
+  if (!payload.from?.identityPub || !payload.from?.dhPub) return;
+  const existing = await resolveFriendByIdentity(payload.from.identityPub);
+  if (!existing) return;
+  const now = Date.now();
+  const friendStatus = payload.type === "friend_accept" ? "normal" : "blocked";
+  await saveProfile({
+    ...existing,
+    friendStatus,
+    primaryDeviceId: payload.from.deviceId ?? existing.primaryDeviceId,
+    routingHints: sanitizeRoutingHints({
+      deviceId: payload.from.deviceId,
+      onionAddr: existing.routingHints?.onionAddr,
+      lokinetAddr: existing.routingHints?.lokinetAddr,
+    }),
+    profileVcard: payload.profile
+      ? {
+          displayName: payload.profile.displayName,
+          status: payload.profile.status,
+          avatarRef: payload.profile.avatarRef,
+          updatedAt: payload.ts ?? now,
+        }
+      : existing.profileVcard,
+    updatedAt: now,
+  });
+
+  const convs = await listConversations();
+  const conv =
+    convs.find((item) => item.id === convId) ??
+    convs.find(
+      (item) =>
+        !(item.type === "group" || item.participants.length > 2) &&
+        item.participants.includes(existing.id)
+    ) ??
+    null;
+  if (!conv) return;
+  await saveConversation({
+    ...conv,
+    pendingAcceptance: false,
+    pendingOutgoing: false,
+    hidden: friendStatus === "blocked" ? true : conv.hidden,
+  });
+};
+
+export const handleIncomingFriendFrame = async (
+  payload: FriendRequestFrame | FriendResponseFrame
+) => {
+  if (!payload || typeof payload !== "object") return;
+  if (payload.type === "friend_req") {
+    const convId = payload.convId ?? createId();
+    await upsertFriendFromRequest(convId, payload);
+    return;
+  }
+  if (payload.type === "friend_accept" || payload.type === "friend_decline") {
+    const convId = payload.convId ?? "";
+    await applyFriendResponse(convId, payload);
+  }
 };
 
 const toBytes = (frame: Frame) => textEncoder.encode(JSON.stringify(frame));
@@ -303,6 +555,14 @@ const applyDecryptedBody = async (
     await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
     return;
   }
+  if (typed.type === "friend_req") {
+    await upsertFriendFromRequest(envelope.header.convId, body as FriendRequestFrame);
+    return;
+  }
+  if (typed.type === "friend_accept" || typed.type === "friend_decline") {
+    await applyFriendResponse(envelope.header.convId, body as FriendResponseFrame);
+    return;
+  }
   if (typed.type === "contact") {
     await applyContactEvent(body as { type: "contact"; profile: Partial<UserProfile> });
     return;
@@ -373,7 +633,14 @@ const applyContactEvent = async (body: { type: "contact"; profile: Partial<UserP
     identityPub: profile.identityPub ?? existing?.identityPub,
     dhPub: profile.dhPub ?? existing?.dhPub,
     routingHints: sanitizedHints,
+    primaryDeviceId:
+      profile.primaryDeviceId ??
+      (profile.routingHints as UserProfile["routingHints"] | undefined)?.deviceId ??
+      existing?.primaryDeviceId,
     trust: existing?.trust ?? { pinnedAt: now, status: "trusted" },
+    verification: existing?.verification,
+    reachability: existing?.reachability,
+    profileVcard: profile.profileVcard ?? existing?.profileVcard,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -394,6 +661,7 @@ const applyConversationEvent = async (body: { type: "conv"; conv: Conversation }
     muted: incoming.muted ?? existing?.muted ?? false,
     blocked: incoming.blocked ?? existing?.blocked ?? false,
     pendingAcceptance: incoming.pendingAcceptance ?? existing?.pendingAcceptance,
+    pendingOutgoing: incoming.pendingOutgoing ?? existing?.pendingOutgoing,
     lastTs: incoming.lastTs ?? existing?.lastTs ?? Date.now(),
     lastMessage: incoming.lastMessage ?? existing?.lastMessage ?? "",
     participants: incoming.participants ?? existing?.participants ?? [],
@@ -638,9 +906,102 @@ const handleSyncRes = async (convId: string, frame: SyncResFrame) => {
   });
 };
 
+const applyVerification = async (identityPub: string, deviceId?: string, profile?: HelloFrame["profile"]) => {
+  const friend = await resolveFriendByIdentity(identityPub);
+  if (!friend) return;
+  if (friend.identityPub && friend.identityPub !== identityPub) {
+    await saveProfile({
+      ...friend,
+      verification: {
+        status: "key_changed",
+        safetyNumber: friend.verification?.safetyNumber,
+        verifiedAt: friend.verification?.verifiedAt,
+      },
+      friendStatus: "blocked",
+      updatedAt: Date.now(),
+    });
+    return;
+  }
+  const localIdentityPub = encodeBase64Url(await getIdentityPublicKey());
+  const safetyNumber = await computeSafetyNumber(localIdentityPub, identityPub);
+  const now = Date.now();
+  await saveProfile({
+    ...friend,
+    identityPub,
+    primaryDeviceId: deviceId ?? friend.primaryDeviceId,
+    routingHints: sanitizeRoutingHints({
+      onionAddr: friend.routingHints?.onionAddr,
+      lokinetAddr: friend.routingHints?.lokinetAddr,
+      deviceId: deviceId ?? friend.routingHints?.deviceId,
+    }),
+    verification: {
+      status: "verified",
+      safetyNumber,
+      verifiedAt: now,
+    },
+    reachability: deviceId
+      ? { status: "ok", lastAttemptAt: now }
+      : friend.reachability ?? { status: "unreachable", lastError: "Missing deviceId" },
+    profileVcard: profile
+      ? {
+          displayName: profile.displayName,
+          status: profile.status,
+          avatarRef: profile.avatarRef,
+          updatedAt: now,
+        }
+      : friend.profileVcard,
+    updatedAt: now,
+  });
+};
+
 const handleHello = async (convId: string, frame: HelloFrame) => {
+  const payload = {
+    type: "HELLO",
+    identityPub: frame.identityPub,
+    deviceId: frame.deviceId,
+    nonce: frame.nonce,
+  };
+  const ok = await verifyHandshake(payload, frame.sig, frame.identityPub);
+  if (!ok) {
+    console.warn("[sync] invalid HELLO signature", { convId });
+    return;
+  }
   const existing = peerContexts.get(convId) ?? {};
-  peerContexts.set(convId, { ...existing, identityPub: frame.identityPub });
+  peerContexts.set(convId, {
+    ...existing,
+    identityPub: frame.identityPub,
+    peerDeviceId: frame.deviceId,
+  });
+  await applyVerification(frame.identityPub, frame.deviceId, frame.profile);
+  const ackPayload = {
+    type: "ACK",
+    identityPub: encodeBase64Url(await getIdentityPublicKey()),
+    deviceId: getOrCreateDeviceId(),
+    nonce: frame.nonce,
+  } as const;
+  const sig = await signHandshake(ackPayload);
+  await sendFrame(convId, { ...ackPayload, sig });
+};
+
+const handleAck = async (convId: string, frame: AckFrame) => {
+  const payload = {
+    type: "ACK",
+    identityPub: frame.identityPub,
+    deviceId: frame.deviceId,
+    nonce: frame.nonce,
+  };
+  const ok = await verifyHandshake(payload, frame.sig, frame.identityPub);
+  if (!ok) {
+    console.warn("[sync] invalid ACK signature", { convId });
+    return;
+  }
+  const existing = peerContexts.get(convId) ?? {};
+  peerContexts.set(convId, {
+    ...existing,
+    identityPub: frame.identityPub,
+    peerDeviceId: frame.deviceId,
+  });
+  await applyVerification(frame.identityPub, frame.deviceId);
 };
 
 const handleIncoming = async (convId: string, bytes: Uint8Array) => {
@@ -648,6 +1009,10 @@ const handleIncoming = async (convId: string, bytes: Uint8Array) => {
   if (!frame) return;
   if (frame.type === "HELLO") {
     await handleHello(convId, frame);
+    return;
+  }
+  if (frame.type === "ACK") {
+    await handleAck(convId, frame);
     return;
   }
   if (frame.type === "SYNC_REQ") {
@@ -671,11 +1036,23 @@ export const connectConversation = async (convId: string, peerHint: PeerContext)
   }
   await connectTransport(convId, peerHint);
   const identityPub = await getIdentityPublicKey();
-  const hello: HelloFrame = {
+  const helloPayload = {
     type: "HELLO",
     deviceId: getOrCreateDeviceId(),
     identityPub: encodeBase64Url(identityPub),
-  };
+    nonce: createNonce(),
+  } as const;
+  const sig = await signHandshake(helloPayload);
+  const localUserId = await resolveLocalUserId();
+  let profile: HelloFrame["profile"] | undefined;
+  if (localUserId) {
+    const profiles = await listProfiles();
+    const me = profiles.find((item) => item.id === localUserId) || null;
+    if (me) {
+      profile = { displayName: me.displayName, status: me.status, avatarRef: me.avatarRef };
+    }
+  }
+  const hello: HelloFrame = { ...helloPayload, sig, profile };
   await sendFrame(convId, hello);
   await syncConversation(convId);
   await syncGlobal(convId);
@@ -849,6 +1226,8 @@ const buildContactEvents = async (convId: string) => {
           identityPub: contact.identityPub,
           dhPub: contact.dhPub,
           routingHints: sanitizeRoutingHints(contact.routingHints),
+          primaryDeviceId: contact.primaryDeviceId,
+          profileVcard: contact.profileVcard,
         },
       },
       identityPriv

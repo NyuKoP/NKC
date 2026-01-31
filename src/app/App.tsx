@@ -96,6 +96,8 @@ import { getGroupAvatarOverride, setGroupAvatarOverride } from "../security/pref
 import { parseAvatarRef, resolveGroupAvatarRef } from "../utils/avatarRefs";
 import { listFriendAliases, setFriendAlias } from "../storage/friendStore";
 import { resolveDisplayName, resolveFriendDisplayName } from "../utils/displayName";
+import { startFriendRequestScheduler } from "../friends/friendRequestScheduler";
+import { startFriendInboxListener } from "../friends/friendInbox";
 
 const buildNameMap = (
   profiles: UserProfile[],
@@ -233,6 +235,7 @@ export default function App() {
   const onboardingLockRef = useRef(false);
   const bootGuardRef = useRef<Promise<void> | null>(null);
   const outboxSchedulerStarted = useRef(false);
+  const friendInboxStarted = useRef(false);
   const activeSyncConvRef = useRef<string | null>(null);
   const lastReadCursorSentAtRef = useRef<Record<string, number>>({});
   const lastReadCursorSentTsRef = useRef<Record<string, number>>({});
@@ -277,6 +280,7 @@ export default function App() {
           v: 1,
           identityPub: encodeBase64Url(identityPub),
           dhPub: encodeBase64Url(dhPub),
+          deviceId: getOrCreateDeviceId(),
         })
       )
       .then(setMyFriendCode)
@@ -534,6 +538,15 @@ export default function App() {
     outboxSchedulerStarted.current = true;
   }, [ui.mode]);
 
+  useEffect(() => {
+    if (ui.mode !== "app") return;
+    if (friendInboxStarted.current) return;
+    startFriendInboxListener(() => {
+      void hydrateVault();
+    });
+    friendInboxStarted.current = true;
+  }, [hydrateVault, ui.mode]);
+
   // cleanup 메모리 문제(EffectCallback) + unsubscribe 방어
   useEffect(() => {
     if (typeof window !== "undefined") {
@@ -683,23 +696,36 @@ export default function App() {
         };
       }
       if (result.reason === "not_set") {
-        await clearPinRecord();
-        setPinEnabled(true);
-        setPinNeedsReset(true);
-        setDefaultTab("startKey");
-        setMode("onboarding");
-        navigate("/");
-        return { ok: false, error: "PIN must be reset. Unlock with the start key." };
+        return {
+          ok: false,
+          reason: "not_set",
+          error: "PIN 정보가 없습니다. 시작 키로 재설정해주세요.",
+        };
       }
 
       return {
         ok: false,
-        error: result.reason === "locked" ? "Please try again later." : "PIN is incorrect.",
+        reason: result.reason,
+        error:
+          result.reason === "locked"
+            ? "잠시 후 다시 시도해주세요."
+            : "PIN이 올바르지 않습니다.",
         retryAfterMs: result.retryAfterMs,
       };
     }
 
     try {
+      const keyOk = await verifyVaultKeyId(result.vaultKey);
+      if (!keyOk) {
+        await clearPinRecord();
+        setPinEnabled(true);
+        setPinNeedsReset(true);
+        return {
+          ok: false,
+          reason: "not_set",
+          error: "PIN이 현재 금고와 일치하지 않습니다. 시작 키로 재설정하세요.",
+        };
+      }
       setVaultKey(result.vaultKey);
       await setStoredSession(result.vaultKey, undefined, { remember: true });
       await hydrateVault();
@@ -710,7 +736,7 @@ export default function App() {
       await clearPinRecord();
       setPinEnabled(true);
       setPinNeedsReset(true);
-      return { ok: false, error: "Unlock failed." };
+      return { ok: false, error: "잠금 해제에 실패했습니다." };
     }
   };
 
@@ -894,13 +920,18 @@ export default function App() {
   };
 
 
-  const buildRoutingMeta = (partner: UserProfile) => ({
-    toDeviceId: partner.friendId ?? partner.id,
+  const buildRoutingMeta = useCallback((partner: UserProfile) => ({
+    toDeviceId:
+      partner.routingHints?.deviceId ??
+      partner.primaryDeviceId ??
+      partner.deviceId ??
+      partner.friendId ??
+      partner.id,
     route: {
       torOnion: partner.routingHints?.onionAddr,
       lokinet: partner.routingHints?.lokinetAddr,
     },
-  });
+  }), []);
 
   const sendDirectEnvelope = useCallback(
     async (
@@ -976,7 +1007,99 @@ export default function App() {
 
       return { header, envelopeJson };
     },
-    []
+    [buildRoutingMeta]
+  );
+
+  const buildFriendRequestPayload = useCallback(async (convId: string) => {
+    if (!userProfile) return null;
+    const [identityPub, dhPub] = await Promise.all([
+      getIdentityPublicKey(),
+      getDhPublicKey(),
+    ]);
+    const friendCode = encodeFriendCodeV1({
+      v: 1,
+      identityPub: encodeBase64Url(identityPub),
+      dhPub: encodeBase64Url(dhPub),
+      deviceId: getOrCreateDeviceId(),
+    });
+    return {
+      type: "friend_req" as const,
+      convId,
+      from: {
+        identityPub: encodeBase64Url(identityPub),
+        dhPub: encodeBase64Url(dhPub),
+        deviceId: getOrCreateDeviceId(),
+        friendCode,
+      },
+      profile: {
+        displayName: userProfile.displayName,
+        status: userProfile.status,
+        avatarRef: userProfile.avatarRef,
+      },
+      ts: Date.now(),
+    };
+  }, [userProfile]);
+
+  const ensureDirectConvForFriend = useCallback(
+    async (friend: UserProfile) => {
+      if (!userProfile) return null;
+      const existingConv = convs.find(
+        (conv) =>
+          !(conv.type === "group" || conv.participants.length > 2) &&
+          conv.participants.includes(friend.id)
+      );
+      if (existingConv) return existingConv;
+      const now = Date.now();
+      const newConv: Conversation = {
+        id: createId(),
+        type: "direct",
+        name: friend.displayName,
+        pinned: friend.isFavorite ?? false,
+        unread: 0,
+        hidden: false,
+        muted: false,
+        blocked: false,
+        pendingOutgoing: friend.friendStatus === "request_out",
+        lastTs: now,
+        lastMessage: "친구 요청을 보냈습니다.",
+        participants: [userProfile.id, friend.id],
+      };
+      await saveConversation(newConv);
+      return newConv;
+    },
+    [convs, userProfile]
+  );
+
+  const sendFriendControlPacket = useCallback(
+    async (
+      conv: Conversation,
+      partner: UserProfile,
+      payload: unknown,
+      priority: "high" | "normal" = "high"
+    ) => {
+      const messageId = createId();
+      await sendCiphertext({
+        convId: conv.id,
+        messageId,
+        ciphertext: JSON.stringify(payload),
+        priority,
+        ...buildRoutingMeta(partner),
+      });
+    },
+    [buildRoutingMeta]
+  );
+
+  const sendFriendRequestForFriend = useCallback(
+    async (friend: UserProfile) => {
+      if (!friend.routingHints?.deviceId && !friend.primaryDeviceId) return false;
+      const conv = await ensureDirectConvForFriend(friend);
+      if (!conv) return false;
+      const payload = await buildFriendRequestPayload(conv.id);
+      if (!payload) return false;
+      await sendFriendControlPacket(conv, friend, payload, "high");
+      return true;
+    },
+    [buildFriendRequestPayload, ensureDirectConvForFriend, sendFriendControlPacket]
   );
 
   const handleSendMessage = async (text: string, clientBatchId: string) => {
@@ -1680,6 +1803,7 @@ export default function App() {
       hidden: false,
       muted: false,
       blocked: false,
+      pendingOutgoing: friend?.friendStatus === "request_out",
       lastTs: now,
       lastMessage: "채팅을 시작했어요.",
       participants: [userProfile.id, friendId],
@@ -2141,56 +2265,25 @@ export default function App() {
     }
   };
 
-  const handleAddFriendLegacy = async (rawId: string) => {
-    const trimmed = rawId.trim();
-
-    if (!trimmed) {
-      return { ok: false as const, error: "Enter a friend ID." };
-    }
-    if (!trimmed.startsWith("NCK-")) {
-      return { ok: false as const, error: "Enter a valid friend ID." };
-    }
-    if (friends.some((friend) => friend.friendId === trimmed)) {
-      return { ok: false as const, error: "Friend already added." };
-    }
-
-    try {
-      const now = Date.now();
-      const short = trimmed.replace(/[^a-zA-Z0-9]/g, "").slice(0, 6);
-
-      const friend: UserProfile = {
-        id: createId(),
-        friendId: trimmed,
-        displayName: short ? `Friend ${short}` : "Friend",
-        status: "Friend",
-        theme: "dark",
-        kind: "friend",
-        friendStatus: "request_out",
-        isFavorite: false,
-        createdAt: now,
-        updatedAt: now,
-      };
-
-      await saveProfile(friend);
-      await hydrateVault();
-      devLog("friend:add:success", { id: friend.id });
-
-      return { ok: true as const };
-    } catch (error) {
-      console.error("Friend:add failed", error);
-      return { ok: false as const, error: "Failed to add friend." };
-    }
-  };
-
   const handleAddFriend = async (payload: { code: string; psk?: string }) => {
     if (!userProfile) return { ok: false as const, error: "User profile missing." };
 
     const rawInput = payload.code.trim();
     const normalized = normalizeInviteCode(rawInput);
+    const upper = rawInput.toUpperCase();
     let attemptKey = normalized || "empty";
     let inviteFingerprint: string | null = null;
     let invitePsk: Uint8Array | null = null;
     let oneTimeInvite = false;
+
+    if (upper.startsWith("NCK-") || upper.startsWith("NKC-")) {
+      recordFail(attemptKey);
+      return {
+        ok: false as const,
+        error:
+          "레거시 친구 ID(NCK-/NKC-)는 더 이상 지원하지 않습니다. 상대에게 NKC1- 친구 코드를 요청하세요.",
+      };
+    }
 
     if (normalized.startsWith("NKI1")) {
       try {
@@ -2208,16 +2301,6 @@ export default function App() {
         ok: false as const,
         error: `Too many attempts. Try again in ${waitSeconds}s.`,
       };
-    }
-
-    if (rawInput.startsWith("NCK-")) {
-      const legacy = await handleAddFriendLegacy(rawInput);
-      if (legacy.ok) {
-        recordSuccess(attemptKey);
-      } else {
-        recordFail(attemptKey);
-      }
-      return legacy;
     }
 
     let friendCode = rawInput;
@@ -2314,12 +2397,39 @@ export default function App() {
       }
 
       const routingHints = sanitizeRoutingHints(
-        decoded.onionAddr || decoded.lokinetAddr
-          ? { onionAddr: decoded.onionAddr, lokinetAddr: decoded.lokinetAddr }
+        decoded.onionAddr || decoded.lokinetAddr || decoded.deviceId
+          ? {
+              onionAddr: decoded.onionAddr,
+              lokinetAddr: decoded.lokinetAddr,
+              deviceId: decoded.deviceId,
+            }
           : undefined
       );
+      if (!decoded.deviceId) {
+        console.warn("[friend] missing deviceId in friend code; marking unreachable", {
+          friendId,
+        });
+      }
 
       const short = friendId.slice(0, 6);
+      const reachability = (() => {
+        if (decoded.deviceId) {
+          return {
+            status: "ok" as const,
+            attempts: existing?.reachability?.attempts ?? 0,
+            lastAttemptAt: existing?.reachability?.lastAttemptAt,
+            nextAttemptAt: existing?.reachability?.nextAttemptAt,
+          };
+        }
+        return {
+          status: "unreachable" as const,
+          lastError: "Missing deviceId in friend code",
+          attempts: existing?.reachability?.attempts ?? 0,
+          lastAttemptAt: Date.now(),
+          nextAttemptAt: existing?.reachability?.nextAttemptAt,
+        };
+      })();
+
       const friend: UserProfile = {
         id: existing?.id ?? createId(),
         friendId,
@@ -2332,13 +2442,23 @@ export default function App() {
         identityPub: decoded.identityPub,
         dhPub: decoded.dhPub,
         routingHints,
+        primaryDeviceId: decoded.deviceId ?? existing?.primaryDeviceId,
         trust: { pinnedAt: existing?.trust?.pinnedAt ?? now, status: "trusted" },
+        verification: existing?.verification ?? { status: "unverified" },
+        reachability,
         pskHint: Boolean(psk) || existing?.pskHint,
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       };
 
       await saveProfile(friend);
+
+      try {
+        await sendFriendRequestForFriend(friend);
+      } catch (error) {
+        console.warn("[friend] failed to send friend request", error);
+      }
+
       await hydrateVault();
       devLog("friend:add:success", { id: friend.id, friendId });
 
@@ -2484,6 +2604,9 @@ export default function App() {
 
   const currentTrustState = useMemo(() => {
     if (!partnerProfile) return "UNVERIFIED" as TrustState;
+    const verification = partnerProfile.verification?.status;
+    if (verification === "verified") return "VERIFIED";
+    if (verification === "key_changed") return "KEY_CHANGED";
     return trustByFriendId[partnerProfile.id]?.trustState ?? "UNVERIFIED";
   }, [partnerProfile, trustByFriendId]);
 
@@ -2567,12 +2690,69 @@ export default function App() {
     if (!currentConversation || !partnerProfile) return;
     try {
       await updateFriend(partnerProfile.id, { friendStatus: "normal" });
-      await updateConversation(currentConversation.id, { hidden: false, pendingAcceptance: false });
+      await updateConversation(currentConversation.id, {
+        hidden: false,
+        pendingAcceptance: false,
+        pendingOutgoing: false,
+      });
+      try {
+        if (!partnerProfile.routingHints?.deviceId && !partnerProfile.primaryDeviceId) {
+          console.warn("[friend] missing deviceId; cannot send accept");
+          return;
+        }
+        const [identityPub, dhPub] = await Promise.all([
+          getIdentityPublicKey(),
+          getDhPublicKey(),
+        ]);
+        await sendFriendControlPacket(currentConversation, partnerProfile, {
+          type: "friend_accept",
+          convId: currentConversation.id,
+          from: {
+            identityPub: encodeBase64Url(identityPub),
+            dhPub: encodeBase64Url(dhPub),
+            deviceId: getOrCreateDeviceId(),
+          },
+          profile: {
+            displayName: userProfile?.displayName,
+            status: userProfile?.status,
+            avatarRef: userProfile?.avatarRef,
+          },
+          ts: Date.now(),
+        });
+      } catch (error) {
+        console.warn("[friend] failed to send friend accept", error);
+      }
     } catch (error) {
       console.error("Failed to accept request", error);
       addToast({ message: "메시지 요청 수락에 실패했습니다." });
     }
   };
+
+  useEffect(() => {
+    if (!userProfile) return;
+    const scheduler = startFriendRequestScheduler({
+      getTargets: () => useAppStore.getState().friends,
+      onAttempt: async (friend) => {
+        try {
+          return await sendFriendRequestForFriend(friend);
+        } catch (error) {
+          console.warn("[friend] request retry failed", error);
+          return false;
+        }
+      },
+      onUpdate: async (friendId, patch) => {
+        const latest = useAppStore.getState().friends.find((item) => item.id === friendId);
+        if (!latest) return;
+        await saveProfile({
+          ...latest,
+          ...patch,
+          updatedAt: Date.now(),
+        });
+        await hydrateVault();
+      },
+    });
+    return () => scheduler.stop();
+  }, [hydrateVault, sendFriendRequestForFriend, userProfile]);
 
   const handleDeclineRequest = async () => {
     if (!currentConversation || !partnerProfile) return;
@@ -2581,7 +2761,30 @@ export default function App() {
       await updateConversation(currentConversation.id, {
         hidden: true,
         pendingAcceptance: false,
+        pendingOutgoing: false,
       });
+      try {
+        if (!partnerProfile.routingHints?.deviceId && !partnerProfile.primaryDeviceId) {
+          console.warn("[friend] missing deviceId; cannot send decline");
+          return;
+        }
+        const [identityPub, dhPub] = await Promise.all([
+          getIdentityPublicKey(),
+          getDhPublicKey(),
+        ]);
+        await sendFriendControlPacket(currentConversation, partnerProfile, {
+          type: "friend_decline",
+          convId: currentConversation.id,
+          from: {
+            identityPub: encodeBase64Url(identityPub),
+            dhPub: encodeBase64Url(dhPub),
+            deviceId: getOrCreateDeviceId(),
+          },
+          ts: Date.now(),
+        });
+      } catch (error) {
+        console.warn("[friend] failed to send friend decline", error);
+      }
     } catch (error) {
       console.error("Failed to decline request", error);
       addToast({ message: "메시지 요청 거절에 실패했습니다." });
@@ -2765,7 +2968,27 @@ export default function App() {
       <Routes>
         <Route
           path="/unlock"
-          element={ui.mode === "locked" ? <Unlock onUnlock={handlePinUnlock} /> : <Navigate to="/" replace />}
+          element={
+            ui.mode === "locked" ? (
+              <Unlock
+                onUnlock={handlePinUnlock}
+                onUseStartKey={async () => {
+                  try {
+                    await clearPinRecord();
+                  } catch (error) {
+                    console.warn("Failed to mark PIN reset", error);
+                  }
+                  setPinEnabled(true);
+                  setPinNeedsReset(true);
+                  setDefaultTab("startKey");
+                  setMode("onboarding");
+                  navigate("/");
+                }}
+              />
+            ) : (
+              <Navigate to="/" replace />
+            )
+          }
         />
         <Route
           path="/start-key"

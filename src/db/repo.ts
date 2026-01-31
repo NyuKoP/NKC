@@ -44,10 +44,25 @@ export type UserProfile = {
   avatarRef?: AvatarRef;
   kind: "user" | "friend";
   friendId?: string;
+  deviceId?: string;
+  primaryDeviceId?: string;
   identityPub?: string;
   dhPub?: string;
-  routingHints?: { onionAddr?: string; lokinetAddr?: string };
+  routingHints?: { onionAddr?: string; lokinetAddr?: string; deviceId?: string };
   trust?: { pinnedAt: number; status: "trusted" | "blocked" | "changed"; reason?: string };
+  verification?: {
+    status: "unverified" | "verified" | "key_changed" | "blocked";
+    safetyNumber?: string;
+    verifiedAt?: number;
+  };
+  reachability?: {
+    status: "ok" | "unreachable" | "expired";
+    lastError?: string;
+    attempts?: number;
+    nextAttemptAt?: number;
+    lastAttemptAt?: number;
+  };
+  profileVcard?: { displayName?: string; status?: string; avatarRef?: AvatarRef; updatedAt?: number };
   pskHint?: boolean;
   friendStatus?: "request_in" | "request_out" | "normal" | "hidden" | "blocked";
   isFavorite?: boolean;
@@ -65,6 +80,7 @@ export type Conversation = {
   muted: boolean;
   blocked: boolean;
   pendingAcceptance?: boolean;
+  pendingOutgoing?: boolean;
   lastTs: number;
   lastMessage: string;
   participants: string[];

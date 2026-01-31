@@ -4,6 +4,7 @@ export type PrivacyPreferences = {
   readReceipts: boolean;
   typingIndicator: boolean;
   linkPreviews: boolean;
+  autoRejectUnknownRequests: boolean;
 };
 
 const PREF_KEY = "nkc_privacy_prefs_v1";
@@ -22,6 +23,7 @@ export const defaultPrivacyPrefs: PrivacyPreferences = {
   readReceipts: false,
   typingIndicator: true,
   linkPreviews: true,
+  autoRejectUnknownRequests: false,
 };
 
 export const getPrivacyPrefs = async () => {

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+﻿import type { ReactNode } from "react";
 import { Clock } from "lucide-react";
 import type { OnionStatus } from "../../../net/onionControl";
 import type { NetConfig, OnionNetwork } from "../../../net/netConfig";
@@ -138,12 +138,12 @@ export default function NetworkSettings({
 
   return (
     <div className="mt-6 grid gap-6">
-      <SettingsBackHeader title={t("네트워크", "Network")} backLabel={t("뒤로", "Back")} onBack={onBack} />
+      <SettingsBackHeader title={t("?ㅽ듃?뚰겕", "Network")} backLabel={t("?ㅻ줈", "Back")} onBack={onBack} />
 
       <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-        <div className="text-sm font-semibold text-nkc-text">{t("연결 방식", "Connection mode")}</div>
+        <div className="text-sm font-semibold text-nkc-text">{t("?곌껐 諛⑹떇", "Connection mode")}</div>
         <div className="mt-3 grid gap-2">
-          <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
+          <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text opacity-60">
             <div className="flex items-start gap-3">
               <input
                 id="network-mode-directP2P"
@@ -152,13 +152,15 @@ export default function NetworkSettings({
                 className="mt-1"
                 checked={connectionChoice === "directP2P"}
                 onChange={() => void onConnectionChoiceChange("directP2P")}
+                disabled
                 data-testid="network-mode-directP2P"
               />
               <label htmlFor="network-mode-directP2P">
                 <div className="text-sm font-medium text-nkc-text">Direct P2P</div>
                 <div className="text-xs text-nkc-muted">
-                  {t("프록시 없이 직접 연결", "Direct connection without proxy")}
+                  {t("?꾨줉???놁씠 吏곸젒 ?곌껐", "Direct connection without proxy")}
                 </div>
+                <div className="text-xs text-red-300">Direct P2P disabled</div>
               </label>
             </div>
           </div>
@@ -182,7 +184,7 @@ export default function NetworkSettings({
                   >
                     <span>Tor Onion</span>
                     <span
-                      title={t("Tor 상태", "Tor status")}
+                      title={t("Tor ?곹깭", "Tor status")}
                       className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
                         getDotState("tor", onionStatus)
                       )} cursor-pointer`}
@@ -190,7 +192,7 @@ export default function NetworkSettings({
                     />
                   </label>
                   <div className="text-xs text-nkc-muted">
-                    {t("SOCKS 기반 · 앱 트래픽만", "SOCKS-based · app traffic only")}
+                    {t("SOCKS 湲곕컲 쨌 ???몃옒?쎈쭔", "SOCKS-based 쨌 app traffic only")}
                   </div>
                 </div>
               </div>
@@ -210,11 +212,23 @@ export default function NetworkSettings({
                   </div>
                   <div className="text-right">
                     <div>
-                      {runtimeStateLabel} · {runtimeNetworkLabel}
+                      {runtimeStateLabel} 쨌 {runtimeNetworkLabel}
                     </div>
                     {runtimeErrorLabel ? <div className="text-red-300">{runtimeErrorLabel}</div> : null}
                   </div>
                 </div>
+                {torAddress ? (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-xs text-nkc-muted">
+                    <span className="font-mono break-all">{torAddress}</span>
+                    <button
+                      type="button"
+                      onClick={() => void onCopyAddress(torAddress, "Tor")}
+                      className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                    >
+                      {t("蹂듭궗", "Copy")}
+                    </button>
+                  </div>
+                ) : null}
                 {torUpdateStatus ? (
                   <div className="mt-2 max-w-full break-words text-xs text-nkc-muted">{torUpdateStatus}</div>
                 ) : null}
@@ -235,7 +249,7 @@ export default function NetworkSettings({
                         disabled={torInstallBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {torInstallBusy ? t("처리 중...", "Working...") : t("Tor 다운로드/설치", "Download/Install Tor")}
+                        {torInstallBusy ? t("泥섎━ 以?..", "Working...") : t("Tor ?ㅼ슫濡쒕뱶/?ㅼ튂", "Download/Install Tor")}
                       </button>
                       <button
                         type="button"
@@ -243,7 +257,7 @@ export default function NetworkSettings({
                         disabled={torStatusBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {torStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
+                        {torStatusBusy ? t("泥섎━ 以?..", "Working...") : t("?곹깭 ?뺤씤", "Check status")}
                       </button>
                     </>
                   ) : (
@@ -256,7 +270,7 @@ export default function NetworkSettings({
                         disabled={torConnected ? torInstallBusy : torInstallBusy || !isComponentReady(netConfig.tor)}
                         className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                       >
-                        {torConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
+                        {torConnected ? t("?곌껐 ?댁젣", "Disconnect") : t("?곌껐", "Connect")}
                       </button>
                       <button
                         type="button"
@@ -264,7 +278,7 @@ export default function NetworkSettings({
                         disabled={torCheckBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {torCheckBusy ? t("처리 중...", "Working...") : t("업데이트 확인", "Check updates")}
+                        {torCheckBusy ? t("泥섎━ 以?..", "Working...") : t("?낅뜲?댄듃 ?뺤씤", "Check updates")}
                       </button>
                       {torUpdateAvailable ? (
                         <button
@@ -273,7 +287,7 @@ export default function NetworkSettings({
                           disabled={torApplyBusy}
                           className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                         >
-                          {torApplyBusy ? t("처리 중...", "Working...") : t("업데이트 적용", "Apply update")}
+                          {torApplyBusy ? t("泥섎━ 以?..", "Working...") : t("?낅뜲?댄듃 ?곸슜", "Apply update")}
                         </button>
                       ) : null}
                       <button
@@ -282,7 +296,7 @@ export default function NetworkSettings({
                         disabled={torUninstallBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {torUninstallBusy ? t("처리 중...", "Working...") : t("제거", "Uninstall")}
+                        {torUninstallBusy ? t("泥섎━ 以?..", "Working...") : t("?쒓굅", "Uninstall")}
                       </button>
                       <button
                         type="button"
@@ -290,7 +304,7 @@ export default function NetworkSettings({
                         disabled={torStatusBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {torStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
+                        {torStatusBusy ? t("泥섎━ 以?..", "Working...") : t("?곹깭 ?뺤씤", "Check status")}
                       </button>
                     </>
                   )}
@@ -318,16 +332,16 @@ export default function NetworkSettings({
                   >
                     <span>Lokinet Onion</span>
                     <span
-                      title={t("Lokinet 상태", "Lokinet status")}
+                      title={t("Lokinet ?곹깭", "Lokinet status")}
                       className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
                         getDotState("lokinet", onionStatus)
                       )} cursor-pointer`}
                       tabIndex={0}
                     />
-                    <span className="text-xs text-nkc-muted">{t("⚠ 고급", "⚠ Advanced")}</span>
+                    <span className="text-xs text-nkc-muted">{t("??怨좉툒", "??Advanced")}</span>
                   </label>
                   <div className="text-xs text-nkc-muted">
-                    {t("Exit/VPN 기반 · 앱 전용 라우팅", "Exit/VPN based · app-only routing")}
+                    {t("Exit/VPN based app-only routing", "Exit/VPN based app-only routing")}
                   </div>
                 </div>
               </div>
@@ -347,13 +361,25 @@ export default function NetworkSettings({
                   </div>
                   <div className="text-right">
                     <div>
-                      {runtimeStateLabel} · {runtimeNetworkLabel}
+                      {runtimeStateLabel} 쨌 {runtimeNetworkLabel}
                     </div>
                     {runtimeErrorLabel ? <div className="text-red-300">{runtimeErrorLabel}</div> : null}
                   </div>
                 </div>
+                {lokinetAddress ? (
+                  <div className="mt-2 flex items-center justify-between gap-2 text-xs text-nkc-muted">
+                    <span className="font-mono break-all">{lokinetAddress}</span>
+                    <button
+                      type="button"
+                      onClick={() => void onCopyAddress(lokinetAddress, "Lokinet")}
+                      className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                    >
+                      {t("복사", "Copy")}
+                    </button>
+                  </div>
+                ) : null}
                 <div className="mt-2 text-xs text-nkc-muted">
-                  {netConfig.lokinet.installed ? t("상태: 설치됨", "Status: installed") : t("상태: 미설치", "Status: not installed")}
+                  {netConfig.lokinet.installed ? t("Status: installed", "Status: installed") : t("Status: not installed", "Status: not installed")}
                 </div>
                 {lokinetUpdateStatus ? (
                   <div className="mt-2 max-w-full break-words text-xs text-nkc-muted">{lokinetUpdateStatus}</div>
@@ -375,7 +401,7 @@ export default function NetworkSettings({
                         disabled={lokinetInstallBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {lokinetInstallBusy ? t("처리 중...", "Working...") : t("설치", "Install")}
+                        {lokinetInstallBusy ? t("泥섎━ 以?..", "Working...") : t("?ㅼ튂", "Install")}
                       </button>
                       <button
                         type="button"
@@ -383,7 +409,7 @@ export default function NetworkSettings({
                         disabled={lokinetStatusBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {lokinetStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
+                        {lokinetStatusBusy ? t("泥섎━ 以?..", "Working...") : t("?곹깭 ?뺤씤", "Check status")}
                       </button>
                     </>
                   ) : (
@@ -400,7 +426,7 @@ export default function NetworkSettings({
                         }
                         className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                       >
-                        {lokinetConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
+                        {lokinetConnected ? t("?곌껐 ?댁젣", "Disconnect") : t("?곌껐", "Connect")}
                       </button>
                       <button
                         type="button"
@@ -412,11 +438,11 @@ export default function NetworkSettings({
                       >
                         {lokinetUpdateAvailable
                           ? lokinetApplyBusy
-                            ? t("처리 중...", "Working...")
-                            : t("업데이트 적용", "Apply update")
+                            ? t("泥섎━ 以?..", "Working...")
+                            : t("?낅뜲?댄듃 ?곸슜", "Apply update")
                           : torCheckBusy
-                            ? t("처리 중...", "Working...")
-                            : t("업데이트 확인", "Check updates")}
+                            ? t("泥섎━ 以?..", "Working...")
+                            : t("?낅뜲?댄듃 ?뺤씤", "Check updates")}
                       </button>
                       <button
                         type="button"
@@ -424,7 +450,7 @@ export default function NetworkSettings({
                         disabled={lokinetUninstallBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {lokinetUninstallBusy ? t("처리 중...", "Working...") : t("제거", "Uninstall")}
+                        {lokinetUninstallBusy ? t("泥섎━ 以?..", "Working...") : t("?쒓굅", "Uninstall")}
                       </button>
                       <button
                         type="button"
@@ -432,7 +458,7 @@ export default function NetworkSettings({
                         disabled={lokinetStatusBusy}
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
-                        {lokinetStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
+                        {lokinetStatusBusy ? t("泥섎━ 以?..", "Working...") : t("?곹깭 ?뺤씤", "Check status")}
                       </button>
                     </>
                   )}
@@ -453,9 +479,9 @@ export default function NetworkSettings({
                 data-testid="network-mode-selfOnion"
               />
               <label htmlFor="network-mode-selfOnion">
-                <div className="text-sm font-medium text-nkc-text">{t("내부 Onion", "Built-in Onion")}</div>
+                <div className="text-sm font-medium text-nkc-text">{t("?대? Onion", "Built-in Onion")}</div>
                 <div className="text-xs text-nkc-muted">
-                  {t("내장 Onion 경로(N hops)", "Built-in Onion route (N hops)")}
+                  {t("?댁옣 Onion 寃쎈줈(N hops)", "Built-in Onion route (N hops)")}
                 </div>
               </label>
             </div>
@@ -472,9 +498,9 @@ export default function NetworkSettings({
           <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <div className="text-sm font-medium text-nkc-text">{t("Hop 설정", "Hop settings")}</div>
+                <div className="text-sm font-medium text-nkc-text">{t("Hop ?ㅼ젙", "Hop settings")}</div>
                 <div className="text-xs text-nkc-muted">
-                  hops: {selfOnionHopConnected}/{selfOnionHopTarget} · {selfOnionRouteLabel}
+                  hops: {selfOnionHopConnected}/{selfOnionHopTarget} 쨌 {selfOnionRouteLabel}
                 </div>
               </div>
               <select
@@ -495,7 +521,7 @@ export default function NetworkSettings({
           >
             <div>
               {t(
-                "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 사용하세요.",
+                "Direct P2P???곷??먭쾶 IP媛 ?몄텧?????덉뒿?덈떎. ?꾪뿕???댄빐?섎뒗 寃쎌슦?먮쭔 ?ъ슜?섏꽭??",
                 "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
               )}
             </div>
@@ -509,11 +535,11 @@ export default function NetworkSettings({
             <div className="flex items-center justify-between gap-4">
               <div>
                 <div className="text-sm font-medium text-nkc-text">
-                  {t("IP 보호 모드 사용", "Enable IP protection")}
+                  {t("IP 蹂댄샇 紐⑤뱶 ?ъ슜", "Enable IP protection")}
                 </div>
                 <div className="text-xs text-nkc-muted">
                   {t(
-                    "direct P2P를 차단하고, 실패 시 네트워크를 중지합니다.",
+                    "direct P2P瑜?李⑤떒?섍퀬, ?ㅽ뙣 ???ㅽ듃?뚰겕瑜?以묒??⑸땲??",
                     "Blocks direct P2P and stops the network on failure."
                   )}
                 </div>
@@ -528,10 +554,10 @@ export default function NetworkSettings({
 
           <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
             <div className="flex items-center gap-2 text-sm font-medium text-nkc-text">
-              <span>{t("프록시 URL", "Proxy URL")}</span>
+              <span>{t("?꾨줉??URL", "Proxy URL")}</span>
               {proxyAuto ? (
                 <span
-                  title={t("프록시 미설정/자동", "Proxy unset/auto")}
+                  title={t("?꾨줉??誘몄꽕???먮룞", "Proxy unset/auto")}
                   className="inline-flex items-center cursor-pointer"
                   tabIndex={0}
                 >
@@ -543,7 +569,7 @@ export default function NetworkSettings({
               <input
                 value={proxyUrlDraft}
                 onChange={(e) => onProxyUrlChange(e.target.value)}
-                placeholder={t("예: socks5://127.0.0.1:9050", "e.g. socks5://127.0.0.1:9050")}
+                placeholder={t("?? socks5://127.0.0.1:9050", "e.g. socks5://127.0.0.1:9050")}
                 className={`w-full rounded-nkc border bg-nkc-panel px-3 py-2 text-sm text-nkc-text placeholder:text-nkc-muted ${
                   proxyUrlError ? "border-red-400/60" : "border-nkc-border"
                 }`}
@@ -558,7 +584,7 @@ export default function NetworkSettings({
             </div>
             <div className="mt-2 text-xs text-nkc-muted">
               {t(
-                "포트까지 포함한 URL을 입력하세요. 비워두면 자동 감지합니다.",
+                "?ы듃源뚯? ?ы븿??URL???낅젰?섏꽭?? 鍮꾩썙?먮㈃ ?먮룞 媛먯??⑸땲??",
                 "Include the port. Leave blank to auto-detect."
               )}
             </div>
@@ -573,7 +599,7 @@ export default function NetworkSettings({
           className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
           disabled={netConfig.mode === "onionRouter" && onionEnabledDraft && !canSaveOnion}
         >
-          {t("저장", "Save")}
+          {t("Save", "Save")}
         </button>
       </div>
 
