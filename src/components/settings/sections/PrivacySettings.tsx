@@ -35,6 +35,7 @@ export default function PrivacySettings({
   privacyPrefs,
   onUpdatePrivacy,
 }: PrivacySettingsProps) {
+  void onOpenKeys;
   return (
     <div className="mt-6 grid gap-6">
       <SettingsBackHeader
@@ -148,6 +149,30 @@ export default function PrivacySettings({
               checked={privacyPrefs.linkPreviews}
               onChange={(e) =>
                 void onUpdatePrivacy({ ...privacyPrefs, linkPreviews: e.target.checked })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 border-t border-nkc-border px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("알 수 없는 요청 자동 거절", "Auto-reject unknown requests")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t(
+                  "검증되지 않은 신규 친구 요청을 자동으로 거절합니다.",
+                  "Automatically reject unverified friend requests."
+                )}
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={privacyPrefs.autoRejectUnknownRequests}
+              onChange={(e) =>
+                void onUpdatePrivacy({
+                  ...privacyPrefs,
+                  autoRejectUnknownRequests: e.target.checked,
+                })
               }
             />
           </div>

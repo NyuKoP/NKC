@@ -383,6 +383,7 @@ export default function RightPanel({
       : trustState === "KEY_CHANGED"
         ? "⚠ 키가 변경되었습니다. 주의하세요."
         : "미검증";
+  const safetyNumber = friendProfile?.verification?.safetyNumber;
 
   return (
     <aside className="hidden h-full w-[320px] rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft lg:block">
@@ -452,6 +453,12 @@ export default function RightPanel({
                   <span>Trust Status</span>
                   <span className="text-nkc-text">{trustLabel}</span>
                 </div>
+                {safetyNumber ? (
+                  <div className="flex items-center justify-between gap-2">
+                    <span>Safety Number</span>
+                    <span className="font-mono text-nkc-text">{safetyNumber}</span>
+                  </div>
+                ) : null}
               </div>
 
               {isGroup ? (
@@ -861,7 +868,6 @@ export default function RightPanel({
     </aside>
   );
 }
-
 
 
 

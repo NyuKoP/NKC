@@ -225,6 +225,7 @@ export default function ChatView({
     !isGroup &&
     (Boolean(conversation?.pendingAcceptance) || peerProfile?.friendStatus === "request_in");
   const requestOutgoing = !isGroup && peerProfile?.friendStatus === "request_out";
+  const pendingTextOnly = requestIncoming || requestOutgoing;
   const [viewerGroup, setViewerGroup] = useState<ChatMessageLike[] | null>(null);
   const [viewerIndex, setViewerIndex] = useState(0);
   const [viewerUrls, setViewerUrls] = useState<Record<string, string>>({});
@@ -623,7 +624,7 @@ export default function ChatView({
       onDrop={(event) => {
         event.preventDefault();
         event.stopPropagation();
-        if (!conversation || requestIncoming) return;
+        if (!conversation || requestIncoming || requestOutgoing) return;
         const files = Array.from(event.dataTransfer?.files ?? []);
         if (!files.length) return;
         window.dispatchEvent(new CustomEvent("nkc:attach-files", { detail: { files } }));
@@ -1023,7 +1024,8 @@ export default function ChatView({
       <MessageComposer
         key={conversation?.id ?? "none"}
         conversation={conversation}
-        disabled={requestIncoming}
+        disabled={false}
+        textOnly={pendingTextOnly}
         isComposing={isComposing}
         onComposingChange={onComposingChange}
         onSendBatch={onSendBatch}
@@ -1035,6 +1037,7 @@ export default function ChatView({
 type MessageComposerProps = {
   conversation: Conversation | null;
   disabled?: boolean;
+  textOnly?: boolean;
   isComposing: boolean;
   onComposingChange: (value: boolean) => void;
   onSendBatch: (payload: { text: string; files: File[] }) => void;
@@ -1043,6 +1046,7 @@ type MessageComposerProps = {
 const MessageComposer = ({
   conversation,
   disabled = false,
+  textOnly = false,
   isComposing,
   onComposingChange,
   onSendBatch,
@@ -1086,7 +1090,7 @@ const MessageComposer = ({
 
   useEffect(() => {
     const handler = (event: Event) => {
-      if (!conversation || disabled) return;
+      if (!conversation || disabled || textOnly) return;
       const custom = event as CustomEvent<{ files?: File[] }>;
       const files = custom.detail?.files ?? [];
       addFilesToQueue(files);
@@ -1095,13 +1099,14 @@ const MessageComposer = ({
     return () => {
       window.removeEventListener("nkc:attach-files", handler as EventListener);
     };
-  }, [addFilesToQueue, conversation, disabled]);
+  }, [addFilesToQueue, conversation, disabled, textOnly]);
 
   const handleSend = () => {
     if (!conversation || disabled) return;
     const trimmed = text.trim();
     const hasText = Boolean(trimmed);
     const hasAttachments = attachments.length > 0;
+    if (textOnly && hasAttachments) return;
     if (!hasText && !hasAttachments) return;
 
     onSendBatch({ text: trimmed, files: attachments });
@@ -1110,7 +1115,7 @@ const MessageComposer = ({
   };
 
   const handleMediaSelect = (event: ChangeEvent<HTMLInputElement>) => {
-    if (!conversation || disabled) return;
+    if (!conversation || disabled || textOnly) return;
     const files = Array.from(event.target.files ?? []);
     addFilesToQueue(files);
     event.target.value = "";
@@ -1132,6 +1137,11 @@ const MessageComposer = ({
       }`}
     >
       <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3">
+        {textOnly ? (
+          <div className="mb-2 text-xs text-nkc-muted">
+            요청 대기중: 텍스트만 전송할 수 있습니다.
+          </div>
+        ) : null}
         {attachments.length ? (
           <div className="mb-2 flex items-center justify-between text-xs text-nkc-muted">
             <span>
@@ -1204,7 +1214,7 @@ const MessageComposer = ({
           <div className="flex items-center gap-3">
             <label
               className={`flex h-8 w-8 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panel ${
-                conversation && !disabled ? "" : "pointer-events-none opacity-50"
+                conversation && !disabled && !textOnly ? "" : "pointer-events-none opacity-50"
               }`}
               data-testid="chat-attach-button"
             >
@@ -1215,7 +1225,7 @@ const MessageComposer = ({
                 accept="*/*"
                 className="hidden"
                 onChange={handleMediaSelect}
-                disabled={!conversation || disabled}
+                disabled={!conversation || disabled || textOnly}
                 data-testid="chat-attach-input"
               />
             </label>

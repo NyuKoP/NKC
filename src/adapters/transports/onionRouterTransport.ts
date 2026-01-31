@@ -257,6 +257,9 @@ export const createOnionRouterTransport = ({
         (packet as { route?: { to?: string } }).route?.to ??
         (packet as { meta?: { to?: string } }).meta?.to;
       if (!toDeviceId) {
+        console.warn("[onion] missing toDeviceId for outbound packet", {
+          id: (packet as { id?: string }).id,
+        });
         throw new Error("onionRouterTransport: missing destination 'to'");
       }
       if (!client) {
