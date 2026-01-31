@@ -353,3 +353,10 @@ export const clearPinRecord = async () => {
   await store.remove(PIN_RECORD_KEY);
   await setPinNeedsReset(true);
 };
+
+export const wipePinState = async () => {
+  if (!(await isPinAvailable())) return;
+  const store = getPinStore();
+  await store.remove(PIN_RECORD_KEY);
+  await store.remove(PIN_RESET_KEY);
+};

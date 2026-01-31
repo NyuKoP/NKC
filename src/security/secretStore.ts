@@ -31,11 +31,17 @@ class ElectronSecretStore implements SecretStore {
   }
 
   async set(key: string, value: string) {
-    await this.api.set(key, value);
+    const ok = await this.api.set(key, value);
+    if (!ok) {
+      throw new Error("SecretStore set failed");
+    }
   }
 
   async remove(key: string) {
-    await this.api.remove(key);
+    const ok = await this.api.remove(key);
+    if (!ok) {
+      throw new Error("SecretStore remove failed");
+    }
   }
 }
 

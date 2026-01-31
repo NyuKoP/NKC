@@ -55,7 +55,7 @@ import {
   getSession as getStoredSession,
   setSession as setStoredSession,
 } from "../security/session";
-import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin as savePin, verifyPin } from "../security/pin";
+import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin as savePin, verifyPin, wipePinState } from "../security/pin";
 import { loadConversationMessages } from "../security/messageStore";
 import { clearFriendPsk, getFriendPsk, setFriendPsk } from "../security/pskStore";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
@@ -833,16 +833,21 @@ export default function App() {
   const handleDisablePin = async () => {
     try {
       await clearPin();
+      const status = await getPinStatus();
+      if (status.enabled) {
+        throw new Error("PIN disable did not persist");
+      }
       setPinEnabled(false);
       setPinNeedsReset(false);
       addToast({ message: "PIN disabled." });
     } catch (error) {
       if (isPinUnavailableError(error)) {
         addToast({ message: "PIN lock is unavailable on this platform/build." });
-        return;
+        throw error;
       }
       console.error("Failed to clear PIN", error);
       addToast({ message: "Failed to disable PIN." });
+      throw error;
     }
   };
 
@@ -2892,6 +2897,7 @@ export default function App() {
               message: "로컬 금고가 초기화됩니다.",
               onConfirm: async () => {
                 await clearStoredSession();
+                await wipePinState();
                 await wipeVault();
                 window.location.reload();
               },

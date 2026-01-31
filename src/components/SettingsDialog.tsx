@@ -932,10 +932,16 @@ export default function SettingsDialog({
       setPinEnabledUi(true);
       return;
     }
-    await onDisablePin();
-    setPinDraft("");
-    setPinEnabledUi(false);
-    setSaveMessage(t("PIN disabled.", "PIN disabled."));
+    try {
+      await onDisablePin();
+      setPinDraft("");
+      setPinEnabledUi(false);
+      setSaveMessage(t("PIN disabled.", "PIN disabled."));
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setPinEnabledUi(true);
+      setPinError(message || t("PIN 해제에 실패했습니다.", "Failed to disable PIN."));
+    }
   };
 
   type DotState = "running" | "starting" | "stopped" | "error";
