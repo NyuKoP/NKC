@@ -2,7 +2,7 @@
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "./store";
 import Onboarding from "../components/Onboarding";
-import Unlock from "../components/Unlock";
+import Unlock, { type UnlockResult } from "../components/Unlock";
 import StartKey from "../components/StartKey";
 import FriendAddDialog from "../components/FriendAddDialog";
 import GroupCreateDialog from "../components/GroupCreateDialog";
@@ -685,13 +685,14 @@ export default function App() {
     }
   };
 
-  const handlePinUnlock = async (pin: string) => {
+  const handlePinUnlock = async (pin: string): Promise<UnlockResult> => {
     const result = await verifyPin(pin);
 
     if (!result.ok) {
       if (result.reason === "unavailable") {
         return {
           ok: false,
+          reason: "unavailable",
           error: result.message || "PIN lock is unavailable on this platform/build.",
         };
       }
@@ -703,11 +704,12 @@ export default function App() {
         };
       }
 
+      const reason = result.reason === "locked" ? "locked" : "mismatch";
       return {
         ok: false,
-        reason: result.reason,
+        reason,
         error:
-          result.reason === "locked"
+          reason === "locked"
             ? "잠시 후 다시 시도해주세요."
             : "PIN이 올바르지 않습니다.",
         retryAfterMs: result.retryAfterMs,
