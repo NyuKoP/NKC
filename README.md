@@ -74,13 +74,13 @@ Generated artifacts are placed in `release/`.
 
 ## Release Info
 ### Latest Release
-- Version: `v0.1.0`
-- Release date (UTC): `2026-02-06T11:33:04.7357335Z`
-- Channel: `stable`
+- Version: `v0.1.0-alpha`
+- Release date (UTC): `2026-02-06T11:34:39.3384613Z`
+- Channel: `alpha`
 - Installer/update outputs: `release/`
 - Auto-update manifest: `release/latest.yml`
 
-### Release Notes (`v0.1.0`)
+### Release Notes (`v0.1.0-alpha`)
 - Applied network-mode changes only after explicit `Save`.
 - Added background sync control wiring (`appControls.syncNow` and status events).
 - Updated CI/package workflow matrix for Windows + macOS + Linux.
