@@ -3,7 +3,10 @@
   "private": true,
   "version": "0.0.0",
   "description": "NKC serverless secure chat desktop app",
-  "author": "NyuKoP",
+  "author": {
+    "name": "NyuKoP",
+    "email": "nyukop@users.noreply.github.com"
+  },
   "type": "commonjs",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -11,10 +14,10 @@
     "generate:onion-pins": "node scripts/generateOnionPins.mjs",
     "lint:encoding": "node scripts/check-utf8.mjs",
     "build": "tsc -b && vite build",
-    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
-    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis",
-    "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip",
-    "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb",
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish never",
+    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis --publish never",
+    "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
+    "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb --publish never",
     "test": "vitest",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
@@ -105,7 +108,8 @@
         "AppImage",
         "deb"
       ],
-      "category": "Network"
+      "category": "Network",
+      "maintainer": "NyuKoP <nyukop@users.noreply.github.com>"
     }
   }
 }
