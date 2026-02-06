@@ -74,19 +74,17 @@ Generated artifacts are placed in `release/`.
 
 ## Release Info
 ### Latest Release
-- Version: `0.0.0-alpha`
-- Release date (UTC): `2026-02-06T09:24:08.705Z`
-- Channel: `alpha`
+- Version: `v0.1.0`
+- Release date (UTC): `2026-02-06T11:33:04.7357335Z`
+- Channel: `stable`
 - Installer/update outputs: `release/`
 - Auto-update manifest: `release/latest.yml`
 
-### Release Notes (`0.0.0-alpha`)
-- Added onion-first transport flows with optional direct fallback.
-- Added encrypted event-log sync pipeline and deterministic apply ordering.
-- Added friend request and device routing improvements for multi-device behavior.
-- Added internal onion routing UI/runtime integration.
-- Strengthened security behaviors around PIN handling and direct P2P restrictions.
-- Improved chat panel stability and grouped message rendering behavior.
+### Release Notes (`v0.1.0`)
+- Applied network-mode changes only after explicit `Save`.
+- Added background sync control wiring (`appControls.syncNow` and status events).
+- Updated CI/package workflow matrix for Windows + macOS + Linux.
+- Added Playwright E2E coverage for friend add flow and friend-list visibility.
 
 ## UI E2E Tests (Playwright)
 - Install browsers: `npx playwright install chromium`
