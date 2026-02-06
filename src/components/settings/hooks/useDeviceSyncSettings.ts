@@ -25,13 +25,8 @@ import {
   startDeviceSyncAsApprover,
   startDeviceSyncAsInitiator,
 } from "../../../devices/deviceSync";
+import { resolveInternalRendezvousConfig } from "../../../net/rendezvousConfig";
 import { getDhPublicKey, getIdentityPublicKey } from "../../../security/identityKeys";
-import {
-  getRendezvousBaseUrl,
-  getRendezvousUseOnion,
-  setRendezvousBaseUrl as saveRendezvousBaseUrl,
-  setRendezvousUseOnion as saveRendezvousUseOnion,
-} from "../../../security/preferences";
 import type { DeviceSyncTransportPolicy } from "../../../preferences";
 
 type Translate = (ko: string, en: string) => string;
@@ -41,7 +36,6 @@ type UseDeviceSyncSettingsArgs = {
   t: Translate;
   view: string;
   open: boolean;
-  onionProxyUrl: string;
   deviceSyncTransportPolicy: DeviceSyncTransportPolicy;
   onChangeDeviceSyncTransportPolicy: (value: DeviceSyncTransportPolicy) => Promise<void>;
   addToast: (toast: { message: string }) => void;
@@ -67,7 +61,6 @@ export const useDeviceSyncSettings = ({
   t,
   view,
   open,
-  onionProxyUrl,
   deviceSyncTransportPolicy,
   onChangeDeviceSyncTransportPolicy,
   addToast,
@@ -84,8 +77,6 @@ export const useDeviceSyncSettings = ({
   const [linkBusy, setLinkBusy] = useState(false);
   const linkTimeoutRef = useRef<number | null>(null);
 
-  const [rendezvousBaseUrl, setRendezvousBaseUrl] = useState("");
-  const [rendezvousUseOnion, setRendezvousUseOnion] = useState(false);
   const [hostRendezvousStatus, setHostRendezvousStatus] =
     useState<RendezvousPairingStatus>("idle");
   const [guestRendezvousStatus, setGuestRendezvousStatus] =
@@ -115,25 +106,13 @@ export const useDeviceSyncSettings = ({
     setGuestRendezvousStatus("idle");
   }, []);
 
-  const buildRendezvousConfig = useCallback(() => {
-    const baseUrl = rendezvousBaseUrl.trim();
-    if (!baseUrl) return null;
-    return {
-      baseUrl,
-      useOnionProxy: rendezvousUseOnion,
-      onionProxyUrl,
-    };
-  }, [onionProxyUrl, rendezvousBaseUrl, rendezvousUseOnion]);
-
   const startHostRendezvous = useCallback(
     (syncCode: string) => {
       stopHostRendezvous();
-      const config = buildRendezvousConfig();
-      if (!config) return;
       const session = startRendezvousPairingAsHost({
         syncCode,
         deviceId: getOrCreateDeviceId(),
-        rendezvousConfig: config,
+        rendezvousConfig: resolveInternalRendezvousConfig(),
       });
       hostRendezvousRef.current = session;
       setHostRendezvousStatus(session.getStatus());
@@ -141,18 +120,16 @@ export const useDeviceSyncSettings = ({
         setHostRendezvousStatus(status);
       });
     },
-    [buildRendezvousConfig, stopHostRendezvous]
+    [stopHostRendezvous]
   );
 
   const startGuestRendezvous = useCallback(
     (syncCode: string) => {
       stopGuestRendezvous();
-      const config = buildRendezvousConfig();
-      if (!config) return;
       const session = startRendezvousPairingAsGuest({
         syncCode,
         deviceId: getOrCreateDeviceId(),
-        rendezvousConfig: config,
+        rendezvousConfig: resolveInternalRendezvousConfig(),
       });
       guestRendezvousRef.current = session;
       setGuestRendezvousStatus(session.getStatus());
@@ -160,7 +137,7 @@ export const useDeviceSyncSettings = ({
         setGuestRendezvousStatus(status);
       });
     },
-    [buildRendezvousConfig, stopGuestRendezvous]
+    [stopGuestRendezvous]
   );
 
   const handleApprovedResult = useCallback(
@@ -223,16 +200,6 @@ export const useDeviceSyncSettings = ({
     },
     [deviceSyncTransportPolicy, stopGuestRendezvous, t]
   );
-
-  useEffect(() => {
-    if (!open) return;
-    getRendezvousBaseUrl()
-      .then(setRendezvousBaseUrl)
-      .catch((error) => console.error("Failed to load rendezvous base URL", error));
-    getRendezvousUseOnion()
-      .then(setRendezvousUseOnion)
-      .catch((error) => console.error("Failed to load rendezvous onion preference", error));
-  }, [open]);
 
   useEffect(() => {
     if (view !== "devices") return;
@@ -419,24 +386,6 @@ export const useDeviceSyncSettings = ({
     [deviceSyncTransportPolicy, onChangeDeviceSyncTransportPolicy]
   );
 
-  const handleRendezvousBaseUrlChange = useCallback(async (value: string) => {
-    setRendezvousBaseUrl(value);
-    try {
-      await saveRendezvousBaseUrl(value.trim());
-    } catch (error) {
-      console.error("Failed to save rendezvous base URL", error);
-    }
-  }, []);
-
-  const handleRendezvousUseOnionChange = useCallback(async (value: boolean) => {
-    setRendezvousUseOnion(value);
-    try {
-      await saveRendezvousUseOnion(value);
-    } catch (error) {
-      console.error("Failed to save rendezvous onion preference", error);
-    }
-  }, []);
-
   const linkStatusClass =
     linkStatus === "approved"
       ? "text-emerald-300"
@@ -466,10 +415,6 @@ export const useDeviceSyncSettings = ({
     linkStatusClass,
     linkMessage,
     handleSubmitLink,
-    rendezvousBaseUrl,
-    handleRendezvousBaseUrlChange,
-    rendezvousUseOnion,
-    handleRendezvousUseOnionChange,
     hostRendezvousStatus,
     guestRendezvousStatus,
     handleDeviceSyncPolicyChange,

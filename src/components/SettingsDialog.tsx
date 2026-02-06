@@ -383,7 +383,6 @@ export default function SettingsDialog({
     t,
     view,
     open,
-    onionProxyUrl: netConfig.onionProxyUrl,
     deviceSyncTransportPolicy: appPrefs.deviceSync.transportPolicy,
     onChangeDeviceSyncTransportPolicy: setDeviceSyncTransportPolicy,
     addToast,
@@ -1381,10 +1380,6 @@ export default function SettingsDialog({
               linkStatusClass={deviceSyncSettings.linkStatusClass}
               linkMessage={deviceSyncSettings.linkMessage}
               onSubmitLink={deviceSyncSettings.handleSubmitLink}
-              rendezvousBaseUrl={deviceSyncSettings.rendezvousBaseUrl}
-              setRendezvousBaseUrl={deviceSyncSettings.handleRendezvousBaseUrlChange}
-              rendezvousUseOnion={deviceSyncSettings.rendezvousUseOnion}
-              setRendezvousUseOnion={deviceSyncSettings.handleRendezvousUseOnionChange}
               hostRendezvousStatus={deviceSyncSettings.hostRendezvousStatus}
               guestRendezvousStatus={deviceSyncSettings.guestRendezvousStatus}
             />

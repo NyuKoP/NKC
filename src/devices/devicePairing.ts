@@ -1,8 +1,8 @@
 import type { DeviceAddedEvent } from "./deviceApprovals";
 import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { RendezvousClient, type RendezvousConfig } from "../net/rendezvousSignaling";
+import { resolveInternalRendezvousConfig } from "../net/rendezvousConfig";
 import { getOrCreateDeviceId } from "../security/deviceRole";
-import { getRendezvousBaseUrl, getRendezvousUseOnion } from "../security/preferences";
 import { createId } from "../utils/ids";
 
 export type SyncCodeState = {
@@ -118,23 +118,12 @@ const fromRemotePayload = (payload: string): PairingMessage | null => {
   }
 };
 
-const resolveRendezvousConfig = async (): Promise<RendezvousConfig | null> => {
-  const [baseUrlRaw, useOnionProxy] = await Promise.all([
-    getRendezvousBaseUrl(),
-    getRendezvousUseOnion(),
-  ]);
-  const baseUrl = baseUrlRaw.trim();
-  if (!baseUrl) return null;
-  return {
-    baseUrl,
-    useOnionProxy,
-    onionProxyUrl: null,
-  };
+const resolveRendezvousConfig = async (): Promise<RendezvousConfig> => {
+  return resolveInternalRendezvousConfig();
 };
 
 const createRendezvousClient = async () => {
   const config = await resolveRendezvousConfig();
-  if (!config) return null;
   return new RendezvousClient(config);
 };
 
@@ -171,10 +160,6 @@ const ensureRemotePoller = (code: string) => {
     if (stopped) return;
     try {
       const client = await createRendezvousClient();
-      if (!client) {
-        schedule(REMOTE_POLL_ERROR_INTERVAL_MS);
-        return;
-      }
       const result = await client.poll(normalized, getOrCreateDeviceId(), afterTs);
       afterTs = result.nextAfterTs;
       for (const item of result.items) {
@@ -199,7 +184,6 @@ const publishRemoteMessage = (message: PairingMessage) => {
   void (async () => {
     try {
       const client = await createRendezvousClient();
-      if (!client) return;
       await client.publish(code, getOrCreateDeviceId(), [toRemotePayload(message)]);
     } catch {
       // keep local flow alive even if remote signaling is unavailable
