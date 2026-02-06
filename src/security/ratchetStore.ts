@@ -25,6 +25,16 @@ const setSecret = async (key: string, value: string) => {
   }
 };
 
+const removeSecret = async (key: string) => {
+  try {
+    const store = getSecretStore();
+    await store.remove(key);
+    return;
+  } catch {
+    memoryStore.delete(key);
+  }
+};
+
 export const getRatchetState = async (convId: string): Promise<RatchetStateV1 | null> => {
   const raw = await getSecret(`${RATCHET_PREFIX}${convId}`);
   if (!raw) return null;
@@ -50,6 +60,10 @@ export const setRatchetState = async (convId: string, state: RatchetStateV1) => 
     recvI: state.recvI,
   });
   await setSecret(`${RATCHET_PREFIX}${convId}`, payload);
+};
+
+export const clearRatchetState = async (convId: string) => {
+  await removeSecret(`${RATCHET_PREFIX}${convId}`);
 };
 
 export const getDhRatchetState = async (convId: string): Promise<DhRatchetStateV2 | null> => {
@@ -114,4 +128,8 @@ export const setDhRatchetState = async (convId: string, state: DhRatchetStateV2)
     mode: state.mode,
   });
   await setSecret(`${DH_RATCHET_PREFIX}${convId}`, payload);
+};
+
+export const clearDhRatchetState = async (convId: string) => {
+  await removeSecret(`${DH_RATCHET_PREFIX}${convId}`);
 };

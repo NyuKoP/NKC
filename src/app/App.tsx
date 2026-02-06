@@ -1164,6 +1164,15 @@ export default function App() {
           eventHash,
         });
 
+        await saveMessage({
+          id: header.eventId,
+          convId: conv.id,
+          senderId: userProfile.id,
+          text,
+          ts: now,
+          clientBatchId,
+        });
+
         const routed = await sendCiphertext({
           convId: conv.id,
           messageId: header.eventId,
@@ -1323,6 +1332,16 @@ export default function App() {
             envelopeJson,
             prevHash: header.prev,
             eventHash,
+          });
+
+          await saveMessage({
+            id: header.eventId,
+            convId: conv.id,
+            senderId: userProfile.id,
+            text: label,
+            ts: now,
+            media,
+            clientBatchId,
           });
 
           void sendCiphertext({

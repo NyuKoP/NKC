@@ -40,6 +40,7 @@ const defaultRouteController = createRouteController();
 const defaultHttpClient = createHttpClient();
 const transportCache = new Map<TransportKind, Transport>();
 let transportStarted = new WeakSet<Transport>();
+const inboundAttachedKinds = new Set<TransportKind>();
 
 const debugLog = (label: string, payload: Record<string, unknown>) => {
   try {
@@ -111,6 +112,12 @@ const getTransport = (
     transport = createOnionRouterTransport({ httpClient, config });
   }
   attachHandlers(transport, controller, kind);
+  if (!inboundAttachedKinds.has(kind)) {
+    transport.onMessage((packet) => {
+      inboundHandlers.forEach((handler) => handler(packet));
+    });
+    inboundAttachedKinds.add(kind);
+  }
   transportCache.set(kind, transport);
   return transport;
 };
@@ -129,6 +136,7 @@ export const resolveTransport = (
 export const __testResetRouter = () => {
   transportCache.clear();
   transportStarted = new WeakSet<Transport>();
+  inboundAttachedKinds.clear();
 };
 
 const warnOnionRouterGuards = (config: NetConfig) => {
@@ -147,17 +155,24 @@ const ensureInboundListener = async () => {
   const config = useNetConfigStore.getState().config;
   const controller = defaultRouteController;
   const httpClient = defaultHttpClient;
-  const transport = getTransport("onionRouter", config, controller, httpClient);
-  if (!inboundAttached) {
-    transport.onMessage((packet) => {
-      inboundHandlers.forEach((handler) => handler(packet));
+  const transports = [
+    getTransport("onionRouter", config, controller, httpClient),
+    getTransport("selfOnion", config, controller, httpClient),
+  ];
+  if (!inboundAttached) inboundAttached = true;
+  inboundStartPromise = Promise.allSettled(
+    transports.map((transport) => ensureStarted(transport))
+  )
+    .then((results) => {
+      const allFailed = results.every((result) => result.status === "rejected");
+      if (allFailed) {
+        throw new Error("All inbound transports failed to start");
+      }
+    })
+    .catch((error) => {
+      inboundStartPromise = null;
+      console.warn("[net] inbound listener failed to start", error);
     });
-    inboundAttached = true;
-  }
-  inboundStartPromise = ensureStarted(transport).catch((error) => {
-    inboundStartPromise = null;
-    console.warn("[net] inbound listener failed to start", error);
-  });
   return inboundStartPromise;
 };
 
@@ -244,7 +259,7 @@ export const sendCiphertext = async (
     });
     const fallbackKinds: TransportKind[] =
       chosen === "directP2P"
-        ? ["selfOnion", "onionRouter"]
+        ? ["onionRouter", "selfOnion"]
         : config.mode === "selfOnion" && chosen === "selfOnion"
           ? ["onionRouter"]
           : [];
@@ -355,7 +370,7 @@ export const sendOutboxRecord = async (
     });
     const fallbackKinds: TransportKind[] =
       chosen === "directP2P"
-        ? ["selfOnion", "onionRouter"]
+        ? ["onionRouter", "selfOnion"]
         : config.mode === "selfOnion" && chosen === "selfOnion"
           ? ["onionRouter"]
           : [];
