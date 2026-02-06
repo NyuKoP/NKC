@@ -1071,7 +1071,9 @@ export default function App() {
 
   const sendFriendRequestForFriend = useCallback(
     async (friend: UserProfile) => {
-      if (!friend.routingHints?.deviceId && !friend.primaryDeviceId) return false;
+      if (!friend.routingHints?.deviceId && !friend.primaryDeviceId && !friend.deviceId) {
+        return false;
+      }
       const conv = await ensureDirectConvForFriend(friend);
       if (!conv) return false;
       const payload = await buildFriendRequestPayload(conv.id);
@@ -2433,10 +2435,18 @@ export default function App() {
 
       await saveProfile(friend);
 
+      let requestSent = false;
       try {
-        await sendFriendRequestForFriend(friend);
+        requestSent = await sendFriendRequestForFriend(friend);
       } catch (error) {
         console.warn("[friend] failed to send friend request", error);
+      }
+      if (!requestSent) {
+        recordFail(finalKey);
+        return {
+          ok: false as const,
+          error: "친구 요청 전송에 실패했습니다. 잠시 후 다시 시도해 주세요.",
+        };
       }
 
       await hydrateVault();
@@ -2676,7 +2686,11 @@ export default function App() {
         pendingOutgoing: false,
       });
       try {
-        if (!partnerProfile.routingHints?.deviceId && !partnerProfile.primaryDeviceId) {
+        if (
+          !partnerProfile.routingHints?.deviceId &&
+          !partnerProfile.primaryDeviceId &&
+          !partnerProfile.deviceId
+        ) {
           console.warn("[friend] missing deviceId; cannot send accept");
           return;
         }
@@ -2744,7 +2758,11 @@ export default function App() {
         pendingOutgoing: false,
       });
       try {
-        if (!partnerProfile.routingHints?.deviceId && !partnerProfile.primaryDeviceId) {
+        if (
+          !partnerProfile.routingHints?.deviceId &&
+          !partnerProfile.primaryDeviceId &&
+          !partnerProfile.deviceId
+        ) {
           console.warn("[friend] missing deviceId; cannot send decline");
           return;
         }
