@@ -73,8 +73,10 @@ export class TorManager {
       args = ["--SocksPort", `127.0.0.1:${socksPort}`, "--DataDirectory", dataDir];
     }
     const bundleRoot = path.dirname(path.dirname(binaryPath));
-    await this.clearMacQuarantine(bundleRoot);
     const hasBundleDefaults = fsSync.existsSync(path.join(bundleRoot, "data", "torrc-defaults"));
+    if (hasBundleDefaults) {
+      await this.clearMacQuarantine(bundleRoot);
+    }
     const child = spawn(binaryPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: hasBundleDefaults ? bundleRoot : undefined,

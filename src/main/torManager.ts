@@ -186,7 +186,7 @@ export class TorManager {
     await fsPromises.mkdir(this.dataDir, { recursive: true });
     const socksPort = await getAvailablePort();
     const torrcPath = path.join(this.dataDir, "torrc");
-    await fsPromises.writeFile(this.buildTorrc(socksPort, this.hsConfig), torrcPath, "utf8");
+    await fsPromises.writeFile(torrcPath, this.buildTorrc(socksPort, this.hsConfig), "utf8");
     await this.ensureExecutable(torPath);
     await this.clearMacQuarantine(torPath);
     this.process = spawn(torPath, ["-f", torrcPath], {

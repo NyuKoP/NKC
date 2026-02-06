@@ -67,6 +67,20 @@ export class OnionRuntime {
   private lokinetManager = new LokinetManager();
   private status: RuntimeStatus = { status: "idle" };
 
+  private resolveSystemTorBinaryPath() {
+    const candidates = [
+      process.env.NKC_SYSTEM_TOR_BIN?.trim(),
+      "/opt/homebrew/bin/tor",
+      "/usr/local/bin/tor",
+      "/opt/local/bin/tor",
+      "/usr/bin/tor",
+    ].filter((value): value is string => Boolean(value));
+    for (const candidate of candidates) {
+      if (fsSync.existsSync(candidate)) return candidate;
+    }
+    return null;
+  }
+
   private async waitForTorSocks(port: number) {
     await waitForPort(port, 90000, () => {
       const state = this.torManager.getState();
@@ -78,23 +92,41 @@ export class OnionRuntime {
   }
 
   private async startTorWithFallback(binaryPath: string, port: number, dataDir: string) {
-    await this.torManager.start(binaryPath, port, dataDir, "torrc");
-    try {
-      await this.waitForTorSocks(port);
-      return;
-    } catch (firstError) {
-      await this.torManager.stop();
-      await this.torManager.start(binaryPath, port, dataDir, "cli");
+    const attempts: string[] = [];
+    const tryStart = async (
+      label: string,
+      candidatePath: string,
+      mode: "torrc" | "cli"
+    ) => {
       try {
+        await this.torManager.start(candidatePath, port, dataDir, mode);
         await this.waitForTorSocks(port);
-      } catch (secondError) {
+        return true;
+      } catch (error) {
         const state = this.torManager.getState();
         const detail = state.logTail ? ` | ${state.logTail}` : "";
-        const message =
-          secondError instanceof Error ? secondError.message : String(secondError);
-        throw new Error(`Tor SOCKS startup failed after retry: ${message}${detail}`);
+        const message = error instanceof Error ? error.message : String(error);
+        attempts.push(`${label}: ${message}${detail}`);
+        await this.torManager.stop();
+        return false;
+      }
+    };
+
+    if (await tryStart("bundled-torrc", binaryPath, "torrc")) return;
+    if (await tryStart("bundled-cli", binaryPath, "cli")) return;
+
+    if (process.platform === "darwin") {
+      const systemTorBinary = this.resolveSystemTorBinaryPath();
+      if (
+        systemTorBinary &&
+        path.resolve(systemTorBinary) !== path.resolve(binaryPath) &&
+        (await tryStart(`system-cli(${systemTorBinary})`, systemTorBinary, "cli"))
+      ) {
+        return;
       }
     }
+
+    throw new Error(`Tor SOCKS startup failed after retry: ${attempts.join(" || ")}`);
   }
 
   async start(userDataDir: string, network: OnionNetwork) {
