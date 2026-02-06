@@ -146,7 +146,7 @@ describe("router", () => {
     expect(store.size).toBe(1);
   });
 
-  it("falls back to selfOnion when directP2P send fails in direct mode", async () => {
+  it("falls back to onionRouter when directP2P send fails in direct mode", async () => {
     const store = new Map<string, OutboxRecord>();
     vi.doMock("../../storage/outboxStore", () => {
       return {
@@ -164,7 +164,7 @@ describe("router", () => {
     const directTransport = createTransport("directP2P", async () => {
       throw new Error("direct channel not open");
     });
-    const selfOnionTransport = createTransport("selfOnion");
+    const onionRouterTransport = createTransport("onionRouter");
     const result = await router.sendCiphertext(
       {
         convId: "c1",
@@ -189,14 +189,14 @@ describe("router", () => {
           lokinet: { installed: false, status: "idle" },
           lastUpdateCheckAtMs: undefined,
         },
-        transports: { directP2P: directTransport, selfOnion: selfOnionTransport },
+        transports: { directP2P: directTransport, onionRouter: onionRouterTransport },
       }
     );
 
     expect(result.ok).toBe(true);
-    expect(result.transport).toBe("selfOnion");
+    expect(result.transport).toBe("onionRouter");
     expect(directTransport.send).toHaveBeenCalledTimes(1);
-    expect(selfOnionTransport.send).toHaveBeenCalledTimes(1);
+    expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
     expect(store.size).toBe(1);
   });
 

@@ -15,10 +15,12 @@ import {
   listConversations,
   listEventsByConv,
   listProfiles,
+  saveMessage,
   saveConversation,
   saveEvent,
   saveProfile,
   type Conversation,
+  type Message,
   type UserProfile,
 } from "../db/repo";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
@@ -571,6 +573,7 @@ const applyDecryptedBody = async (
     anchorMsgId?: string;
     msgId?: string;
     ts?: number;
+    clientBatchId?: string;
   };
 
   if (typed.type === "rcpt" && typed.kind === "read_cursor") {
@@ -590,7 +593,12 @@ const applyDecryptedBody = async (
   }
 
   if (typed.type === "msg") {
-    await applyMessageEvent(conv, envelope, body as { type: "msg"; text: string; media?: unknown });
+    await applyMessageEvent(
+      conv,
+      envelope,
+      body as { type: "msg"; text: string; media?: unknown; clientBatchId?: string },
+      senderId ?? currentUserId ?? envelope.header.authorDeviceId
+    );
     return;
   }
   if (typed.type === "friend_req") {
@@ -617,7 +625,8 @@ const applyDecryptedBody = async (
 const applyMessageEvent = async (
   conv: Conversation | null,
   envelope: Envelope,
-  body: { type: "msg"; text: string; media?: unknown }
+  body: { type: "msg"; text: string; media?: unknown; clientBatchId?: string },
+  senderId: string
 ) => {
   if (!conv) return;
   const lastMessage = typeof body.text === "string" ? body.text : "";
@@ -626,6 +635,17 @@ const applyMessageEvent = async (
     lastMessage,
     lastTs: envelope.header.ts,
   };
+  const media = body.media as Message["media"] | undefined;
+  const message: Message = {
+    id: envelope.header.eventId,
+    convId: conv.id,
+    senderId,
+    text: lastMessage,
+    ts: envelope.header.ts,
+    media,
+    clientBatchId: body.clientBatchId,
+  };
+  await saveMessage(message);
   await saveConversation(updated);
 };
 
@@ -766,6 +786,41 @@ const ensurePeerContextFromConversation = async (convId: string) => {
   return true;
 };
 
+const resolveFallbackConversationId = async (envelope: Envelope) => {
+  const [conversations, profiles, localUserId] = await Promise.all([
+    listConversations(),
+    listProfiles(),
+    resolveLocalUserId(),
+  ]);
+  if (!localUserId) return null;
+
+  const directCandidates = conversations.filter((conv) => {
+    const isDirect =
+      !(conv.type === "group" || conv.participants.length > 2) &&
+      conv.participants.length === 2;
+    return isDirect && conv.participants.includes(localUserId);
+  });
+
+  for (const conv of directCandidates) {
+    const partnerId = conv.participants.find((id) => id && id !== localUserId) ?? null;
+    if (!partnerId) continue;
+    const partner =
+      profiles.find((profile) => profile.id === partnerId && profile.kind === "friend") ?? null;
+    if (!partner?.identityPub) continue;
+    try {
+      const verifyKey = decodeBase64Url(partner.identityPub);
+      const verified = await verifyEnvelopeSignature(envelope, verifyKey);
+      if (verified) {
+        return conv.id;
+      }
+    } catch {
+      // keep scanning candidates
+    }
+  }
+
+  return null;
+};
+
 export const ingestIncomingEnvelopeText = async (payloadText: string) => {
   let parsed: unknown;
   try {
@@ -778,7 +833,22 @@ export const ingestIncomingEnvelopeText = async (payloadText: string) => {
   const envelope = parsed as Envelope;
   const convId = envelope.header.convId;
   if (!convId) return false;
-  const hasPeer = await ensurePeerContextFromConversation(convId);
+  let targetConvId = convId;
+  let hasPeer = await ensurePeerContextFromConversation(targetConvId);
+  if (!hasPeer) {
+    const fallbackConvId = await resolveFallbackConversationId(envelope);
+    if (fallbackConvId) {
+      targetConvId = fallbackConvId;
+      hasPeer = await ensurePeerContextFromConversation(targetConvId);
+      if (hasPeer && fallbackConvId !== convId) {
+        console.info("[sync] incoming envelope mapped to local conversation", {
+          incomingConvId: convId,
+          targetConvId: fallbackConvId,
+          eventId: envelope.header.eventId,
+        });
+      }
+    }
+  }
   if (!hasPeer) {
     console.warn("[sync] incoming envelope dropped: peer context unavailable", { convId });
     return false;
@@ -792,7 +862,7 @@ export const ingestIncomingEnvelopeText = async (payloadText: string) => {
     ts: envelope.header.ts,
     envelopeJson: payloadText,
   };
-  await applyEnvelopeEvents(convId, [event]);
+  await applyEnvelopeEvents(targetConvId, [event]);
   return true;
 };
 

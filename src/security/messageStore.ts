@@ -6,12 +6,18 @@ import {
   type Envelope,
   verifyEnvelopeSignature,
 } from "../crypto/box";
-import { tryRecvDhKey, tryRecvKey } from "../crypto/ratchet";
+import { getOrInitDhRatchetState, tryRecvDhKey, tryRecvKey } from "../crypto/ratchet";
 import { encodeBinaryEnvelope } from "../crypto/vault";
 import { getVaultKey } from "../crypto/sessionKeyring";
 import { getFriendPsk } from "./pskStore";
 import { decodeBase64Url } from "./base64url";
 import { getDhPrivateKey, getIdentityPublicKey } from "./identityKeys";
+import {
+  clearDhRatchetState,
+  clearRatchetState,
+  getDhRatchetState,
+  setDhRatchetState,
+} from "./ratchetStore";
 import { db, ensureDbOpen } from "../db/schema";
 import { putReadCursor, putReceipt } from "../storage/receiptStore";
 import { applyGroupEvent, isGroupEventPayload } from "../sync/groupSync";
@@ -121,6 +127,16 @@ export const loadConversationMessages = async (
 
   const eventRecords = await listEventsByConv(conv.id).catch(() => []);
   const messages: Message[] = [...legacy];
+  const messageIds = new Set(messages.map((message) => message.id));
+  const pushMessageIfNew = (message: Message) => {
+    if (messageIds.has(message.id)) return;
+    messageIds.add(message.id);
+    messages.push(message);
+  };
+  const replayConvId = `${conv.id}:replay:${Date.now().toString(36)}:${Math.random()
+    .toString(36)
+    .slice(2)}`;
+  const existingDhState = await getDhRatchetState(conv.id);
 
   const handleBody = async (
     body: unknown,
@@ -207,7 +223,17 @@ export const loadConversationMessages = async (
     return null;
   };
 
-  for (const record of eventRecords) {
+  try {
+    if (existingDhState) {
+      const replayDhState = await getOrInitDhRatchetState(replayConvId, ratchetBaseKey);
+      await setDhRatchetState(replayConvId, {
+        ...replayDhState,
+        dhSelfPriv: existingDhState.dhSelfPriv,
+        dhSelfPub: existingDhState.dhSelfPub,
+      });
+    }
+
+    for (const record of eventRecords) {
     let envelope: Envelope;
     try {
       envelope = JSON.parse(record.envelopeJson) as Envelope;
@@ -236,10 +262,10 @@ export const loadConversationMessages = async (
       const rk = envelope.header.rk;
       if (rk && rk.v === 2 && Number.isFinite(rk.i) && typeof rk.dh === "string") {
         logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "v2" });
-        const recv = await tryRecvDhKey(conv.id, ratchetBaseKey, rk);
+        const recv = await tryRecvDhKey(replayConvId, ratchetBaseKey, rk);
         if ("deferred" in recv) {
           logDecrypt("deferred", { convId: record.convId, eventId: record.eventId, mode: "v2" });
-          messages.push({
+          pushMessageIfNew({
             id: envelope.header.eventId,
             convId: conv.id,
             senderId,
@@ -263,16 +289,16 @@ export const loadConversationMessages = async (
           envelope.header.ts,
           envelope.header.eventId
         );
-        if (message) messages.push(message);
+        if (message) pushMessageIfNew(message);
         continue;
       }
 
       if (rk && rk.v === 1 && Number.isFinite(rk.i)) {
         logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "v1" });
-        const recv = await tryRecvKey(conv.id, ratchetBaseKey, rk.i);
+        const recv = await tryRecvKey(replayConvId, ratchetBaseKey, rk.i);
         if ("deferred" in recv) {
           logDecrypt("deferred", { convId: record.convId, eventId: record.eventId, mode: "v1" });
-          messages.push({
+          pushMessageIfNew({
             id: envelope.header.eventId,
             convId: conv.id,
             senderId,
@@ -295,7 +321,7 @@ export const loadConversationMessages = async (
           envelope.header.ts,
           envelope.header.eventId
         );
-        if (message) messages.push(message);
+        if (message) pushMessageIfNew(message);
         continue;
       }
 
@@ -314,7 +340,7 @@ export const loadConversationMessages = async (
         envelope.header.ts,
         envelope.header.eventId
       );
-      if (message) messages.push(message);
+      if (message) pushMessageIfNew(message);
     } catch (error) {
       console.warn(
         "[msg] decrypt failed",
@@ -322,6 +348,9 @@ export const loadConversationMessages = async (
         error
       );
     }
+    }
+  } finally {
+    await Promise.allSettled([clearRatchetState(replayConvId), clearDhRatchetState(replayConvId)]);
   }
 
   messages.sort((a, b) => a.ts - b.ts);
