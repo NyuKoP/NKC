@@ -1058,13 +1058,16 @@ export default function App() {
       priority: "high" | "normal" = "high"
     ) => {
       const messageId = createId();
-      await sendCiphertext({
+      const result = await sendCiphertext({
         convId: conv.id,
         messageId,
         ciphertext: JSON.stringify(payload),
         priority,
         ...buildRoutingMeta(partner),
       });
+      if (!result.ok) {
+        throw new Error(result.error ?? "Friend control packet send failed");
+      }
     },
     [buildRoutingMeta]
   );
