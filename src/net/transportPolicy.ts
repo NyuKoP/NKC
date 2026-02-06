@@ -6,11 +6,18 @@ export type RouterTransportKind = "directP2P" | "selfOnion" | "onionRouter";
 
 type ConversationPolicyInput = {
   allowDirect: boolean;
+  directOnly?: boolean;
 };
 
 export const decideConversationTransport = (
   input: ConversationPolicyInput
 ) => {
+  if (input.directOnly) {
+    return {
+      primary: "direct" as const,
+      fallback: undefined,
+    };
+  }
   if (input.allowDirect) {
     return {
       primary: "direct" as const,

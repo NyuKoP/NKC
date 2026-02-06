@@ -9,6 +9,12 @@ describe("transportPolicy", () => {
     expect(decision.fallback).toBe("onion");
   });
 
+  it("forces direct-only when directOnly is set", () => {
+    const decision = decideConversationTransport({ allowDirect: false, directOnly: true });
+    expect(decision.primary).toBe("direct");
+    expect(decision.fallback).toBeUndefined();
+  });
+
   it("uses onion only when direct is not allowed", () => {
     const decision = decideConversationTransport({ allowDirect: false });
     expect(decision.primary).toBe("onion");

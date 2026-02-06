@@ -186,8 +186,20 @@ export const connectConversation = async (convId: string, peerHint?: PeerHint) =
     await closeTransport(state.transport);
     state.transport = null;
 
-    const allowDirect = useNetConfigStore.getState().config.mode === "directP2P";
-    const decision = decideConversationTransport({ allowDirect });
+    const config = useNetConfigStore.getState().config;
+    const isDeviceSyncPeer = peerHint?.kind === "device";
+    const deviceSyncPolicy = isDeviceSyncPeer
+      ? peerHint?.deviceSyncTransportPolicy ?? "directOnly"
+      : undefined;
+    const allowDirect = isDeviceSyncPeer
+      ? deviceSyncPolicy === "directOnly"
+        ? true
+        : config.mode === "directP2P"
+      : config.mode === "directP2P";
+    const decision = decideConversationTransport({
+      allowDirect,
+      directOnly: isDeviceSyncPeer && deviceSyncPolicy === "directOnly",
+    });
     const primary = decision.primary;
 
     const tryKind = async (kind: TransportKind) => {
