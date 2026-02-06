@@ -32,6 +32,12 @@ const makeCodeWithDashInBody = () => {
   throw new Error("failed to build test code with '-' in body");
 };
 
+const toStandardBase64Code = (code: string) => {
+  const body = code.slice("NKC1-".length);
+  const standard = body.replace(/-/g, "+").replace(/_/g, "/");
+  return `NKC1-${standard}`;
+};
+
 const legacyHash32Bytes = (bytes: Uint8Array) => {
   const seeds = [
     0x811c9dc5, 0x01000193, 0x1234567, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
@@ -75,6 +81,12 @@ describe("friendCode", () => {
 
   it("decodes code when base64url body includes '-'", () => {
     const decoded = decodeFriendCodeV1(makeCodeWithDashInBody());
+    expect("error" in decoded ? decoded.error : "").toBe("");
+  });
+
+  it("decodes code when body uses standard base64 characters", () => {
+    const code = toStandardBase64Code(makeCode());
+    const decoded = decodeFriendCodeV1(code);
     expect("error" in decoded ? decoded.error : "").toBe("");
   });
 
