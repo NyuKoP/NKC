@@ -36,6 +36,14 @@ declare global {
       hide: () => Promise<void>;
       quit: () => Promise<void>;
       syncNow: () => Promise<void>;
+      reportSyncResult: (payload: {
+        requestId: string;
+        ok: boolean;
+        error?: string;
+      }) => void;
+      onSyncRun: (
+        cb: (payload: { requestId: string; reason: "manual" | "interval" }) => void
+      ) => () => void;
       onSyncStatus: (cb: (payload: unknown) => void) => () => void;
       onBackgroundStatus: (cb: (payload: unknown) => void) => () => void;
     };

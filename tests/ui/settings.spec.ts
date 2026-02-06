@@ -39,7 +39,7 @@ test.describe("Settings and media E2E", () => {
   test("proxy URL without port shows inline error and is not applied", async ({ page }) => {
     await openNetworkSettings(page);
 
-    await page.getByTestId("network-mode-onionRouter").check();
+    await page.getByTestId("network-mode-torOnion").check();
     const proxyInput = page.getByTestId("proxy-url-input");
     await expect(proxyInput).toBeVisible();
 
@@ -51,21 +51,21 @@ test.describe("Settings and media E2E", () => {
     expect(afterUrl).toBe(beforeUrl);
   });
 
-  test("direct P2P requires confirmation before switching modes", async ({ page }) => {
+  test("direct P2P switches only after save", async ({ page }) => {
     await openNetworkSettings(page);
 
     const effectiveMode = page.getByTestId("effective-mode-label");
     const initialLabel = (await effectiveMode.textContent())?.trim() ?? "";
 
     await page.getByTestId("network-mode-directP2P").click();
-    await expect(page.getByTestId("direct-p2p-confirm-dialog")).toBeVisible();
     await expect(effectiveMode).toHaveText(initialLabel);
 
-    await page.getByTestId("direct-p2p-confirm").click();
-    await expect(page.getByTestId("direct-p2p-warning")).toBeVisible();
+    await page.getByRole("button", { name: "Save" }).click();
     await expect(effectiveMode).not.toHaveText(initialLabel);
 
     await page.getByTestId("network-mode-selfOnion").click();
+    await expect(effectiveMode).not.toHaveText(initialLabel);
+    await page.getByRole("button", { name: "Save" }).click();
     await expect(effectiveMode).toHaveText(initialLabel);
   });
 

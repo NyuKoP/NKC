@@ -78,6 +78,17 @@ type BackgroundStatusPayload = {
   route?: string;
 };
 
+type SyncRunPayload = {
+  requestId: string;
+  reason: "manual" | "interval";
+};
+
+type SyncResultPayload = {
+  requestId: string;
+  ok: boolean;
+  error?: string;
+};
+
 const isDev = !app.isPackaged;
 const isAutoStartLaunch = process.argv.includes("--autostart");
 const SECRET_STORE_FILENAME = "secret-store.json";
@@ -483,6 +494,19 @@ const registerAppIpc = () => {
   });
   ipcMain.handle("sync:manual", async () => {
     await backgroundService?.manualSync();
+  });
+  ipcMain.on("sync:result", (_event, payload: SyncResultPayload) => {
+    if (!payload || typeof payload !== "object") return;
+    if (!payload.requestId || typeof payload.requestId !== "string") return;
+    const pending = pendingSyncRuns.get(payload.requestId);
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    pendingSyncRuns.delete(payload.requestId);
+    if (payload.ok) {
+      pending.resolve();
+      return;
+    }
+    pending.reject(new Error(payload.error || "sync-failed"));
   });
   ipcMain.handle("app:show", async () => {
     if (!focusMainWindow()) createMainWindow();
@@ -1002,6 +1026,40 @@ const sendToAllWindows = (channel: string, payload: unknown) => {
   });
 };
 
+type PendingSyncRun = {
+  resolve: () => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+};
+
+const pendingSyncRuns = new Map<string, PendingSyncRun>();
+const SYNC_RUN_TIMEOUT_MS = 30_000;
+let syncRunCounter = 0;
+
+const requestRendererSyncRun = async (
+  reason: SyncRunPayload["reason"]
+): Promise<void> => {
+  const candidates = BrowserWindow.getAllWindows().filter(
+    (win) => !win.isDestroyed() && !win.webContents.isDestroyed()
+  );
+  if (!candidates.length) {
+    throw new Error("sync-runner-unavailable");
+  }
+  const target = candidates[0];
+  const requestId = `sync-${Date.now()}-${syncRunCounter++}`;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      pendingSyncRuns.delete(requestId);
+      reject(new Error("sync-timeout"));
+    }, SYNC_RUN_TIMEOUT_MS);
+    pendingSyncRuns.set(requestId, { resolve, reject, timeout });
+    target.webContents.send("sync:run", {
+      requestId,
+      reason,
+    } satisfies SyncRunPayload);
+  });
+};
+
 class BackgroundService {
   private prefs: AppPreferences = defaultAppPrefs;
   private intervalId: NodeJS.Timeout | null = null;
@@ -1025,7 +1083,7 @@ class BackgroundService {
   }
 
   manualSync() {
-    return this.runSync();
+    return this.runSync("manual");
   }
 
   emitCurrentStatus() {
@@ -1049,7 +1107,7 @@ class BackgroundService {
         : this.prefs.background.syncIntervalMinutes;
     const clamped = Math.min(30, Math.max(1, minutes));
     this.intervalId = setTimeout(() => {
-      void this.runSync();
+      void this.runSync("interval");
     }, clamped * 60 * 1000);
   }
 
@@ -1065,14 +1123,14 @@ class BackgroundService {
     return connected ? 30 : 5;
   }
 
-  private async runSync() {
+  private async runSync(reason: SyncRunPayload["reason"]) {
     if (!this.prefs.background.enabled) return;
     if (this.syncInFlight) return;
     this.syncInFlight = true;
     this.syncStatus = { state: "running", lastSyncAt: this.lastSyncAt };
     this.emitSyncStatus();
     try {
-      await this.performSync();
+      await this.performSync(reason);
       this.lastSyncAt = Date.now();
       this.lastActivityAt = this.lastSyncAt;
       this.syncStatus = { state: "ok", lastSyncAt: this.lastSyncAt };
@@ -1088,8 +1146,8 @@ class BackgroundService {
     }
   }
 
-  private async performSync() {
-    await new Promise((resolve) => setTimeout(resolve, 80));
+  private async performSync(reason: SyncRunPayload["reason"]) {
+    await requestRendererSyncRun(reason);
   }
 
   private emitSyncStatus() {

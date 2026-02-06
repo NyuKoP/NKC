@@ -83,6 +83,9 @@ import {
 import {
   connectConversation as connectSyncConversation,
   disconnectConversation as disconnectSyncConversation,
+  syncContactsNow,
+  syncConversation,
+  syncConversationsNow,
 } from "../sync/syncEngine";
 import {
   getTransportStatus,
@@ -98,6 +101,7 @@ import { startFriendRequestScheduler } from "../friends/friendRequestScheduler";
 import { startFriendInboxListener } from "../friends/friendInbox";
 import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
+import { onSyncRun, reportSyncResult } from "../appControl";
 
 const buildNameMap = (
   profiles: UserProfile[],
@@ -2546,6 +2550,42 @@ export default function App() {
     });
     return () => scheduler.stop();
   }, [hydrateVault, sendFriendRequestForFriend, userProfile]);
+
+  const runBackgroundSync = useCallback(async () => {
+    await syncContactsNow();
+    await syncConversationsNow();
+    if (activeSyncConvRef.current) {
+      await syncConversation(activeSyncConvRef.current);
+    }
+    await hydrateVault();
+  }, [hydrateVault]);
+
+  useEffect(() => {
+    const unsubscribe = onSyncRun((payload) => {
+      if (!payload?.requestId) return;
+      const complete = (ok: boolean, error?: string) => {
+        try {
+          reportSyncResult({ requestId: payload.requestId, ok, error });
+        } catch (reportError) {
+          console.error("Failed to report sync result", reportError);
+        }
+      };
+      void (async () => {
+        if (ui.mode !== "app") {
+          throw new Error("app-not-ready");
+        }
+        await runBackgroundSync();
+      })()
+        .then(() => complete(true))
+        .catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          complete(false, message);
+        });
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [runBackgroundSync, ui.mode]);
 
   const handleDeclineRequest = async () => {
     if (!currentConversation || !partnerProfile) return;
