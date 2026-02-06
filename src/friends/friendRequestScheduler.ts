@@ -42,7 +42,7 @@ export const startFriendRequestScheduler = ({
       await onUpdate(friend.id, {
         reachability: {
           status: ok ? "ok" : friend.reachability?.status ?? "unreachable",
-          attempts: ok ? attempts : nextAttempts,
+          attempts: ok ? 0 : nextAttempts,
           lastAttemptAt: now,
           nextAttemptAt: ok ? undefined : next,
         },

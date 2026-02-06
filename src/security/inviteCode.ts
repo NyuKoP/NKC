@@ -129,12 +129,25 @@ export const decodeInviteCodeV1 = (
     return { error: "Invalid public keys in invite code." };
   }
 
+  const deviceId =
+    typeof friend.deviceId === "string" && friend.deviceId.length > 0
+      ? friend.deviceId
+      : undefined;
+  if (deviceId) {
+    const uuidPattern =
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidPattern.test(deviceId)) {
+      return { error: "Invalid deviceId in invite code." };
+    }
+  }
+
   return {
     v: 1,
     friend: {
       v: 1,
       identityPub: friend.identityPub,
       dhPub: friend.dhPub,
+      deviceId,
       onionAddr: typeof friend.onionAddr === "string" ? friend.onionAddr : undefined,
       lokinetAddr: typeof friend.lokinetAddr === "string" ? friend.lokinetAddr : undefined,
     },
