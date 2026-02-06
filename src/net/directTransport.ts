@@ -30,6 +30,9 @@ const mapState = (state: AdapterState): TransportStatus["state"] => {
   return "idle";
 };
 
+const DEFAULT_DIRECT_CONNECT_TIMEOUT_MS = 8_000;
+const DEVICE_DIRECT_CONNECT_TIMEOUT_MS = 20_000;
+
 export const createDirectTransport = (): Transport => {
   const adapter = createDirectP2PTransport();
   let status: TransportStatus = { state: "idle" };
@@ -48,10 +51,42 @@ export const createDirectTransport = (): Transport => {
   return {
     kind: "direct",
     async connect(peerHint?: PeerHint) {
-      void peerHint;
       status = { state: "connecting" };
       try {
-        await adapter.start();
+        await new Promise<void>((resolve, reject) => {
+          let done = false;
+          const finish = (error?: unknown) => {
+            if (done) return;
+            done = true;
+            if (timeout) {
+              clearTimeout(timeout);
+            }
+            if (error) {
+              reject(error);
+              return;
+            }
+            resolve();
+          };
+          const timeoutMs =
+            peerHint?.kind === "device"
+              ? DEVICE_DIRECT_CONNECT_TIMEOUT_MS
+              : DEFAULT_DIRECT_CONNECT_TIMEOUT_MS;
+          const timeout = setTimeout(() => {
+            finish(new Error("Direct P2P connect timeout"));
+          }, timeoutMs);
+          adapter.onState((next) => {
+            if (next === "connected" || next === "degraded") {
+              finish();
+              return;
+            }
+            if (next === "failed") {
+              finish(new Error("Direct P2P connect failed"));
+            }
+          });
+          void adapter.start().catch((error) => {
+            finish(error);
+          });
+        });
         status = { state: "connected" };
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);

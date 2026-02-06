@@ -1,5 +1,9 @@
 import { Clock } from "lucide-react";
-import type { PairingRequest, SyncCodeState } from "../../../devices/devicePairing";
+import type {
+  PairingRequest,
+  RendezvousPairingStatus,
+  SyncCodeState,
+} from "../../../devices/devicePairing";
 import type { DeviceSyncTransportPolicy } from "../../../preferences";
 import SettingsBackHeader from "../SettingsBackHeader";
 
@@ -31,6 +35,23 @@ type DevicesSettingsProps = {
   linkStatusClass: string;
   linkMessage: string;
   onSubmitLink: () => void | Promise<void>;
+  rendezvousBaseUrl: string;
+  setRendezvousBaseUrl: (value: string) => void;
+  rendezvousUseOnion: boolean;
+  setRendezvousUseOnion: (value: boolean) => void;
+  hostRendezvousStatus: RendezvousPairingStatus;
+  guestRendezvousStatus: RendezvousPairingStatus;
+};
+
+const statusLabel = (
+  value: RendezvousPairingStatus,
+  t: Translate
+) => {
+  if (value === "connecting") return t("연결 중", "Connecting");
+  if (value === "exchanging") return t("신호 교환 중", "Exchanging");
+  if (value === "connected") return t("연결됨", "Connected");
+  if (value === "error") return t("오류", "Error");
+  return t("대기", "Idle");
 };
 
 export default function DevicesSettings({
@@ -59,22 +80,24 @@ export default function DevicesSettings({
   linkStatusClass,
   linkMessage,
   onSubmitLink,
+  rendezvousBaseUrl,
+  setRendezvousBaseUrl,
+  rendezvousUseOnion,
+  setRendezvousUseOnion,
+  hostRendezvousStatus,
+  guestRendezvousStatus,
 }: DevicesSettingsProps) {
   return (
     <div className="mt-6 grid gap-6">
-      <SettingsBackHeader
-        title={t("기기/동기화", "Devices / Sync")}
-        backLabel={t("뒤로", "Back")}
-        onBack={onBack}
-      />
+      <SettingsBackHeader title={t("기기/동기화", "Devices / Sync")} backLabel={t("뒤로", "Back")} onBack={onBack} />
 
       <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
         <div className="text-sm font-semibold text-nkc-text">
-          {t("기기 동기화 정책", "Device sync policy")}
+          {t("기기 동기화 전송 정책", "Device sync transport policy")}
         </div>
         <div className="mt-2 text-xs text-nkc-muted">
           {t(
-            "동기화 연결에서 사용할 전송 정책을 선택하세요.",
+            "기기 동기화 연결에서 사용할 전송 정책을 선택하세요.",
             "Choose which transport policy device sync should use."
           )}
         </div>
@@ -86,7 +109,7 @@ export default function DevicesSettings({
               checked={deviceSyncTransportPolicy === "directOnly"}
               onChange={() => void onChangeDeviceSyncTransportPolicy("directOnly")}
             />
-            <span>{t("직접 연결 전용(권장)", "Direct only (Recommended)")}</span>
+            <span>{t("직접 연결 우선(권장)", "Direct only (Recommended)")}</span>
           </label>
           <label className="flex items-center gap-2 text-xs text-nkc-text">
             <input
@@ -102,11 +125,43 @@ export default function DevicesSettings({
 
       <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
         <div className="text-sm font-semibold text-nkc-text">
+          {t("Rendezvous 신호 서버", "Rendezvous signaling server")}
+        </div>
+        <div className="mt-2 text-xs text-nkc-muted">
+          {t(
+            "서로 다른 기기 간 코드 요청/응답과 WebRTC 신호 교환에 사용됩니다.",
+            "Used for cross-device code request/response and WebRTC signaling."
+          )}
+        </div>
+        <div className="mt-4 grid gap-2">
+          <input
+            value={rendezvousBaseUrl}
+            onChange={(event) => setRendezvousBaseUrl(event.target.value)}
+            placeholder="https://example.com"
+            className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
+          />
+          <label className="flex items-center gap-2 text-xs text-nkc-text">
+            <input
+              type="checkbox"
+              checked={rendezvousUseOnion}
+              onChange={(event) => setRendezvousUseOnion(event.target.checked)}
+            />
+            <span>{t("신호 요청을 Onion 프록시로 전송", "Send signaling through Onion proxy")}</span>
+          </label>
+          <div className="text-xs text-nkc-muted">
+            {t("호스트 상태", "Host status")}: {statusLabel(hostRendezvousStatus, t)} |{" "}
+            {t("참가 상태", "Guest status")}: {statusLabel(guestRendezvousStatus, t)}
+          </div>
+        </div>
+      </section>
+
+      <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+        <div className="text-sm font-semibold text-nkc-text">
           {t("새 기기 추가(코드 생성)", "Add new device (Generate code)")}
         </div>
         <div className="mt-2 text-xs text-nkc-muted">
           {t(
-            "기존 기기에서 코드를 생성한 뒤 새 기기에 입력하세요.",
+            "기존 기기에서 코드를 생성하고 새 기기에서 입력하세요.",
             "Generate a code on an existing device and enter it on the new device."
           )}
         </div>
@@ -147,9 +202,7 @@ export default function DevicesSettings({
           <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3">
             <div className="text-xs text-nkc-muted">{t("연결 요청", "Pairing request")}</div>
             <div className="mt-2 flex flex-wrap items-center justify-between gap-3 text-sm">
-              <span className="font-mono text-nkc-text">
-                {pairingRequest.deviceId.slice(0, 12)}
-              </span>
+              <span className="font-mono text-nkc-text">{pairingRequest.deviceId.slice(0, 12)}</span>
               <span className="text-xs text-nkc-muted">{formatTimestamp(pairingRequest.ts)}</span>
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
@@ -183,7 +236,7 @@ export default function DevicesSettings({
         </div>
         <div className="mt-2 text-xs text-nkc-muted">
           {t(
-            "새 기기에서 코드를 입력해 연결을 요청합니다.",
+            "새 기기에서 코드를 입력하면 기존 기기로 승인 요청이 전송됩니다.",
             "Enter the code on the new device to request linking."
           )}
         </div>
@@ -216,4 +269,3 @@ export default function DevicesSettings({
     </div>
   );
 }
-

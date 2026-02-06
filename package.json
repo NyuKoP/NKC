@@ -2,6 +2,8 @@
   "name": "test",
   "private": true,
   "version": "0.0.0",
+  "description": "NKC serverless secure chat desktop app",
+  "author": "NyuKoP",
   "type": "commonjs",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -9,6 +11,10 @@
     "generate:onion-pins": "node scripts/generateOnionPins.mjs",
     "lint:encoding": "node scripts/check-utf8.mjs",
     "build": "tsc -b && vite build",
+    "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder",
+    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis",
+    "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip",
+    "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb",
     "test": "vitest",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
@@ -39,9 +45,9 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.20",
-    "concurrently": "^9.1.2",
     "cross-env": "^10.1.0",
     "electron": "^35.7.5",
+    "electron-builder": "^24.13.3",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
@@ -53,8 +59,53 @@
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
     "vite-plugin-electron": "^0.29.0",
-    "vitest": "^3.2.4",
-    "wait-on": "^8.0.1",
-    "webpack-cli": "^6.0.1"
+    "vitest": "^3.2.4"
+  },
+  "build": {
+    "appId": "com.nyukop.nkc",
+    "productName": "NKC",
+    "asar": true,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "extraMetadata": {
+      "main": "dist-electron/main.js"
+    },
+    "win": {
+      "signAndEditExecutable": false,
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "category": "public.app-category.social-networking"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Network"
+    }
   }
 }

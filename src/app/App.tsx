@@ -59,7 +59,6 @@ import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin a
 import { loadConversationMessages } from "../security/messageStore";
 import { clearFriendPsk, getFriendPsk, setFriendPsk } from "../security/pskStore";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
-import { getSodium } from "../security/sodium";
 import {
   getDhPrivateKey,
   getDhPublicKey,
@@ -68,7 +67,7 @@ import {
   getOrCreateDhKeypair,
   getOrCreateIdentityKeypair,
 } from "../security/identityKeys";
-import { getOrCreateDeviceId, getRoleEpoch } from "../security/deviceRole";
+import { getOrCreateDeviceId } from "../security/deviceRole";
 import { computeEnvelopeHash, deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
 import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
 import { sendCiphertext } from "../net/router";
@@ -88,15 +87,17 @@ import {
 import {
   getTransportStatus,
   onTransportStatusChange,
+  setDirectApprovalHandler,
   type ConversationTransportStatus,
 } from "../net/transportManager";
 import { putReadCursor } from "../storage/receiptStore";
-import { getGroupAvatarOverride, setGroupAvatarOverride } from "../security/preferences";
-import { parseAvatarRef, resolveGroupAvatarRef } from "../utils/avatarRefs";
-import { listFriendAliases, setFriendAlias } from "../storage/friendStore";
+import { getConvAllowDirect, setGroupAvatarOverride } from "../security/preferences";
+import { setFriendAlias } from "../storage/friendStore";
 import { resolveDisplayName, resolveFriendDisplayName } from "../utils/displayName";
 import { startFriendRequestScheduler } from "../friends/friendRequestScheduler";
 import { startFriendInboxListener } from "../friends/friendInbox";
+import { useProfileDecorations } from "./hooks/useProfileDecorations";
+import { useTrustState } from "./hooks/useTrustState";
 
 const buildNameMap = (
   profiles: UserProfile[],
@@ -115,49 +116,6 @@ const buildNameMap = (
 const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
 const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
 const READ_CURSOR_THROTTLE_MS = 1500;
-type TrustState = "UNVERIFIED" | "VERIFIED" | "KEY_CHANGED";
-
-type TrustRecord = {
-  peerIdentityKey?: string;
-  trustState: TrustState;
-  mkc?: {
-    sessionEpoch: number;
-    localNonce: string;
-    localSig?: string;
-    lastRunAt: number;
-  };
-};
-
-const TRUST_STORE_KEY = "nkc_trust_state_v1";
-
-const readTrustStore = () => {
-  if (typeof window === "undefined") return {} as Record<string, TrustRecord>;
-  try {
-    const raw = window.localStorage.getItem(TRUST_STORE_KEY);
-    if (!raw) return {} as Record<string, TrustRecord>;
-    const parsed = JSON.parse(raw) as Record<string, TrustRecord>;
-    return parsed && typeof parsed === "object" ? parsed : {};
-  } catch {
-    return {} as Record<string, TrustRecord>;
-  }
-};
-
-const writeTrustStore = (value: Record<string, TrustRecord>) => {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(TRUST_STORE_KEY, JSON.stringify(value));
-  } catch {
-    // ignore storage errors
-  }
-};
-
-const createNonce = () => {
-  const bytes = new Uint8Array(16);
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-  }
-  return encodeBase64Url(bytes);
-};
 
 const newClientBatchId = () => {
   if (globalThis.crypto?.randomUUID) {
@@ -169,15 +127,6 @@ const newClientBatchId = () => {
   }
   return encodeBase64Url(bytes);
 };      
-
-const signMkcPayload = async (payload: Record<string, unknown>) => {
-  const encoder = new TextEncoder();
-  const sodium = await getSodium();
-  const identityPriv = await getIdentityPrivateKey();
-  const bytes = encoder.encode(JSON.stringify(payload));
-  const sig = sodium.crypto_sign_detached(bytes, identityPriv);
-  return encodeBase64Url(sig);
-};
 
 export default function App() {
   const ui = useAppStore((state) => state.ui);
@@ -212,22 +161,19 @@ export default function App() {
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [groupInviteOpen, setGroupInviteOpen] = useState(false);
   const [groupInviteConvId, setGroupInviteConvId] = useState<string | null>(null);
-  const [groupAvatarOverrides, setGroupAvatarOverrides] = useState<Record<string, string | null>>(
-    {}
-  );
-  const [groupAvatarOverrideVersion, setGroupAvatarOverrideVersion] = useState(0);
-  const [friendAliasesById, setFriendAliasesById] = useState<Record<string, string | undefined>>(
-    {}
-  );
-  const [friendAliasVersion, setFriendAliasVersion] = useState(0);
   const [myFriendCode, setMyFriendCode] = useState("");
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
   >({});
-  const [trustByFriendId, setTrustByFriendId] = useState<Record<string, TrustRecord>>({});
-  const mkcRunRef = useRef<Record<string, number>>({});
-  const mkcInFlightRef = useRef<Record<string, boolean>>({});
-  const mkcConnectedRef = useRef<Record<string, boolean>>({});
+
+  const {
+    groupAvatarOverrides,
+    friendAliasesById,
+    groupAvatarRefsByConv,
+    refreshGroupAvatarOverrides,
+    refreshFriendAliases,
+    setFriendAliasInState,
+  } = useProfileDecorations({ convs });
 
   const onboardingLockRef = useRef(false);
   const bootGuardRef = useRef<Promise<void> | null>(null);
@@ -292,44 +238,19 @@ export default function App() {
       unsubscribe();
     };
   }, []);
-  useEffect(() => {
-    setTrustByFriendId(readTrustStore());
-  }, []);
 
   useEffect(() => {
-    writeTrustStore(trustByFriendId);
-  }, [trustByFriendId]);
-
-  useEffect(() => {
-    if (!friends.length) return;
-    setTrustByFriendId((prev) => {
-      let changed = false;
-      const next = { ...prev };
-      for (const friend of friends) {
-        if (!friend.identityPub) continue;
-        const existing = next[friend.id];
-        if (!existing) {
-          next[friend.id] = { peerIdentityKey: friend.identityPub, trustState: "UNVERIFIED" };
-          changed = true;
-          continue;
-        }
-        if (!existing.peerIdentityKey) {
-          next[friend.id] = {
-            ...existing,
-            peerIdentityKey: friend.identityPub,
-            trustState: existing.trustState ?? "UNVERIFIED",
-          };
-          changed = true;
-          continue;
-        }
-        if (existing.peerIdentityKey !== friend.identityPub && existing.trustState !== "KEY_CHANGED") {
-          next[friend.id] = { ...existing, trustState: "KEY_CHANGED" };
-          changed = true;
-        }
+    setDirectApprovalHandler(async (convId) => {
+      try {
+        return await getConvAllowDirect(convId);
+      } catch {
+        return true;
       }
-      return changed ? next : prev;
     });
-  }, [friends]);
+    return () => {
+      setDirectApprovalHandler(null);
+    };
+  }, []);
 
   const withTimeout = useCallback(
     async <T,>(promise: Promise<T>, label: string, ms = 15000) => {
@@ -2148,35 +2069,27 @@ export default function App() {
       if (!userProfile) return;
       if (!file) {
         await setGroupAvatarOverride(convId, null);
-        setGroupAvatarOverrideVersion((prev) => prev + 1);
+        refreshGroupAvatarOverrides();
         return;
       }
       try {
         const ownerId = `group-local:${convId}:${userProfile.id}`;
         const ref = await saveGroupPhotoRef(ownerId, file);
         await setGroupAvatarOverride(convId, ref);
-        setGroupAvatarOverrideVersion((prev) => prev + 1);
+        refreshGroupAvatarOverrides();
       } catch (error) {
         console.error("Failed to set group avatar override", error);
         addToast({ message: "Failed to update local group image." });
       }
     },
-    [addToast, userProfile]
+    [addToast, refreshGroupAvatarOverrides, userProfile]
   );
 
   const handleSetFriendAlias = useCallback(async (friendId: string, alias: string | null) => {
     await setFriendAlias(friendId, alias);
-    setFriendAliasVersion((prev) => prev + 1);
-    const nextAlias = alias?.trim() ?? "";
-    setFriendAliasesById((prev) => {
-      if (!nextAlias) {
-        const rest = { ...prev };
-        delete rest[friendId];
-        return rest;
-      }
-      return { ...prev, [friendId]: nextAlias };
-    });
-  }, []);
+    refreshFriendAliases();
+    setFriendAliasInState(friendId, alias);
+  }, [refreshFriendAliases, setFriendAliasInState]);
 
   const handleSubmitGroup = async (payload: {
     name: string;
@@ -2501,54 +2414,6 @@ export default function App() {
     return map;
   }, [friends, userProfile]);
 
-  useEffect(() => {
-    let active = true;
-    const groupConvs = convs.filter(
-      (conv) => conv.type === "group" || conv.participants.length > 2
-    );
-    if (!groupConvs.length) {
-      setGroupAvatarOverrides({});
-      return () => {
-        active = false;
-      };
-    }
-    const load = async () => {
-      const entries = await Promise.all(
-        groupConvs.map(async (conv) => [conv.id, await getGroupAvatarOverride(conv.id)] as const)
-      );
-      if (!active) return;
-      setGroupAvatarOverrides(Object.fromEntries(entries));
-    };
-    void load();
-    return () => {
-      active = false;
-    };
-  }, [convs, groupAvatarOverrideVersion]);
-
-  useEffect(() => {
-    let active = true;
-    const load = async () => {
-      const map = await listFriendAliases();
-      if (!active) return;
-      setFriendAliasesById(map);
-    };
-    void load();
-    return () => {
-      active = false;
-    };
-  }, [friendAliasVersion]);
-
-  const groupAvatarRefsByConv = useMemo(() => {
-    const map: Record<string, ReturnType<typeof parseAvatarRef>> = {};
-    convs.forEach((conv) => {
-      const resolved = resolveGroupAvatarRef(conv, groupAvatarOverrides[conv.id]);
-      if (resolved) {
-        map[conv.id] = resolved;
-      }
-    });
-    return map;
-  }, [convs, groupAvatarOverrides]);
-
   const currentGroupAvatarRef = currentConversation
     ? groupAvatarRefsByConv[currentConversation.id]
     : undefined;
@@ -2595,81 +2460,12 @@ export default function App() {
     return friends.find((friend) => friend.id === partnerId) || null;
   }, [currentConversation, friends, userProfile]);
 
-  const currentTrustState = useMemo(() => {
-    if (!partnerProfile) return "UNVERIFIED" as TrustState;
-    const verification = partnerProfile.verification?.status;
-    if (verification === "verified") return "VERIFIED";
-    if (verification === "key_changed") return "KEY_CHANGED";
-    return trustByFriendId[partnerProfile.id]?.trustState ?? "UNVERIFIED";
-  }, [partnerProfile, trustByFriendId]);
-
-  useEffect(() => {
-    if (!currentConversation || !partnerProfile?.identityPub) return;
-    const isDirect =
-      !(currentConversation.type === "group" || currentConversation.participants.length > 2) &&
-      currentConversation.participants.length === 2;
-    if (!isDirect) return;
-
-    const isConnected = currentTransportStatus?.state === "connected";
-    const prevConnected = mkcConnectedRef.current[currentConversation.id] ?? false;
-    if (!isConnected) {
-      mkcConnectedRef.current[currentConversation.id] = false;
-      return;
-    }
-    mkcConnectedRef.current[currentConversation.id] = true;
-
-    const trustRecord = trustByFriendId[partnerProfile.id];
-    if (trustRecord?.trustState === "KEY_CHANGED") return;
-
-    const sessionEpoch = getRoleEpoch();
-    const shouldRun = !prevConnected || mkcRunRef.current[currentConversation.id] !== sessionEpoch;
-    if (!shouldRun) return;
-    if (mkcInFlightRef.current[currentConversation.id]) return;
-    mkcInFlightRef.current[currentConversation.id] = true;
-
-    const run = async () => {
-      const localIdentityPub = await getIdentityPublicKey();
-      const localIdentityPubB64 = encodeBase64Url(localIdentityPub);
-      const localNonce = createNonce();
-      const payload = {
-        type: "MKC",
-        convId: currentConversation.id,
-        localIdentityPub: localIdentityPubB64,
-        peerIdentityPub: partnerProfile.identityPub,
-        sessionEpoch,
-        localNonce,
-      };
-      let localSig: string | undefined;
-      try {
-        localSig = await signMkcPayload(payload);
-      } catch (error) {
-        console.warn("Failed to sign MKC payload", error);
-      }
-
-      setTrustByFriendId((prev) => {
-        const existing = prev[partnerProfile.id];
-        if (existing?.trustState === "KEY_CHANGED") return prev;
-        const next: TrustRecord = {
-          peerIdentityKey: existing?.peerIdentityKey ?? partnerProfile.identityPub,
-          trustState: "VERIFIED",
-          mkc: {
-            sessionEpoch,
-            localNonce,
-            localSig,
-            lastRunAt: Date.now(),
-          },
-        };
-        return { ...prev, [partnerProfile.id]: next };
-      });
-    };
-
-    run()
-      .catch((error) => console.warn("MKC failed", error))
-      .finally(() => {
-        mkcRunRef.current[currentConversation.id] = sessionEpoch;
-        mkcInFlightRef.current[currentConversation.id] = false;
-      });
-  }, [currentConversation, currentTransportStatus, partnerProfile, trustByFriendId]);
+  const { currentTrustState } = useTrustState({
+    friends,
+    currentConversation,
+    currentTransportStatus,
+    partnerProfile,
+  });
 
   const currentConversationDisplayName = useMemo(() => {
     if (!currentConversation) return "대화를 선택해주세요.";

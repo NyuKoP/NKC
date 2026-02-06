@@ -1,6 +1,8 @@
 import type { DeviceAddedEvent } from "./deviceApprovals";
-import type { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
+import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { RendezvousClient, type RendezvousConfig } from "../net/rendezvousSignaling";
+import { getOrCreateDeviceId } from "../security/deviceRole";
+import { getRendezvousBaseUrl, getRendezvousUseOnion } from "../security/preferences";
 import { createId } from "../utils/ids";
 
 export type SyncCodeState = {
@@ -48,19 +50,20 @@ export type RendezvousPairingSession = {
 };
 
 const CHANNEL_NAME = "nkc-device-pairing-v1";
+const REMOTE_PAIRING_CHANNEL = "nkc-pairing-v1";
 const DEFAULT_TTL_MS = 10 * 60 * 1000;
 const CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+const REMOTE_POLL_INTERVAL_MS = 1200;
+const REMOTE_POLL_ERROR_INTERVAL_MS = 2500;
 
 const activeCodes = new Map<string, SyncCodeState>();
 const pendingRequests = new Map<string, PairingRequest>();
 const requestListeners = new Set<(req: PairingRequest) => void>();
 const resultListeners = new Set<(res: PairingResult) => void>();
+const handledResults = new Set<string>();
+const remotePollers = new Map<string, () => void>();
 
-const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
-const channel =
-  isDev && typeof BroadcastChannel !== "undefined"
-    ? new BroadcastChannel(CHANNEL_NAME)
-    : null;
+const channel = typeof BroadcastChannel !== "undefined" ? new BroadcastChannel(CHANNEL_NAME) : null;
 
 type PairingMessage =
   | {
@@ -74,13 +77,135 @@ type PairingMessage =
     }
   | {
       type: "PAIR_RES";
+      code?: string;
       requestId: string;
       status: PairingResult["status"];
       message?: string;
       event?: DeviceAddedEvent;
     };
 
+type RemotePairingPayload = {
+  channel: typeof REMOTE_PAIRING_CHANNEL;
+  version: 1;
+  message: PairingMessage;
+};
+
 const normalizeCode = (value: string) => value.replace(/[\s-]+/g, "").toUpperCase();
+
+const getMessageCode = (message: PairingMessage) => {
+  if (message.type === "PAIR_REQ") return normalizeCode(message.code);
+  if (!message.code) return null;
+  return normalizeCode(message.code);
+};
+
+const toRemotePayload = (message: PairingMessage): string =>
+  JSON.stringify({
+    channel: REMOTE_PAIRING_CHANNEL,
+    version: 1,
+    message,
+  } satisfies RemotePairingPayload);
+
+const fromRemotePayload = (payload: string): PairingMessage | null => {
+  try {
+    const parsed = JSON.parse(payload) as Partial<RemotePairingPayload>;
+    if (!parsed || parsed.channel !== REMOTE_PAIRING_CHANNEL || parsed.version !== 1) return null;
+    if (!parsed.message || typeof parsed.message !== "object" || !("type" in parsed.message)) return null;
+    const type = (parsed.message as { type?: unknown }).type;
+    if (type !== "PAIR_REQ" && type !== "PAIR_RES") return null;
+    return parsed.message as PairingMessage;
+  } catch {
+    return null;
+  }
+};
+
+const resolveRendezvousConfig = async (): Promise<RendezvousConfig | null> => {
+  const [baseUrlRaw, useOnionProxy] = await Promise.all([
+    getRendezvousBaseUrl(),
+    getRendezvousUseOnion(),
+  ]);
+  const baseUrl = baseUrlRaw.trim();
+  if (!baseUrl) return null;
+  return {
+    baseUrl,
+    useOnionProxy,
+    onionProxyUrl: null,
+  };
+};
+
+const createRendezvousClient = async () => {
+  const config = await resolveRendezvousConfig();
+  if (!config) return null;
+  return new RendezvousClient(config);
+};
+
+const stopRemotePoller = (code: string) => {
+  const normalized = normalizeCode(code);
+  const stop = remotePollers.get(normalized);
+  if (!stop) return;
+  remotePollers.delete(normalized);
+  stop();
+};
+
+const ensureRemotePoller = (code: string) => {
+  const normalized = normalizeCode(code);
+  if (!normalized || remotePollers.has(normalized) || typeof window === "undefined") return;
+
+  let stopped = false;
+  let timer: number | null = null;
+  let afterTs = 0;
+
+  const stop = () => {
+    stopped = true;
+    if (timer !== null) {
+      window.clearTimeout(timer);
+      timer = null;
+    }
+  };
+
+  const schedule = (delayMs: number) => {
+    if (stopped) return;
+    timer = window.setTimeout(tick, delayMs);
+  };
+
+  const tick = async () => {
+    if (stopped) return;
+    try {
+      const client = await createRendezvousClient();
+      if (!client) {
+        schedule(REMOTE_POLL_ERROR_INTERVAL_MS);
+        return;
+      }
+      const result = await client.poll(normalized, getOrCreateDeviceId(), afterTs);
+      afterTs = result.nextAfterTs;
+      for (const item of result.items) {
+        const message = fromRemotePayload(item.payload);
+        if (!message) continue;
+        handleMessage(message);
+      }
+      schedule(REMOTE_POLL_INTERVAL_MS);
+    } catch {
+      schedule(REMOTE_POLL_ERROR_INTERVAL_MS);
+    }
+  };
+
+  remotePollers.set(normalized, stop);
+  schedule(50);
+};
+
+const publishRemoteMessage = (message: PairingMessage) => {
+  const code = getMessageCode(message);
+  if (!code) return;
+  ensureRemotePoller(code);
+  void (async () => {
+    try {
+      const client = await createRendezvousClient();
+      if (!client) return;
+      await client.publish(code, getOrCreateDeviceId(), [toRemotePayload(message)]);
+    } catch {
+      // keep local flow alive even if remote signaling is unavailable
+    }
+  })();
+};
 
 const toBase32 = (bytes: Uint8Array) => {
   let bits = 0;
@@ -129,6 +254,7 @@ const cleanupExpiredCodes = () => {
   for (const [code, entry] of activeCodes.entries()) {
     if (entry.expiresAt <= now) {
       activeCodes.delete(code);
+      stopRemotePoller(code);
     }
   }
 };
@@ -156,32 +282,33 @@ const emitResult = (res: PairingResult) => {
 const postMessage = (message: PairingMessage) => {
   if (channel) {
     channel.postMessage(message);
-    return;
-  }
-  if (isDev) {
+  } else {
     handleMessage(message);
   }
+  publishRemoteMessage(message);
 };
 
-const respondWithError = (requestId: string, message: string) => {
-  postMessage({ type: "PAIR_RES", requestId, status: "error", message });
+const respondWithError = (requestId: string, message: string, code?: string) => {
+  postMessage({ type: "PAIR_RES", requestId, status: "error", message, code });
 };
 
 const handlePairReq = (message: Extract<PairingMessage, { type: "PAIR_REQ" }>) => {
   cleanupExpiredCodes();
   const code = normalizeCode(message.code);
+  if (pendingRequests.has(message.requestId)) return;
   const entry = activeCodes.get(code);
   if (!entry) {
-    respondWithError(message.requestId, "코드가 유효하지 않습니다.");
+    respondWithError(message.requestId, "코드가 유효하지 않습니다.", code);
     return;
   }
   if (entry.expiresAt <= Date.now()) {
     activeCodes.delete(code);
-    respondWithError(message.requestId, "코드가 만료되었습니다.");
+    stopRemotePoller(code);
+    respondWithError(message.requestId, "코드가 만료되었습니다.", code);
     return;
   }
   if (entry.used) {
-    respondWithError(message.requestId, "코드가 이미 사용되었습니다.");
+    respondWithError(message.requestId, "코드가 이미 사용되었습니다.", code);
     return;
   }
   entry.used = true;
@@ -199,6 +326,15 @@ const handlePairReq = (message: Extract<PairingMessage, { type: "PAIR_REQ" }>) =
 };
 
 const handlePairRes = (message: Extract<PairingMessage, { type: "PAIR_RES" }>) => {
+  const resultKey = `${message.requestId}:${message.status}`;
+  if (handledResults.has(resultKey)) return;
+  handledResults.add(resultKey);
+  if (handledResults.size > 1000) {
+    handledResults.clear();
+  }
+  if (message.code) {
+    stopRemotePoller(message.code);
+  }
   emitResult({
     requestId: message.requestId,
     status: message.status,
@@ -232,6 +368,7 @@ export const createSyncCode = (ttlMs: number = DEFAULT_TTL_MS): SyncCodeState =>
   const normalized = normalizeCode(formatted);
   const entry: SyncCodeState = { code: formatted, issuedAt, expiresAt, used: false };
   activeCodes.set(normalized, entry);
+  ensureRemotePoller(normalized);
   return entry;
 };
 
@@ -257,10 +394,12 @@ export const submitSyncCode = (payload: {
   identityPub: string;
   dhPub: string;
 }) => {
+  const normalizedCode = normalizeCode(payload.code);
+  ensureRemotePoller(normalizedCode);
   const requestId = createId();
   postMessage({
     type: "PAIR_REQ",
-    code: normalizeCode(payload.code),
+    code: normalizedCode,
     requestId,
     deviceId: payload.deviceId,
     identityPub: payload.identityPub,
@@ -271,13 +410,27 @@ export const submitSyncCode = (payload: {
 };
 
 export const approvePairingRequest = (requestId: string, event: DeviceAddedEvent) => {
+  const request = pendingRequests.get(requestId);
   pendingRequests.delete(requestId);
-  postMessage({ type: "PAIR_RES", requestId, status: "approved", event });
+  postMessage({
+    type: "PAIR_RES",
+    requestId,
+    code: request?.code ? normalizeCode(request.code) : undefined,
+    status: "approved",
+    event,
+  });
 };
 
 export const rejectPairingRequest = (requestId: string, message: string) => {
+  const request = pendingRequests.get(requestId);
   pendingRequests.delete(requestId);
-  postMessage({ type: "PAIR_RES", requestId, status: "rejected", message });
+  postMessage({
+    type: "PAIR_RES",
+    requestId,
+    code: request?.code ? normalizeCode(request.code) : undefined,
+    status: "rejected",
+    message,
+  });
 };
 
 const createRendezvousSession = (syncCode: string) => {
@@ -342,13 +495,13 @@ export const startRendezvousPairingAsHost = (args: {
   syncCode?: string;
   deviceId: string;
   rendezvousConfig: RendezvousConfig;
-  transport: DirectSignalTransport;
+  transport?: DirectSignalTransport;
 }): RendezvousPairingSession => {
   const syncCode = args.syncCode ?? generateShortSyncCode();
   const session = createRendezvousSession(syncCode);
   const activeRef = { current: true };
   const client = new RendezvousClient(args.rendezvousConfig);
-  const transport = args.transport;
+  const transport = (args.transport ?? createDirectP2PTransport()) as DirectSignalTransport;
 
   const stopPolling = startPolling({
     client,
@@ -405,12 +558,12 @@ export const startRendezvousPairingAsGuest = (args: {
   syncCode: string;
   deviceId: string;
   rendezvousConfig: RendezvousConfig;
-  transport: DirectSignalTransport;
+  transport?: DirectSignalTransport;
 }): RendezvousPairingSession => {
   const session = createRendezvousSession(args.syncCode);
   const activeRef = { current: true };
   const client = new RendezvousClient(args.rendezvousConfig);
-  const transport = args.transport;
+  const transport = (args.transport ?? createDirectP2PTransport()) as DirectSignalTransport;
 
   const stopPolling = startPolling({
     client,

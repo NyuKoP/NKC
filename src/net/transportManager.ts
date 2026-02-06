@@ -34,6 +34,7 @@ type ConversationState = {
 
 const states = new Map<string, ConversationState>();
 const listeners = new Set<StatusListener>();
+let directApprovalHandler: ((convId: string) => Promise<boolean>) | null = null;
 
 const DEFAULT_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
@@ -161,7 +162,7 @@ const attachHandlers = (state: ConversationState, transport: Transport) => {
 export const setDirectApprovalHandler = (
   handler: ((convId: string) => Promise<boolean>) | null
 ) => {
-  void handler;
+  directApprovalHandler = handler;
 };
 
 export const onTransportStatusChange = (listener: StatusListener) => {
@@ -188,6 +189,14 @@ export const connectConversation = async (convId: string, peerHint?: PeerHint) =
 
     const config = useNetConfigStore.getState().config;
     const isDeviceSyncPeer = peerHint?.kind === "device";
+    let directApproved = true;
+    if (!isDeviceSyncPeer && directApprovalHandler) {
+      try {
+        directApproved = await directApprovalHandler(convId);
+      } catch {
+        directApproved = false;
+      }
+    }
     const deviceSyncPolicy = isDeviceSyncPeer
       ? peerHint?.deviceSyncTransportPolicy ?? "directOnly"
       : undefined;
@@ -195,7 +204,7 @@ export const connectConversation = async (convId: string, peerHint?: PeerHint) =
       ? deviceSyncPolicy === "directOnly"
         ? true
         : config.mode === "directP2P"
-      : config.mode === "directP2P";
+      : config.mode === "directP2P" && directApproved;
     const decision = decideConversationTransport({
       allowDirect,
       directOnly: isDeviceSyncPeer && deviceSyncPolicy === "directOnly",

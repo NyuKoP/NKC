@@ -43,6 +43,35 @@ npm run dev
 npm run build
 ```
 
+## Installer Packaging
+This project supports installer packaging with `electron-builder`.
+
+### Prerequisites
+- Windows installer (`.exe`): run on Windows
+- macOS installer (`.dmg`/`.zip`): run on macOS
+- Linux installer (`.AppImage`/`.deb`): run on Linux
+
+### Commands
+```bash
+# All targets for current host OS
+npm run dist
+
+# Windows NSIS installer
+npm run dist:win
+
+# macOS DMG + ZIP
+npm run dist:mac
+
+# Linux AppImage + DEB
+npm run dist:linux
+```
+
+Generated artifacts are placed in `release/`.
+
+### Notes
+- Code signing/notarization is not configured yet. Unsigned installers may show OS warnings.
+- Optional app icons can be added later under `build/` (for example `build/icon.ico`, `build/icon.icns`, `build/icon.png`).
+
 ## UI E2E Tests (Playwright)
 - Install browsers: `npx playwright install chromium`
 - Run headless: `npm run test:ui`
