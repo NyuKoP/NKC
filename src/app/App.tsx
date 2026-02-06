@@ -2842,6 +2842,7 @@ export default function App() {
       />
 
       <ChatView
+        key={currentConversation?.id ?? "none"}
         conversation={currentConversation}
         conversationDisplayName={currentConversationDisplayName}
         transportStatus={currentTransportStatus}

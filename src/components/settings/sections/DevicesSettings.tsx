@@ -1,5 +1,6 @@
 import { Clock } from "lucide-react";
 import type { PairingRequest, SyncCodeState } from "../../../devices/devicePairing";
+import type { DeviceSyncTransportPolicy } from "../../../preferences";
 import SettingsBackHeader from "../SettingsBackHeader";
 
 type Translate = (ko: string, en: string) => string;
@@ -19,6 +20,8 @@ type DevicesSettingsProps = {
   pairingRequestError: string;
   onApproveRequest: () => void | Promise<void>;
   onRejectRequest: () => void;
+  deviceSyncTransportPolicy: DeviceSyncTransportPolicy;
+  onChangeDeviceSyncTransportPolicy: (value: DeviceSyncTransportPolicy) => void | Promise<void>;
   linkCodeDraft: string;
   setLinkCodeDraft: (value: string) => void;
   linkStatus: "idle" | "pending" | "approved" | "rejected" | "error";
@@ -45,6 +48,8 @@ export default function DevicesSettings({
   pairingRequestError,
   onApproveRequest,
   onRejectRequest,
+  deviceSyncTransportPolicy,
+  onChangeDeviceSyncTransportPolicy,
   linkCodeDraft,
   setLinkCodeDraft,
   linkStatus,
@@ -62,6 +67,38 @@ export default function DevicesSettings({
         backLabel={t("뒤로", "Back")}
         onBack={onBack}
       />
+
+      <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
+        <div className="text-sm font-semibold text-nkc-text">
+          {t("기기 동기화 정책", "Device sync policy")}
+        </div>
+        <div className="mt-2 text-xs text-nkc-muted">
+          {t(
+            "동기화 연결에서 사용할 전송 정책을 선택하세요.",
+            "Choose which transport policy device sync should use."
+          )}
+        </div>
+        <div className="mt-4 grid gap-2">
+          <label className="flex items-center gap-2 text-xs text-nkc-text">
+            <input
+              type="radio"
+              name="device-sync-transport-policy"
+              checked={deviceSyncTransportPolicy === "directOnly"}
+              onChange={() => void onChangeDeviceSyncTransportPolicy("directOnly")}
+            />
+            <span>{t("직접 연결 전용(권장)", "Direct only (Recommended)")}</span>
+          </label>
+          <label className="flex items-center gap-2 text-xs text-nkc-text">
+            <input
+              type="radio"
+              name="device-sync-transport-policy"
+              checked={deviceSyncTransportPolicy === "followNetwork"}
+              onChange={() => void onChangeDeviceSyncTransportPolicy("followNetwork")}
+            />
+            <span>{t("현재 네트워크 모드 따름", "Follow current network mode")}</span>
+          </label>
+        </div>
+      </section>
 
       <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
         <div className="text-sm font-semibold text-nkc-text">

@@ -26,6 +26,7 @@ import {
   defaultAppPrefs,
   getAppPrefs,
   setAppPrefs,
+  type DeviceSyncTransportPolicy,
   type AppPreferencesPatch,
 } from "../preferences";
 import { syncNow } from "../appControl";
@@ -311,6 +312,7 @@ export default function SettingsDialog({
         deviceId: event.approvedBy,
         identityPub: event.approverIdentityPub,
         dhPub: event.approverDhPub,
+        syncTransportPolicy: appPrefs.deviceSync.transportPolicy,
       });
       setLinkStatus("approved");
       setLinkMessage(t("승인이 완료되었습니다. 동기화를 시작합니다.", "Approved. Starting sync."));
@@ -319,7 +321,7 @@ export default function SettingsDialog({
       setLinkStatus("error");
       setLinkMessage(t("승인 처리에 실패했습니다.", "Failed to process approval."));
     }
-  }, [t]);
+  }, [appPrefs.deviceSync.transportPolicy, t]);
 
   useEffect(() => {
     setDisplayName(user.displayName);
@@ -793,6 +795,7 @@ export default function SettingsDialog({
         deviceId: pairingRequest.deviceId,
         identityPub: pairingRequest.identityPub,
         dhPub: pairingRequest.dhPub,
+        syncTransportPolicy: appPrefs.deviceSync.transportPolicy,
       });
       setPairingRequest(null);
       addToast({ message: t("새 기기를 승인했습니다.", "New device approved.") });
@@ -959,6 +962,11 @@ export default function SettingsDialog({
       setPinEnabledUi(true);
       setPinError(message || t("PIN 해제에 실패했습니다.", "Failed to disable PIN."));
     }
+  };
+
+  const handleDeviceSyncPolicyChange = async (transportPolicy: DeviceSyncTransportPolicy) => {
+    if (transportPolicy === appPrefs.deviceSync.transportPolicy) return;
+    await updateAppPrefs({ deviceSync: { transportPolicy } });
   };
 
   type DotState = "running" | "starting" | "stopped" | "error";
@@ -1628,6 +1636,8 @@ export default function SettingsDialog({
               pairingRequestError={pairingRequestError}
               onApproveRequest={handleApproveRequest}
               onRejectRequest={handleRejectRequest}
+              deviceSyncTransportPolicy={appPrefs.deviceSync.transportPolicy}
+              onChangeDeviceSyncTransportPolicy={handleDeviceSyncPolicyChange}
               linkCodeDraft={linkCodeDraft}
               setLinkCodeDraft={setLinkCodeDraft}
               linkStatus={linkStatus}

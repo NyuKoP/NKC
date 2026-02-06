@@ -1,10 +1,12 @@
 import { connectConversation, syncContactsNow, syncConversationsNow, type PeerContext } from "../sync/syncEngine";
 import { getOrCreateDeviceId } from "../security/deviceRole";
+import type { DeviceSyncTransportPolicy } from "../preferences";
 
 export type DevicePeer = {
   deviceId: string;
   identityPub: string;
   dhPub: string;
+  syncTransportPolicy?: DeviceSyncTransportPolicy;
 };
 
 const buildDeviceSyncConvId = (a: string, b: string) => {
@@ -21,6 +23,7 @@ const connectDevicePeer = async (peer: DevicePeer) => {
     friendKeyId: peer.deviceId,
     identityPub: peer.identityPub,
     dhPub: peer.dhPub,
+    deviceSyncTransportPolicy: peer.syncTransportPolicy ?? "directOnly",
   };
   await connectConversation(convId, peerContext);
   return convId;

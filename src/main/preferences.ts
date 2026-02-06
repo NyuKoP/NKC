@@ -44,6 +44,7 @@ export const setAppPrefs = async (patch: AppPreferencesPatch) => {
     login: { ...current.login, ...(patch.login ?? {}) },
     background: { ...current.background, ...(patch.background ?? {}) },
     notifications: { ...current.notifications, ...(patch.notifications ?? {}) },
+    deviceSync: { ...current.deviceSync, ...(patch.deviceSync ?? {}) },
   });
   await writePrefs(next);
   return next;

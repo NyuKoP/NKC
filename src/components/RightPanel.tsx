@@ -98,8 +98,6 @@ export default function RightPanel({
   onHideConversation,
   onToggleBlock,
 }: RightPanelProps) {
-  if (!open) return null;
-
   const directDisplayName = resolveFriendDisplayName(friendProfile ?? undefined, friendAliasesById);
   const displayName =
     conversation && (conversation.type === "group" || conversation.participants.length > 2)
@@ -157,8 +155,11 @@ export default function RightPanel({
   useEffect(() => {
     if (tab !== "media" || !conversation) return;
     let active = true;
-    setMediaLoading(true);
-    setMediaError(null);
+    queueMicrotask(() => {
+      if (!active) return;
+      setMediaLoading(true);
+      setMediaError(null);
+    });
     listMessagesByConv(conversation.id)
       .then((messages) => {
         if (!active) return;
@@ -253,32 +254,39 @@ export default function RightPanel({
 
   useEffect(() => {
     if (tab !== "media") return;
+    let active = true;
     const activeIds = new Set(filteredMedia.map((message) => message.id));
-    setMediaPreviewUrls((prev) => {
-      let changed = false;
-      const next: Record<string, string> = {};
-      for (const [id, url] of Object.entries(prev)) {
-        if (activeIds.has(id)) {
-          next[id] = url;
-        } else {
-          URL.revokeObjectURL(url);
-          changed = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setMediaPreviewUrls((prev) => {
+        let changed = false;
+        const next: Record<string, string> = {};
+        for (const [id, url] of Object.entries(prev)) {
+          if (activeIds.has(id)) {
+            next[id] = url;
+          } else {
+            URL.revokeObjectURL(url);
+            changed = true;
+          }
         }
-      }
-      return changed ? next : prev;
-    });
-    setMediaPreviewBusy((prev) => {
-      let changed = false;
-      const next: Record<string, boolean> = {};
-      for (const [id, busy] of Object.entries(prev)) {
-        if (activeIds.has(id)) {
-          next[id] = busy;
-        } else {
-          changed = true;
+        return changed ? next : prev;
+      });
+      setMediaPreviewBusy((prev) => {
+        let changed = false;
+        const next: Record<string, boolean> = {};
+        for (const [id, busy] of Object.entries(prev)) {
+          if (activeIds.has(id)) {
+            next[id] = busy;
+          } else {
+            changed = true;
+          }
         }
-      }
-      return changed ? next : prev;
+        return changed ? next : prev;
+      });
     });
+    return () => {
+      active = false;
+    };
   }, [filteredMedia, tab]);
 
   useEffect(() => {
@@ -291,11 +299,18 @@ export default function RightPanel({
 
   useEffect(() => {
     if (tab === "media") return;
-    setMediaPreviewUrls((prev) => {
-      Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
-      return {};
+    let active = true;
+    queueMicrotask(() => {
+      if (!active) return;
+      setMediaPreviewUrls((prev) => {
+        Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
+        return {};
+      });
+      setMediaPreviewBusy({});
     });
-    setMediaPreviewBusy({});
+    return () => {
+      active = false;
+    };
   }, [tab]);
 
   useEffect(() => {
@@ -384,6 +399,8 @@ export default function RightPanel({
         ? "⚠ 키가 변경되었습니다. 주의하세요."
         : "미검증";
   const safetyNumber = friendProfile?.verification?.safetyNumber;
+
+  if (!open) return null;
 
   return (
     <aside className="hidden h-full w-[320px] rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft lg:block">
@@ -868,8 +885,6 @@ export default function RightPanel({
     </aside>
   );
 }
-
-
 
 
 

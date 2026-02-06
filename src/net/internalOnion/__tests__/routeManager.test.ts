@@ -22,8 +22,7 @@ describe("InternalOnionRouteManager", () => {
     rebuildBackoffMs?: number[];
   }) => {
     const states = options.states ?? [];
-    let manager: InternalOnionRouteManager;
-    manager = new InternalOnionRouteManager({
+    const manager = new InternalOnionRouteManager({
       getRelayPeerIds: () => options.relayPeerIds,
       getLocalPeerId: () => "local-peer",
       onStateChange: (state) => {

@@ -117,7 +117,7 @@ export default function ChatView({
   const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(false);
   const [sendStates, setSendStates] = useState<Record<string, SendState>>({});
   const [readCursors, setReadCursors] = useState<Record<string, number>>({});
-  const [codeCopied, setCodeCopied] = useState(false);
+  const [copiedFriendCode, setCopiedFriendCode] = useState<string | null>(null);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const copyTimerRef = useRef<number | null>(null);
   const latestIncomingRef = useRef<HTMLDivElement | null>(null);
@@ -192,10 +192,6 @@ export default function ChatView({
   );
 
   useEffect(() => {
-    setMessageMenu(null);
-  }, [conversation?.id]);
-
-  useEffect(() => {
     if (!messageMenu) return;
     const handleClick = (event: MouseEvent) => {
       if (menuRef.current && menuRef.current.contains(event.target as Node)) return;
@@ -229,6 +225,7 @@ export default function ChatView({
   const requestOutgoing = !isGroup && peerProfile?.friendStatus === "request_out";
   const pendingTextOnly = requestIncoming || requestOutgoing;
   const pendingFriendCode = peerProfile?.profileVcard?.friendCode;
+  const codeCopied = Boolean(pendingFriendCode && copiedFriendCode === pendingFriendCode);
   const pendingSenderName = peerProfile
     ? nameMap[peerProfile.id] || peerProfile.displayName || "알 수 없음"
     : "알 수 없음";
@@ -302,15 +299,46 @@ export default function ChatView({
     viewerBusyRef.current = viewerBusy;
   }, [viewerBusy]);
 
-  useEffect(() => {
-    if (!viewerGroup?.length) {
-      setViewerUrls((prev) => {
-        Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
-        return {};
-      });
-      setViewerBusy({});
+  const clearViewerPreviews = useCallback(() => {
+    viewerRunRef.current += 1;
+    setViewerUrls((prev) => {
+      Object.values(prev).forEach((url) => URL.revokeObjectURL(url));
+      return {};
+    });
+    setViewerBusy({});
+  }, []);
+
+  const openViewer = useCallback(
+    (items: ChatMessageLike[], index: number) => {
+      clearViewerPreviews();
+      setViewerGroup(items);
+      setViewerIndex(index);
+    },
+    [clearViewerPreviews]
+  );
+
+  const closeViewer = useCallback(() => {
+    clearViewerPreviews();
+    setViewerGroup(null);
+    setViewerIndex(0);
+  }, [clearViewerPreviews]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchQuery("");
+    setSearchIndex(0);
+  }, []);
+
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) {
+      closeSearch();
       return;
     }
+    setSearchOpen(true);
+  }, [closeSearch, searchOpen]);
+
+  useEffect(() => {
+    if (!viewerGroup?.length) return;
     const runId = (viewerRunRef.current += 1);
     const load = async () => {
       for (const message of viewerGroup) {
@@ -349,20 +377,16 @@ export default function ChatView({
     };
   }, []);
 
-  useEffect(() => {
-    setCodeCopied(false);
-  }, [pendingFriendCode, conversation?.id]);
-
   const handleCopyFriendCode = useCallback(async () => {
     if (!pendingFriendCode) return;
     try {
       await navigator.clipboard.writeText(pendingFriendCode);
-      setCodeCopied(true);
+      setCopiedFriendCode(pendingFriendCode);
       if (copyTimerRef.current) {
         window.clearTimeout(copyTimerRef.current);
       }
       copyTimerRef.current = window.setTimeout(() => {
-        setCodeCopied(false);
+        setCopiedFriendCode(null);
       }, 1500);
     } catch (error) {
       console.warn("Failed to copy friend code", error);
@@ -377,17 +401,6 @@ export default function ChatView({
   }, []);
 
   useEffect(() => {
-    if (!conversation) return;
-    setSearchOpen(false);
-    setSearchQuery("");
-    setSearchIndex(0);
-  }, [conversation?.id]);
-
-  useEffect(() => {
-    setSearchIndex(0);
-  }, [searchQuery]);
-
-  useEffect(() => {
     if (!searchOpen) return;
     if (!searchInputRef.current) return;
     requestAnimationFrame(() => searchInputRef.current?.focus());
@@ -397,14 +410,14 @@ export default function ChatView({
     if (!searchOpen) return;
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setSearchOpen(false);
+        closeSearch();
       }
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => {
       window.removeEventListener("keydown", handleKeyDown);
     };
-  }, [searchOpen]);
+  }, [closeSearch, searchOpen]);
 
   useEffect(() => {
     if (!searchOpen) return;
@@ -431,7 +444,7 @@ export default function ChatView({
     return () => {
       active = false;
     };
-  }, [conversation?.id]);
+  }, [conversation]);
 
   const refreshSendStates = useCallback(async () => {
     if (!currentUserId) {
@@ -522,7 +535,7 @@ export default function ChatView({
       window.removeEventListener("blur", updateWindowActive);
       document.removeEventListener("visibilitychange", updateWindowActive);
     };
-  }, [conversation?.id]);
+  }, [conversation]);
 
   useEffect(() => {
     if (!conversation || !currentUserId || !readReceiptsEnabled || !onSendReadReceipt) return;
@@ -706,7 +719,7 @@ export default function ChatView({
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => setSearchOpen((prev) => !prev)}
+            onClick={toggleSearch}
             className="flex h-9 w-9 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text"
             disabled={!conversation}
             aria-label="채팅 검색"
@@ -731,14 +744,17 @@ export default function ChatView({
               <input
                 ref={searchInputRef}
                 value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+                onChange={(event) => {
+                  setSearchQuery(event.target.value);
+                  setSearchIndex(0);
+                }}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") {
                     event.preventDefault();
                     goToSearchResult(event.shiftKey ? -1 : 1);
                   }
                   if (event.key === "Escape") {
-                    setSearchOpen(false);
+                    closeSearch();
                   }
                 }}
                 placeholder="채팅 기록 검색"
@@ -774,10 +790,7 @@ export default function ChatView({
               </button>
               <button
                 type="button"
-                onClick={() => {
-                  setSearchOpen(false);
-                  setSearchQuery("");
-                }}
+                onClick={closeSearch}
                 className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
               >
                 닫기
@@ -896,10 +909,7 @@ export default function ChatView({
                         <MessageGroupBubble
                           group={group}
                           isMine={group.senderId === currentUserId}
-                          onOpenMedia={(items, index) => {
-                            setViewerGroup(items);
-                            setViewerIndex(index);
-                          }}
+                          onOpenMedia={openViewer}
                           onRequestMenu={(event) => openMessageMenu(group, event)}
                           highlightQuery={searchOpen ? searchQuery : ""}
                           footer={
@@ -988,10 +998,7 @@ export default function ChatView({
           <div className="relative w-full max-w-3xl rounded-nkc bg-nkc-panel p-4 shadow-soft">
             <button
               type="button"
-              onClick={() => {
-                setViewerGroup(null);
-                setViewerIndex(0);
-              }}
+              onClick={closeViewer}
               className="absolute right-4 top-4 rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
             >
               닫기

@@ -1,4 +1,5 @@
 export type SyncIntervalMinutes = 0 | 1 | 3 | 5 | 10 | 15 | 20 | 25 | 30;
+export type DeviceSyncTransportPolicy = "directOnly" | "followNetwork";
 
 export type AppPreferences = {
   login: {
@@ -15,12 +16,16 @@ export type AppPreferences = {
     enabled: boolean;
     hideContent: boolean;
   };
+  deviceSync: {
+    transportPolicy: DeviceSyncTransportPolicy;
+  };
 };
 
 export type AppPreferencesPatch = {
   login?: Partial<AppPreferences["login"]>;
   background?: Partial<AppPreferences["background"]>;
   notifications?: Partial<AppPreferences["notifications"]>;
+  deviceSync?: Partial<AppPreferences["deviceSync"]>;
 };
 
 export const defaultAppPrefs: AppPreferences = {
@@ -38,6 +43,9 @@ export const defaultAppPrefs: AppPreferences = {
     enabled: true,
     hideContent: true,
   },
+  deviceSync: {
+    transportPolicy: "directOnly",
+  },
 };
 
 const allowedIntervals: SyncIntervalMinutes[] = [0, 1, 3, 5, 10, 15, 20, 25, 30];
@@ -47,6 +55,7 @@ export const normalizePrefs = (input?: Partial<AppPreferences> | null): AppPrefe
     login: { ...defaultAppPrefs.login, ...(input?.login ?? {}) },
     background: { ...defaultAppPrefs.background, ...(input?.background ?? {}) },
     notifications: { ...defaultAppPrefs.notifications, ...(input?.notifications ?? {}) },
+    deviceSync: { ...defaultAppPrefs.deviceSync, ...(input?.deviceSync ?? {}) },
   };
 
   if (!allowedIntervals.includes(merged.background.syncIntervalMinutes)) {
@@ -60,6 +69,13 @@ export const normalizePrefs = (input?: Partial<AppPreferences> | null): AppPrefe
 
   if (merged.login.closeToTray) {
     merged.login.closeToExit = false;
+  }
+
+  if (
+    merged.deviceSync.transportPolicy !== "directOnly" &&
+    merged.deviceSync.transportPolicy !== "followNetwork"
+  ) {
+    merged.deviceSync.transportPolicy = defaultAppPrefs.deviceSync.transportPolicy;
   }
 
   return merged;
