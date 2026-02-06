@@ -23,7 +23,7 @@
     "test:ui:headed": "playwright test --headed",
     "lint": "eslint .",
     "preview": "vite preview",
-    "start": "electron .",
+    "start": "node scripts/start-electron.cjs",
     "phase:lock:check": "node scripts/check-phase-lock.mjs"
   },
   "dependencies": {
