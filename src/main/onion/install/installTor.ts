@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import type { OnionNetwork } from "../../../net/netConfig";
 import { downloadFile } from "./downloader";
 import { verifySha256 } from "./verify";
@@ -33,6 +34,13 @@ const ensureExecutable = async (binaryPath: string) => {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+};
+
+const clearMacQuarantine = async (targetPath: string) => {
+  if (process.platform !== "darwin") return;
+  await new Promise<void>((resolve) => {
+    execFile("xattr", ["-dr", "com.apple.quarantine", targetPath], () => resolve());
+  });
 };
 
 const resolveDownload = (version: string) => {
@@ -97,6 +105,7 @@ export const installTor = async (
       throw new Error(`BINARY_MISSING: ${binaryPath}`);
     }
     await ensureExecutable(binaryPath);
+    await clearMacQuarantine(installPath);
 
     onProgress?.({ step: "activate", message: "Activating Tor" });
     const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });

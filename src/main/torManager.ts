@@ -2,7 +2,7 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import net from "node:net";
 import path from "node:path";
-import { spawn, type ChildProcess } from "node:child_process";
+import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { readCurrentPointer } from "./onion/install/swapperRollback";
 import { getBinaryPath } from "./onion/componentRegistry";
 
@@ -21,7 +21,7 @@ type StatusListener = (status: TorStatus) => void;
 
 const TOR_ENV_PATH = "NKC_TOR_PATH";
 const DEFAULT_SOCKS_PORT = 9050;
-const START_TIMEOUT_MS = 8000;
+const START_TIMEOUT_MS = 30000;
 const HOSTNAME_TIMEOUT_MS = 15000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -96,6 +96,7 @@ export class TorManager {
   private torPath: string | null = null;
   private dataDir: string;
   private hsConfig: HiddenServiceConfig | null = null;
+  private logTail = "";
 
   constructor(opts: { appDataDir: string }) {
     this.dataDir = path.join(opts.appDataDir, "nkc-tor");
@@ -132,6 +133,34 @@ export class TorManager {
     return null;
   }
 
+  private appendLog(chunk: Buffer | string) {
+    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    const next = `${this.logTail}${text}`.slice(-4096);
+    this.logTail = next.trim();
+  }
+
+  private resolveBundleRoot(torPath: string) {
+    const candidate = path.dirname(path.dirname(torPath));
+    const defaultsPath = path.join(candidate, "data", "torrc-defaults");
+    return fs.existsSync(defaultsPath) ? candidate : undefined;
+  }
+
+  private async ensureExecutable(torPath: string) {
+    if (process.platform === "win32") return;
+    try {
+      await fsPromises.chmod(torPath, 0o755);
+    } catch {
+      // Best effort; spawn error handling will surface failures.
+    }
+  }
+
+  private async clearMacQuarantine(torPath: string) {
+    if (process.platform !== "darwin") return;
+    await new Promise<void>((resolve) => {
+      execFile("xattr", ["-dr", "com.apple.quarantine", torPath], () => resolve());
+    });
+  }
+
   private buildTorrc(socksPort: number, hsConfig?: HiddenServiceConfig | null) {
     const lines = [
       `DataDirectory ${this.dataDir}`,
@@ -152,15 +181,32 @@ export class TorManager {
       this.emit({ state: "unavailable", details: "tor-binary-not-found" });
       return;
     }
+    this.logTail = "";
     this.emit({ state: "starting", details: "starting-tor" });
     await fsPromises.mkdir(this.dataDir, { recursive: true });
     const socksPort = await getAvailablePort();
     const torrcPath = path.join(this.dataDir, "torrc");
     await fsPromises.writeFile(this.buildTorrc(socksPort, this.hsConfig), torrcPath, "utf8");
-    this.process = spawn(torPath, ["-f", torrcPath], { stdio: "ignore" });
-    this.process.once("exit", () => {
+    await this.ensureExecutable(torPath);
+    await this.clearMacQuarantine(torPath);
+    this.process = spawn(torPath, ["-f", torrcPath], {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: this.resolveBundleRoot(torPath),
+    });
+    this.process.stdout?.on("data", (chunk) => this.appendLog(chunk));
+    this.process.stderr?.on("data", (chunk) => this.appendLog(chunk));
+    this.process.once("error", (error) => {
+      const detail = error instanceof Error ? error.message : String(error);
       this.process = null;
-      this.emit({ state: "failed", details: "tor-exited" });
+      this.emit({ state: "failed", details: `tor-spawn-failed: ${detail}` });
+    });
+    this.process.once("exit", (code, signal) => {
+      this.process = null;
+      const tail = this.logTail ? ` | ${this.logTail}` : "";
+      this.emit({
+        state: "failed",
+        details: `tor-exited(code=${code ?? "null"},signal=${signal ?? "none"})${tail}`,
+      });
     });
     const ready = await waitForPort(socksPort, START_TIMEOUT_MS);
     if (!ready) {

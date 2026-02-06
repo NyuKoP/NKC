@@ -1,6 +1,7 @@
 import { canonicalBytes } from "../crypto/canonicalJson";
 import { decodeBase64Url, encodeBase64Url } from "./base64url";
 import type { FriendCodeV1 } from "./friendCode";
+import { sha256 } from "./sha256";
 
 export type InviteCodeV1 = {
   v: 1;
@@ -11,6 +12,27 @@ export type InviteCodeV1 = {
 };
 
 const PREFIX = "NKI1-";
+const ZERO_WIDTH_OR_BOM = /[\u200B-\u200D\uFEFF]/g;
+const BASE64URL_BODY_ALLOWED = /[^A-Za-z0-9_-]/g;
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+const sanitizeScannedCode = (value: string) => {
+  let next = value.replace(ZERO_WIDTH_OR_BOM, "").trim();
+  next = next.replace(/^[\s"'`([{<]+/, "");
+  next = next.replace(/[\s"'`)\]}>:;,.!?]+$/, "");
+  return next;
+};
+
+const extractCodeBody = (value: string, prefix: string) => {
+  const compact = sanitizeScannedCode(value).replace(/\s+/g, "");
+  const prefixCompact = prefix.replace("-", "");
+  if (!compact.toUpperCase().startsWith(prefixCompact)) return null;
+  let raw = compact.slice(prefixCompact.length);
+  raw = raw.replace(/^[-:]/, "");
+  raw = raw.replace(BASE64URL_BODY_ALLOWED, "");
+  return raw;
+};
 
 const hash32Bytes = (bytes: Uint8Array) => {
   const seeds = [
@@ -33,7 +55,8 @@ const hash32Bytes = (bytes: Uint8Array) => {
   return out;
 };
 
-const checksum4Bytes = (payloadBytes: Uint8Array) => hash32Bytes(payloadBytes).slice(0, 4);
+const checksum4Bytes = (payloadBytes: Uint8Array) => sha256(payloadBytes).slice(0, 4);
+const legacyChecksum4Bytes = (payloadBytes: Uint8Array) => hash32Bytes(payloadBytes).slice(0, 4);
 
 export const encodeInviteCodeV1 = (data: InviteCodeV1) => {
   const payload: InviteCodeV1 = {
@@ -54,12 +77,10 @@ export const encodeInviteCodeV1 = (data: InviteCodeV1) => {
 export const decodeInviteCodeV1 = (
   code: string
 ): InviteCodeV1 | { error: string } => {
-  const compact = code.trim().replace(/[\s-]/g, "");
-  const prefixCompact = PREFIX.replace("-", "");
-  if (!compact.toUpperCase().startsWith(prefixCompact)) {
+  const raw = extractCodeBody(code, PREFIX);
+  if (!raw) {
     return { error: "Invalid invite code prefix." };
   }
-  const raw = compact.slice(prefixCompact.length);
 
   let decoded: Uint8Array;
   try {
@@ -75,10 +96,17 @@ export const decodeInviteCodeV1 = (
   const payloadBytes = decoded.slice(0, decoded.length - 4);
   const checksum = decoded.slice(decoded.length - 4);
   const expected = checksum4Bytes(payloadBytes);
-  for (let i = 0; i < checksum.length; i += 1) {
-    if (checksum[i] !== expected[i]) {
-      return { error: "Invite code checksum mismatch." };
+  const expectedLegacy = legacyChecksum4Bytes(payloadBytes);
+  const matches = (candidate: Uint8Array) => {
+    if (candidate.length !== checksum.length) return false;
+    for (let i = 0; i < checksum.length; i += 1) {
+      if (checksum[i] !== candidate[i]) return false;
     }
+    return true;
+  };
+  const checksumOk = matches(expected) || matches(expectedLegacy);
+  if (!checksumOk) {
+    return { error: "Invite code checksum mismatch." };
   }
 
   let payload: Partial<InviteCodeV1>;
@@ -129,17 +157,10 @@ export const decodeInviteCodeV1 = (
     return { error: "Invalid public keys in invite code." };
   }
 
-  const deviceId =
-    typeof friend.deviceId === "string" && friend.deviceId.length > 0
-      ? friend.deviceId
-      : undefined;
-  if (deviceId) {
-    const uuidPattern =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-    if (!uuidPattern.test(deviceId)) {
-      return { error: "Invalid deviceId in invite code." };
-    }
-  }
+  const deviceIdCandidate = typeof friend.deviceId === "string" ? friend.deviceId.trim() : "";
+  const deviceId = deviceIdCandidate && UUID_PATTERN.test(deviceIdCandidate)
+    ? deviceIdCandidate
+    : undefined;
 
   return {
     v: 1,

@@ -1,23 +1,70 @@
-import { spawn } from "node:child_process";
+import fs from "node:fs/promises";
+import fsSync from "node:fs";
+import path from "node:path";
+import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 
 type TorManagerState = {
   running: boolean;
   pid?: number;
+  error?: string;
+  logTail?: string;
 };
 
 export class TorManager {
   private process: ChildProcess | null = null;
   private state: TorManagerState = { running: false };
+  private logTail = "";
+
+  private appendLog(chunk: Buffer | string) {
+    const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    const next = `${this.logTail}${text}`.slice(-4096);
+    this.logTail = next.trim();
+  }
+
+  private setFailure(message: string) {
+    this.state = { running: false, error: message, logTail: this.logTail || undefined };
+    this.process = null;
+  }
+
+  private async ensureExecutable(binaryPath: string) {
+    if (process.platform === "win32") return;
+    try {
+      await fs.chmod(binaryPath, 0o755);
+    } catch {
+      // Best effort: runtime will still report spawn error if execution is blocked.
+    }
+  }
+
+  private async clearMacQuarantine(binaryPath: string) {
+    if (process.platform !== "darwin") return;
+    await new Promise<void>((resolve) => {
+      execFile("xattr", ["-dr", "com.apple.quarantine", binaryPath], () => resolve());
+    });
+  }
 
   async start(binaryPath: string, socksPort: number, dataDir: string) {
     if (this.process) return;
+    this.logTail = "";
+    await this.ensureExecutable(binaryPath);
+    await this.clearMacQuarantine(binaryPath);
     const args = ["--SocksPort", `127.0.0.1:${socksPort}`, "--DataDirectory", dataDir];
-    this.process = spawn(binaryPath, args, { stdio: "ignore" });
+    const bundleRoot = path.dirname(path.dirname(binaryPath));
+    const hasBundleDefaults = fsSync.existsSync(path.join(bundleRoot, "data", "torrc-defaults"));
+    this.process = spawn(binaryPath, args, {
+      stdio: ["ignore", "pipe", "pipe"],
+      cwd: hasBundleDefaults ? bundleRoot : undefined,
+    });
     this.state = { running: true, pid: this.process.pid };
+    this.process.stdout?.on("data", (chunk) => this.appendLog(chunk));
+    this.process.stderr?.on("data", (chunk) => this.appendLog(chunk));
+    this.process.on("error", (error) => {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.setFailure(`Tor spawn failed: ${detail}`);
+    });
     this.process.on("exit", () => {
-      this.state = { running: false };
-      this.process = null;
+      const tail = this.logTail ? ` | ${this.logTail}` : "";
+      this.setFailure(`Tor exited before ready${tail}`);
     });
   }
 

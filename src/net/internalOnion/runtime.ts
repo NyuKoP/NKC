@@ -51,9 +51,14 @@ const scheduleDiscovery = () => {
   if (discoveryTimer) return;
   discoveryTimer = setInterval(() => {
     if (!activeByConfig || !manager.isRunning()) return;
-    if (!getDiscoveredRelayPeerIds().length) return;
+    const discoveredRelayCount = getDiscoveredRelayPeerIds().length;
+    if (!discoveredRelayCount) return;
     const route = useInternalOnionRouteStore.getState().route;
-    if (route.status === "ready" || route.status === "building" || route.status === "rebuilding") return;
+    if (route.status === "building" || route.status === "rebuilding") return;
+    if (route.status === "ready") {
+      if (route.establishedHops >= route.desiredHops) return;
+      if (discoveredRelayCount <= route.establishedHops) return;
+    }
     void manager.rebuildRoute("RELAY_DISCOVERY_REFRESH");
   }, DISCOVERY_INTERVAL_MS);
 };
