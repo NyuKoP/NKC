@@ -10,6 +10,7 @@ export const startOutboxScheduler = () => {
   if (scheduler) return;
   const getNetMode = (): NetMode => {
     const config = useNetConfigStore.getState().config;
+    if (config.mode === "directP2P") return "direct";
     if (config.mode === "selfOnion") return "onion";
     if (config.mode === "onionRouter" || config.onionEnabled) {
       return config.onionSelectedNetwork === "lokinet" ? "lokinet" : "tor";

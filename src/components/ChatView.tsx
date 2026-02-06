@@ -1,6 +1,7 @@
 ﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useCallback } from "react";
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowLeft,
   Check,
@@ -600,7 +601,12 @@ export default function ChatView({
     setAtBottom(isBottom);
   };
 
-  const transportLabel = transportStatus?.kind === "onion" ? "Onion" : null;
+  const transportLabel =
+    transportStatus?.kind === "direct"
+      ? "Direct"
+      : transportStatus?.kind === "onion"
+        ? "Onion"
+        : null;
 
   const renderSendState = (state?: SendState) => {
     if (!state) return null;
@@ -676,8 +682,13 @@ export default function ChatView({
               </div>
               {conversation && transportLabel ? (
                 <span
-                  className="inline-flex items-center gap-1 rounded-full border border-nkc-border px-2 py-1 text-[11px] text-nkc-muted"
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] ${
+                    transportStatus?.kind === "direct"
+                      ? "border-red-400/40 text-red-200"
+                      : "border-nkc-border text-nkc-muted"
+                  }`}
                 >
+                  {transportStatus?.kind === "direct" ? <AlertTriangle size={12} /> : null}
                   {transportLabel}
                 </span>
               ) : null}

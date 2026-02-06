@@ -1,7 +1,9 @@
 import type { PeerHint, Transport, TransportKind, TransportStatus } from "./transport";
 import { createOnionTransport } from "./onionTransport";
+import { createDirectTransport } from "./directTransport";
 import { redactIPs } from "./privacy";
 import { decideConversationTransport } from "./transportPolicy";
+import { useNetConfigStore } from "./netConfigStore";
 
 export type ConversationTransportStatus = TransportStatus & {
   kind?: TransportKind;
@@ -184,23 +186,35 @@ export const connectConversation = async (convId: string, peerHint?: PeerHint) =
     await closeTransport(state.transport);
     state.transport = null;
 
-    const onion = createOnionTransport();
-    try {
-      await connectTransport(onion, peerHint);
-      state.transport = onion;
-      attachHandlers(state, onion);
-      setStatus(convId, { state: "connected", kind: "onion" });
-      scheduleBackoffReset(convId);
-      return;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      setStatus(convId, { state: "failed", kind: "onion", detail });
-    }
+    const allowDirect = useNetConfigStore.getState().config.mode === "directP2P";
+    const decision = decideConversationTransport({ allowDirect });
+    const primary = decision.primary;
 
-    const decision = decideConversationTransport({ allowDirect: false });
-    if (!decision.fallback) {
+    const tryKind = async (kind: TransportKind) => {
+      const transport = kind === "direct" ? createDirectTransport() : createOnionTransport();
+      try {
+        await connectTransport(transport, peerHint);
+        state.transport = transport;
+        attachHandlers(state, transport);
+        setStatus(convId, { state: "connected", kind, warning: kind === "direct" });
+        scheduleBackoffReset(convId);
+        return true;
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error);
+        setStatus(convId, { state: "failed", kind, detail });
+        return false;
+      }
+    };
+
+    const primaryConnected = await tryKind(primary);
+    if (primaryConnected) return;
+    if (!decision.fallback || decision.fallback === primary) {
       scheduleRetry(convId);
       return;
+    }
+    const fallbackConnected = await tryKind(decision.fallback);
+    if (!fallbackConnected) {
+      scheduleRetry(convId);
     }
   })()
     .catch((error) => {

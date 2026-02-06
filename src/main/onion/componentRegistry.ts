@@ -22,7 +22,8 @@ const withExeSuffix = (platform: NodeJS.Platform, basename: string) =>
 const torEntry: ComponentRegistryEntry = {
   id: "tor",
   displayName: "Tor",
-  binaryPath: (platform) => path.join("Tor", withExeSuffix(platform, "tor")),
+  // Tor expert bundle uses lowercase "tor/" directory across platforms.
+  binaryPath: (platform) => path.join("tor", withExeSuffix(platform, "tor")),
   pinnedSha256: pinnedSha256.tor,
 };
 

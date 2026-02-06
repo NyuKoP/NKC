@@ -24,6 +24,34 @@ type InstallResult = {
   rollback: () => Promise<void>;
 };
 
+const findBinaryRecursively = async (
+  rootDir: string,
+  binaryName: string,
+  maxDepth = 4
+): Promise<string | null> => {
+  const queue: Array<{ dir: string; depth: number }> = [{ dir: rootDir, depth: 0 }];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current) break;
+    let entries: fsSync.Dirent[];
+    try {
+      entries = fsSync.readdirSync(current.dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const fullPath = path.join(current.dir, entry.name);
+      if (entry.isFile() && entry.name === binaryName) {
+        return fullPath;
+      }
+      if (entry.isDirectory() && current.depth < maxDepth) {
+        queue.push({ dir: fullPath, depth: current.depth + 1 });
+      }
+    }
+  }
+  return null;
+};
+
 const ensureExecutable = async (binaryPath: string) => {
   if (process.platform === "win32") return;
   try {
@@ -209,15 +237,24 @@ export const installLokinet = async (
     await fs.mkdir(installPath, { recursive: true });
     onProgress?.({ step: "unpack", message: "Unpacking Lokinet" });
     await unpackArchive(archivePath, installPath);
-    const binaryPath = path.join(installPath, getBinaryPath(network));
+    const binaryName = getBinaryPath(network);
+    const directBinaryPath = path.join(installPath, binaryName);
+    const binaryPath = fsSync.existsSync(directBinaryPath)
+      ? directBinaryPath
+      : await findBinaryRecursively(installPath, binaryName);
     details.binaryPath = binaryPath;
-    if (!fsSync.existsSync(binaryPath)) {
-      throw new Error(`BINARY_MISSING: ${binaryPath}`);
+    if (!binaryPath || !fsSync.existsSync(binaryPath)) {
+      throw new Error(`BINARY_MISSING: ${binaryName}`);
     }
     await ensureExecutable(binaryPath);
     onProgress?.({ step: "activate", message: "Activating Lokinet" });
-    const rollback = await swapWithRollback(userDataDir, network, { version, path: installPath });
-    return { version, installPath, rollback };
+    const activeBaseDir = path.dirname(binaryPath);
+    details.activeBaseDir = activeBaseDir;
+    const rollback = await swapWithRollback(userDataDir, network, {
+      version,
+      path: activeBaseDir,
+    });
+    return { version, installPath: activeBaseDir, rollback };
   } catch (error) {
     if (error && typeof error === "object") {
       const err = error as { expected?: string; actual?: string };

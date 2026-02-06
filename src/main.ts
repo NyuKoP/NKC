@@ -562,6 +562,8 @@ const normalizeOnionError = (
   const code =
     error instanceof PinnedHashMissingError
       ? "PINNED_HASH_MISSING"
+      : errCode === "ASSET_NOT_FOUND" || message.includes("ASSET_NOT_FOUND")
+        ? "ASSET_NOT_FOUND"
       : message.includes("SHA256 mismatch")
         ? "HASH_MISMATCH"
         : message.includes("Download failed") ||
@@ -582,10 +584,19 @@ const normalizeOnionError = (
                   if (err?.code === "ENOENT") return "FS_ERROR";
                   return "UNKNOWN_ERROR";
                 })();
-  const details =
-    error && typeof error === "object" && "details" in error
-      ? { ...context, ...(error as { details?: Record<string, unknown> }).details }
-      : context;
+  const details = (() => {
+    if (!(error && typeof error === "object" && "details" in error)) {
+      return context;
+    }
+    const rawDetails = (error as { details?: unknown }).details;
+    if (rawDetails && typeof rawDetails === "object" && !Array.isArray(rawDetails)) {
+      return { ...context, ...(rawDetails as Record<string, unknown>) };
+    }
+    if (typeof rawDetails === "string") {
+      return { ...context, reason: rawDetails };
+    }
+    return context;
+  })();
   return { code, message, details };
 };
 
@@ -647,20 +658,33 @@ const registerOnionIpc = () => {
     onionComponentCache.tor = {
       ...torState,
       latest: torHasVerifiedUpdate ? torUpdate.version ?? undefined : undefined,
-      error: torUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : undefined,
+      error:
+        torUpdate.errorCode === "PINNED_HASH_MISSING"
+          ? "PINNED_HASH_MISSING"
+          : torUpdate.errorCode === "ASSET_NOT_FOUND"
+            ? "ASSET_NOT_FOUND"
+            : undefined,
       detail:
         torUpdate.errorCode === "PINNED_HASH_MISSING"
           ? `Pinned hash missing for ${torUpdate.assetName ?? torUpdate.version ?? "unknown"}`
+          : torUpdate.errorCode === "ASSET_NOT_FOUND"
+            ? `No compatible Tor asset for ${process.platform}/${process.arch}`
           : undefined,
     };
     onionComponentCache.lokinet = {
       ...lokinetState,
       latest: lokinetHasVerifiedUpdate ? lokinetUpdate.version ?? undefined : undefined,
       error:
-        lokinetUpdate.errorCode === "PINNED_HASH_MISSING" ? "PINNED_HASH_MISSING" : undefined,
+        lokinetUpdate.errorCode === "PINNED_HASH_MISSING"
+          ? "PINNED_HASH_MISSING"
+          : lokinetUpdate.errorCode === "ASSET_NOT_FOUND"
+            ? "ASSET_NOT_FOUND"
+            : undefined,
       detail:
         lokinetUpdate.errorCode === "PINNED_HASH_MISSING"
           ? `Pinned hash missing for ${lokinetUpdate.assetName ?? lokinetUpdate.version ?? "unknown"}`
+          : lokinetUpdate.errorCode === "ASSET_NOT_FOUND"
+            ? `No compatible Lokinet asset for ${process.platform}/${process.arch}`
           : undefined,
     };
     return {
@@ -682,6 +706,17 @@ const registerOnionIpc = () => {
         throw new PinnedHashMissingError(
           `Missing pinned hash for ${network} ${updates.assetName ?? updates.version ?? "unknown"}`
         );
+      }
+      if (updates.errorCode === "ASSET_NOT_FOUND") {
+        const err = new Error("ASSET_NOT_FOUND: No compatible release asset");
+        (err as { code?: string; details?: Record<string, unknown> }).code = "ASSET_NOT_FOUND";
+        (err as { code?: string; details?: Record<string, unknown> }).details = {
+          network,
+          platform: process.platform,
+          arch: process.arch,
+          update: updates,
+        };
+        throw err;
       }
       if (!updates.version || !updates.sha256 || !updates.downloadUrl || !updates.assetName) {
         const err = new Error("No verified release available");
@@ -811,6 +846,17 @@ const registerOnionIpc = () => {
       throw new PinnedHashMissingError(
         `Missing pinned hash for ${network} ${updateInfo.assetName ?? updateInfo.version ?? "unknown"}`
       );
+    }
+    if (updateInfo.errorCode === "ASSET_NOT_FOUND") {
+      const err = new Error("ASSET_NOT_FOUND: No compatible release asset");
+      (err as { code?: string; details?: Record<string, unknown> }).code = "ASSET_NOT_FOUND";
+      (err as { code?: string; details?: Record<string, unknown> }).details = {
+        network,
+        platform: process.platform,
+        arch: process.arch,
+        update: updateInfo,
+      };
+      throw err;
     }
     if (!updateInfo.version || !updateInfo.sha256 || !updateInfo.downloadUrl || !updateInfo.assetName) {
       throw new Error("No verified release available");

@@ -43,6 +43,11 @@ import type { OnionStatus } from "../net/onionControl";
 import { useNetConfigStore } from "../net/netConfigStore";
 import { getRouteInfo } from "../net/routeInfo";
 import type { OnionNetwork } from "../net/netConfig";
+import {
+  getHopsProgressText,
+  getRouteStatusText,
+  useInternalOnionRouteStore,
+} from "../stores/internalOnionRouteStore";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import { validateProxyUrl } from "../net/proxyControl";
 import { getOrCreateDeviceId } from "../security/deviceRole";
@@ -146,6 +151,7 @@ export default function SettingsDialog({
     setLastUpdateCheckAt,
     setSelfOnionMinRelays,
   } = useNetConfigStore();
+  const internalOnionRoute = useInternalOnionRouteStore((state) => state.route);
 
   // profile
   const [displayName, setDisplayName] = useState(user.displayName);
@@ -658,6 +664,17 @@ export default function SettingsDialog({
   };
 
   const handleConnectionChoiceChange = async (choice: ConnectionChoice) => {
+    if (choice === "directP2P") {
+      setMode("directP2P");
+      setOnionEnabledDraft(false);
+      setOnionEnabled(false);
+      try {
+        await setOnionMode(false, onionNetworkDraft);
+      } catch (error) {
+        console.error("Failed to stop onion runtime", error);
+      }
+      return;
+    }
     if (choice === "selfOnion") {
       setMode("selfOnion");
       setOnionEnabledDraft(false);
@@ -969,41 +986,59 @@ export default function SettingsDialog({
 
   const formatActiveRouteLabel = (snapshot: {
     connection: typeof connectionStatus;
+    mode: typeof netConfig.mode;
     runtime?: OnionStatus["runtime"];
     onionNetwork: OnionNetwork;
     torState: typeof netConfig.tor;
     lokinetState: typeof netConfig.lokinet;
-    selfOnionHops: number;
+    internalRoute: typeof internalOnionRoute;
     torAddress?: string;
     lokinetAddress?: string;
   }) => {
     const {
       connection,
+      mode,
       runtime,
       onionNetwork,
       torState,
       lokinetState,
-      selfOnionHops,
+      internalRoute,
       torAddress,
       lokinetAddress,
     } = snapshot;
     const torFailed = torState.status === "failed" || Boolean(torState.error);
     const lokinetFailed = lokinetState.status === "failed" || Boolean(lokinetState.error);
 
-    if (connection.transport === "selfOnion") {
-      if (connection.state === "connected") {
+    if (mode === "selfOnion" || connection.transport === "selfOnion") {
+      if (internalRoute.status === "ready") {
         return t(
-          `경로: 내부 Onion (${selfOnionHops} hops)`,
-          `Route: Built-in Onion (${selfOnionHops} hops)`
+          `경로: 내부 Onion (${internalRoute.establishedHops}/${internalRoute.desiredHops} hops)`,
+          `Route: Built-in Onion (${internalRoute.establishedHops}/${internalRoute.desiredHops} hops)`
         );
       }
-      if (connection.state === "failed") {
-        return t("경로: 내부 Onion (실패)", "Route: Built-in Onion (failed)");
-      }
-      if (connection.state === "degraded") {
+      if (internalRoute.status === "degraded") {
         return t("경로: 내부 Onion (불안정)", "Route: Built-in Onion (degraded)");
       }
-      return t("경로: 내부 Onion (경로 준비 중)", "Route: Built-in Onion (preparing)");
+      if (internalRoute.status === "building" || internalRoute.status === "rebuilding") {
+        return t("경로: 내부 Onion (재구성중)", "Route: Built-in Onion (rebuilding)");
+      }
+      return t("경로: 내부 Onion (대기)", "Route: Built-in Onion (idle)");
+    }
+
+    if (connection.transport === "directP2P") {
+      if (connection.state === "connected") {
+        return t("경로: Direct P2P", "Route: Direct P2P");
+      }
+      if (connection.state === "connecting") {
+        return t("경로: Direct P2P (연결 중)", "Route: Direct P2P (connecting)");
+      }
+      if (connection.state === "failed") {
+        return t("경로: Direct P2P (실패)", "Route: Direct P2P (failed)");
+      }
+      if (connection.state === "degraded") {
+        return t("경로: Direct P2P (불안정)", "Route: Direct P2P (degraded)");
+      }
+      return t("경로: Direct P2P (대기)", "Route: Direct P2P (idle)");
     }
 
     if (connection.transport === "onionRouter") {
@@ -1066,17 +1101,18 @@ export default function SettingsDialog({
   };
 
 
-  const routeInfo = getRouteInfo(netConfig.mode, netConfig);
+  const routeInfo = getRouteInfo(netConfig.mode, netConfig, internalOnionRoute);
   const runtime = onionStatus?.runtime;
   const torAddress = userProfileState?.routingHints?.onionAddr ?? "";
   const lokinetAddress = userProfileState?.routingHints?.lokinetAddr ?? "";
   const activeRouteLabel = formatActiveRouteLabel({
     connection: connectionStatus,
+    mode: netConfig.mode,
     runtime,
     onionNetwork: onionNetworkDraft,
     torState: netConfig.tor,
     lokinetState: netConfig.lokinet,
-    selfOnionHops: netConfig.selfOnionMinRelays,
+    internalRoute: internalOnionRoute,
     torAddress,
     lokinetAddress,
   });
@@ -1119,6 +1155,8 @@ export default function SettingsDialog({
     if (!value) return null;
     if (value === "PINNED_HASH_MISSING")
       return t("실패: 검증 데이터 없음", "Failed: missing verification data");
+    if (value === "ASSET_NOT_FOUND")
+      return t("실패: 지원 자산 없음", "Failed: no compatible asset");
     const trimmed = value.split("| details=")[0].trim();
     const match = trimmed.match(/^\[([^\]]+)\]\s*(.*)$/);
     const code = match?.[1] ?? "";
@@ -1132,10 +1170,12 @@ export default function SettingsDialog({
             ? t("압축 해제 실패", "Extraction failed")
             : code === "PERMISSION_DENIED"
               ? t("권한 부족", "Permission denied")
-              : code === "BINARY_MISSING"
-                ? t("실행 파일 없음", "Binary missing")
-                : code === "FS_ERROR"
-                  ? t("파일 시스템 오류", "File system error")
+                : code === "BINARY_MISSING"
+                  ? t("실행 파일 없음", "Binary missing")
+                  : code === "ASSET_NOT_FOUND"
+                    ? t("지원 자산 없음", "No compatible asset")
+                  : code === "FS_ERROR"
+                    ? t("파일 시스템 오류", "File system error")
                   : code === "PINNED_HASH_MISSING"
                     ? t("검증 데이터 없음", "Missing verification data")
                     : code === "UNKNOWN_ERROR"
@@ -1145,21 +1185,15 @@ export default function SettingsDialog({
     return `${t("실패", "Failed")}: ${shortMessage}`;
   };
 
-  const selfOnionHopTarget = netConfig.selfOnionMinRelays;
-  const selfOnionHopConnected =
-    connectionStatus.transport === "selfOnion" && connectionStatus.state === "connected"
-      ? selfOnionHopTarget
-      : 0;
-  const selfOnionRouteLabel =
-    connectionStatus.transport === "selfOnion"
-      ? connectionStatus.state === "connected"
-        ? t("경로: 연결됨", "Route: connected")
-        : connectionStatus.state === "connecting"
-          ? t("경로: 연결 중", "Route: connecting")
-          : connectionStatus.state === "failed"
-            ? t("경로: 실패", "Route: failed")
-            : t("경로: 대기", "Route: idle")
-      : t("경로: 대기", "Route: idle");
+  const selfOnionHopTarget = internalOnionRoute.desiredHops;
+  const selfOnionHopConnected = Math.min(
+    internalOnionRoute.establishedHops,
+    internalOnionRoute.desiredHops
+  );
+  const selfOnionRouteLabel = getRouteStatusText(internalOnionRoute, language);
+  const selfOnionHopProgressText = getHopsProgressText(internalOnionRoute);
+  const selfOnionHopDetails = internalOnionRoute.hops;
+  const selfOnionLastError = internalOnionRoute.lastError;
 
   const buildComponentLabel = (state: typeof netConfig.tor) => {
     if (state.status === "downloading") return t("다운로드 중", "Downloading");
@@ -1181,6 +1215,8 @@ export default function SettingsDialog({
   const torUpdateStatus = netConfig.lastUpdateCheckAtMs
     ? netConfig.tor.error === "PINNED_HASH_MISSING"
       ? t("검증 데이터 없음", "Missing verification data")
+      : netConfig.tor.error === "ASSET_NOT_FOUND"
+        ? t("지원 자산 없음", "No compatible asset")
       : torUpdateAvailable
         ? `${t("업데이트 가능", "Update available")}: ${netConfig.tor.latest}`
         : t("최신 상태", "Up to date")
@@ -1188,6 +1224,8 @@ export default function SettingsDialog({
   const lokinetUpdateStatus = netConfig.lastUpdateCheckAtMs
     ? netConfig.lokinet.error === "PINNED_HASH_MISSING"
       ? t("검증 데이터 없음", "Missing verification data")
+      : netConfig.lokinet.error === "ASSET_NOT_FOUND"
+        ? t("지원 자산 없음", "No compatible asset")
       : lokinetUpdateAvailable
         ? `${t("업데이트 가능", "Update available")}: ${netConfig.lokinet.latest}`
         : t("최신 상태", "Up to date")
@@ -1200,7 +1238,9 @@ export default function SettingsDialog({
       ? netConfig.onionSelectedNetwork === "lokinet"
         ? "lokinetOnion"
         : "torOnion"
-      : "selfOnion";
+      : netConfig.mode === "selfOnion"
+        ? "selfOnion"
+        : "directP2P";
   const canSaveOnion =
     !onionEnabledDraft ||
     (onionNetworkDraft === "tor" ? netConfig.tor.installed : netConfig.lokinet.installed);
@@ -1211,7 +1251,13 @@ export default function SettingsDialog({
           "외부 Onion: Tor 또는 Lokinet 경로를 사용합니다.",
           "External Onion: uses a Tor or Lokinet route."
         )
+      : netConfig.mode === "directP2P"
+        ? t(
+            "Direct P2P: 프록시 없이 직접 연결을 시도합니다.",
+            "Direct P2P: attempts a direct connection without a proxy."
+          )
       : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
+  const showDirectWarning = netConfig.mode === "directP2P";
   const proxyAuto = !proxyUrlDraft.trim();
   const syncCodeRemainingMs = syncCodeState
     ? Math.max(0, syncCodeState.expiresAt - syncCodeNow)
@@ -1545,8 +1591,12 @@ export default function SettingsDialog({
               connectionDescription={connectionDescription}
               selfOnionHopConnected={selfOnionHopConnected}
               selfOnionHopTarget={selfOnionHopTarget}
+              selfOnionHopProgressText={selfOnionHopProgressText}
               selfOnionRouteLabel={selfOnionRouteLabel}
+              selfOnionHopDetails={selfOnionHopDetails}
+              selfOnionLastError={selfOnionLastError}
               onSelfOnionHopChange={setSelfOnionMinRelays}
+              showDirectWarning={showDirectWarning}
               torAddress={torAddress}
               lokinetAddress={lokinetAddress}
               onCopyAddress={handleCopyAddress}

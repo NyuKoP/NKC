@@ -21,6 +21,9 @@ type UpdateCheckResult = {
   errorCode?: "PINNED_HASH_MISSING" | "ASSET_NOT_FOUND";
 };
 
+const MAX_LOKINET_RELEASE_PAGES = 10;
+const LOKINET_RELEASES_PAGE_SIZE = 100;
+
 const fetchJson = async <T,>(url: string): Promise<T> => {
   return new Promise((resolve, reject) => {
     https
@@ -134,9 +137,42 @@ const selectReleaseAsset = (assets: ReleaseAsset[]) => {
   });
 };
 
-const fetchReleases = async () => {
-  const url = "https://api.github.com/repos/oxen-io/lokinet/releases?per_page=20";
+const fetchReleases = async (page = 1) => {
+  const url = `https://api.github.com/repos/oxen-io/lokinet/releases?per_page=${LOKINET_RELEASES_PAGE_SIZE}&page=${page}`;
   return fetchJson<ReleaseResponse[]>(url);
+};
+
+type LokinetCandidate = {
+  version: string;
+  asset: ReleaseAsset;
+  sha256: string | null;
+};
+
+const toLokinetCandidate = (release: ReleaseResponse): LokinetCandidate | null => {
+  const version = release.tag_name.replace(/^v/i, "");
+  const asset = selectReleaseAsset(release.assets);
+  if (!asset) return null;
+  const sha256 = getPinnedSha256("lokinet", {
+    version,
+    assetName: asset.name,
+  });
+  return {
+    version,
+    asset,
+    sha256: sha256 ?? null,
+  };
+};
+
+const findPinnedLokinetCandidate = async (): Promise<LokinetCandidate | null> => {
+  for (let page = 1; page <= MAX_LOKINET_RELEASE_PAGES; page += 1) {
+    const releases = await fetchReleases(page);
+    if (!releases.length) return null;
+    for (const release of releases) {
+      const candidate = toLokinetCandidate(release);
+      if (candidate?.sha256) return candidate;
+    }
+  }
+  return null;
 };
 
 const checkTorUpdates = async (): Promise<UpdateCheckResult> => {
@@ -170,50 +206,45 @@ const checkTorUpdates = async (): Promise<UpdateCheckResult> => {
 const checkLokinetUpdates = async (): Promise<UpdateCheckResult> => {
   const url = "https://api.github.com/repos/oxen-io/lokinet/releases/latest";
   const release = await fetchJson<ReleaseResponse>(url);
-  let version = release.tag_name.replace(/^v/i, "");
-  let asset = selectReleaseAsset(release.assets);
+  const latestCandidate = toLokinetCandidate(release);
 
-  if (!asset && process.platform === "win32") {
-    const releases = await fetchReleases();
-    for (const candidate of releases) {
-      const candidateAsset = selectReleaseAsset(candidate.assets);
-      if (candidateAsset) {
-        const candidateVersion = candidate.tag_name.replace(/^v/i, "");
-        const sha256 = getPinnedSha256("lokinet", {
-          version: candidateVersion,
-          assetName: candidateAsset.name,
-        });
-        if (!sha256) continue;
-        version = candidateVersion;
-        asset = candidateAsset;
-        break;
-      }
+  if (latestCandidate?.sha256) {
+    return {
+      version: latestCandidate.version,
+      assetName: latestCandidate.asset.name,
+      downloadUrl: latestCandidate.asset.browser_download_url,
+      sha256: latestCandidate.sha256,
+    };
+  }
+
+  if (process.platform === "win32") {
+    const fallbackCandidate = await findPinnedLokinetCandidate();
+    if (fallbackCandidate?.sha256) {
+      return {
+        version: fallbackCandidate.version,
+        assetName: fallbackCandidate.asset.name,
+        downloadUrl: fallbackCandidate.asset.browser_download_url,
+        sha256: fallbackCandidate.sha256,
+      };
     }
   }
-  if (!asset) {
+
+  if (!latestCandidate) {
     return {
-      version,
+      version: release.tag_name.replace(/^v/i, ""),
       assetName: null,
       downloadUrl: null,
       sha256: null,
       errorCode: "ASSET_NOT_FOUND",
     };
   }
-  const sha256 = getPinnedSha256("lokinet", { version, assetName: asset.name });
-  if (!sha256) {
-    return {
-      version,
-      assetName: asset.name,
-      downloadUrl: asset.browser_download_url,
-      sha256: null,
-      errorCode: "PINNED_HASH_MISSING",
-    };
-  }
+
   return {
-    version,
-    assetName: asset.name,
-    downloadUrl: asset.browser_download_url,
-    sha256,
+    version: latestCandidate.version,
+    assetName: latestCandidate.asset.name,
+    downloadUrl: latestCandidate.asset.browser_download_url,
+    sha256: null,
+    errorCode: "PINNED_HASH_MISSING",
   };
 };
 
@@ -223,3 +254,5 @@ export const checkUpdates = async (network: OnionNetwork) => {
   }
   return checkLokinetUpdates();
 };
+
+export const __testToLokinetCandidate = toLokinetCandidate;
