@@ -89,7 +89,8 @@ type SyncResultPayload = {
   error?: string;
 };
 
-const isDev = !app.isPackaged;
+const rendererUrl = process.env.VITE_DEV_SERVER_URL;
+const isDev = Boolean(rendererUrl);
 const isAutoStartLaunch = process.argv.includes("--autostart");
 const SECRET_STORE_FILENAME = "secret-store.json";
 const ALLOWED_PROXY_PROTOCOLS = new Set(["socks5:", "socks5h:", "http:", "https:"]);
@@ -1164,7 +1165,6 @@ class BackgroundService {
   }
 }
 
-const rendererUrl = process.env.VITE_DEV_SERVER_URL;
 let mainWindow: BrowserWindow | null = null;
 let tray: Tray | null = null;
 let backgroundService: BackgroundService | null = null;
