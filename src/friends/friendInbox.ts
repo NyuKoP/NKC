@@ -1,7 +1,7 @@
 import type { TransportPacket } from "../adapters/transports/types";
 import { decodeBase64Url } from "../security/base64url";
 import { onIncomingPacket } from "../net/router";
-import { handleIncomingFriendFrame } from "../sync/syncEngine";
+import { handleIncomingFriendFrame, ingestIncomingEnvelopeText } from "../sync/syncEngine";
 import { handleIncomingRelayPacket } from "../net/internalOnion/relayNetwork";
 
 const textDecoder = new TextDecoder();
@@ -42,9 +42,17 @@ export const startFriendInboxListener = (onChange?: () => void) => {
       } catch {
         return;
       }
-      if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return;
+      if (!parsed || typeof parsed !== "object") return;
       const kind = (parsed as { type?: unknown }).type;
-      if (kind !== "friend_req" && kind !== "friend_accept" && kind !== "friend_decline") {
+      if (
+        kind !== "friend_req" &&
+        kind !== "friend_accept" &&
+        kind !== "friend_decline"
+      ) {
+        const handledEnvelope = await ingestIncomingEnvelopeText(text);
+        if (handledEnvelope) {
+          onChangeCallback?.();
+        }
         return;
       }
       await handleIncomingFriendFrame(

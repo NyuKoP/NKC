@@ -47,9 +47,10 @@ import { chunkBuffer, encryptJsonRecord, validateStartKey } from "../crypto/vaul
 import { getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
 import { computeFriendId, decodeFriendCodeV1, encodeFriendCodeV1 } from "../security/friendCode";
 import { decodeInviteCodeV1 } from "../security/inviteCode";
-import { isInviteUsed, markInviteUsed } from "../security/inviteUseStore";
+import { runOneTimeInviteGuard } from "../security/inviteUseStore";
 import { checkAllowed, recordFail, recordSuccess } from "../security/rateLimit";
 import { applyTOFU } from "../security/trust";
+import { sha256 } from "../security/sha256";
 import {
   clearSession as clearStoredSession,
   getSession as getStoredSession,
@@ -900,15 +901,16 @@ export default function App() {
         eventHash,
       });
 
-      void sendCiphertext({
+      const routed = await sendCiphertext({
         convId: conv.id,
         messageId: header.eventId,
         ciphertext: envelopeJson,
         priority,
         ...buildRoutingMeta(partner),
-      }).catch((error) => {
-        console.error("Failed to route message", error);
       });
+      if (!routed.ok) {
+        throw new Error(routed.error ?? "Failed to route message");
+      }
 
       return { header, envelopeJson };
     },
@@ -1095,15 +1097,20 @@ export default function App() {
           eventHash,
         });
 
-        void sendCiphertext({
+        const routed = await sendCiphertext({
           convId: conv.id,
           messageId: header.eventId,
           ciphertext: envelopeJson,
           priority: "high",
           ...buildRoutingMeta(partner),
-        }).catch((error) => {
-          console.error("Failed to route message", error);
         });
+        if (!routed.ok) {
+          console.error("Failed to route message", routed.error);
+          addToast({
+            message:
+              "전송 경로가 준비되지 않아 메시지가 대기열에 남았습니다. 연결 후 자동 재시도됩니다.",
+          });
+        }
 
         const updatedConv: Conversation = {
           ...conv,
@@ -1131,14 +1138,19 @@ export default function App() {
 
     await saveMessage(message);
 
-    void sendCiphertext({
+    const routed = await sendCiphertext({
       convId: conv.id,
       messageId: message.id,
       ciphertext,
       priority: "high",
-    }).catch((error) => {
-      console.error("Failed to route message", error);
     });
+    if (!routed.ok) {
+      console.error("Failed to route message", routed.error);
+      addToast({
+        message:
+          "전송 경로가 준비되지 않아 메시지가 대기열에 남았습니다. 연결 후 자동 재시도됩니다.",
+      });
+    }
 
     const updatedConv: Conversation = {
       ...conv,
@@ -1940,12 +1952,17 @@ export default function App() {
       addToast({ message: "친구 코드 복사에 실패했습니다." });
     }
   };
-  const normalizeInviteCode = (value: string) =>
-    value.trim().replace(/\s+/g, "").toUpperCase();
+  const normalizeInviteCode = (value: string) => {
+    let next = value.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
+    next = next.replace(/^[\s"'`([{<]+/, "");
+    next = next.replace(/[\s"'`)\]}>:;,.!?]+$/, "");
+    return next.replace(/\s+/g, "").toUpperCase();
+  };
 
   const computeInviteFingerprint = async (normalized: string) => {
     if (!globalThis.crypto?.subtle) {
-      throw new Error("Crypto subtle is unavailable.");
+      const fallback = sha256(new TextEncoder().encode(normalized));
+      return encodeBase64Url(fallback).slice(0, 22);
     }
     const digest = await globalThis.crypto.subtle.digest(
       "SHA-256",
@@ -2172,13 +2189,13 @@ export default function App() {
 
     const rawInput = payload.code.trim();
     const normalized = normalizeInviteCode(rawInput);
-    const upper = rawInput.toUpperCase();
+    const prefixProbe = normalized.replace(/[^A-Z0-9]/g, "");
     let attemptKey = normalized || "empty";
     let inviteFingerprint: string | null = null;
     let invitePsk: Uint8Array | null = null;
     let oneTimeInvite = false;
 
-    if (upper.startsWith("NCK-") || upper.startsWith("NKC-")) {
+    if (prefixProbe.startsWith("NCK") || (prefixProbe.startsWith("NKC") && !prefixProbe.startsWith("NKC1"))) {
       recordFail(attemptKey);
       return {
         ok: false as const,
@@ -2187,7 +2204,7 @@ export default function App() {
       };
     }
 
-    if (normalized.startsWith("NKI1")) {
+    if (prefixProbe.startsWith("NKI1")) {
       try {
         inviteFingerprint = await computeInviteFingerprint(normalized);
         attemptKey = `invite:${inviteFingerprint}`;
@@ -2206,7 +2223,7 @@ export default function App() {
     }
 
     let friendCode = rawInput;
-    if (normalized.startsWith("NKI1")) {
+    if (prefixProbe.startsWith("NKI1")) {
       const decodedInvite = decodeInviteCodeV1(rawInput);
       if ("error" in decodedInvite) {
         recordFail(attemptKey);
@@ -2216,12 +2233,6 @@ export default function App() {
         return { ok: false as const, error: decodedInvite.error };
       }
       oneTimeInvite = Boolean(decodedInvite.oneTime);
-      if (oneTimeInvite && inviteFingerprint) {
-        if (await isInviteUsed(inviteFingerprint)) {
-          recordFail(attemptKey);
-          return { ok: false as const, error: "Invite already used." };
-        }
-      }
       try {
         invitePsk = decodeBase64Url(decodedInvite.psk);
       } catch {
@@ -2239,7 +2250,7 @@ export default function App() {
 
     const identityPubBytes = decodeBase64Url(decoded.identityPub);
     const friendId = computeFriendId(identityPubBytes);
-    const finalKey = normalized.startsWith("NKI1") ? attemptKey : `friend:${friendId}`;
+    const finalKey = prefixProbe.startsWith("NKI1") ? attemptKey : `friend:${friendId}`;
     if (finalKey !== attemptKey) {
       const gate = checkAllowed(finalKey);
       if (!gate.ok) {
@@ -2261,128 +2272,156 @@ export default function App() {
       // Best-effort self-check only; continue.
     }
 
-    try {
-      const existing = friends.find(
-        (friend) => friend.friendId === friendId || friend.identityPub === decoded.identityPub
-      );
+    const finalizeFriendAdd = async () => {
+      try {
+        const existing = friends.find(
+          (friend) => friend.friendId === friendId || friend.identityPub === decoded.identityPub
+        );
 
-      const tofu = applyTOFU(
-        existing?.identityPub && existing?.dhPub
-          ? { identityPub: existing.identityPub, dhPub: existing.dhPub }
-          : null,
-        { identityPub: decoded.identityPub, dhPub: decoded.dhPub }
-      );
+        const tofu = applyTOFU(
+          existing?.identityPub && existing?.dhPub
+            ? { identityPub: existing.identityPub, dhPub: existing.dhPub }
+            : null,
+          { identityPub: decoded.identityPub, dhPub: decoded.dhPub }
+        );
 
-      const now = Date.now();
-      if (!tofu.ok) {
-        if (existing) {
-          await saveProfile({
-            ...existing,
-            trust: {
-              pinnedAt: existing.trust?.pinnedAt ?? now,
-              status: "blocked",
-              reason: tofu.reason,
-            },
-            friendStatus: "blocked",
-            updatedAt: now,
-          });
-          await hydrateVault();
+        const now = Date.now();
+        if (!tofu.ok) {
+          if (existing) {
+            await saveProfile({
+              ...existing,
+              trust: {
+                pinnedAt: existing.trust?.pinnedAt ?? now,
+                status: "blocked",
+                reason: tofu.reason,
+              },
+              friendStatus: "blocked",
+              updatedAt: now,
+            });
+            await hydrateVault();
+          }
+          recordFail(finalKey);
+          return { ok: false as const, error: "Friend keys changed; blocked." };
         }
-        recordFail(finalKey);
-        return { ok: false as const, error: "Friend keys changed; blocked." };
-      }
 
-      const psk =
-        invitePsk ?? (payload.psk?.trim() ? new TextEncoder().encode(payload.psk.trim()) : null);
-      if (psk) {
-        await setFriendPsk(friendId, psk);
-      }
+        const psk =
+          invitePsk ?? (payload.psk?.trim() ? new TextEncoder().encode(payload.psk.trim()) : null);
+        if (psk) {
+          await setFriendPsk(friendId, psk);
+        }
 
-      const routingHints = sanitizeRoutingHints(
-        decoded.onionAddr || decoded.lokinetAddr || decoded.deviceId
-          ? {
-              onionAddr: decoded.onionAddr,
-              lokinetAddr: decoded.lokinetAddr,
-              deviceId: decoded.deviceId,
-            }
-          : undefined
-      );
-      if (!decoded.deviceId) {
-        console.warn("[friend] missing deviceId in friend code; marking unreachable", {
-          friendId,
-        });
-      }
+        const routingHints = sanitizeRoutingHints(
+          decoded.onionAddr || decoded.lokinetAddr || decoded.deviceId
+            ? {
+                onionAddr: decoded.onionAddr,
+                lokinetAddr: decoded.lokinetAddr,
+                deviceId: decoded.deviceId,
+              }
+            : undefined
+        );
+        if (!decoded.deviceId) {
+          console.warn("[friend] missing deviceId in friend code; marking unreachable", {
+            friendId,
+          });
+        }
 
-      const short = friendId.slice(0, 6);
-      const reachability = (() => {
-        if (decoded.deviceId) {
+        const short = friendId.slice(0, 6);
+        const reachability = (() => {
+          if (decoded.deviceId) {
+            return {
+              status: "ok" as const,
+              attempts: existing?.reachability?.attempts ?? 0,
+              lastAttemptAt: existing?.reachability?.lastAttemptAt,
+              nextAttemptAt: existing?.reachability?.nextAttemptAt,
+            };
+          }
           return {
-            status: "ok" as const,
+            status: "unreachable" as const,
+            lastError: "Missing deviceId in friend code",
             attempts: existing?.reachability?.attempts ?? 0,
-            lastAttemptAt: existing?.reachability?.lastAttemptAt,
+            lastAttemptAt: Date.now(),
             nextAttemptAt: existing?.reachability?.nextAttemptAt,
           };
+        })();
+
+        const friend: UserProfile = {
+          id: existing?.id ?? createId(),
+          friendId,
+          displayName: existing?.displayName ?? (short ? `Friend ${short}` : "Friend"),
+          status: existing?.status ?? "Friend",
+          theme: existing?.theme ?? "dark",
+          kind: "friend",
+          friendStatus: existing?.friendStatus ?? "request_out",
+          isFavorite: existing?.isFavorite ?? false,
+          identityPub: decoded.identityPub,
+          dhPub: decoded.dhPub,
+          routingHints,
+          primaryDeviceId: decoded.deviceId ?? existing?.primaryDeviceId,
+          trust: { pinnedAt: existing?.trust?.pinnedAt ?? now, status: "trusted" },
+          verification: existing?.verification ?? { status: "unverified" },
+          reachability,
+          pskHint: Boolean(psk) || existing?.pskHint,
+          createdAt: existing?.createdAt ?? now,
+          updatedAt: now,
+        };
+
+        await saveProfile(friend);
+
+        let requestSent = false;
+        try {
+          requestSent = await sendFriendRequestForFriend(friend);
+        } catch (error) {
+          console.warn("[friend] failed to send friend request", error);
         }
-        return {
-          status: "unreachable" as const,
-          lastError: "Missing deviceId in friend code",
-          attempts: existing?.reachability?.attempts ?? 0,
-          lastAttemptAt: Date.now(),
-          nextAttemptAt: existing?.reachability?.nextAttemptAt,
-        };
-      })();
+        if (!requestSent) {
+          await hydrateVault();
+          const hasDeviceId = Boolean(
+            friend.routingHints?.deviceId || friend.primaryDeviceId || friend.deviceId
+          );
+          if (!hasDeviceId) {
+            addToast({
+              message:
+                "친구는 추가되었지만 코드에 기기 ID가 없어 요청을 보낼 수 없습니다. 상대가 최신 버전에서 코드를 다시 복사해 보내야 합니다.",
+            });
+            return {
+              ok: true as const,
+            };
+          }
+          addToast({
+            message:
+              "친구를 목록에 추가했습니다. 요청 전송이 지연되어 백그라운드에서 재시도됩니다.",
+          });
+          return {
+            ok: true as const,
+          };
+        }
 
-      const friend: UserProfile = {
-        id: existing?.id ?? createId(),
-        friendId,
-        displayName: existing?.displayName ?? (short ? `Friend ${short}` : "Friend"),
-        status: existing?.status ?? "Friend",
-        theme: existing?.theme ?? "dark",
-        kind: "friend",
-        friendStatus: existing?.friendStatus ?? "request_out",
-        isFavorite: existing?.isFavorite ?? false,
-        identityPub: decoded.identityPub,
-        dhPub: decoded.dhPub,
-        routingHints,
-        primaryDeviceId: decoded.deviceId ?? existing?.primaryDeviceId,
-        trust: { pinnedAt: existing?.trust?.pinnedAt ?? now, status: "trusted" },
-        verification: existing?.verification ?? { status: "unverified" },
-        reachability,
-        pskHint: Boolean(psk) || existing?.pskHint,
-        createdAt: existing?.createdAt ?? now,
-        updatedAt: now,
-      };
+        await hydrateVault();
+        devLog("friend:add:success", { id: friend.id, friendId });
 
-      await saveProfile(friend);
-
-      let requestSent = false;
-      try {
-        requestSent = await sendFriendRequestForFriend(friend);
+        recordSuccess(finalKey);
+        return { ok: true as const };
       } catch (error) {
-        console.warn("[friend] failed to send friend request", error);
-      }
-      if (!requestSent) {
+        console.error("Friend:add failed", error);
         recordFail(finalKey);
-        return {
-          ok: false as const,
-          error: "친구 요청 전송에 실패했습니다. 잠시 후 다시 시도해 주세요.",
-        };
+        return { ok: false as const, error: "Failed to add friend." };
       }
+    };
 
-      await hydrateVault();
-      devLog("friend:add:success", { id: friend.id, friendId });
-
-      if (oneTimeInvite && inviteFingerprint) {
-        await markInviteUsed(inviteFingerprint);
+    if (oneTimeInvite && inviteFingerprint) {
+      const guarded = await runOneTimeInviteGuard(
+        inviteFingerprint,
+        finalizeFriendAdd,
+        (result) => result.ok
+      );
+      if (!guarded.ok) {
+        recordFail(finalKey);
+        return { ok: false as const, error: "Invite already used." };
       }
-
-      recordSuccess(finalKey);
-      return { ok: true as const };
-    } catch (error) {
-      console.error("Friend:add failed", error);
-      recordFail(finalKey);
-      return { ok: false as const, error: "Failed to add friend." };
+      return guarded.value;
     }
+
+    return finalizeFriendAdd();
   };
 
   const currentConversation = ui.selectedConvId

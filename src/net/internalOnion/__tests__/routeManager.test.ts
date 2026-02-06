@@ -90,6 +90,31 @@ describe("InternalOnionRouteManager", () => {
     manager.stop();
   });
 
+  it("marks route ready when at least one relay is available", async () => {
+    const { manager } = createManager({
+      relayPeerIds: ["peer-1"],
+      onEmit: (instance, message) => {
+        if (message.type !== "HOP_HELLO") return;
+        instance.handleHelloAck({
+          type: "HOP_ACK",
+          circuitId: message.circuitId,
+          hopIndex: message.hopIndex,
+          ts: Date.now(),
+          relayPeerId: "peer-1",
+          ok: true,
+        });
+      },
+    });
+
+    const built = await manager.start(3);
+    expect(built).toBe(true);
+    expect(manager.getState().status).toBe("ready");
+    expect(manager.getState().establishedHops).toBe(1);
+    expect(manager.getState().hops[0]?.status).toBe("ok");
+    expect(manager.getState().hops[1]?.status).toBe("pending");
+    manager.stop();
+  });
+
   it("transitions ready -> degraded when keepalive misses exceed threshold", async () => {
     const { manager } = createManager({
       relayPeerIds: ["peer-1", "peer-2", "peer-3"],

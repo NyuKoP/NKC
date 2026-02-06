@@ -285,7 +285,7 @@ export class InternalOnionRouteManager {
     const allPeers = dedupePeerIds(this.getRelayPeerIds());
     const localPeerId = this.getLocalPeerId().trim();
     const selectedPeerIds = allPeers.filter((peerId) => peerId !== localPeerId).slice(0, desiredHops);
-    if (selectedPeerIds.length < desiredHops) {
+    if (selectedPeerIds.length === 0) {
       const waitingState: InternalOnionRouteState = {
         desiredHops,
         establishedHops: 0,
@@ -367,17 +367,19 @@ export class InternalOnionRouteManager {
     }
 
     this.rebuildBackoffIndex = 0;
+    const finalizedHops = this.routeState.hops.map(
+      (hop): InternalOnionHopState => ({
+        ...hop,
+        status: hop.status === "dead" ? "pending" : hop.status,
+      })
+    );
+    const establishedHops = computeEstablishedHops(finalizedHops);
     this.setRouteState({
       desiredHops,
-      establishedHops: desiredHops,
+      establishedHops,
       status: "ready",
       circuitId,
-      hops: this.routeState.hops.map(
-        (hop): InternalOnionHopState => ({
-          ...hop,
-          status: "ok" as const,
-        })
-      ),
+      hops: finalizedHops,
       updatedAtTs: this.now(),
     });
     this.startKeepaliveLoop();

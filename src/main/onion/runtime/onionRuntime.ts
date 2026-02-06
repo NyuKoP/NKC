@@ -34,9 +34,17 @@ const findAvailablePort = async () => {
   throw new Error("No available SOCKS port");
 };
 
-const waitForPort = async (port: number, timeoutMs = 30000) => {
+const waitForPort = async (
+  port: number,
+  timeoutMs = 30000,
+  getFailure?: () => string | null
+) => {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
+    const failure = getFailure?.();
+    if (failure) {
+      throw new Error(failure);
+    }
     const ok = await new Promise<boolean>((resolve) => {
       const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
         socket.end();
@@ -46,6 +54,10 @@ const waitForPort = async (port: number, timeoutMs = 30000) => {
     });
     if (ok) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  const failure = getFailure?.();
+  if (failure) {
+    throw new Error(failure);
   }
   throw new Error(`SOCKS proxy not ready (port ${port})`);
 };
@@ -79,7 +91,15 @@ export class OnionRuntime {
         await this.lokinetManager.start(binaryPath, port, dataDir);
       }
 
-      await waitForPort(port);
+      await waitForPort(port, 30000, () => {
+        if (network === "tor") {
+          const state = this.torManager.getState();
+          if (!state.running) {
+            return state.error ?? "Tor exited before SOCKS became ready";
+          }
+        }
+        return null;
+      });
       await session.defaultSession.setProxy({ proxyRules: `socks5://127.0.0.1:${port}` });
       this.status = { status: "running", network, socksPort: port };
     } catch (error) {

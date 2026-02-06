@@ -688,6 +688,94 @@ const applyConversationEvent = async (body: { type: "conv"; conv: Conversation }
   await saveConversation(merged);
 };
 
+const isEnvelopeLike = (value: unknown): value is Envelope => {
+  if (!value || typeof value !== "object") return false;
+  const envelope = value as Partial<Envelope>;
+  const header = envelope.header as Partial<EnvelopeHeader> | undefined;
+  if (!header || typeof header !== "object") return false;
+  return (
+    typeof header.convId === "string" &&
+    typeof header.eventId === "string" &&
+    typeof header.authorDeviceId === "string" &&
+    Number.isFinite(header.ts) &&
+    Number.isFinite(header.lamport) &&
+    typeof envelope.ciphertext === "string" &&
+    typeof envelope.nonce === "string" &&
+    typeof envelope.sig === "string"
+  );
+};
+
+const ensurePeerContextFromConversation = async (convId: string) => {
+  const existing = peerContexts.get(convId);
+  if (existing?.identityPub && existing?.dhPub) return true;
+
+  const [conversations, profiles, localUserId] = await Promise.all([
+    listConversations(),
+    listProfiles(),
+    resolveLocalUserId(),
+  ]);
+  if (!localUserId) return false;
+
+  const conv = conversations.find((item) => item.id === convId) ?? null;
+  if (!conv) return false;
+  const isDirect =
+    !(conv.type === "group" || conv.participants.length > 2) &&
+    conv.participants.length === 2;
+  if (!isDirect) return false;
+
+  const partnerId = conv.participants.find((id) => id && id !== localUserId) ?? null;
+  if (!partnerId) return false;
+  const partner =
+    profiles.find((profile) => profile.id === partnerId && profile.kind === "friend") ?? null;
+  if (!partner?.identityPub || !partner.dhPub) return false;
+
+  peerContexts.set(conv.id, {
+    ...existing,
+    kind: "friend",
+    friendKeyId: existing?.friendKeyId ?? partner.friendId ?? partner.id,
+    identityPub: existing?.identityPub ?? partner.identityPub,
+    dhPub: existing?.dhPub ?? partner.dhPub,
+    onionAddr: existing?.onionAddr ?? partner.routingHints?.onionAddr,
+    lokinetAddr: existing?.lokinetAddr ?? partner.routingHints?.lokinetAddr,
+    peerDeviceId:
+      existing?.peerDeviceId ??
+      partner.routingHints?.deviceId ??
+      partner.primaryDeviceId ??
+      partner.deviceId,
+  });
+  return true;
+};
+
+export const ingestIncomingEnvelopeText = async (payloadText: string) => {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payloadText);
+  } catch {
+    return false;
+  }
+  if (!isEnvelopeLike(parsed)) return false;
+
+  const envelope = parsed as Envelope;
+  const convId = envelope.header.convId;
+  if (!convId) return false;
+  const hasPeer = await ensurePeerContextFromConversation(convId);
+  if (!hasPeer) {
+    console.warn("[sync] incoming envelope dropped: peer context unavailable", { convId });
+    return false;
+  }
+
+  const event: EnvelopeEvent = {
+    eventId: envelope.header.eventId,
+    convId: envelope.header.convId,
+    authorDeviceId: envelope.header.authorDeviceId,
+    lamport: envelope.header.lamport,
+    ts: envelope.header.ts,
+    envelopeJson: payloadText,
+  };
+  await applyEnvelopeEvents(convId, [event]);
+  return true;
+};
+
 const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) => {
   const unique = new Map<string, EnvelopeEvent>();
   for (const event of events) {
