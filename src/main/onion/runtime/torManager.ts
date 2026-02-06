@@ -73,29 +73,64 @@ export class TorManager {
       args = ["--SocksPort", `127.0.0.1:${socksPort}`, "--DataDirectory", dataDir];
     }
     const bundleRoot = path.dirname(path.dirname(binaryPath));
+    await this.clearMacQuarantine(bundleRoot);
     const hasBundleDefaults = fsSync.existsSync(path.join(bundleRoot, "data", "torrc-defaults"));
-    this.process = spawn(binaryPath, args, {
+    const child = spawn(binaryPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: hasBundleDefaults ? bundleRoot : undefined,
     });
-    this.state = { running: true, pid: this.process.pid };
-    this.process.stdout?.on("data", (chunk) => this.appendLog(chunk));
-    this.process.stderr?.on("data", (chunk) => this.appendLog(chunk));
-    this.process.on("error", (error) => {
+    this.process = child;
+    this.state = { running: true, pid: child.pid };
+    child.stdout?.on("data", (chunk) => this.appendLog(chunk));
+    child.stderr?.on("data", (chunk) => this.appendLog(chunk));
+    child.on("error", (error) => {
+      // Ignore stale events from a process that has already been replaced.
+      if (this.process !== child) return;
       const detail = error instanceof Error ? error.message : String(error);
       this.setFailure(`Tor spawn failed: ${detail}`);
     });
-    this.process.on("exit", (code, signal) => {
+    child.on("exit", (code, signal) => {
+      // Ignore stale events from a process that has already been replaced/stopped.
+      if (this.process !== child) return;
       const tail = this.logTail ? ` | ${this.logTail}` : "";
       this.setFailure(`Tor exited before ready (code=${code ?? "null"}, signal=${signal ?? "none"})${tail}`);
     });
   }
 
   async stop() {
-    if (!this.process) return;
-    this.process.kill();
+    const child = this.process;
+    if (!child) {
+      this.state = { running: false };
+      return;
+    }
+    // Mark stopped first so late exit events cannot clobber newer process state.
     this.process = null;
     this.state = { running: false };
+    await new Promise<void>((resolve) => {
+      let finished = false;
+      const done = () => {
+        if (finished) return;
+        finished = true;
+        resolve();
+      };
+      child.once("exit", () => done());
+      child.once("error", () => done());
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        done();
+        return;
+      }
+      setTimeout(() => {
+        if (finished) return;
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+        setTimeout(done, 300);
+      }, 3000);
+    });
   }
 
   getState() {
