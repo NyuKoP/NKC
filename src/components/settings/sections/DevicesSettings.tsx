@@ -35,10 +35,6 @@ type DevicesSettingsProps = {
   linkStatusClass: string;
   linkMessage: string;
   onSubmitLink: () => void | Promise<void>;
-  rendezvousBaseUrl: string;
-  setRendezvousBaseUrl: (value: string) => void;
-  rendezvousUseOnion: boolean;
-  setRendezvousUseOnion: (value: boolean) => void;
   hostRendezvousStatus: RendezvousPairingStatus;
   guestRendezvousStatus: RendezvousPairingStatus;
 };
@@ -80,10 +76,6 @@ export default function DevicesSettings({
   linkStatusClass,
   linkMessage,
   onSubmitLink,
-  rendezvousBaseUrl,
-  setRendezvousBaseUrl,
-  rendezvousUseOnion,
-  setRendezvousUseOnion,
   hostRendezvousStatus,
   guestRendezvousStatus,
 }: DevicesSettingsProps) {
@@ -135,16 +127,17 @@ export default function DevicesSettings({
         </div>
         <div className="mt-4 grid gap-2">
           <input
-            value={rendezvousBaseUrl}
-            onChange={(event) => setRendezvousBaseUrl(event.target.value)}
+            type="hidden"
+            value=""
+            readOnly
             placeholder="https://example.com"
             className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
           />
-          <label className="flex items-center gap-2 text-xs text-nkc-text">
+          <label className="hidden items-center gap-2 text-xs text-nkc-text">
             <input
               type="checkbox"
-              checked={rendezvousUseOnion}
-              onChange={(event) => setRendezvousUseOnion(event.target.checked)}
+              checked={false}
+              readOnly
             />
             <span>{t("신호 요청을 Onion 프록시로 전송", "Send signaling through Onion proxy")}</span>
           </label>
