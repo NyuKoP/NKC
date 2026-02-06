@@ -1,28 +1,78 @@
-name: NodeJS with Webpack
+name: CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "main" ]
+    branches: ["main"]
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
+  verify:
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        node-version: [20.x, 22.x]
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: ["22.x"]
 
     steps:
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v4
-      with:
-        node-version: ${{ matrix.node-version }}
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
 
-    - name: Build
-      run: |
-        npm install
-        npm run build
+      - name: Install
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test -- --run
+
+      - name: Build
+        run: npm run build
+
+  package:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ${{ matrix.os }}
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        node-version: ["22.x"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Package Linux
+        if: runner.os == 'Linux'
+        run: npm run dist:linux
+
+      - name: Package macOS
+        if: runner.os == 'macOS'
+        run: npm run dist:mac
+
+      - name: Package Windows
+        if: runner.os == 'Windows'
+        run: npm run dist:win
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ runner.os }}
+          path: release/**
+          if-no-files-found: error

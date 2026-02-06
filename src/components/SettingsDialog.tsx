@@ -44,6 +44,7 @@ import type { OnionStatus } from "../net/onionControl";
 import { useNetConfigStore } from "../net/netConfigStore";
 import { getRouteInfo } from "../net/routeInfo";
 import type { OnionNetwork } from "../net/netConfig";
+import type { NetworkMode } from "../net/mode";
 import {
   getHopsProgressText,
   getRouteStatusText,
@@ -100,6 +101,17 @@ type SettingsDialogProps = {
   onWipe: () => void;
 };
 
+const getConnectionChoiceFromConfig = (
+  mode: NetworkMode,
+  onionNetwork: OnionNetwork
+): ConnectionChoice => {
+  if (mode === "onionRouter") {
+    return onionNetwork === "lokinet" ? "lokinetOnion" : "torOnion";
+  }
+  if (mode === "selfOnion") return "selfOnion";
+  return "directP2P";
+};
+
 export default function SettingsDialog({
   open,
   onOpenChange,
@@ -154,6 +166,9 @@ export default function SettingsDialog({
   // network
   const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
   const [onionNetworkDraft, setOnionNetworkDraft] = useState(netConfig.onionSelectedNetwork);
+  const [connectionChoiceDraft, setConnectionChoiceDraft] = useState<ConnectionChoice>(
+    getConnectionChoiceFromConfig(netConfig.mode, netConfig.onionSelectedNetwork)
+  );
   const [onionStatus, setOnionStatus] = useState<OnionStatus | null>(null);
   const [proxyUrlDraft, setProxyUrlDraft] = useState(netConfig.onionProxyUrl);
   const [proxyUrlError, setProxyUrlError] = useState("");
@@ -243,6 +258,9 @@ export default function SettingsDialog({
       setView("main");
       setOnionEnabledDraft(netConfig.onionEnabled);
       setOnionNetworkDraft(netConfig.onionSelectedNetwork);
+      setConnectionChoiceDraft(
+        getConnectionChoiceFromConfig(netConfig.mode, netConfig.onionSelectedNetwork)
+      );
       setProxyUrlDraft(netConfig.onionProxyUrl);
       setProxyUrlError("");
       setPrefsLoaded(false);
@@ -260,7 +278,13 @@ export default function SettingsDialog({
         });
     }
     prevOpenRef.current = open;
-  }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork, netConfig.onionProxyUrl]);
+  }, [
+    open,
+    netConfig.onionEnabled,
+    netConfig.onionSelectedNetwork,
+    netConfig.onionProxyUrl,
+    netConfig.mode,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -496,16 +520,20 @@ export default function SettingsDialog({
   };
 
   const handleSaveOnion = async () => {
+    const nextMode: typeof netConfig.mode =
+      connectionChoiceDraft === "directP2P"
+        ? "directP2P"
+        : connectionChoiceDraft === "selfOnion"
+          ? "selfOnion"
+          : "onionRouter";
+    const nextOnionNetwork: OnionNetwork =
+      connectionChoiceDraft === "lokinetOnion" ? "lokinet" : "tor";
+    const nextOnionEnabled = nextMode === "onionRouter" ? onionEnabledDraft : false;
     try {
-      if (netConfig.mode === "onionRouter") {
-        await setOnionMode(onionEnabledDraft, onionNetworkDraft);
-        setOnionEnabled(onionEnabledDraft);
-        setOnionNetwork(onionNetworkDraft);
-      } else {
-        await setOnionMode(false, onionNetworkDraft);
-        setOnionEnabled(false);
-        setOnionNetwork(onionNetworkDraft);
-      }
+      setMode(nextMode);
+      setOnionNetwork(nextOnionNetwork);
+      setOnionEnabled(nextOnionEnabled);
+      await setOnionMode(nextOnionEnabled, nextOnionNetwork);
       setSaveMessage(t("저장됨", "Saved"));
     } catch (error) {
       console.error("Failed to save onion settings", error);
@@ -542,52 +570,23 @@ export default function SettingsDialog({
     }
   };
 
-  const handleConnectionChoiceChange = async (choice: ConnectionChoice) => {
+  const handleConnectionChoiceChange = (choice: ConnectionChoice) => {
+    setConnectionChoiceDraft(choice);
     if (choice === "directP2P") {
-      setMode("directP2P");
       setOnionEnabledDraft(false);
-      setOnionEnabled(false);
-      try {
-        await setOnionMode(false, onionNetworkDraft);
-      } catch (error) {
-        console.error("Failed to stop onion runtime", error);
-      }
       return;
     }
     if (choice === "selfOnion") {
-      setMode("selfOnion");
       setOnionEnabledDraft(false);
-      setOnionEnabled(false);
-      try {
-        await setOnionMode(false, onionNetworkDraft);
-      } catch (error) {
-        console.error("Failed to stop onion runtime", error);
-      }
       return;
     }
     if (choice === "torOnion") {
-      setMode("onionRouter");
-      setOnionNetwork("tor");
       setOnionNetworkDraft("tor");
       setOnionEnabledDraft(true);
-      setOnionEnabled(true);
-      try {
-        await setOnionMode(true, "tor");
-      } catch (error) {
-        console.error("Failed to start onion runtime", error);
-      }
       return;
     }
-    setMode("onionRouter");
-    setOnionNetwork("lokinet");
     setOnionNetworkDraft("lokinet");
     setOnionEnabledDraft(true);
-    setOnionEnabled(true);
-    try {
-      await setOnionMode(true, "lokinet");
-    } catch (error) {
-      console.error("Failed to start onion runtime", error);
-    }
   };
 
   const formatBytes = (value: number) => {
@@ -852,7 +851,14 @@ export default function SettingsDialog({
     return t("경로: 대기", "Route: idle");
   };
 
-
+  const draftMode: typeof netConfig.mode =
+    connectionChoiceDraft === "directP2P"
+      ? "directP2P"
+      : connectionChoiceDraft === "selfOnion"
+        ? "selfOnion"
+        : "onionRouter";
+  const draftOnionNetwork: OnionNetwork =
+    connectionChoiceDraft === "lokinetOnion" ? "lokinet" : "tor";
   const routeInfo = getRouteInfo(netConfig.mode, netConfig, internalOnionRoute);
   const runtime = onionStatus?.runtime;
   const torAddress = userProfileState?.routingHints?.onionAddr ?? "";
@@ -985,31 +991,24 @@ export default function SettingsDialog({
   const torErrorLabel = formatOnionError(netConfig.tor.error);
   const lokinetErrorLabel = formatOnionError(netConfig.lokinet.error);
 
-  const connectionChoice: ConnectionChoice =
-    netConfig.mode === "onionRouter"
-      ? netConfig.onionSelectedNetwork === "lokinet"
-        ? "lokinetOnion"
-        : "torOnion"
-      : netConfig.mode === "selfOnion"
-        ? "selfOnion"
-        : "directP2P";
   const canSaveOnion =
+    draftMode !== "onionRouter" ||
     !onionEnabledDraft ||
-    (onionNetworkDraft === "tor" ? netConfig.tor.installed : netConfig.lokinet.installed);
+    (draftOnionNetwork === "tor" ? netConfig.tor.installed : netConfig.lokinet.installed);
 
   const connectionDescription =
-    netConfig.mode === "onionRouter"
+    draftMode === "onionRouter"
       ? t(
           "외부 Onion: Tor 또는 Lokinet 경로를 사용합니다.",
           "External Onion: uses a Tor or Lokinet route."
         )
-      : netConfig.mode === "directP2P"
+      : draftMode === "directP2P"
         ? t(
             "Direct P2P: 프록시 없이 직접 연결을 시도합니다.",
             "Direct P2P: attempts a direct connection without a proxy."
           )
       : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
-  const showDirectWarning = netConfig.mode === "directP2P";
+  const showDirectWarning = draftMode === "directP2P";
   const proxyAuto = !proxyUrlDraft.trim();
   const prefsDisabled = !prefsLoaded;
   const backgroundDisabled = !appPrefs.background.enabled || appPrefs.login.closeToExit;
@@ -1291,8 +1290,9 @@ export default function SettingsDialog({
             <NetworkSettings
               t={t}
               onBack={() => setView("main")}
-              connectionChoice={connectionChoice}
+              connectionChoice={connectionChoiceDraft}
               onConnectionChoiceChange={handleConnectionChoiceChange}
+              draftMode={draftMode}
               onionStatus={onionStatus}
               getDotState={getDotState}
               getDotClass={getDotClass}

@@ -2,6 +2,7 @@
 import { Clock } from "lucide-react";
 import type { OnionStatus } from "../../../net/onionControl";
 import type { NetConfig, OnionNetwork } from "../../../net/netConfig";
+import type { NetworkMode } from "../../../net/mode";
 import type { InternalOnionHopState } from "../../../net/internalOnion/types";
 import type { ConnectionChoice } from "../settingsTypes";
 import SettingsBackHeader from "../SettingsBackHeader";
@@ -15,6 +16,7 @@ type NetworkSettingsProps = {
   onBack: () => void;
   connectionChoice: ConnectionChoice;
   onConnectionChoiceChange: (choice: ConnectionChoice) => void | Promise<void>;
+  draftMode: NetworkMode;
   onionStatus: OnionStatus | null;
   getDotState: (kind: "tor" | "lokinet", status: OnionStatus | null) => DotState;
   getDotClass: (state: DotState) => string;
@@ -80,6 +82,7 @@ export default function NetworkSettings({
   onBack,
   connectionChoice,
   onConnectionChoiceChange,
+  draftMode,
   onionStatus,
   getDotState,
   getDotClass,
@@ -543,7 +546,7 @@ export default function NetworkSettings({
           <span>{routeInfo.description}</span>
         </div>
         <div className="mt-3 text-xs text-nkc-muted">{connectionDescription}</div>
-        {netConfig.mode === "selfOnion" ? (
+        {draftMode === "selfOnion" ? (
           <div className="mt-4 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2">
             <div className="flex items-center justify-between gap-3">
               <div>
@@ -603,7 +606,7 @@ export default function NetworkSettings({
         ) : null}
       </section>
 
-      {netConfig.mode === "onionRouter" ? (
+      {draftMode === "onionRouter" ? (
         <>
           <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
             <div className="flex items-center justify-between gap-4">
@@ -671,7 +674,7 @@ export default function NetworkSettings({
           type="button"
           onClick={() => void onSaveOnion()}
           className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={netConfig.mode === "onionRouter" && onionEnabledDraft && !canSaveOnion}
+          disabled={draftMode === "onionRouter" && onionEnabledDraft && !canSaveOnion}
         >
           {t("Save", "Save")}
         </button>

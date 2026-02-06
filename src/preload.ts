@@ -83,6 +83,14 @@ contextBridge.exposeInMainWorld("appControls", {
   hide: () => ipcRenderer.invoke("app:hide") as Promise<void>,
   quit: () => ipcRenderer.invoke("app:quit") as Promise<void>,
   syncNow: () => ipcRenderer.invoke("sync:manual") as Promise<void>,
+  reportSyncResult: (payload: { requestId: string; ok: boolean; error?: string }) => {
+    ipcRenderer.send("sync:result", payload);
+  },
+  onSyncRun: (cb: (payload: unknown) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
+    ipcRenderer.on("sync:run", handler);
+    return () => ipcRenderer.removeListener("sync:run", handler);
+  },
   onSyncStatus: (cb: (payload: unknown) => void) => {
     const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
     ipcRenderer.on("sync:status", handler);
