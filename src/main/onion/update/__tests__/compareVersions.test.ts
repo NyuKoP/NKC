@@ -25,13 +25,17 @@ describe("compareVersions", () => {
       ],
     });
 
-    expect(candidate).toMatchObject({
-      version: "0.9.11",
-      asset: {
-        name: "lokinet-0.9.11-win64.exe",
-      },
-      sha256: "0a4a972e1f2d7d2af7f6aebcd15953d98f4ff53b5e823a7d7aa2953eeea2c8d2",
-    });
+    if (process.platform === "win32" && process.arch === "x64") {
+      expect(candidate).toMatchObject({
+        version: "0.9.11",
+        asset: {
+          name: "lokinet-0.9.11-win64.exe",
+        },
+        sha256: "0a4a972e1f2d7d2af7f6aebcd15953d98f4ff53b5e823a7d7aa2953eeea2c8d2",
+      });
+    } else {
+      expect(candidate).toBeNull();
+    }
   });
 
   it("returns null when release has no current-platform asset", () => {
@@ -46,13 +50,13 @@ describe("compareVersions", () => {
       ],
     });
 
-    if (process.platform === "win32") {
-      expect(candidate).toBeNull();
-    } else {
+    if (process.platform === "linux" && process.arch === "x64") {
       expect(candidate).toMatchObject({
         version: "0.9.14",
         asset: { name: "lokinet-linux-amd64-v0.9.14.tar.xz" },
       });
+    } else {
+      expect(candidate).toBeNull();
     }
   });
 });
