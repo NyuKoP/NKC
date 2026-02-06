@@ -48,7 +48,7 @@ export const setPrivacyPrefs = async (prefs: PrivacyPreferences) => {
 export const getConvAllowDirect = async (convId: string) => {
   const store = getPublicStore();
   const raw = await store.get(`${CONV_DIRECT_ALLOW_PREFIX}${convId}`);
-  return raw === "true";
+  return raw !== "false";
 };
 
 export const setConvAllowDirect = async (convId: string, value: boolean) => {

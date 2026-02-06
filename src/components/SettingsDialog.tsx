@@ -51,34 +51,12 @@ import {
 } from "../stores/internalOnionRouteStore";
 import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus";
 import { validateProxyUrl } from "../net/proxyControl";
-import { getOrCreateDeviceId } from "../security/deviceRole";
-import { encodeBase64Url } from "../security/base64url";
-import { getDhPublicKey, getIdentityPublicKey } from "../security/identityKeys";
-import {
-  approvePairingRequest,
-  createSyncCode,
-  onPairingRequest,
-  onPairingResult,
-  rejectPairingRequest,
-  submitSyncCode,
-  type PairingRequest,
-  type PairingResult,
-  type SyncCodeState,
-} from "../devices/devicePairing";
-import {
-  createDeviceAddedEvent,
-  storeDeviceApproval,
-  verifyDeviceAddedEvent,
-} from "../devices/deviceApprovals";
-import {
-  startDeviceSyncAsApprover,
-  startDeviceSyncAsInitiator,
-} from "../devices/deviceSync";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
 import StartKey from "./StartKey";
 import SettingsBackHeader from "./settings/SettingsBackHeader";
 import DevicesSettings from "./settings/sections/DevicesSettings";
+import { useDeviceSyncSettings } from "./settings/hooks/useDeviceSyncSettings";
 import LoginSettings from "./settings/sections/LoginSettings";
 import FriendsSettings from "./settings/sections/FriendsSettings";
 import NetworkSettings from "./settings/sections/NetworkSettings";
@@ -249,79 +227,6 @@ export default function SettingsDialog({
 
   // misc
   const [saveMessage, setSaveMessage] = useState("");
-  const [syncCodeState, setSyncCodeState] = useState<SyncCodeState | null>(null);
-  const [syncCodeNow, setSyncCodeNow] = useState(Date.now());
-  const [pairingRequest, setPairingRequest] = useState<PairingRequest | null>(null);
-  const [pairingRequestError, setPairingRequestError] = useState("");
-  const [pairingRequestBusy, setPairingRequestBusy] = useState(false);
-  const [linkCodeDraft, setLinkCodeDraft] = useState("");
-  const [linkRequestId, setLinkRequestId] = useState<string | null>(null);
-  const [linkStatus, setLinkStatus] = useState<
-    "idle" | "pending" | "approved" | "rejected" | "error"
-  >("idle");
-  const [linkMessage, setLinkMessage] = useState("");
-  const [linkBusy, setLinkBusy] = useState(false);
-  const linkTimeoutRef = useRef<number | null>(null);
-
-  const handleApprovedResult = useCallback(async (result: PairingResult) => {
-    setLinkBusy(false);
-    const event = result.event;
-    if (!event) {
-      setLinkStatus("error");
-      setLinkMessage(t("승인 이벤트를 받지 못했습니다.", "Missing approval event."));
-      return;
-    }
-    try {
-      const localDeviceId = getOrCreateDeviceId();
-      if (event.deviceId !== localDeviceId) {
-        setLinkStatus("error");
-        setLinkMessage(t("승인 대상이 이 기기가 아닙니다.", "Approval does not match this device."));
-        return;
-      }
-      const [identityPub, dhPub] = await Promise.all([
-        getIdentityPublicKey(),
-        getDhPublicKey(),
-      ]);
-      const localIdentity = encodeBase64Url(identityPub);
-      const localDh = encodeBase64Url(dhPub);
-      if (event.identityPub !== localIdentity || event.dhPub !== localDh) {
-        setLinkStatus("error");
-        setLinkMessage(t("기기 키가 일치하지 않습니다.", "Device keys do not match."));
-        return;
-      }
-      if (!event.approvedBy || !event.approverIdentityPub || !event.approverDhPub) {
-        setLinkStatus("error");
-        setLinkMessage(t("승인 정보가 누락되었습니다.", "Approval data is missing."));
-        return;
-      }
-      const verified = await verifyDeviceAddedEvent(event);
-      if (!verified) {
-        setLinkStatus("error");
-        setLinkMessage(
-          t("승인 서명 검증에 실패했습니다.", "Approval signature verification failed.")
-        );
-        return;
-      }
-      const stored = await storeDeviceApproval(event);
-      if (!stored) {
-        setLinkStatus("error");
-        setLinkMessage(t("승인 정보를 저장하지 못했습니다.", "Failed to store approval."));
-        return;
-      }
-      await startDeviceSyncAsInitiator({
-        deviceId: event.approvedBy,
-        identityPub: event.approverIdentityPub,
-        dhPub: event.approverDhPub,
-        syncTransportPolicy: appPrefs.deviceSync.transportPolicy,
-      });
-      setLinkStatus("approved");
-      setLinkMessage(t("승인이 완료되었습니다. 동기화를 시작합니다.", "Approved. Starting sync."));
-    } catch (error) {
-      console.error("Failed to process approval result", error);
-      setLinkStatus("error");
-      setLinkMessage(t("승인 처리에 실패했습니다.", "Failed to process approval."));
-    }
-  }, [appPrefs.deviceSync.transportPolicy, t]);
 
   useEffect(() => {
     setDisplayName(user.displayName);
@@ -356,51 +261,6 @@ export default function SettingsDialog({
     }
     prevOpenRef.current = open;
   }, [open, netConfig.onionEnabled, netConfig.onionSelectedNetwork, netConfig.onionProxyUrl]);
-
-  useEffect(() => {
-    if (view !== "devices") return;
-    const unsubscribeRequests = onPairingRequest((request) => {
-      setPairingRequestError("");
-      setPairingRequest(request);
-      setSyncCodeState((prev) => {
-        if (!prev || prev.code !== request.code) return prev;
-        return { ...prev, used: true };
-      });
-    });
-    const unsubscribeResults = onPairingResult((result) => {
-      if (!linkRequestId || result.requestId !== linkRequestId) return;
-      if (linkTimeoutRef.current) {
-        window.clearTimeout(linkTimeoutRef.current);
-        linkTimeoutRef.current = null;
-      }
-      if (result.status === "approved") {
-        void handleApprovedResult(result);
-        return;
-      }
-      setLinkBusy(false);
-      if (result.status === "rejected") {
-        setLinkStatus("rejected");
-        setLinkMessage(result.message || t("요청이 거절되었습니다.", "Request rejected."));
-        return;
-      }
-      setLinkStatus("error");
-      setLinkMessage(result.message || t("연결에 실패했습니다.", "Connection failed."));
-    });
-    return () => {
-      unsubscribeRequests();
-      unsubscribeResults();
-      if (linkTimeoutRef.current) {
-        window.clearTimeout(linkTimeoutRef.current);
-        linkTimeoutRef.current = null;
-      }
-    };
-  }, [handleApprovedResult, linkRequestId, t, view]);
-
-  useEffect(() => {
-    if (!syncCodeState) return;
-    const timer = window.setInterval(() => setSyncCodeNow(Date.now()), 1000);
-    return () => window.clearInterval(timer);
-  }, [syncCodeState]);
 
   useEffect(() => {
     if (!open) return;
@@ -479,14 +339,31 @@ export default function SettingsDialog({
     }
   };
 
-  const updateAppPrefs = async (patch: AppPreferencesPatch) => {
+  const updateAppPrefs = useCallback(async (patch: AppPreferencesPatch) => {
     try {
       const next = await setAppPrefs(patch);
       setAppPrefsState(next);
     } catch (e) {
       console.error("Failed to save app prefs", e);
     }
-  };
+  }, []);
+
+  const setDeviceSyncTransportPolicy = useCallback(
+    async (transportPolicy: DeviceSyncTransportPolicy) => {
+      await updateAppPrefs({ deviceSync: { transportPolicy } });
+    },
+    [updateAppPrefs]
+  );
+
+  const deviceSyncSettings = useDeviceSyncSettings({
+    t,
+    view,
+    open,
+    onionProxyUrl: netConfig.onionProxyUrl,
+    deviceSyncTransportPolicy: appPrefs.deviceSync.transportPolicy,
+    onChangeDeviceSyncTransportPolicy: setDeviceSyncTransportPolicy,
+    addToast,
+  });
 
   const refreshOnionStatus = async () => {
     try {
@@ -719,48 +596,6 @@ export default function SettingsDialog({
     return `${value} B`;
   };
 
-  const formatTimestamp = (value: number) => {
-    if (!Number.isFinite(value)) return "-";
-    try {
-      return new Date(value).toLocaleString();
-    } catch {
-      return "-";
-    }
-  };
-
-  const formatCountdown = (valueMs: number) => {
-    const totalSeconds = Math.max(0, Math.ceil(valueMs / 1000));
-    const minutes = Math.floor(totalSeconds / 60);
-    const seconds = totalSeconds % 60;
-    return `${minutes}:${String(seconds).padStart(2, "0")}`;
-  };
-
-
-  const handleGenerateSyncCode = () => {
-    try {
-      const next = createSyncCode();
-      setSyncCodeState(next);
-      setSyncCodeNow(Date.now());
-      setPairingRequest(null);
-      setPairingRequestError("");
-    } catch (error) {
-      console.error("Failed to generate sync code", error);
-      addToast({ message: t("코드 생성에 실패했습니다.", "Failed to generate code.") });
-    }
-  };
-
-  const handleCopySyncCode = async () => {
-    if (!syncCodeState?.code) return;
-    try {
-      if (!navigator.clipboard) throw new Error("Clipboard not available");
-      await navigator.clipboard.writeText(syncCodeState.code);
-      addToast({ message: t("코드를 복사했습니다.", "Code copied.") });
-    } catch (error) {
-      console.error("Failed to copy sync code", error);
-      addToast({ message: t("코드 복사에 실패했습니다.", "Failed to copy code.") });
-    }
-  };
-
   const handleCopyAddress = async (value: string, label: string) => {
     if (!value) return;
     try {
@@ -770,92 +605,6 @@ export default function SettingsDialog({
     } catch (error) {
       console.error("Failed to copy address", error);
       addToast({ message: t("주소 복사에 실패했습니다.", "Failed to copy address.") });
-    }
-  };
-
-  const handleApproveRequest = async () => {
-    if (!pairingRequest) return;
-    setPairingRequestBusy(true);
-    setPairingRequestError("");
-    try {
-      const event = await createDeviceAddedEvent({
-        deviceId: pairingRequest.deviceId,
-        identityPub: pairingRequest.identityPub,
-        dhPub: pairingRequest.dhPub,
-      });
-      const stored = await storeDeviceApproval(event);
-      if (!stored) {
-        setPairingRequestError(
-          t("승인 정보를 저장하지 못했습니다.", "Failed to store approval.")
-        );
-        return;
-      }
-      approvePairingRequest(pairingRequest.requestId, event);
-      await startDeviceSyncAsApprover({
-        deviceId: pairingRequest.deviceId,
-        identityPub: pairingRequest.identityPub,
-        dhPub: pairingRequest.dhPub,
-        syncTransportPolicy: appPrefs.deviceSync.transportPolicy,
-      });
-      setPairingRequest(null);
-      addToast({ message: t("새 기기를 승인했습니다.", "New device approved.") });
-    } catch (error) {
-      console.error("Failed to approve device", error);
-      setPairingRequestError(t("승인 처리에 실패했습니다.", "Approval failed."));
-    } finally {
-      setPairingRequestBusy(false);
-    }
-  };
-
-  const handleRejectRequest = () => {
-    if (!pairingRequest) return;
-    rejectPairingRequest(
-      pairingRequest.requestId,
-      t("요청이 거절되었습니다.", "Request rejected.")
-    );
-    setPairingRequest(null);
-    addToast({ message: t("요청을 거절했습니다.", "Request rejected.") });
-  };
-
-  const handleSubmitLink = async () => {
-    if (!linkCodeDraft.trim()) {
-      setLinkStatus("error");
-      setLinkMessage(t("연결 코드를 입력해 주세요.", "Enter a sync code."));
-      return;
-    }
-    setLinkBusy(true);
-    setLinkStatus("pending");
-    setLinkMessage(t("승인을 기다리는 중...", "Waiting for approval..."));
-    try {
-      const [identityPub, dhPub] = await Promise.all([
-        getIdentityPublicKey(),
-        getDhPublicKey(),
-      ]);
-      const requestId = submitSyncCode({
-        code: linkCodeDraft.trim(),
-        deviceId: getOrCreateDeviceId(),
-        identityPub: encodeBase64Url(identityPub),
-        dhPub: encodeBase64Url(dhPub),
-      });
-      setLinkRequestId(requestId);
-      if (linkTimeoutRef.current) {
-        window.clearTimeout(linkTimeoutRef.current);
-      }
-      linkTimeoutRef.current = window.setTimeout(() => {
-        setLinkBusy(false);
-        setLinkStatus("error");
-        setLinkMessage(
-          t(
-            "기존 기기의 응답이 없습니다. 온라인 상태를 확인하세요.",
-            "No response from the existing device. Check it is online."
-          )
-        );
-      }, 30_000);
-    } catch (error) {
-      console.error("Failed to submit sync code", error);
-      setLinkBusy(false);
-      setLinkStatus("error");
-      setLinkMessage(t("연결 요청에 실패했습니다.", "Failed to request pairing."));
     }
   };
 
@@ -962,11 +711,6 @@ export default function SettingsDialog({
       setPinEnabledUi(true);
       setPinError(message || t("PIN 해제에 실패했습니다.", "Failed to disable PIN."));
     }
-  };
-
-  const handleDeviceSyncPolicyChange = async (transportPolicy: DeviceSyncTransportPolicy) => {
-    if (transportPolicy === appPrefs.deviceSync.transportPolicy) return;
-    await updateAppPrefs({ deviceSync: { transportPolicy } });
   };
 
   type DotState = "running" | "starting" | "stopped" | "error";
@@ -1267,16 +1011,6 @@ export default function SettingsDialog({
       : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
   const showDirectWarning = netConfig.mode === "directP2P";
   const proxyAuto = !proxyUrlDraft.trim();
-  const syncCodeRemainingMs = syncCodeState
-    ? Math.max(0, syncCodeState.expiresAt - syncCodeNow)
-    : 0;
-  const syncCodeExpired = Boolean(syncCodeState && syncCodeRemainingMs <= 0);
-  const linkStatusClass =
-    linkStatus === "approved"
-      ? "text-emerald-300"
-      : linkStatus === "pending"
-        ? "text-nkc-muted"
-        : "text-red-300";
   const prefsDisabled = !prefsLoaded;
   const backgroundDisabled = !appPrefs.background.enabled || appPrefs.login.closeToExit;
   const notificationsDisabled = !appPrefs.notifications.enabled;
@@ -1624,29 +1358,35 @@ export default function SettingsDialog({
             <DevicesSettings
               t={t}
               onBack={() => setView("main")}
-              onGenerateSyncCode={handleGenerateSyncCode}
-              onCopySyncCode={handleCopySyncCode}
-              syncCodeState={syncCodeState}
-              syncCodeExpired={syncCodeExpired}
-              syncCodeRemainingMs={syncCodeRemainingMs}
-              formatCountdown={formatCountdown}
-              pairingRequest={pairingRequest}
-              formatTimestamp={formatTimestamp}
-              pairingRequestBusy={pairingRequestBusy}
-              pairingRequestError={pairingRequestError}
-              onApproveRequest={handleApproveRequest}
-              onRejectRequest={handleRejectRequest}
+              onGenerateSyncCode={deviceSyncSettings.handleGenerateSyncCode}
+              onCopySyncCode={deviceSyncSettings.handleCopySyncCode}
+              syncCodeState={deviceSyncSettings.syncCodeState}
+              syncCodeExpired={deviceSyncSettings.syncCodeExpired}
+              syncCodeRemainingMs={deviceSyncSettings.syncCodeRemainingMs}
+              formatCountdown={deviceSyncSettings.formatCountdown}
+              pairingRequest={deviceSyncSettings.pairingRequest}
+              formatTimestamp={deviceSyncSettings.formatTimestamp}
+              pairingRequestBusy={deviceSyncSettings.pairingRequestBusy}
+              pairingRequestError={deviceSyncSettings.pairingRequestError}
+              onApproveRequest={deviceSyncSettings.handleApproveRequest}
+              onRejectRequest={deviceSyncSettings.handleRejectRequest}
               deviceSyncTransportPolicy={appPrefs.deviceSync.transportPolicy}
-              onChangeDeviceSyncTransportPolicy={handleDeviceSyncPolicyChange}
-              linkCodeDraft={linkCodeDraft}
-              setLinkCodeDraft={setLinkCodeDraft}
-              linkStatus={linkStatus}
-              setLinkStatus={setLinkStatus}
-              setLinkMessage={setLinkMessage}
-              linkBusy={linkBusy}
-              linkStatusClass={linkStatusClass}
-              linkMessage={linkMessage}
-              onSubmitLink={handleSubmitLink}
+              onChangeDeviceSyncTransportPolicy={deviceSyncSettings.handleDeviceSyncPolicyChange}
+              linkCodeDraft={deviceSyncSettings.linkCodeDraft}
+              setLinkCodeDraft={deviceSyncSettings.setLinkCodeDraft}
+              linkStatus={deviceSyncSettings.linkStatus}
+              setLinkStatus={deviceSyncSettings.setLinkStatus}
+              setLinkMessage={deviceSyncSettings.setLinkMessage}
+              linkBusy={deviceSyncSettings.linkBusy}
+              linkStatusClass={deviceSyncSettings.linkStatusClass}
+              linkMessage={deviceSyncSettings.linkMessage}
+              onSubmitLink={deviceSyncSettings.handleSubmitLink}
+              rendezvousBaseUrl={deviceSyncSettings.rendezvousBaseUrl}
+              setRendezvousBaseUrl={deviceSyncSettings.handleRendezvousBaseUrlChange}
+              rendezvousUseOnion={deviceSyncSettings.rendezvousUseOnion}
+              setRendezvousUseOnion={deviceSyncSettings.handleRendezvousUseOnionChange}
+              hostRendezvousStatus={deviceSyncSettings.hostRendezvousStatus}
+              guestRendezvousStatus={deviceSyncSettings.guestRendezvousStatus}
             />
           )}
           {/* PRIVACY */}
