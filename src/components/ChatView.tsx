@@ -958,7 +958,7 @@ export default function ChatView({
         <div className="fixed inset-0 z-50">
           <div
             ref={menuRef}
-            className="fixed min-w-[140px] rounded-nkc border border-nkc-border bg-nkc-panel p-1 text-xs shadow-soft"
+            className="pointer-events-auto fixed min-w-[140px] rounded-nkc border border-nkc-border bg-nkc-panel p-1 text-xs shadow-soft"
             style={{ left: messageMenu.x, top: messageMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
