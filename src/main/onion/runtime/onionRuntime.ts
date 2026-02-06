@@ -67,6 +67,36 @@ export class OnionRuntime {
   private lokinetManager = new LokinetManager();
   private status: RuntimeStatus = { status: "idle" };
 
+  private async waitForTorSocks(port: number) {
+    await waitForPort(port, 90000, () => {
+      const state = this.torManager.getState();
+      if (!state.running) {
+        return state.error ?? "Tor exited before SOCKS became ready";
+      }
+      return null;
+    });
+  }
+
+  private async startTorWithFallback(binaryPath: string, port: number, dataDir: string) {
+    await this.torManager.start(binaryPath, port, dataDir, "torrc");
+    try {
+      await this.waitForTorSocks(port);
+      return;
+    } catch (firstError) {
+      await this.torManager.stop();
+      await this.torManager.start(binaryPath, port, dataDir, "cli");
+      try {
+        await this.waitForTorSocks(port);
+      } catch (secondError) {
+        const state = this.torManager.getState();
+        const detail = state.logTail ? ` | ${state.logTail}` : "";
+        const message =
+          secondError instanceof Error ? secondError.message : String(secondError);
+        throw new Error(`Tor SOCKS startup failed after retry: ${message}${detail}`);
+      }
+    }
+  }
+
   async start(userDataDir: string, network: OnionNetwork) {
     if (this.status.status === "running" && this.status.network === network) return;
     await this.stop();
@@ -86,20 +116,11 @@ export class OnionRuntime {
       }
 
       if (network === "tor") {
-        await this.torManager.start(binaryPath, port, dataDir);
+        await this.startTorWithFallback(binaryPath, port, dataDir);
       } else {
         await this.lokinetManager.start(binaryPath, port, dataDir);
+        await waitForPort(port, 30000);
       }
-
-      await waitForPort(port, 30000, () => {
-        if (network === "tor") {
-          const state = this.torManager.getState();
-          if (!state.running) {
-            return state.error ?? "Tor exited before SOCKS became ready";
-          }
-        }
-        return null;
-      });
       await session.defaultSession.setProxy({ proxyRules: `socks5://127.0.0.1:${port}` });
       this.status = { status: "running", network, socksPort: port };
     } catch (error) {

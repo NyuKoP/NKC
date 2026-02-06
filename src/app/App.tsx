@@ -45,7 +45,12 @@ import {
 } from "../db/repo";
 import { chunkBuffer, encryptJsonRecord, validateStartKey } from "../crypto/vault";
 import { getVaultKey, setVaultKey } from "../crypto/sessionKeyring";
-import { computeFriendId, decodeFriendCodeV1, encodeFriendCodeV1 } from "../security/friendCode";
+import {
+  computeFriendId,
+  decodeFriendCodeV1,
+  encodeFriendCodeV1,
+  type FriendCodeV1,
+} from "../security/friendCode";
 import { decodeInviteCodeV1 } from "../security/inviteCode";
 import { runOneTimeInviteGuard } from "../security/inviteUseStore";
 import { checkAllowed, recordFail, recordSuccess } from "../security/rateLimit";
@@ -220,20 +225,87 @@ export default function App() {
     setSelectedConv(null);
   }, [clearConnectionToastGuard, setData, setSelectedConv, setSessionState]);
 
+  const resolveLocalRoutingHintsForFriendCode = useCallback(async () => {
+    const localDeviceId = getOrCreateDeviceId();
+    const fallback = sanitizeRoutingHints({
+      deviceId: localDeviceId,
+      onionAddr: userProfile?.routingHints?.onionAddr,
+      lokinetAddr: userProfile?.routingHints?.lokinetAddr,
+    });
+    const nkc = (
+      globalThis as {
+        nkc?: {
+          ensureHiddenService?: () => Promise<unknown>;
+          getMyOnionAddress?: () => Promise<string>;
+          getMyLokinetAddress?: () => Promise<string>;
+        };
+      }
+    ).nkc;
+    if (!nkc) return fallback;
+
+    let onionAddr = fallback?.onionAddr;
+    let lokinetAddr = fallback?.lokinetAddr;
+
+    if (!onionAddr && nkc.ensureHiddenService) {
+      try {
+        await nkc.ensureHiddenService();
+      } catch {
+        // Best-effort only.
+      }
+    }
+    if (nkc.getMyOnionAddress) {
+      try {
+        const value = (await nkc.getMyOnionAddress()).trim();
+        if (value) onionAddr = value;
+      } catch {
+        // Best-effort only.
+      }
+    }
+    if (nkc.getMyLokinetAddress) {
+      try {
+        const value = (await nkc.getMyLokinetAddress()).trim();
+        if (value) lokinetAddr = value;
+      } catch {
+        // Best-effort only.
+      }
+    }
+
+    return (
+      sanitizeRoutingHints({
+        deviceId: localDeviceId,
+        onionAddr,
+        lokinetAddr,
+      }) ?? fallback
+    );
+  }, [userProfile?.routingHints?.lokinetAddr, userProfile?.routingHints?.onionAddr]);
+
+  const buildLocalFriendCodePayload = useCallback(async (): Promise<Omit<FriendCodeV1, "v">> => {
+    const [identityPub, dhPub, localHints] = await Promise.all([
+      getIdentityPublicKey(),
+      getDhPublicKey(),
+      resolveLocalRoutingHintsForFriendCode(),
+    ]);
+    return {
+      identityPub: encodeBase64Url(identityPub),
+      dhPub: encodeBase64Url(dhPub),
+      deviceId: getOrCreateDeviceId(),
+      onionAddr: localHints?.onionAddr,
+      lokinetAddr: localHints?.lokinetAddr,
+    };
+  }, [resolveLocalRoutingHintsForFriendCode]);
+
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;
-    Promise.all([getIdentityPublicKey(), getDhPublicKey()])
-      .then(([identityPub, dhPub]) =>
+    buildLocalFriendCodePayload()
+      .then((payload) =>
         encodeFriendCodeV1({
           v: 1,
-          identityPub: encodeBase64Url(identityPub),
-          dhPub: encodeBase64Url(dhPub),
-          deviceId: getOrCreateDeviceId(),
+          ...payload,
         })
       )
       .then(setMyFriendCode)
       .catch((error) => console.error("Failed to compute friend code", error));
-  }, [friendAddOpen, userProfile]);
+  }, [buildLocalFriendCodePayload, friendAddOpen, userProfile]);
 
   useEffect(() => {
     const unsubscribe = onTransportStatusChange((convId, status) => {
@@ -919,23 +991,18 @@ export default function App() {
 
   const buildFriendRequestPayload = useCallback(async (convId: string) => {
     if (!userProfile) return null;
-    const [identityPub, dhPub] = await Promise.all([
-      getIdentityPublicKey(),
-      getDhPublicKey(),
-    ]);
+    const payload = await buildLocalFriendCodePayload();
     const friendCode = encodeFriendCodeV1({
       v: 1,
-      identityPub: encodeBase64Url(identityPub),
-      dhPub: encodeBase64Url(dhPub),
-      deviceId: getOrCreateDeviceId(),
+      ...payload,
     });
     return {
       type: "friend_req" as const,
       convId,
       from: {
-        identityPub: encodeBase64Url(identityPub),
-        dhPub: encodeBase64Url(dhPub),
-        deviceId: getOrCreateDeviceId(),
+        identityPub: payload.identityPub,
+        dhPub: payload.dhPub,
+        deviceId: payload.deviceId,
         friendCode,
       },
       profile: {
@@ -945,7 +1012,7 @@ export default function App() {
       },
       ts: Date.now(),
     };
-  }, [userProfile]);
+  }, [buildLocalFriendCodePayload, userProfile]);
 
   const ensureDirectConvForFriend = useCallback(
     async (friend: UserProfile) => {

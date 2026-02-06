@@ -26,7 +26,7 @@ import { getDhPrivateKey, getIdentityPrivateKey, getIdentityPublicKey } from "..
 import { getFriendPsk } from "../security/pskStore";
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { applyTOFU } from "../security/trust";
-import { computeFriendId } from "../security/friendCode";
+import { computeFriendId, decodeFriendCodeV1 } from "../security/friendCode";
 import { getPrivacyPrefs } from "../security/preferences";
 import { updateFromRoleEvent, type RoleChangeEvent } from "../devices/deviceRegistry";
 import { getDeviceApproval } from "../devices/deviceApprovals";
@@ -260,8 +260,28 @@ const upsertFriendFromRequest = async (
   const identityBytes = decodeBase64Url(payload.from.identityPub);
   const friendId = computeFriendId(identityBytes);
   const now = Date.now();
-  const routingHints = sanitizeRoutingHints({ deviceId: payload.from.deviceId });
-  const reachability = payload.from.deviceId
+  const decodedFriendCode =
+    typeof payload.from.friendCode === "string" && payload.from.friendCode.trim()
+      ? decodeFriendCodeV1(payload.from.friendCode)
+      : null;
+  const codeHints =
+    decodedFriendCode && !("error" in decodedFriendCode)
+      ? sanitizeRoutingHints({
+          deviceId: decodedFriendCode.deviceId,
+          onionAddr: decodedFriendCode.onionAddr,
+          lokinetAddr: decodedFriendCode.lokinetAddr,
+        })
+      : undefined;
+  const resolvedDeviceId =
+    payload.from.deviceId ??
+    (decodedFriendCode && !("error" in decodedFriendCode) ? decodedFriendCode.deviceId : undefined) ??
+    existing?.primaryDeviceId;
+  const routingHints = sanitizeRoutingHints({
+    deviceId: resolvedDeviceId,
+    onionAddr: codeHints?.onionAddr ?? existing?.routingHints?.onionAddr,
+    lokinetAddr: codeHints?.lokinetAddr ?? existing?.routingHints?.lokinetAddr,
+  });
+  const reachability = resolvedDeviceId
     ? { status: "ok" as const }
     : {
         status: "unreachable" as const,
@@ -305,7 +325,7 @@ const upsertFriendFromRequest = async (
     identityPub: payload.from.identityPub,
     dhPub: payload.from.dhPub,
     routingHints: routingHints ?? existing?.routingHints,
-    primaryDeviceId: payload.from.deviceId ?? existing?.primaryDeviceId,
+    primaryDeviceId: resolvedDeviceId,
     trust: existing?.trust ?? { pinnedAt: now, status: "trusted" },
     verification: existing?.verification ?? { status: "unverified" },
     reachability,

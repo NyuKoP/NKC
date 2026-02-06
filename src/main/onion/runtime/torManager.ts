@@ -11,10 +11,20 @@ type TorManagerState = {
   logTail?: string;
 };
 
+type TorStartMode = "torrc" | "cli";
+
 export class TorManager {
   private process: ChildProcess | null = null;
   private state: TorManagerState = { running: false };
   private logTail = "";
+
+  private buildTorrc(socksPort: number, dataDir: string) {
+    const lines = [
+      `DataDirectory ${dataDir}`,
+      `SocksPort 127.0.0.1:${socksPort}`,
+    ];
+    return lines.join("\n");
+  }
 
   private appendLog(chunk: Buffer | string) {
     const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
@@ -43,12 +53,25 @@ export class TorManager {
     });
   }
 
-  async start(binaryPath: string, socksPort: number, dataDir: string) {
+  async start(
+    binaryPath: string,
+    socksPort: number,
+    dataDir: string,
+    mode: TorStartMode = "torrc"
+  ) {
     if (this.process) return;
     this.logTail = "";
     await this.ensureExecutable(binaryPath);
     await this.clearMacQuarantine(binaryPath);
-    const args = ["--SocksPort", `127.0.0.1:${socksPort}`, "--DataDirectory", dataDir];
+    let args: string[];
+    if (mode === "torrc") {
+      await fs.mkdir(dataDir, { recursive: true });
+      const torrcPath = path.join(dataDir, "torrc");
+      await fs.writeFile(torrcPath, this.buildTorrc(socksPort, dataDir), "utf8");
+      args = ["-f", torrcPath];
+    } else {
+      args = ["--SocksPort", `127.0.0.1:${socksPort}`, "--DataDirectory", dataDir];
+    }
     const bundleRoot = path.dirname(path.dirname(binaryPath));
     const hasBundleDefaults = fsSync.existsSync(path.join(bundleRoot, "data", "torrc-defaults"));
     this.process = spawn(binaryPath, args, {
@@ -62,9 +85,9 @@ export class TorManager {
       const detail = error instanceof Error ? error.message : String(error);
       this.setFailure(`Tor spawn failed: ${detail}`);
     });
-    this.process.on("exit", () => {
+    this.process.on("exit", (code, signal) => {
       const tail = this.logTail ? ` | ${this.logTail}` : "";
-      this.setFailure(`Tor exited before ready${tail}`);
+      this.setFailure(`Tor exited before ready (code=${code ?? "null"}, signal=${signal ?? "none"})${tail}`);
     });
   }
 
