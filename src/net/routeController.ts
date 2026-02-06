@@ -10,7 +10,8 @@ export class RouteController {
   private p95OverSince: number | null = null;
   private fallbackUntil = 0;
 
-  decideTransport(config: NetConfig): "selfOnion" | "onionRouter" {
+  decideTransport(config: NetConfig): "directP2P" | "selfOnion" | "onionRouter" {
+    if (config.mode === "directP2P") return "directP2P";
     if (config.mode === "onionRouter") return "onionRouter";
     if (!config.selfOnionEnabled) return "onionRouter";
     const now = Date.now();

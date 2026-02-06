@@ -49,4 +49,13 @@ describe("netConfigStore", () => {
     expect(parsed.onionProxyEnabled).toBe(true);
     expect(parsed.disableLinkPreview).toBe(true);
   });
+
+  it("allows directP2P mode without forcing onion router", () => {
+    useNetConfigStore.getState().setMode("directP2P");
+    const raw = storage.getItem("netConfig.v1");
+    expect(raw).toBeTruthy();
+    const parsed = JSON.parse(raw as string) as typeof DEFAULT_NET_CONFIG;
+    expect(parsed.mode).toBe("directP2P");
+    expect(parsed.onionEnabled).toBe(false);
+  });
 });

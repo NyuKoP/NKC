@@ -7,13 +7,14 @@ import { computeExpiresAt } from "../policies/ttl";
 import { enqueueOutgoing, onAckReceived } from "../policies/deliveryPolicy";
 import { putOutbox, updateOutbox } from "../storage/outboxStore";
 import type { Transport, TransportPacket } from "../adapters/transports/types";
+import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { createSelfOnionTransport } from "../adapters/transports/selfOnionTransport";
 import { createOnionRouterTransport } from "../adapters/transports/onionRouterTransport";
 import { updateConnectionStatus } from "./connectionStatus";
 import { decideRouterTransport } from "./transportPolicy";
 import { useAppStore } from "../app/store";
 
-export type TransportKind = "selfOnion" | "onionRouter";
+export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
 
 type SendPayload = {
   convId: string;
@@ -102,7 +103,9 @@ const getTransport = (
   if (transportCache.has(kind)) return transportCache.get(kind) as Transport;
 
   let transport: Transport;
-  if (kind === "selfOnion") {
+  if (kind === "directP2P") {
+    transport = createDirectP2PTransport();
+  } else if (kind === "selfOnion") {
     transport = createSelfOnionTransport({ routeController: controller });
   } else {
     transport = createOnionRouterTransport({ httpClient, config });
@@ -202,7 +205,10 @@ export const sendCiphertext = async (
   await enqueueOutgoing(record);
 
   const attemptSend = async (kind: TransportKind) => {
-    if (config.onionEnabled && kind === "selfOnion") {
+    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "directP2P") {
+      throw new Error("Direct P2P blocked in onion router mode");
+    }
+    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "selfOnion") {
       throw new Error("Self-onion blocked while onion router is enabled");
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
@@ -236,9 +242,15 @@ export const sendCiphertext = async (
       chosen,
       error: error instanceof Error ? error.message : String(error),
     });
-    if (config.mode === "selfOnion" && chosen === "selfOnion") {
+    const fallbackKinds: TransportKind[] =
+      chosen === "directP2P"
+        ? ["selfOnion", "onionRouter"]
+        : config.mode === "selfOnion" && chosen === "selfOnion"
+          ? ["onionRouter"]
+          : [];
+    for (const fallbackKind of fallbackKinds) {
       try {
-        const used = await attemptSend("onionRouter");
+        const used = await attemptSend(fallbackKind);
         debugLog("[net] sendCiphertext: fallback ok", {
           convId: payload.convId,
           messageId: payload.messageId,
@@ -246,18 +258,14 @@ export const sendCiphertext = async (
         });
         return { ok: true, transport: used };
       } catch (fallbackError) {
-        controller.reportSendFail("onionRouter");
+        controller.reportSendFail(fallbackKind);
         debugLog("[net] sendCiphertext: fallback failed", {
           convId: payload.convId,
           messageId: payload.messageId,
+          fallbackKind,
           error:
             fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
         });
-        return {
-          ok: false,
-          transport: "onionRouter",
-          error: fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
-        };
       }
     }
     return {
@@ -310,7 +318,10 @@ export const sendOutboxRecord = async (
   }
 
   const attemptSend = async (kind: TransportKind) => {
-    if (config.onionEnabled && kind === "selfOnion") {
+    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "directP2P") {
+      throw new Error("Direct P2P blocked in onion router mode");
+    }
+    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "selfOnion") {
       throw new Error("Self-onion blocked while onion router is enabled");
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
@@ -342,24 +353,30 @@ export const sendOutboxRecord = async (
       chosen,
       error: error instanceof Error ? error.message : String(error),
     });
-    if (config.mode === "selfOnion" && chosen === "selfOnion") {
+    const fallbackKinds: TransportKind[] =
+      chosen === "directP2P"
+        ? ["selfOnion", "onionRouter"]
+        : config.mode === "selfOnion" && chosen === "selfOnion"
+          ? ["onionRouter"]
+          : [];
+    for (const fallbackKind of fallbackKinds) {
       try {
-        await attemptSend("onionRouter");
+        await attemptSend(fallbackKind);
         debugLog("[net] sendOutboxRecord: fallback ok", {
           convId: record.convId,
           messageId: record.id,
-          transport: "onionRouter",
+          transport: fallbackKind,
         });
         return { ok: true as const };
       } catch (fallbackError) {
-        controller.reportSendFail("onionRouter");
+        controller.reportSendFail(fallbackKind);
         debugLog("[net] sendOutboxRecord: fallback failed", {
           convId: record.convId,
           messageId: record.id,
+          fallbackKind,
           error:
             fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
         });
-        return { ok: false as const, retryable: true };
       }
     }
     return { ok: false as const, retryable: true };

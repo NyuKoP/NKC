@@ -1,6 +1,6 @@
 ﻿import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Copy, Eye, EyeOff, UserPlus } from "lucide-react";
+import { Copy, UserPlus } from "lucide-react";
 
 type FriendAddDialogProps = {
   open: boolean;
@@ -18,16 +18,12 @@ export default function FriendAddDialog({
   onAdd,
 }: FriendAddDialogProps) {
   const [code, setCode] = useState("");
-  const [psk, setPsk] = useState("");
-  const [showPsk, setShowPsk] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     if (!open) {
       setCode("");
-      setPsk("");
-      setShowPsk(false);
       setError("");
       setBusy(false);
     }
@@ -37,13 +33,12 @@ export default function FriendAddDialog({
     setError("");
     setBusy(true);
     try {
-      const result = await onAdd({ code, psk: psk.trim() ? psk : undefined });
+      const result = await onAdd({ code });
       if (!result.ok) {
         setError(result.error || "친구 추가에 실패했습니다.");
         return;
       }
       setCode("");
-      setPsk("");
       onOpenChange(false);
     } catch (addError) {
       console.error("Friend add failed", addError);
@@ -67,7 +62,6 @@ export default function FriendAddDialog({
               내 코드
               <input
                 value={myCode}
-                onClick={() => setShowPsk(false)}
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 font-mono text-sm text-nkc-text"
                 placeholder="코드를 생성하는 중..."
                 readOnly
@@ -91,34 +85,6 @@ export default function FriendAddDialog({
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
                 placeholder="NKC1-... (선택: NKI1-...)"
               />
-            </label>
-
-            <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3 text-xs text-nkc-muted">
-              PSK는 선택사항입니다. 친구와 미리 공유한 경우 입력하세요.
-              <div className="mt-2">
-                친구 추가는 <span className="font-mono">NKC1-</span> 코드만 지원합니다.
-                <span className="font-mono"> NKC-</span>(시작키)는 친구 코드가 아닙니다.
-              </div>
-            </div>
-
-            <label className="text-sm text-nkc-muted">
-              PSK
-              <div className="mt-2 flex items-center gap-2">
-                <input
-                  type={showPsk ? "text" : "password"}
-                  value={psk}
-                  onChange={(event) => setPsk(event.target.value)}
-                  className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-                  placeholder="PSK (선택)"
-                />
-                <button
-                  type="button"
-                  onClick={() => setShowPsk((prev) => !prev)}
-                  className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
-                >
-                  {showPsk ? <EyeOff size={14} /> : <Eye size={14} />}
-                </button>
-              </div>
             </label>
 
             {error ? <div className="text-xs text-red-300">{error}</div> : null}

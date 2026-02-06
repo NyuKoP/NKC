@@ -2,6 +2,7 @@ import type { TransportPacket } from "../adapters/transports/types";
 import { decodeBase64Url } from "../security/base64url";
 import { onIncomingPacket } from "../net/router";
 import { handleIncomingFriendFrame } from "../sync/syncEngine";
+import { handleIncomingRelayPacket } from "../net/internalOnion/relayNetwork";
 
 const textDecoder = new TextDecoder();
 let started = false;
@@ -29,23 +30,27 @@ export const startFriendInboxListener = (onChange?: () => void) => {
   if (started) return;
   started = true;
   onIncomingPacket((packet) => {
-    const text = decodePayload(packet.payload);
-    if (!text) return;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(text);
-    } catch {
-      return;
-    }
-    if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return;
-    const kind = (parsed as { type?: unknown }).type;
-    if (kind !== "friend_req" && kind !== "friend_accept" && kind !== "friend_decline") {
-      return;
-    }
-    void handleIncomingFriendFrame(
-      parsed as Parameters<typeof handleIncomingFriendFrame>[0]
-    )
-      .then(() => onChangeCallback?.())
-      .catch((error) => console.warn("[friend] inbox handle failed", error));
+    void (async () => {
+      const relay = await handleIncomingRelayPacket(packet);
+      if (relay.handled && !relay.deliveredPacket) return;
+      const effectivePacket = relay.deliveredPacket ?? packet;
+      const text = decodePayload(effectivePacket.payload);
+      if (!text) return;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        return;
+      }
+      if (!parsed || typeof parsed !== "object" || !("type" in parsed)) return;
+      const kind = (parsed as { type?: unknown }).type;
+      if (kind !== "friend_req" && kind !== "friend_accept" && kind !== "friend_decline") {
+        return;
+      }
+      await handleIncomingFriendFrame(
+        parsed as Parameters<typeof handleIncomingFriendFrame>[0]
+      );
+      onChangeCallback?.();
+    })().catch((error) => console.warn("[friend] inbox handle failed", error));
   });
 };

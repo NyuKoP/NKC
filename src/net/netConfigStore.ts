@@ -2,6 +2,7 @@ import { create } from "zustand";
 import type { NetConfig } from "./netConfig";
 import { DEFAULT_NET_CONFIG } from "./netConfig";
 import type { NetworkMode } from "./mode";
+import { syncInternalOnionRouteRuntimeWithConfig } from "./internalOnion/runtime";
 
 const STORAGE_KEY = "netConfig.v1";
 
@@ -15,8 +16,7 @@ const getStorage = () => {
 
 const migrateMode = (mode?: string): NetworkMode => {
   if (!mode) return DEFAULT_NET_CONFIG.mode;
-  if (mode === "selfOnion" || mode === "onionRouter") return mode;
-  if (mode === "directP2P") return "selfOnion";
+  if (mode === "selfOnion" || mode === "onionRouter" || mode === "directP2P") return mode;
   return DEFAULT_NET_CONFIG.mode;
 };
 
@@ -85,6 +85,7 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
       onionEnabled: mode === "onionRouter" ? get().config.onionEnabled : false,
     });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setProxy: (enabled, url) => {
@@ -94,21 +95,25 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
       onionProxyUrl: url ?? get().config.onionProxyUrl,
     });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setRelayOnly: (value) => {
     const next = enforceRules({ ...get().config, webrtcRelayOnly: value });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setDisableLinkPreview: (value) => {
     const next = enforceRules({ ...get().config, disableLinkPreview: value });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setSelfOnionEnabled: (value) => {
     const next = enforceRules({ ...get().config, selfOnionEnabled: value });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setSelfOnionMinRelays: (value) => {
@@ -117,16 +122,19 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
       selfOnionMinRelays: clampSelfOnionRelays(value),
     });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setOnionEnabled: (value) => {
     const next = enforceRules({ ...get().config, onionEnabled: value });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setOnionNetwork: (value) => {
     const next = enforceRules({ ...get().config, onionSelectedNetwork: value });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setComponentState: (network, state) => {
@@ -136,11 +144,13 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
       [network]: { ...current[network], ...state },
     });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setLastUpdateCheckAt: (value) => {
     const next = enforceRules({ ...get().config, lastUpdateCheckAtMs: value });
     persistConfig(next);
+    syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
   },
   setConfig: (next) => {
@@ -149,6 +159,7 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
       selfOnionMinRelays: clampSelfOnionRelays(next.selfOnionMinRelays),
     });
     persistConfig(enforced);
+    syncInternalOnionRouteRuntimeWithConfig(enforced);
     set({ config: enforced });
   },
 }));
