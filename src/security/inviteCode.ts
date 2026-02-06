@@ -13,7 +13,7 @@ export type InviteCodeV1 = {
 
 const PREFIX = "NKI1-";
 const ZERO_WIDTH_OR_BOM = /[\u200B-\u200D\uFEFF]/g;
-const BASE64URL_BODY_ALLOWED = /[^A-Za-z0-9_-]/g;
+const BASE64_BODY_ALLOWED = /[^A-Za-z0-9_+\-/=]/g;
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -30,7 +30,7 @@ const extractCodeBody = (value: string, prefix: string) => {
   if (!compact.toUpperCase().startsWith(prefixCompact)) return null;
   let raw = compact.slice(prefixCompact.length);
   raw = raw.replace(/^[-:]/, "");
-  raw = raw.replace(BASE64URL_BODY_ALLOWED, "");
+  raw = raw.replace(BASE64_BODY_ALLOWED, "");
   return raw;
 };
 

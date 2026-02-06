@@ -29,6 +29,12 @@ const makeInviteCodeWithDashInBody = () => {
   throw new Error("failed to build test invite code with '-' in body");
 };
 
+const toStandardBase64InviteCode = (code: string) => {
+  const body = code.slice("NKI1-".length);
+  const standard = body.replace(/-/g, "+").replace(/_/g, "/");
+  return `NKI1-${standard}`;
+};
+
 const legacyHash32Bytes = (bytes: Uint8Array) => {
   const seeds = [
     0x811c9dc5, 0x01000193, 0x1234567, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
@@ -72,6 +78,12 @@ describe("inviteCode", () => {
 
   it("decodes invite code when base64url body includes '-'", () => {
     const decoded = decodeInviteCodeV1(makeInviteCodeWithDashInBody());
+    expect("error" in decoded ? decoded.error : "").toBe("");
+  });
+
+  it("decodes invite code when body uses standard base64 characters", () => {
+    const code = toStandardBase64InviteCode(makeInviteCode());
+    const decoded = decodeInviteCodeV1(code);
     expect("error" in decoded ? decoded.error : "").toBe("");
   });
 
