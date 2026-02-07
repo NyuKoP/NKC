@@ -67,9 +67,22 @@ export class OnionRuntime {
   private lokinetManager = new LokinetManager();
   private status: RuntimeStatus = { status: "idle" };
 
+  private findInPath(binName: string) {
+    const envPath = process.env.PATH ?? "";
+    const parts = envPath.split(path.delimiter);
+    for (const part of parts) {
+      const full = path.join(part, binName);
+      if (fsSync.existsSync(full)) return full;
+    }
+    return null;
+  }
+
   private resolveSystemTorBinaryPath() {
+    const binName = process.platform === "win32" ? "tor.exe" : "tor";
+    const fromPath = this.findInPath(binName);
     const candidates = [
       process.env.NKC_SYSTEM_TOR_BIN?.trim(),
+      fromPath,
       "/opt/homebrew/bin/tor",
       "/usr/local/bin/tor",
       "/opt/local/bin/tor",
@@ -93,6 +106,8 @@ export class OnionRuntime {
 
   private async startTorWithFallback(binaryPath: string, port: number, dataDir: string) {
     const attempts: string[] = [];
+    const systemTorBinary =
+      process.platform === "darwin" ? this.resolveSystemTorBinaryPath() : null;
     const tryStart = async (
       label: string,
       candidatePath: string,
@@ -111,20 +126,24 @@ export class OnionRuntime {
         return false;
       }
     };
+    const trySystemTor = async () => {
+      if (!systemTorBinary) return false;
+      if (path.resolve(systemTorBinary) === path.resolve(binaryPath)) return false;
+      return tryStart(`system-cli(${systemTorBinary})`, systemTorBinary, "cli");
+    };
 
     if (await tryStart("bundled-torrc", binaryPath, "torrc")) return;
-    if (await tryStart("bundled-cli", binaryPath, "cli")) return;
-
-    if (process.platform === "darwin") {
-      const systemTorBinary = this.resolveSystemTorBinaryPath();
-      if (
-        systemTorBinary &&
-        path.resolve(systemTorBinary) !== path.resolve(binaryPath) &&
-        (await tryStart(`system-cli(${systemTorBinary})`, systemTorBinary, "cli"))
-      ) {
-        return;
-      }
+    // On macOS, SIGKILL often means the bundled binary was blocked by policy/runtime checks.
+    // If that happens, prefer immediate fallback to a system Tor binary.
+    if (
+      process.platform === "darwin" &&
+      (this.torManager.getState().error ?? "").includes("signal=SIGKILL") &&
+      (await trySystemTor())
+    ) {
+      return;
     }
+    if (await tryStart("bundled-cli", binaryPath, "cli")) return;
+    if (await trySystemTor()) return;
 
     throw new Error(`Tor SOCKS startup failed after retry: ${attempts.join(" || ")}`);
   }
