@@ -127,6 +127,7 @@ const buildNameMap = (
 const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
 const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
 const READ_CURSOR_THROTTLE_MS = 1500;
+const ROUTE_PENDING_TOAST_COOLDOWN_MS = 10_000;
 
 const newClientBatchId = () => {
   if (globalThis.crypto?.randomUUID) {
@@ -223,6 +224,7 @@ export default function App() {
     Record<string, { cursorTs: number; anchorMsgId: string } | undefined>
   >({});
   const readCursorThrottleTimerRef = useRef<Record<string, number | undefined>>({});
+  const routePendingToastRef = useRef<Record<string, number>>({});
 
   const connectionToastShown = useRef(false);
   const connectionToastKey = "nkc.sessionConnectedToastShown";
@@ -285,6 +287,49 @@ export default function App() {
   }, []);
 
   const settingsOpen = location.pathname === "/settings";
+  const getRoutePendingToast = useCallback((error?: string) => {
+    const message = (error ?? "").toLowerCase();
+    if (message.includes("missing destination 'to'") || message.includes("missing-to-device")) {
+      return {
+        key: "missing-device-id",
+        text:
+          "상대 기기 ID가 없어 전송 경로를 만들 수 없습니다. 친구 코드를 다시 받아 업데이트하세요.",
+      };
+    }
+    if (message.includes("forward_failed:no_proxy") || message.includes("onion controller unavailable")) {
+      return {
+        key: "onion-proxy-not-ready",
+        text:
+          "Tor/Lokinet 프록시가 아직 준비되지 않았습니다. Onion 적용 후 연결되면 자동 재시도됩니다.",
+      };
+    }
+    if (message.includes("direct p2p data channel is not open")) {
+      return {
+        key: "direct-not-open",
+        text:
+          "Direct P2P 연결이 아직 열리지 않았습니다. 연결 수립 후 자동 재시도됩니다.",
+      };
+    }
+    return {
+      key: "generic-route-not-ready",
+      text:
+        "전송 경로가 준비되지 않아 메시지가 대기열에 남았습니다. 연결 후 자동 재시도됩니다.",
+    };
+  }, []);
+  const notifyRoutePendingToast = useCallback(
+    (convId: string, error?: string) => {
+      const info = getRoutePendingToast(error);
+      const now = Date.now();
+      const key = `${convId}:${info.key}`;
+      const lastAt = routePendingToastRef.current[key] ?? 0;
+      if (now - lastAt < ROUTE_PENDING_TOAST_COOLDOWN_MS) {
+        return;
+      }
+      routePendingToastRef.current[key] = now;
+      addToast({ message: info.text });
+    },
+    [addToast, getRoutePendingToast]
+  );
   const clearConnectionToastGuard = useCallback(() => {
     connectionToastShown.current = false;
     if (typeof window !== "undefined") {
@@ -972,18 +1017,18 @@ export default function App() {
   };
 
 
-  const buildRoutingMeta = useCallback((partner: UserProfile) => ({
-    toDeviceId:
+  const buildRoutingMeta = useCallback((partner: UserProfile) => {
+    const toDeviceId =
       partner.routingHints?.deviceId ??
       partner.primaryDeviceId ??
-      partner.deviceId ??
-      partner.friendId ??
-      partner.id,
-    route: {
-      torOnion: partner.routingHints?.onionAddr,
-      lokinet: partner.routingHints?.lokinetAddr,
-    },
-  }), []);
+      partner.deviceId;
+    const torOnion = partner.routingHints?.onionAddr;
+    const lokinet = partner.routingHints?.lokinetAddr;
+    return {
+      toDeviceId,
+      route: torOnion || lokinet ? { torOnion, lokinet } : undefined,
+    };
+  }, []);
 
   const sendDirectEnvelope = useCallback(
     async (
@@ -1291,10 +1336,7 @@ export default function App() {
         });
         if (!routed.ok) {
           console.error("Failed to route message", routed.error);
-          addToast({
-            message:
-              "전송 경로가 준비되지 않아 메시지가 대기열에 남았습니다. 연결 후 자동 재시도됩니다.",
-          });
+          notifyRoutePendingToast(conv.id, routed.error);
         }
 
         const updatedConv: Conversation = {
@@ -1331,10 +1373,7 @@ export default function App() {
     });
     if (!routed.ok) {
       console.error("Failed to route message", routed.error);
-      addToast({
-        message:
-          "전송 경로가 준비되지 않아 메시지가 대기열에 남았습니다. 연결 후 자동 재시도됩니다.",
-      });
+      notifyRoutePendingToast(conv.id, routed.error);
     }
 
     const updatedConv: Conversation = {

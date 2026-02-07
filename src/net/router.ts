@@ -53,9 +53,15 @@ const debugLog = (label: string, payload: Record<string, unknown>) => {
   }
 };
 
+type DerivedRoutingMeta = {
+  toDeviceId?: string;
+  route?: { torOnion?: string; lokinet?: string };
+  staleDeviceAliases?: string[];
+};
+
 const deriveRoutingMetaFromStores = (
   convId: string
-): { toDeviceId?: string; route?: { torOnion?: string; lokinet?: string } } => {
+): DerivedRoutingMeta => {
   const state = useAppStore.getState();
   const conv = state.convs.find((item) => item.id === convId);
   const me = state.userProfile;
@@ -68,17 +74,18 @@ const deriveRoutingMetaFromStores = (
   if (!partnerId) return {};
   const partner = state.friends.find((friend) => friend.id === partnerId) ?? null;
   if (!partner) return {};
+  const toDeviceId =
+    partner.routingHints?.deviceId ??
+    partner.primaryDeviceId ??
+    partner.deviceId;
+  const torOnion = partner.routingHints?.onionAddr;
+  const lokinet = partner.routingHints?.lokinetAddr;
   return {
-    toDeviceId:
-      partner.routingHints?.deviceId ??
-      partner.primaryDeviceId ??
-      partner.deviceId ??
-      partner.friendId ??
-      partner.id,
-    route: {
-      torOnion: partner.routingHints?.onionAddr,
-      lokinet: partner.routingHints?.lokinetAddr,
-    },
+    toDeviceId,
+    route: torOnion || lokinet ? { torOnion, lokinet } : undefined,
+    staleDeviceAliases: [partner.friendId, partner.id].filter(
+      (value): value is string => Boolean(value && value.trim())
+    ),
   };
 };
 
@@ -253,6 +260,9 @@ export const sendCiphertext = async (
     });
     return { ok: true, transport: used };
   } catch (error) {
+    const attemptErrors: string[] = [
+      `${chosen}: ${error instanceof Error ? error.message : String(error)}`,
+    ];
     controller.reportSendFail(chosen);
     debugLog("[net] sendCiphertext: send failed", {
       convId: payload.convId,
@@ -276,6 +286,11 @@ export const sendCiphertext = async (
         });
         return { ok: true, transport: used };
       } catch (fallbackError) {
+        attemptErrors.push(
+          `${fallbackKind}: ${
+            fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          }`
+        );
         controller.reportSendFail(fallbackKind);
         debugLog("[net] sendCiphertext: fallback failed", {
           convId: payload.convId,
@@ -289,7 +304,7 @@ export const sendCiphertext = async (
     return {
       ok: false,
       transport: chosen,
-      error: error instanceof Error ? error.message : String(error),
+      error: attemptErrors.join(" || "),
     };
   }
 };
@@ -301,19 +316,23 @@ export const sendOutboxRecord = async (
   const config = deps.config ?? useNetConfigStore.getState().config;
   const controller = deps.routeController ?? defaultRouteController;
   const httpClient = deps.httpClient ?? defaultHttpClient;
-  const derived = record.toDeviceId
-    ? {}
-    : deriveRoutingMetaFromStores(record.convId);
-  const toDeviceId = record.toDeviceId ?? derived.toDeviceId;
+  const derived = deriveRoutingMetaFromStores(record.convId);
+  const recordToDeviceId = record.toDeviceId?.trim();
+  const hasStaleAlias = recordToDeviceId
+    ? Boolean(derived.staleDeviceAliases?.includes(recordToDeviceId))
+    : false;
+  const toDeviceId = hasStaleAlias ? derived.toDeviceId : record.toDeviceId ?? derived.toDeviceId;
   const torOnion = record.torOnion ?? derived.route?.torOnion;
   const lokinet = record.lokinet ?? derived.route?.lokinet;
 
-  if (!record.toDeviceId && toDeviceId) {
-    await updateOutbox(record.id, {
-      toDeviceId,
-      torOnion,
-      lokinet,
-    });
+  if ((!record.toDeviceId || hasStaleAlias) && (toDeviceId || torOnion || lokinet)) {
+    const patch: Partial<OutboxRecord> = {};
+    if (toDeviceId) patch.toDeviceId = toDeviceId;
+    if (torOnion) patch.torOnion = torOnion;
+    if (lokinet) patch.lokinet = lokinet;
+    if (Object.keys(patch).length) {
+      await updateOutbox(record.id, patch);
+    }
   }
 
   warnOnionRouterGuards(config);
