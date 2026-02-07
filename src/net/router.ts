@@ -15,6 +15,9 @@ import { decideRouterTransport } from "./transportPolicy";
 import { useAppStore } from "../app/store";
 
 export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
+export type IncomingPacketMeta = {
+  via: TransportKind;
+};
 
 type SendPayload = {
   convId: string;
@@ -114,7 +117,7 @@ const getTransport = (
   attachHandlers(transport, controller, kind);
   if (!inboundAttachedKinds.has(kind)) {
     transport.onMessage((packet) => {
-      inboundHandlers.forEach((handler) => handler(packet));
+      inboundHandlers.forEach((handler) => handler(packet, { via: kind }));
     });
     inboundAttachedKinds.add(kind);
   }
@@ -146,7 +149,7 @@ const warnOnionRouterGuards = (config: NetConfig) => {
   }
 };
 
-const inboundHandlers = new Set<(packet: TransportPacket) => void>();
+const inboundHandlers = new Set<(packet: TransportPacket, meta: IncomingPacketMeta) => void>();
 let inboundAttached = false;
 let inboundStartPromise: Promise<void> | null = null;
 
@@ -398,7 +401,9 @@ export const sendOutboxRecord = async (
   }
 };
 
-export const onIncomingPacket = (handler: (packet: TransportPacket) => void) => {
+export const onIncomingPacket = (
+  handler: (packet: TransportPacket, meta: IncomingPacketMeta) => void
+) => {
   inboundHandlers.add(handler);
   void ensureInboundListener();
   return () => {
