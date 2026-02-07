@@ -1219,7 +1219,6 @@ export default function App() {
           authorDeviceId: getOrCreateDeviceId(),
         };
         header.prev = await getLastEventHash(conv.id);
-        header.prev = await getLastEventHash(conv.id);
 
         const dhPriv = await getDhPrivateKey();
         const theirDhPub = decodeBase64Url(partner.dhPub);
