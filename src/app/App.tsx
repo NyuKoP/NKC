@@ -108,6 +108,7 @@ import { startFriendInboxListener } from "../friends/friendInbox";
 import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
 import { onSyncRun, reportSyncResult } from "../appControl";
+import { appendTestLog } from "../utils/testLogSink";
 
 const buildNameMap = (
   profiles: UserProfile[],
@@ -262,6 +263,25 @@ export default function App() {
         })
       );
     }
+  }, []);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    const handleFriendAdd = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      void appendTestLog("friend-add", detail);
+    };
+    const handleFriendRoute = (event: Event) => {
+      const detail = (event as CustomEvent<unknown>).detail;
+      void appendTestLog("friend-route", detail);
+    };
+
+    window.addEventListener("nkc:test:friend-add", handleFriendAdd as EventListener);
+    window.addEventListener("nkc:test:friend-route", handleFriendRoute as EventListener);
+    return () => {
+      window.removeEventListener("nkc:test:friend-add", handleFriendAdd as EventListener);
+      window.removeEventListener("nkc:test:friend-route", handleFriendRoute as EventListener);
+    };
   }, []);
 
   const settingsOpen = location.pathname === "/settings";
