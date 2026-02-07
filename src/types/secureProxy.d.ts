@@ -47,5 +47,12 @@ declare global {
       onSyncStatus: (cb: (payload: unknown) => void) => () => void;
       onBackgroundStatus: (cb: (payload: unknown) => void) => () => void;
     };
+    testLog?: {
+      append: (payload: { channel: string; event: unknown; at?: string }) => Promise<{
+        ok: boolean;
+        path: string;
+      }>;
+      getPath: () => Promise<string>;
+    };
   }
 }

@@ -102,3 +102,9 @@ contextBridge.exposeInMainWorld("appControls", {
     return () => ipcRenderer.removeListener("background:status", handler);
   },
 });
+
+contextBridge.exposeInMainWorld("testLog", {
+  append: (payload: { channel: string; event: unknown; at?: string }) =>
+    ipcRenderer.invoke("testLog:append", payload) as Promise<{ ok: boolean; path: string }>,
+  getPath: () => ipcRenderer.invoke("testLog:path") as Promise<string>,
+});
