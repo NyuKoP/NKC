@@ -1,12 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const listRetryableOutbox = vi.fn();
+const listPendingOutbox = vi.fn();
 const listInFlightTimedOut = vi.fn();
 const updateOutbox = vi.fn();
 const sweepExpired = vi.fn();
 
 vi.mock("../../storage/outboxStore", () => {
   return {
+    listPendingOutbox: (...args: unknown[]) => listPendingOutbox(...args),
     listRetryableOutbox: (...args: unknown[]) => listRetryableOutbox(...args),
     listInFlightTimedOut: (...args: unknown[]) => listInFlightTimedOut(...args),
     updateOutbox: (...args: unknown[]) => updateOutbox(...args),
@@ -27,6 +29,7 @@ describe("deliveryScheduler", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
     listRetryableOutbox.mockReset();
+    listPendingOutbox.mockReset();
     listInFlightTimedOut.mockReset();
     updateOutbox.mockReset();
     sweepExpired.mockReset();
@@ -46,6 +49,7 @@ describe("deliveryScheduler", () => {
       inFlightAtMs: now - 4000,
       ackDeadlineMs: now - 100,
     };
+    listPendingOutbox.mockResolvedValue([]);
     listInFlightTimedOut.mockResolvedValue([record]);
     listRetryableOutbox.mockResolvedValue([]);
     const send = vi.fn(async () => ({ ok: true as const }));
@@ -71,6 +75,7 @@ describe("deliveryScheduler", () => {
       nextAttemptAtMs: now - 1,
       status: "pending",
     };
+    listPendingOutbox.mockResolvedValue([record]);
     listInFlightTimedOut.mockResolvedValue([]);
     listRetryableOutbox.mockResolvedValue([record]);
     const send = vi.fn(async () => ({ ok: true as const }));

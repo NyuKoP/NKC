@@ -1,4 +1,5 @@
 import { onionFetch } from "../adapters/transports/onionRouterTransport";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 export type RendezvousConfig = {
   baseUrl: string;
@@ -40,18 +41,18 @@ const hashFallback = async (value: string) => {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
-const fetchWithTimeout = async (url: string, init: FetchInit, useOnionProxy: boolean) => {
+const fetchRendezvous = async (url: string, init: FetchInit, useOnionProxy: boolean) => {
   if (useOnionProxy) {
     return onionFetch(url, init);
   }
-  const controller = new AbortController();
   const timeoutMs = init.timeoutMs ?? 10_000;
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    window.clearTimeout(timeout);
-  }
+  const { timeoutMs: _timeoutMs, signal: parentSignal, ...fetchInit } = init;
+  return fetchWithTimeout(url, fetchInit, {
+    timeoutMs,
+    parentSignal: parentSignal ?? undefined,
+    opId: url,
+    traceSource: "rendezvous",
+  });
 };
 
 const getSeenSet = (syncCode: string) => {
@@ -85,7 +86,7 @@ export class RendezvousClient {
     items.forEach((item) => seen.add(item.id));
 
     const url = `${normalizeBaseUrl(this.config.baseUrl)}/rendezvous/${syncCode}/signals`;
-    const response = await fetchWithTimeout(
+    const response = await fetchRendezvous(
       url,
       {
         method: "PUT",
@@ -108,7 +109,7 @@ export class RendezvousClient {
     url.searchParams.set("limit", "50");
     url.searchParams.set("deviceId", deviceId);
 
-    const response = await fetchWithTimeout(
+    const response = await fetchRendezvous(
       url.toString(),
       { method: "GET", timeoutMs: 10_000 },
       this.config.useOnionProxy

@@ -31,6 +31,7 @@ import {
   type TestLogAppendPayload,
 } from "./main/testLogStore";
 import { defaultAppPrefs, type AppPreferences, type AppPreferencesPatch } from "./preferences";
+import { fetchWithTimeout } from "./net/fetchWithTimeout";
 
 type ProxyApplyPayload = {
   proxyUrl: string;
@@ -295,23 +296,7 @@ const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchRes
 };
 
 const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchResponse> => {
-  const controller = new AbortController();
   const timeoutMs = req.timeoutMs ?? 10000;
-  const abortId = `main-abort:${createAbortTraceId()}`;
-  emitAbortTrace("abort:linked", {
-    abortId,
-    opId: req.url,
-    source: "timeout",
-  });
-  const timeout = setTimeout(() => {
-    emitAbortTrace("abort:fired", {
-      abortId,
-      opId: req.url,
-      source: "timeout",
-      reason: `net.fetch timeout ${timeoutMs}ms`,
-    });
-    controller.abort();
-  }, timeoutMs);
   try {
     const fetchWithSession = net.fetch as unknown as (
       input: string,
@@ -328,13 +313,40 @@ const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchRespo
       headers: Headers;
       arrayBuffer: () => Promise<ArrayBuffer>;
     }>;
-    const response = await fetchWithSession(req.url, {
-      method: req.method,
-      headers: req.headers,
-      body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
-      signal: controller.signal,
-      session: getOnionSession(),
-    });
+    const response = await fetchWithTimeout<{
+      ok: boolean;
+      status: number;
+      headers: Headers;
+      arrayBuffer: () => Promise<ArrayBuffer>;
+    }>(
+      req.url,
+      {
+        method: req.method,
+        headers: req.headers,
+        body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
+      },
+      {
+        timeoutMs,
+        opId: req.url,
+        traceSource: "timeout",
+        onTrace: (trace) => {
+          emitAbortTrace(trace.event, {
+            abortId: trace.abortId,
+            opId: trace.opId,
+            source: trace.source,
+            reason: trace.reason,
+          });
+        },
+        fetchImpl: (url, init) =>
+          fetchWithSession(url, {
+            method: init?.method,
+            headers: init?.headers as Record<string, string> | undefined,
+            body: init?.body as Uint8Array | undefined,
+            signal: (init?.signal ?? undefined) as AbortSignal | undefined,
+            session: getOnionSession(),
+          }),
+      }
+    );
     const buffer = new Uint8Array(await response.arrayBuffer());
     return {
       ok: response.ok,
@@ -351,8 +363,6 @@ const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchRespo
       bodyBase64: "",
       error: message,
     };
-  } finally {
-    clearTimeout(timeout);
   }
 };
 
@@ -384,30 +394,29 @@ const fetchOnionController = async (
   if (!req?.url || !req.method) {
     return { status: 0, headers: {}, bodyBase64: "", error: "invalid-request" };
   }
-  const controller = new AbortController();
   const timeoutMs = req.timeoutMs ?? 10000;
-  const abortId = `main-abort:${createAbortTraceId()}`;
-  emitAbortTrace("abort:linked", {
-    abortId,
-    opId: req.url,
-    source: "timeout",
-  });
-  const timeout = setTimeout(() => {
-    emitAbortTrace("abort:fired", {
-      abortId,
-      opId: req.url,
-      source: "timeout",
-      reason: `fetch timeout ${timeoutMs}ms`,
-    });
-    controller.abort();
-  }, timeoutMs);
   try {
-    const response = await fetch(req.url, {
-      method: req.method,
-      headers: req.headers,
-      body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
-      signal: controller.signal,
-    });
+    const response = await fetchWithTimeout<Response>(
+      req.url,
+      {
+        method: req.method,
+        headers: req.headers,
+        body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
+      },
+      {
+        timeoutMs,
+        opId: req.url,
+        traceSource: "timeout",
+        onTrace: (trace) => {
+          emitAbortTrace(trace.event, {
+            abortId: trace.abortId,
+            opId: trace.opId,
+            source: trace.source,
+            reason: trace.reason,
+          });
+        },
+      }
+    );
     const buffer = new Uint8Array(await response.arrayBuffer());
     return {
       status: response.status,
@@ -421,8 +430,6 @@ const fetchOnionController = async (
       bodyBase64: "",
       error: error instanceof Error ? error.message : String(error),
     };
-  } finally {
-    clearTimeout(timeout);
   }
 };
 

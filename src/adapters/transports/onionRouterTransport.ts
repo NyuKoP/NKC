@@ -358,11 +358,11 @@ export const createOnionRouterTransport = ({
         (packet as { to?: string }).to ??
         (packet as { route?: { to?: string } }).route?.to ??
         (packet as { meta?: { to?: string } }).meta?.to;
-      if (!toDeviceId) {
-        console.warn("[onion] missing toDeviceId for outbound packet", {
-          id: (packet as { id?: string }).id,
-        });
-        throw new Error("onionRouterTransport: missing destination 'to'");
+      if (!toDeviceId || !toDeviceId.trim()) {
+        console.warn(
+          `[net][route] missing_to skip route=onionRouter opId=${(packet as { id?: string }).id ?? "unknown"}`
+        );
+        return;
       }
       try {
         await torRuntime.awaitReady(15_000, signal);
