@@ -154,7 +154,7 @@ const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
 const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
 const READ_CURSOR_THROTTLE_MS = 1500;
 const ROUTE_PENDING_TOAST_COOLDOWN_MS = 10_000;
-const FRIEND_ROUTE_SEND_DEADLINE_MS = 30_000;
+const FRIEND_ROUTE_SEND_DEADLINE_MS = 45_000;
 
 const newClientBatchId = () => {
   if (globalThis.crypto?.randomUUID) {
@@ -186,6 +186,13 @@ type RuntimeNetworkSnapshot = {
   lokinetDetail: string | null;
 };
 
+const EMPTY_RUNTIME_NETWORK_SNAPSHOT: RuntimeNetworkSnapshot = {
+  torState: null,
+  torDetail: null,
+  lokinetState: null,
+  lokinetDetail: null,
+};
+
 const toRuntimeState = (value: unknown) => {
   if (!value || typeof value !== "object") return null;
   const state = (value as { state?: unknown }).state;
@@ -207,6 +214,12 @@ const sameRoutingHints = (
   (lhs?.deviceId ?? "") === (rhs?.deviceId ?? "") &&
   (lhs?.onionAddr ?? "") === (rhs?.onionAddr ?? "") &&
   (lhs?.lokinetAddr ?? "") === (rhs?.lokinetAddr ?? "");
+
+const sameRuntimeNetworkSnapshot = (lhs: RuntimeNetworkSnapshot, rhs: RuntimeNetworkSnapshot) =>
+  lhs.torState === rhs.torState &&
+  lhs.torDetail === rhs.torDetail &&
+  lhs.lokinetState === rhs.lokinetState &&
+  lhs.lokinetDetail === rhs.lokinetDetail;
 
 export default function App() {
   const ui = useAppStore((state) => state.ui);
@@ -243,6 +256,9 @@ export default function App() {
   const [groupInviteOpen, setGroupInviteOpen] = useState(false);
   const [groupInviteConvId, setGroupInviteConvId] = useState<string | null>(null);
   const [myFriendCode, setMyFriendCode] = useState("");
+  const [friendCodeRuntimeSnapshot, setFriendCodeRuntimeSnapshot] = useState<RuntimeNetworkSnapshot>(
+    EMPTY_RUNTIME_NETWORK_SNAPSHOT
+  );
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
   >({});
@@ -477,18 +493,55 @@ export default function App() {
     };
   }, [resolveLocalRoutingHintsForFriendCode]);
 
+  const refreshFriendCodeRuntimeSnapshot = useCallback(async () => {
+    const snapshot = await resolveRuntimeNetworkSnapshot();
+    setFriendCodeRuntimeSnapshot((prev) =>
+      sameRuntimeNetworkSnapshot(prev, snapshot) ? prev : snapshot
+    );
+    return snapshot;
+  }, [resolveRuntimeNetworkSnapshot]);
+
+  const refreshMyFriendCode = useCallback(async () => {
+    if (!friendAddOpen || !userProfile) return;
+    const payload = await buildLocalFriendCodePayload();
+    const nextCode = encodeFriendCodeV1({
+      v: 1,
+      ...payload,
+    });
+    setMyFriendCode((prev) => (prev === nextCode ? prev : nextCode));
+  }, [buildLocalFriendCodePayload, friendAddOpen, userProfile]);
+
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;
-    buildLocalFriendCodePayload()
-      .then((payload) =>
-        encodeFriendCodeV1({
-          v: 1,
-          ...payload,
-        })
-      )
-      .then(setMyFriendCode)
-      .catch((error) => console.error("Failed to compute friend code", error));
-  }, [buildLocalFriendCodePayload, friendAddOpen, userProfile]);
+    let disposed = false;
+    const refreshAll = async () => {
+      try {
+        await refreshFriendCodeRuntimeSnapshot();
+        await refreshMyFriendCode();
+      } catch (error) {
+        if (!disposed) {
+          console.error("Failed to refresh friend code/runtime snapshot", error);
+        }
+      }
+    };
+    void refreshAll();
+    const timer = window.setInterval(() => {
+      void refreshAll();
+    }, 4_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    friendAddOpen,
+    userProfile,
+    refreshFriendCodeRuntimeSnapshot,
+    refreshMyFriendCode,
+    netConfig.onionEnabled,
+    netConfig.onionSelectedNetwork,
+    netConfig.mode,
+  ]);
+
   const friendAddHint = useMemo(() => {
     if (!friendAddOpen) return null;
     if (!myFriendCode) {
@@ -503,15 +556,18 @@ export default function App() {
     const onionMode = netConfig.onionEnabled || netConfig.mode === "onionRouter";
     const selectedNetwork = netConfig.onionSelectedNetwork;
     const selectedLabel = selectedNetwork === "tor" ? "Tor" : "Lokinet";
-    const selectedStatus =
-      selectedNetwork === "tor" ? netConfig.tor.status : netConfig.lokinet.status;
-    const selectedReady = selectedStatus === "ready";
+    const selectedStatus = selectedNetwork === "tor"
+      ? friendCodeRuntimeSnapshot.torState
+      : friendCodeRuntimeSnapshot.lokinetState;
+    const selectedReady = selectedStatus
+      ? selectedStatus === "running"
+      : (selectedNetwork === "tor" ? netConfig.tor.status : netConfig.lokinet.status) === "ready";
 
     if (onionMode && (!selectedReady || !hasRouteTarget)) {
       return `${selectedLabel} 연결이 아직 준비되지 않아 코드에 라우팅 주소가 없을 수 있습니다. 대안: 내 코드를 먼저 상대에게 보내 상대가 먼저 친구 추가하게 하거나, 네트워크 설정에서 ${selectedLabel} 연결 후 코드를 다시 복사하세요.`;
     }
     return null;
-  }, [friendAddOpen, myFriendCode, netConfig]);
+  }, [friendAddOpen, myFriendCode, netConfig, friendCodeRuntimeSnapshot]);
 
   useEffect(() => {
     const unsubscribe = onTransportStatusChange((convId, status) => {
@@ -2852,6 +2908,9 @@ export default function App() {
 
       const routerOpened = warmup.started.includes("onionRouter");
       const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
+      setFriendCodeRuntimeSnapshot((prev) =>
+        sameRuntimeNetworkSnapshot(prev, runtimeSnapshot) ? prev : runtimeSnapshot
+      );
       const resolved = hasRouteTarget && routerOpened;
       emitRouterTestLog({
         status: resolved ? "ready" : "failed",
