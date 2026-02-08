@@ -311,8 +311,77 @@ describe("router", () => {
     expect(result.ok).toBe(true);
     expect(result.transport).toBe("selfOnion");
     expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
-    expect(directTransport.send).toHaveBeenCalledTimes(1);
+    expect(directTransport.send).not.toHaveBeenCalled();
     expect(selfOnionTransport.send).toHaveBeenCalledTimes(1);
+    expect(store.size).toBe(1);
+  });
+
+  it("retries selfOnion once before direct fallback when route is not ready", async () => {
+    const store = new Map<string, OutboxRecord>();
+    vi.doMock("../../storage/outboxStore", () => {
+      return {
+        putOutbox: async (record: OutboxRecord) => {
+          store.set(record.id, record);
+        },
+        deleteOutbox: async (id: string) => {
+          store.delete(id);
+        },
+        deleteExpiredOutbox: async () => 0,
+      };
+    });
+
+    const router = await import("../router");
+    const onionRouterTransport = createTransport("onionRouter", async () => {
+      throw new Error("forward_failed:proxy_unreachable");
+    });
+    let selfOnionAttempts = 0;
+    const selfOnionTransport = createTransport("selfOnion", async () => {
+      selfOnionAttempts += 1;
+      if (selfOnionAttempts === 1) {
+        throw new Error("Internal onion route is not ready");
+      }
+    });
+    const directTransport = createTransport("directP2P", async () => {
+      throw new Error("direct channel not open");
+    });
+
+    const result = await router.sendCiphertext(
+      {
+        convId: "c1",
+        messageId: "m1e-retry",
+        ciphertext: "enc",
+        priority: "high",
+      },
+      {
+        resolveTransport: () => "onionRouter",
+        config: {
+          mode: "onionRouter",
+          onionProxyEnabled: true,
+          onionProxyUrl: "socks5://127.0.0.1:9050",
+          webrtcRelayOnly: true,
+          disableLinkPreview: true,
+          selfOnionEnabled: true,
+          selfOnionMinRelays: 3,
+          allowRemoteProxy: false,
+          onionEnabled: true,
+          onionSelectedNetwork: "tor",
+          tor: { installed: true, status: "ready", version: "1.0.0" },
+          lokinet: { installed: false, status: "idle" },
+          lastUpdateCheckAtMs: undefined,
+        },
+        transports: {
+          onionRouter: onionRouterTransport,
+          selfOnion: selfOnionTransport,
+          directP2P: directTransport,
+        },
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.transport).toBe("selfOnion");
+    expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
+    expect(selfOnionTransport.send).toHaveBeenCalledTimes(2);
+    expect(directTransport.send).not.toHaveBeenCalled();
     expect(store.size).toBe(1);
   });
 

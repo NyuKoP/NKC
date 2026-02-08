@@ -12,6 +12,8 @@ type Handler<T> = (payload: T) => void;
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SEEN_IDS = 500;
 const STATE_DEBOUNCE_MS = 1000;
+const START_HEALTH_RETRY_DELAYS_MS = [0, 350, 900] as const;
+const SEND_PROXY_RETRY_DELAYS_MS = [0, 250, 700] as const;
 
 type OnionFetchRequest = {
   url: string;
@@ -44,6 +46,58 @@ const fromBase64 = (value: string) => {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+};
+
+const isForwardProxyNotReadyError = (message: string) => {
+  const text = message.toLowerCase();
+  return text.includes("forward_failed:proxy_unreachable") || text.includes("forward_failed:no_proxy");
+};
+
+const getNkcBridge = () =>
+  (
+    globalThis as {
+      nkc?: {
+        getTorStatus?: () => Promise<unknown>;
+        startTor?: () => Promise<unknown>;
+        setOnionForwardProxy?: (proxyUrl: string | null) => Promise<unknown>;
+      };
+    }
+  ).nkc;
+
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const extractTorSocksProxyUrl = (raw: unknown) => {
+  if (!raw || typeof raw !== "object") return null;
+  const state = (raw as { state?: unknown }).state;
+  const proxyUrl = (raw as { socksProxyUrl?: unknown }).socksProxyUrl;
+  if (state !== "running" || typeof proxyUrl !== "string") return null;
+  const trimmed = proxyUrl.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const syncTorForwardProxyFromRuntime = async () => {
+  const nkc = getNkcBridge();
+  if (!nkc?.getTorStatus || !nkc?.setOnionForwardProxy) return false;
+  try {
+    let torStatus = await nkc.getTorStatus();
+    let proxyUrl = extractTorSocksProxyUrl(torStatus);
+    if (!proxyUrl && nkc.startTor) {
+      try {
+        await nkc.startTor();
+      } catch {
+        // ignore start failure and keep best-effort sync
+      }
+      torStatus = await nkc.getTorStatus();
+      proxyUrl = extractTorSocksProxyUrl(torStatus);
+    }
+    await nkc.setOnionForwardProxy(proxyUrl);
+    return Boolean(proxyUrl);
+  } catch {
+    return false;
+  }
 };
 
 export async function onionFetch(
@@ -203,7 +257,15 @@ export const createOnionRouterTransport = ({
         baseUrl,
         deviceId: getOrCreateDeviceId(),
       });
-      const health = await client.health();
+      // Keep controller forwarding proxy in sync with runtime Tor state.
+      await syncTorForwardProxyFromRuntime();
+      let health = await client.health();
+      for (const delayMs of START_HEALTH_RETRY_DELAYS_MS.slice(1)) {
+        if (health.ok) break;
+        await syncTorForwardProxyFromRuntime();
+        await wait(delayMs);
+        health = await client.health();
+      }
       if (!health.ok) {
         requestState("failed", true);
         throw new Error(health.details ?? "Onion controller unavailable");
@@ -265,6 +327,7 @@ export const createOnionRouterTransport = ({
       if (!client) {
         throw new Error("Onion controller is not ready");
       }
+      const activeClient = client;
       const envelope = encodeBase64Url(
         new TextEncoder().encode(JSON.stringify(packet))
       );
@@ -276,11 +339,32 @@ export const createOnionRouterTransport = ({
               lokinet,
             }
           : undefined;
-      const result = await client.send(toDeviceId, envelope, DEFAULT_TTL_MS, route);
-      if (!result.ok) {
-        throw new Error(result.error ?? "Onion send failed");
+      const sendOnce = () => activeClient.send(toDeviceId, envelope, DEFAULT_TTL_MS, route);
+      if (!torOnion) {
+        const result = await sendOnce();
+        if (!result.ok) {
+          throw new Error(result.error ?? "Onion send failed");
+        }
+        ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
+        return;
       }
-      ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
+      let lastError = "Onion send failed";
+      for (const delayMs of SEND_PROXY_RETRY_DELAYS_MS) {
+        if (delayMs > 0) {
+          await wait(delayMs);
+        }
+        await syncTorForwardProxyFromRuntime();
+        const result = await sendOnce();
+        if (result.ok) {
+          ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
+          return;
+        }
+        lastError = result.error ?? "Onion send failed";
+        if (!isForwardProxyNotReadyError(lastError)) {
+          break;
+        }
+      }
+      throw new Error(lastError);
     },
     onMessage(cb) {
       messageHandlers.push(cb);

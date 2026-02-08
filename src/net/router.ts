@@ -172,6 +172,21 @@ const isOnionProxyUnavailableError = (message: string) =>
   message.includes("forward_failed:proxy_unreachable") ||
   message.includes("onion controller unavailable");
 
+const isSelfOnionRouteNotReadyError = (message: string) => {
+  const normalized = message.toLowerCase();
+  return (
+    normalized.includes("internal onion route is not ready") ||
+    normalized.includes("route_not_ready")
+  );
+};
+
+const SELF_ONION_RETRY_DELAY_MS = 450;
+
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
 const getPrewarmKinds = (
   chosen: TransportKind,
   includeFallback: boolean
@@ -380,7 +395,7 @@ export const sendCiphertext = async (
       chosen === "onionRouter" && isOnionProxyUnavailableError(primaryErrorMessage);
     const fallbackKinds: TransportKind[] =
       allowSelfOnionFallback
-        ? ["directP2P", "selfOnion"]
+        ? ["selfOnion", "directP2P"]
         : allowDirectFallback
         ? ["directP2P"]
         : chosen === "directP2P"
@@ -389,53 +404,73 @@ export const sendCiphertext = async (
           ? ["onionRouter"]
           : [];
     for (const fallbackKind of fallbackKinds) {
-      try {
-        const used = await attemptSend(fallbackKind, {
-          allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
-          allowSelfOnionWhenOnionGuarded:
-            allowSelfOnionFallback && fallbackKind === "selfOnion",
-        });
-        attemptTrace.push({ transport: fallbackKind, phase: "fallback", ok: true });
-        debugLog("[net] sendCiphertext: fallback ok", {
-          convId: payload.convId,
-          messageId: payload.messageId,
-          transport: used,
-        });
-        return {
-          ok: true,
-          transport: used,
-          diagnostic: {
-            chosenTransport: chosen,
-            attempts: attemptTrace,
-            allowDirectFallback,
-            allowSelfOnionFallback,
-            fallbackKinds,
-            hasToDeviceId: Boolean(toDeviceId),
-            hasTorOnion: Boolean(route?.torOnion),
-            hasLokinet: Boolean(route?.lokinet),
-            mode: config.mode,
-            onionEnabled: config.onionEnabled,
-            onionSelectedNetwork: config.onionSelectedNetwork,
-          },
-        };
-      } catch (fallbackError) {
-        const fallbackErrorMessage = toErrorMessage(fallbackError);
-        attemptTrace.push({
-          transport: fallbackKind,
-          phase: "fallback",
-          ok: false,
-          error: fallbackErrorMessage,
-        });
-        attemptErrors.push(
-          `${fallbackKind}: ${fallbackErrorMessage}`
-        );
-        controller.reportSendFail(fallbackKind);
-        debugLog("[net] sendCiphertext: fallback failed", {
-          convId: payload.convId,
-          messageId: payload.messageId,
-          fallbackKind,
-          error: fallbackErrorMessage,
-        });
+      const maxAttempts = fallbackKind === "selfOnion" ? 2 : 1;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          const used = await attemptSend(fallbackKind, {
+            allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
+            allowSelfOnionWhenOnionGuarded:
+              allowSelfOnionFallback && fallbackKind === "selfOnion",
+          });
+          attemptTrace.push({ transport: fallbackKind, phase: "fallback", ok: true });
+          debugLog("[net] sendCiphertext: fallback ok", {
+            convId: payload.convId,
+            messageId: payload.messageId,
+            transport: used,
+          });
+          return {
+            ok: true,
+            transport: used,
+            diagnostic: {
+              chosenTransport: chosen,
+              attempts: attemptTrace,
+              allowDirectFallback,
+              allowSelfOnionFallback,
+              fallbackKinds,
+              hasToDeviceId: Boolean(toDeviceId),
+              hasTorOnion: Boolean(route?.torOnion),
+              hasLokinet: Boolean(route?.lokinet),
+              mode: config.mode,
+              onionEnabled: config.onionEnabled,
+              onionSelectedNetwork: config.onionSelectedNetwork,
+            },
+          };
+        } catch (fallbackError) {
+          const fallbackErrorMessage = toErrorMessage(fallbackError);
+          attemptTrace.push({
+            transport: fallbackKind,
+            phase: "fallback",
+            ok: false,
+            error: fallbackErrorMessage,
+          });
+          const shouldRetrySelfOnion =
+            fallbackKind === "selfOnion" &&
+            attempt < maxAttempts &&
+            isSelfOnionRouteNotReadyError(fallbackErrorMessage);
+          if (shouldRetrySelfOnion) {
+            debugLog("[net] sendCiphertext: fallback retry", {
+              convId: payload.convId,
+              messageId: payload.messageId,
+              fallbackKind,
+              attempt,
+              maxAttempts,
+              error: fallbackErrorMessage,
+            });
+            await wait(SELF_ONION_RETRY_DELAY_MS);
+            continue;
+          }
+          attemptErrors.push(
+            `${fallbackKind}: ${fallbackErrorMessage}`
+          );
+          controller.reportSendFail(fallbackKind);
+          debugLog("[net] sendCiphertext: fallback failed", {
+            convId: payload.convId,
+            messageId: payload.messageId,
+            fallbackKind,
+            error: fallbackErrorMessage,
+          });
+          break;
+        }
       }
     }
     return {
@@ -563,7 +598,7 @@ export const sendOutboxRecord = async (
       chosen === "onionRouter" && isOnionProxyUnavailableError(primaryErrorMessage);
     const fallbackKinds: TransportKind[] =
       allowSelfOnionFallback
-        ? ["directP2P", "selfOnion"]
+        ? ["selfOnion", "directP2P"]
         : allowDirectFallback
         ? ["directP2P"]
         : chosen === "directP2P"
@@ -572,27 +607,47 @@ export const sendOutboxRecord = async (
           ? ["onionRouter"]
           : [];
     for (const fallbackKind of fallbackKinds) {
-      try {
-        await attemptSend(fallbackKind, {
-          allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
-          allowSelfOnionWhenOnionGuarded:
-            allowSelfOnionFallback && fallbackKind === "selfOnion",
-        });
-        debugLog("[net] sendOutboxRecord: fallback ok", {
-          convId: record.convId,
-          messageId: record.id,
-          transport: fallbackKind,
-        });
-        return { ok: true as const };
-      } catch (fallbackError) {
-        controller.reportSendFail(fallbackKind);
-        const fallbackErrorMessage = toErrorMessage(fallbackError);
-        debugLog("[net] sendOutboxRecord: fallback failed", {
-          convId: record.convId,
-          messageId: record.id,
-          fallbackKind,
-          error: fallbackErrorMessage,
-        });
+      const maxAttempts = fallbackKind === "selfOnion" ? 2 : 1;
+      for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        try {
+          await attemptSend(fallbackKind, {
+            allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
+            allowSelfOnionWhenOnionGuarded:
+              allowSelfOnionFallback && fallbackKind === "selfOnion",
+          });
+          debugLog("[net] sendOutboxRecord: fallback ok", {
+            convId: record.convId,
+            messageId: record.id,
+            transport: fallbackKind,
+          });
+          return { ok: true as const };
+        } catch (fallbackError) {
+          const fallbackErrorMessage = toErrorMessage(fallbackError);
+          const shouldRetrySelfOnion =
+            fallbackKind === "selfOnion" &&
+            attempt < maxAttempts &&
+            isSelfOnionRouteNotReadyError(fallbackErrorMessage);
+          if (shouldRetrySelfOnion) {
+            debugLog("[net] sendOutboxRecord: fallback retry", {
+              convId: record.convId,
+              messageId: record.id,
+              fallbackKind,
+              attempt,
+              maxAttempts,
+              error: fallbackErrorMessage,
+            });
+            await wait(SELF_ONION_RETRY_DELAY_MS);
+            continue;
+          }
+          controller.reportSendFail(fallbackKind);
+          debugLog("[net] sendOutboxRecord: fallback failed", {
+            convId: record.convId,
+            messageId: record.id,
+            fallbackKind,
+            error: fallbackErrorMessage,
+          });
+          break;
+        }
       }
     }
     return { ok: false as const, retryable: true };
