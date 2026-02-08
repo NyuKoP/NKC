@@ -1,7 +1,14 @@
 import http from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { test, expect } from "@playwright/test";
-import { disableAnimations, ensureOnboarded } from "./helpers";
+import {
+  disableAnimations,
+  enableFriendFlowCapture,
+  ensureOnboarded,
+  filterFriendFlowLogsByAction,
+  readFriendFlowLogs,
+  resetFriendFlowLogs,
+} from "./helpers";
 
 type OnionInboxItem = {
   id: string;
@@ -234,10 +241,12 @@ test.describe("Friend add E2E", () => {
   test("adds friend and shows it in friend list", async ({ page }) => {
     const { friendCode, expectedDisplayName } = makeFriendCode();
     await seedNetworkConfig(page, onionServer.baseUrl);
+    await enableFriendFlowCapture(page);
 
     await page.goto("/");
     await disableAnimations(page);
     await ensureOnboarded(page);
+    await resetFriendFlowLogs(page);
 
     await page.getByTestId("list-mode-friends").click();
     await page.getByRole("button", { name: /친구 추가|Add friend/i }).first().click();
@@ -253,5 +262,35 @@ test.describe("Friend add E2E", () => {
 
     await page.getByTestId("list-mode-friends").click();
     await expect(page.getByTestId("sidebar").getByText(expectedDisplayName, { exact: true })).toBeVisible();
+
+    await expect
+      .poll(async () => {
+        const logs = await readFriendFlowLogs(page);
+        const addLogs = filterFriendFlowLogsByAction(logs, "add");
+        return addLogs.length;
+      })
+      .toBeGreaterThan(0);
+
+    await expect
+      .poll(async () => {
+        const logs = await readFriendFlowLogs(page);
+        const addLogs = filterFriendFlowLogsByAction(logs, "add");
+        const events = addLogs
+          .map((record) => record.event)
+          .filter((event): event is { result?: unknown; stage?: unknown } => {
+            return Boolean(event && typeof event === "object");
+          });
+        const startIndex = events.findIndex(
+          (event) => event.result === "progress" && event.stage === "progress:start"
+        );
+        const doneIndex = events.findIndex(
+          (event) =>
+            event.result === "added" &&
+            typeof event.stage === "string" &&
+            event.stage.startsWith("result:added-")
+        );
+        return startIndex >= 0 && doneIndex > startIndex;
+      })
+      .toBe(true);
   });
 });

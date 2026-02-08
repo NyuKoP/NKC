@@ -53,6 +53,7 @@ declare global {
         path: string;
       }>;
       getPath: () => Promise<string>;
+      getFriendFlowPath: () => Promise<string>;
     };
   }
 }

@@ -23,6 +23,12 @@ import { startOnionController, type OnionControllerHandle } from "./main/onionCo
 import { TorManager } from "./main/torManager";
 import { LokinetManager } from "./main/lokinetManager";
 import { readAppPrefs, setAppPrefs } from "./main/preferences";
+import {
+  appendTestLogRecord,
+  getFriendFlowTestLogPath,
+  getTestLogPath,
+  type TestLogAppendPayload,
+} from "./main/testLogStore";
 import { defaultAppPrefs, type AppPreferences, type AppPreferencesPatch } from "./preferences";
 
 type ProxyApplyPayload = {
@@ -89,17 +95,10 @@ type SyncResultPayload = {
   error?: string;
 };
 
-type TestLogAppendPayload = {
-  channel: string;
-  event: unknown;
-  at?: string;
-};
-
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
 const isDev = Boolean(rendererUrl);
 const isAutoStartLaunch = process.argv.includes("--autostart");
 const SECRET_STORE_FILENAME = "secret-store.json";
-const TEST_LOG_FILENAME = "nkc-test-events.log";
 const ALLOWED_PROXY_PROTOCOLS = new Set(["socks5:", "socks5h:", "http:", "https:"]);
 let onionSession: Electron.Session | null = null;
 const getOnionSession = () => {
@@ -528,32 +527,11 @@ const registerAppIpc = () => {
   });
 };
 
-const getTestLogPath = () => path.join(app.getPath("userData"), "logs", TEST_LOG_FILENAME);
-
-const appendTestLog = async (payload: TestLogAppendPayload) => {
-  const logPath = getTestLogPath();
-  await fs.mkdir(path.dirname(logPath), { recursive: true });
-  const record = {
-    at: payload.at ?? new Date().toISOString(),
-    channel: payload.channel,
-    event: payload.event,
-  };
-  let line: string;
-  try {
-    line = JSON.stringify(record);
-  } catch {
-    line = JSON.stringify({
-      at: record.at,
-      channel: record.channel,
-      event: String(payload.event),
-      note: "non-serializable event converted to string",
-    });
-  }
-  await fs.appendFile(logPath, `${line}\n`, "utf8");
-};
-
 const registerTestLogIpc = () => {
-  ipcMain.handle("testLog:path", async () => getTestLogPath());
+  ipcMain.handle("testLog:path", async () => getTestLogPath(app.getPath("userData")));
+  ipcMain.handle("testLog:friendFlowPath", async () =>
+    getFriendFlowTestLogPath(app.getPath("userData"))
+  );
   ipcMain.handle("testLog:append", async (_event, payload: TestLogAppendPayload) => {
     if (!payload || typeof payload !== "object") {
       throw new Error("invalid-test-log-payload");
@@ -561,12 +539,13 @@ const registerTestLogIpc = () => {
     if (typeof payload.channel !== "string" || !payload.channel.trim()) {
       throw new Error("invalid-test-log-channel");
     }
-    await appendTestLog({
+    const userDataPath = app.getPath("userData");
+    await appendTestLogRecord(userDataPath, {
       channel: payload.channel.trim(),
       event: payload.event,
       at: payload.at,
     });
-    return { ok: true, path: getTestLogPath() };
+    return { ok: true, path: getTestLogPath(userDataPath) };
   });
 };
 

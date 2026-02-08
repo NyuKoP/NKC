@@ -114,12 +114,18 @@ import {
   signFriendControlFrame,
   stripFriendControlFrameSignature,
   type FriendControlFrame,
-  type FriendControlFrameType,
 } from "../friends/friendControlFrame";
+import {
+  attachInfoCollectionLogSink,
+  emitFriendAddInfoLog,
+  emitFriendRouteOutgoingInfoLog,
+  type FriendAddInfoLogInput,
+  type InfoLogErrorDetail,
+  type FriendRouteOutgoingInfoLogInput,
+} from "../diagnostics/infoCollectionLogs";
 import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
 import { onSyncRun, reportSyncResult } from "../appControl";
-import { appendTestLog } from "../utils/testLogSink";
 
 const buildNameMap = (
   profiles: UserProfile[],
@@ -151,28 +157,34 @@ const newClientBatchId = () => {
   return encodeBase64Url(bytes);
 };
 
-type FriendAddTestLog = {
-  result: "added" | "not_added";
-  stage: string;
-  message?: string;
-  profileId?: string;
-  friendId?: string;
-  requestSent?: boolean;
+const nowMonotonicMs = () => {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
 };
 
-type FriendRouteTestLog = {
-  direction: "outgoing";
-  status: "sent" | "failed";
-  frameType: FriendControlFrameType;
-  via?: "directP2P" | "selfOnion" | "onionRouter";
-  messageId: string;
-  convId: string;
-  senderDeviceId?: string;
-  toDeviceId?: string;
-  torOnion?: string;
-  lokinet?: string;
-  error?: string;
-  timestamp: string;
+const toInfoLogErrorDetail = (error: unknown): InfoLogErrorDetail => {
+  if (error instanceof Error) {
+    const code =
+      typeof (error as { code?: unknown }).code === "string"
+        ? ((error as { code?: string }).code ?? undefined)
+        : undefined;
+    const cause =
+      typeof (error as { cause?: unknown }).cause === "string"
+        ? ((error as { cause?: string }).cause ?? undefined)
+        : undefined;
+    return {
+      name: error.name,
+      message: error.message,
+      code,
+      stackTop: error.stack?.split("\n").slice(0, 3).join("\n"),
+      causeMessage: cause,
+    };
+  }
+  return {
+    message: String(error),
+  };
 };
 
 export default function App() {
@@ -247,52 +259,14 @@ export default function App() {
     },
     [isDev]
   );
-  const emitFriendAddTestLog = useCallback((detail: FriendAddTestLog) => {
-    const payload = {
-      ...detail,
-      timestamp: new Date().toISOString(),
-    };
-    console.info("[test][friend-add]", payload);
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(
-        new CustomEvent("nkc:test:friend-add", {
-          detail: payload,
-        })
-      );
-    }
+  const emitFriendAddTestLog = useCallback((detail: FriendAddInfoLogInput) => {
+    emitFriendAddInfoLog(detail);
   }, []);
-  const emitFriendRouteTestLog = useCallback((detail: Omit<FriendRouteTestLog, "timestamp">) => {
-    const payload: FriendRouteTestLog = {
-      ...detail,
-      timestamp: new Date().toISOString(),
-    };
-    console.info("[test][friend-route]", payload);
-    if (typeof window !== "undefined") {
-      window.dispatchEvent(
-        new CustomEvent("nkc:test:friend-route", {
-          detail: payload,
-        })
-      );
-    }
+  const emitFriendRouteTestLog = useCallback((detail: FriendRouteOutgoingInfoLogInput) => {
+    emitFriendRouteOutgoingInfoLog(detail);
   }, []);
   useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    const handleFriendAdd = (event: Event) => {
-      const detail = (event as CustomEvent<unknown>).detail;
-      void appendTestLog("friend-add", detail);
-    };
-    const handleFriendRoute = (event: Event) => {
-      const detail = (event as CustomEvent<unknown>).detail;
-      void appendTestLog("friend-route", detail);
-    };
-
-    window.addEventListener("nkc:test:friend-add", handleFriendAdd as EventListener);
-    window.addEventListener("nkc:test:friend-route", handleFriendRoute as EventListener);
-    return () => {
-      window.removeEventListener("nkc:test:friend-add", handleFriendAdd as EventListener);
-      window.removeEventListener("nkc:test:friend-route", handleFriendRoute as EventListener);
-    };
+    return attachInfoCollectionLogSink();
   }, []);
 
   const settingsOpen = location.pathname === "/settings";
@@ -1191,21 +1165,62 @@ export default function App() {
           };
       const frameType = signedPayload.type;
       const messageId = createId();
+      const operationId = `friend-route:${newClientBatchId()}`;
+      const startedAt = nowMonotonicMs();
+      const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
       const routingMeta = buildRoutingMeta(partner);
       const senderDeviceId =
         signedPayload.from?.deviceId ?? getOrCreateDeviceId();
-      const result = await sendCiphertext({
-        convId: conv.id,
-        messageId,
-        ciphertext: JSON.stringify(signedPayload),
+      const commonContext = {
         priority,
-        ...routingMeta,
-      });
+        partnerProfileId: partner.id,
+        partnerFriendId: partner.friendId,
+        hasToDeviceId: Boolean(routingMeta.toDeviceId),
+        hasTorOnion: Boolean(routingMeta.route?.torOnion),
+        hasLokinet: Boolean(routingMeta.route?.lokinet),
+      };
+      let result:
+        | Awaited<ReturnType<typeof sendCiphertext>>
+        | null = null;
+      try {
+        result = await sendCiphertext({
+          convId: conv.id,
+          messageId,
+          ciphertext: JSON.stringify(signedPayload),
+          priority,
+          ...routingMeta,
+        });
+      } catch (error) {
+        emitFriendRouteTestLog({
+          direction: "outgoing",
+          status: "failed",
+          frameType,
+          messageId,
+          convId: conv.id,
+          source: "app:sendFriendControlPacket",
+          operationId,
+          elapsedMs: elapsedMs(),
+          senderDeviceId,
+          toDeviceId: routingMeta.toDeviceId,
+          torOnion: routingMeta.route?.torOnion,
+          lokinet: routingMeta.route?.lokinet,
+          error: "sendCiphertext threw",
+          errorDetail: toInfoLogErrorDetail(error),
+          context: {
+            ...commonContext,
+            checkpoint: "sendCiphertext",
+          },
+        });
+        return false;
+      }
       if (!result.ok) {
         emitFriendRouteTestLog({
           direction: "outgoing",
           status: "failed",
           frameType,
+          source: "app:sendFriendControlPacket",
+          operationId,
+          elapsedMs: elapsedMs(),
           via: result.transport,
           messageId,
           convId: conv.id,
@@ -1214,6 +1229,10 @@ export default function App() {
           torOnion: routingMeta.route?.torOnion,
           lokinet: routingMeta.route?.lokinet,
           error: result.error ?? "Friend control packet send failed",
+          context: {
+            ...commonContext,
+            checkpoint: "sendCiphertext:result-not-ok",
+          },
         });
         return false;
       }
@@ -1221,6 +1240,9 @@ export default function App() {
         direction: "outgoing",
         status: "sent",
         frameType,
+        source: "app:sendFriendControlPacket",
+        operationId,
+        elapsedMs: elapsedMs(),
         via: result.transport,
         messageId,
         convId: conv.id,
@@ -1228,6 +1250,7 @@ export default function App() {
         toDeviceId: routingMeta.toDeviceId,
         torOnion: routingMeta.route?.torOnion,
         lokinet: routingMeta.route?.lokinet,
+        context: commonContext,
       });
       return true;
     },
@@ -2461,18 +2484,48 @@ export default function App() {
   };
 
   const handleAddFriend = async (payload: { code: string; psk?: string }) => {
-    const failWithTestLog = (
-      error: string,
-      stage: string,
-      extras?: Omit<FriendAddTestLog, "result" | "stage" | "message">
+    type FriendAddLogExtras = Omit<
+      FriendAddInfoLogInput,
+      "result" | "stage" | "source" | "operationId" | "elapsedMs"
+    >;
+    const operationId = `friend-add:${newClientBatchId()}`;
+    const startedAt = nowMonotonicMs();
+    const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
+    const emitFriendAddWithMeta = (
+      detail: Omit<FriendAddInfoLogInput, "source" | "operationId" | "elapsedMs">
     ) => {
       emitFriendAddTestLog({
-        result: "not_added",
+        source: "app:handleAddFriend",
+        operationId,
+        elapsedMs: elapsedMs(),
+        ...detail,
+      });
+    };
+    const emitProgressWithTestLog = (
+      stage: string,
+      extras?: FriendAddLogExtras
+    ) => {
+      emitFriendAddWithMeta({
+        result: "progress",
         stage,
-        message: error,
         ...extras,
       });
-      return { ok: false as const, error };
+    };
+    const failWithTestLog = (
+      errorMessage: string,
+      stage: string,
+      extras?: FriendAddLogExtras,
+      errorCause?: unknown
+    ) => {
+      emitFriendAddWithMeta({
+        result: "not_added",
+        stage,
+        message: errorMessage,
+        errorDetail:
+          extras?.errorDetail ?? (errorCause !== undefined ? toInfoLogErrorDetail(errorCause) : undefined),
+        ...extras,
+      });
+      return { ok: false as const, error: errorMessage };
     };
 
     if (!userProfile) {
@@ -2482,6 +2535,19 @@ export default function App() {
     const rawInput = payload.code.trim();
     const normalized = normalizeInviteCode(rawInput);
     const prefixProbe = normalized.replace(/[^A-Z0-9]/g, "");
+    const inputKind = prefixProbe.startsWith("NKI1")
+      ? "invite"
+      : prefixProbe.startsWith("NKC1")
+      ? "friend-code-v1"
+      : "unknown";
+    emitProgressWithTestLog("progress:start", {
+      message: `Friend add requested. inputKind=${inputKind}`,
+      context: {
+        inputKind,
+        rawLength: rawInput.length,
+        normalizedLength: normalized.length,
+      },
+    });
     let attemptKey = normalized || "empty";
     let inviteFingerprint: string | null = null;
     let invitePsk: Uint8Array | null = null;
@@ -2491,7 +2557,13 @@ export default function App() {
       recordFail(attemptKey);
       return failWithTestLog(
         "레거시 친구 ID(NCK-/NKC-)는 더 이상 지원하지 않습니다. 상대에게 NKC1- 친구 코드를 요청하세요.",
-        "guard:legacy-code"
+        "guard:legacy-code",
+        {
+          context: {
+            inputKind,
+            prefixProbe: prefixProbe.slice(0, 8),
+          },
+        }
       );
     }
 
@@ -2499,8 +2571,18 @@ export default function App() {
       try {
         inviteFingerprint = await computeInviteFingerprint(normalized);
         attemptKey = `invite:${inviteFingerprint}`;
-      } catch {
-        return failWithTestLog("Invite code invalid.", "guard:invite-fingerprint-invalid");
+      } catch (error) {
+        return failWithTestLog(
+          "Invite code invalid.",
+          "guard:invite-fingerprint-invalid",
+          {
+            context: {
+              inputKind,
+              normalizedLength: normalized.length,
+            },
+          },
+          error
+        );
       }
     }
 
@@ -2509,9 +2591,20 @@ export default function App() {
       const waitSeconds = Math.ceil((firstGate.waitMs ?? 0) / 1000);
       return failWithTestLog(
         `Too many attempts. Try again in ${waitSeconds}s.`,
-        "guard:rate-limit-initial"
+        "guard:rate-limit-initial",
+        {
+          context: {
+            attemptKey,
+            waitSeconds,
+          },
+        }
       );
     }
+    emitProgressWithTestLog("progress:rate-limit-initial-passed", {
+      context: {
+        attemptKey,
+      },
+    });
 
     let friendCode = rawInput;
     if (prefixProbe.startsWith("NKI1")) {
@@ -2531,28 +2624,62 @@ export default function App() {
         return failWithTestLog("Invalid invite PSK.", "decode:invite-psk-invalid");
       }
       friendCode = encodeFriendCodeV1(decodedInvite.friend);
+      emitProgressWithTestLog("progress:invite-decoded", {
+        message: oneTimeInvite
+          ? "Invite decoded (one-time)."
+          : "Invite decoded (reusable).",
+        context: {
+          oneTimeInvite,
+          inviteFingerprint: inviteFingerprint?.slice(0, 12),
+        },
+      });
     }
 
     const decoded = decodeFriendCodeV1(friendCode);
     if ("error" in decoded) {
       recordFail(attemptKey);
-      return failWithTestLog(decoded.error, "decode:friend-code-invalid");
+      return failWithTestLog(decoded.error, "decode:friend-code-invalid", {
+        context: {
+          inputKind,
+          oneTimeInvite,
+        },
+      });
     }
 
     const identityPubBytes = decodeBase64Url(decoded.identityPub);
     const friendId = computeFriendId(identityPubBytes);
+    emitProgressWithTestLog("progress:friend-code-decoded", {
+      friendId,
+      context: {
+        hasDeviceId: Boolean(decoded.deviceId),
+        hasOnionAddr: Boolean(decoded.onionAddr),
+        hasLokinetAddr: Boolean(decoded.lokinetAddr),
+      },
+    });
     const finalKey = prefixProbe.startsWith("NKI1") ? attemptKey : `friend:${friendId}`;
     if (finalKey !== attemptKey) {
       const gate = checkAllowed(finalKey);
       if (!gate.ok) {
         const waitSeconds = Math.ceil((gate.waitMs ?? 0) / 1000);
         return failWithTestLog(
-          `Too many attempts. Try again in ${waitSeconds}s.`,
-          "guard:rate-limit-friend-id",
-          { friendId }
+            `Too many attempts. Try again in ${waitSeconds}s.`,
+            "guard:rate-limit-friend-id",
+            {
+              friendId,
+              context: {
+                finalKey,
+                waitSeconds,
+              },
+            }
         );
       }
     }
+    emitProgressWithTestLog("progress:rate-limit-final-passed", {
+      friendId,
+      context: {
+        finalKey,
+      },
+    });
 
     try {
       const myIdentityPub = await getIdentityPublicKey();
@@ -2560,8 +2687,13 @@ export default function App() {
         recordFail(finalKey);
         return failWithTestLog("You cannot add yourself.", "guard:self-add", { friendId });
       }
-    } catch {
-      // Best-effort self-check only; continue.
+      emitProgressWithTestLog("progress:self-check-passed", { friendId });
+    } catch (error) {
+      emitProgressWithTestLog("progress:self-check-skipped", {
+        friendId,
+        message: "Self-check skipped due to local identity read failure.",
+        errorDetail: toInfoLogErrorDetail(error),
+      });
     }
 
     const finalizeFriendAdd = async () => {
@@ -2569,6 +2701,15 @@ export default function App() {
         const existing = friends.find(
           (friend) => friend.friendId === friendId || friend.identityPub === decoded.identityPub
         );
+        emitProgressWithTestLog("progress:finalize-start", {
+          friendId,
+          profileId: existing?.id,
+          context: {
+            finalKey,
+            hasExistingProfile: Boolean(existing),
+            oneTimeInvite,
+          },
+        });
 
         const tofu = applyTOFU(
           existing?.identityPub && existing?.dhPub
@@ -2596,13 +2737,30 @@ export default function App() {
           return failWithTestLog("Friend keys changed; blocked.", "verify:tofu-blocked", {
             profileId: existing?.id,
             friendId,
+            context: {
+              tofuReason: tofu.reason,
+            },
           });
         }
+        emitProgressWithTestLog("progress:tofu-passed", {
+          friendId,
+          profileId: existing?.id,
+          context: {
+            trustStatus: existing?.trust?.status ?? "new",
+          },
+        });
 
         const psk =
           invitePsk ?? (payload.psk?.trim() ? new TextEncoder().encode(payload.psk.trim()) : null);
         if (psk) {
           await setFriendPsk(friendId, psk);
+          emitProgressWithTestLog("progress:psk-stored", {
+            friendId,
+            profileId: existing?.id,
+            context: {
+              pskSource: invitePsk ? "invite" : "manual",
+            },
+          });
         }
 
         const routingHints = sanitizeRoutingHints(
@@ -2661,13 +2819,51 @@ export default function App() {
         };
 
         await saveProfile(friend);
+        emitProgressWithTestLog("progress:profile-saved", {
+          friendId,
+          profileId: friend.id,
+          context: {
+            friendStatus: friend.friendStatus,
+            hasDeviceId: Boolean(friend.routingHints?.deviceId || friend.primaryDeviceId || friend.deviceId),
+          },
+        });
 
         let requestSent = false;
+        emitProgressWithTestLog("progress:request-send-attempt", {
+          friendId,
+          profileId: friend.id,
+          requestSent: false,
+          context: {
+            convPendingOutgoing: friend.friendStatus === "request_out",
+          },
+        });
         try {
           requestSent = await sendFriendRequestForFriend(friend);
         } catch (error) {
           console.warn("[friend] failed to send friend request", error);
+          const message = error instanceof Error ? error.message : String(error);
+          emitProgressWithTestLog("progress:request-send-error", {
+            friendId,
+            profileId: friend.id,
+            message,
+            requestSent: false,
+            errorDetail: toInfoLogErrorDetail(error),
+            context: {
+              checkpoint: "sendFriendRequestForFriend",
+            },
+          });
         }
+        emitProgressWithTestLog(
+          requestSent ? "progress:request-send-success" : "progress:request-send-deferred",
+          {
+            friendId,
+            profileId: friend.id,
+            requestSent,
+            context: {
+              retryExpected: !requestSent,
+            },
+          }
+        );
         if (!requestSent) {
           await hydrateVault();
           const hasDeviceId = Boolean(
@@ -2678,13 +2874,18 @@ export default function App() {
               message:
                 "친구는 추가되었지만 코드에 기기 ID가 없어 요청을 보낼 수 없습니다. 상대가 최신 버전에서 코드를 다시 복사해 보내야 합니다.",
             });
-            emitFriendAddTestLog({
+            emitFriendAddWithMeta({
               result: "added",
               stage: "result:added-missing-device-id",
               message: "Friend added without deviceId; friend request not sent.",
               profileId: friend.id,
               friendId,
               requestSent: false,
+              context: {
+                finalKey,
+                hasDeviceId: false,
+                retryExpected: false,
+              },
             });
             return {
               ok: true as const,
@@ -2694,13 +2895,18 @@ export default function App() {
             message:
               "친구를 목록에 추가했습니다. 요청 전송이 지연되어 백그라운드에서 재시도됩니다.",
           });
-          emitFriendAddTestLog({
+          emitFriendAddWithMeta({
             result: "added",
             stage: "result:added-request-delayed",
             message: "Friend added; request send delayed and scheduled for retry.",
             profileId: friend.id,
             friendId,
             requestSent: false,
+            context: {
+              finalKey,
+              hasDeviceId: true,
+              retryExpected: true,
+            },
           });
           return {
             ok: true as const,
@@ -2709,13 +2915,17 @@ export default function App() {
 
         await hydrateVault();
         devLog("friend:add:success", { id: friend.id, friendId });
-        emitFriendAddTestLog({
+        emitFriendAddWithMeta({
           result: "added",
           stage: "result:added-request-sent",
           message: "Friend added and request sent.",
           profileId: friend.id,
           friendId,
           requestSent: true,
+          context: {
+            finalKey,
+            retryExpected: false,
+          },
         });
 
         recordSuccess(finalKey);
@@ -2723,11 +2933,28 @@ export default function App() {
       } catch (error) {
         console.error("Friend:add failed", error);
         recordFail(finalKey);
-        return failWithTestLog("Failed to add friend.", "exception:add-failed", { friendId });
+        return failWithTestLog(
+          "Failed to add friend.",
+          "exception:add-failed",
+          {
+            friendId,
+            context: {
+              finalKey,
+              checkpoint: "finalizeFriendAdd",
+            },
+          },
+          error
+        );
       }
     };
 
     if (oneTimeInvite && inviteFingerprint) {
+      emitProgressWithTestLog("progress:invite-guard-check", {
+        friendId,
+        context: {
+          inviteFingerprint: inviteFingerprint.slice(0, 12),
+        },
+      });
       const guarded = await runOneTimeInviteGuard(
         inviteFingerprint,
         finalizeFriendAdd,
@@ -2735,8 +2962,19 @@ export default function App() {
       );
       if (!guarded.ok) {
         recordFail(finalKey);
-        return failWithTestLog("Invite already used.", "guard:invite-already-used", { friendId });
+        return failWithTestLog("Invite already used.", "guard:invite-already-used", {
+          friendId,
+          context: {
+            inviteFingerprint: inviteFingerprint.slice(0, 12),
+          },
+        });
       }
+      emitProgressWithTestLog("progress:invite-guard-passed", {
+        friendId,
+        context: {
+          inviteFingerprint: inviteFingerprint.slice(0, 12),
+        },
+      });
       return guarded.value;
     }
 
@@ -3284,14 +3522,3 @@ export default function App() {
     </>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
