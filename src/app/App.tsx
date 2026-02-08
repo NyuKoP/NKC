@@ -177,6 +177,15 @@ type RuntimeNetworkSnapshot = {
   alternateRouteDetail: string | null;
 };
 
+const toRuntimeTorSocksProxyUrl = (value: unknown) => {
+  if (!value || typeof value !== "object") return null;
+  const state = (value as { state?: unknown }).state;
+  const proxy = (value as { socksProxyUrl?: unknown }).socksProxyUrl;
+  if (state !== "running" || typeof proxy !== "string") return null;
+  const trimmed = proxy.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
 const toRuntimeState = (value: unknown) => {
   if (!value || typeof value !== "object") return null;
   const state = (value as { state?: unknown }).state;
@@ -691,6 +700,7 @@ export default function App() {
             nkc?: {
               getTorStatus?: () => Promise<unknown>;
               startTor?: () => Promise<unknown>;
+              setOnionForwardProxy?: (proxyUrl: string | null) => Promise<unknown>;
               getalternateRouteStatus?: () => Promise<unknown>;
               startalternateRoute?: () => Promise<unknown>;
             };
@@ -711,6 +721,16 @@ export default function App() {
           const torAfter = nkc?.getTorStatus ? await nkc.getTorStatus() : null;
           runtimeBootstrap.torAfter = toRuntimeState(torAfter);
           runtimeBootstrap.torAfterDetail = toRuntimeDetail(torAfter);
+          if (nkc?.setOnionForwardProxy) {
+            try {
+              const proxyUrl = toRuntimeTorSocksProxyUrl(torAfter);
+              await nkc.setOnionForwardProxy(proxyUrl);
+              runtimeBootstrap.torForwardProxySynced = Boolean(proxyUrl);
+            } catch (error) {
+              runtimeBootstrap.torForwardProxySyncError =
+                error instanceof Error ? error.message : String(error);
+            }
+          }
         } else if (netConfig.onionSelectedNetwork === "alternateRoute") {
           const alternateRouteBefore = nkc?.getalternateRouteStatus ? await nkc.getalternateRouteStatus() : null;
           runtimeBootstrap.alternateRouteBefore = toRuntimeState(alternateRouteBefore);
