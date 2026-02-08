@@ -442,10 +442,10 @@ export default function App() {
     ).nkc;
     if (!nkc) return fallback;
 
-    let onionAddr = fallback?.onionAddr;
-    let lokinetAddr = fallback?.lokinetAddr;
+    let onionAddr: string | undefined;
+    let lokinetAddr: string | undefined;
 
-    if (!onionAddr && nkc.ensureHiddenService) {
+    if (netConfig.onionSelectedNetwork === "tor" && nkc.ensureHiddenService) {
       try {
         await nkc.ensureHiddenService();
       } catch {
@@ -469,14 +469,18 @@ export default function App() {
       }
     }
 
-    return (
-      sanitizeRoutingHints({
-        deviceId: localDeviceId,
-        onionAddr,
-        lokinetAddr,
-      }) ?? fallback
-    );
-  }, [userProfile?.routingHints?.lokinetAddr, userProfile?.routingHints?.onionAddr]);
+    const liveHints = sanitizeRoutingHints({
+      deviceId: localDeviceId,
+      onionAddr,
+      lokinetAddr,
+    });
+    if (liveHints) return liveHints;
+    return sanitizeRoutingHints({ deviceId: localDeviceId }) ?? fallback;
+  }, [
+    netConfig.onionSelectedNetwork,
+    userProfile?.routingHints?.lokinetAddr,
+    userProfile?.routingHints?.onionAddr,
+  ]);
 
   const buildLocalFriendCodePayload = useCallback(async (): Promise<Omit<FriendCodeV1, "v">> => {
     const [identityPub, dhPub, localHints] = await Promise.all([
@@ -515,13 +519,25 @@ export default function App() {
     if (!friendAddOpen || !userProfile) return;
     let disposed = false;
     const refreshAll = async () => {
-      try {
-        await refreshFriendCodeRuntimeSnapshot();
-        await refreshMyFriendCode();
-      } catch (error) {
-        if (!disposed) {
-          console.error("Failed to refresh friend code/runtime snapshot", error);
-        }
+      const [runtimeResult, codeResult] = await Promise.allSettled([
+        refreshFriendCodeRuntimeSnapshot(),
+        refreshMyFriendCode(),
+      ]);
+      if (disposed) return;
+      if (runtimeResult.status === "rejected") {
+        console.error("Failed to refresh friend code runtime snapshot", runtimeResult.reason);
+      }
+      if (codeResult.status === "rejected") {
+        console.error("Failed to refresh friend code", codeResult.reason);
+      }
+      if (
+        runtimeResult.status === "rejected" &&
+        codeResult.status === "rejected"
+      ) {
+        console.error("Failed to refresh friend code/runtime snapshot", {
+          runtimeError: runtimeResult.reason,
+          friendCodeError: codeResult.reason,
+        });
       }
     };
     void refreshAll();
@@ -559,11 +575,12 @@ export default function App() {
     const selectedStatus = selectedNetwork === "tor"
       ? friendCodeRuntimeSnapshot.torState
       : friendCodeRuntimeSnapshot.lokinetState;
-    const selectedReady = selectedStatus
-      ? selectedStatus === "running"
-      : (selectedNetwork === "tor" ? netConfig.tor.status : netConfig.lokinet.status) === "ready";
+    const selectedReady = selectedStatus === "running";
 
-    if (onionMode && (!selectedReady || !hasRouteTarget)) {
+    if (onionMode && !hasRouteTarget) {
+      if (selectedReady) {
+        return `${selectedLabel} 런타임은 동작 중이지만 코드의 라우팅 주소가 아직 준비되지 않았습니다. 잠시 후 코드를 다시 복사하세요.`;
+      }
       return `${selectedLabel} 연결이 아직 준비되지 않아 코드에 라우팅 주소가 없을 수 있습니다. 대안: 내 코드를 먼저 상대에게 보내 상대가 먼저 친구 추가하게 하거나, 네트워크 설정에서 ${selectedLabel} 연결 후 코드를 다시 복사하세요.`;
     }
     return null;
