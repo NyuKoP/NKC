@@ -156,6 +156,13 @@ const warnOnionRouterGuards = (config: NetConfig) => {
   }
 };
 
+const toErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error);
+
+const isRouteTargetMissingError = (message: string) =>
+  message.includes("forward_failed:no_route_target") ||
+  message.includes("forward_failed:no_route");
+
 const inboundHandlers = new Set<(packet: TransportPacket, meta: IncomingPacketMeta) => void>();
 let inboundAttached = false;
 let inboundStartPromise: Promise<void> | null = null;
@@ -229,8 +236,15 @@ export const sendCiphertext = async (
   });
   await enqueueOutgoing(record);
 
-  const attemptSend = async (kind: TransportKind) => {
-    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "directP2P") {
+  const attemptSend = async (
+    kind: TransportKind,
+    options?: { allowDirectWhenOnionGuarded?: boolean }
+  ) => {
+    if (
+      (config.mode === "onionRouter" || config.onionEnabled) &&
+      kind === "directP2P" &&
+      !options?.allowDirectWhenOnionGuarded
+    ) {
       throw new Error("Direct P2P blocked in onion router mode");
     }
     if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "selfOnion") {
@@ -260,25 +274,32 @@ export const sendCiphertext = async (
     });
     return { ok: true, transport: used };
   } catch (error) {
+    const primaryErrorMessage = toErrorMessage(error);
     const attemptErrors: string[] = [
-      `${chosen}: ${error instanceof Error ? error.message : String(error)}`,
+      `${chosen}: ${primaryErrorMessage}`,
     ];
     controller.reportSendFail(chosen);
     debugLog("[net] sendCiphertext: send failed", {
       convId: payload.convId,
       messageId: payload.messageId,
       chosen,
-      error: error instanceof Error ? error.message : String(error),
+      error: primaryErrorMessage,
     });
+    const allowDirectFallback =
+      chosen === "onionRouter" && isRouteTargetMissingError(primaryErrorMessage);
     const fallbackKinds: TransportKind[] =
-      chosen === "directP2P"
+      allowDirectFallback
+        ? ["directP2P"]
+        : chosen === "directP2P"
         ? ["onionRouter", "selfOnion"]
         : config.mode === "selfOnion" && chosen === "selfOnion"
           ? ["onionRouter"]
           : [];
     for (const fallbackKind of fallbackKinds) {
       try {
-        const used = await attemptSend(fallbackKind);
+        const used = await attemptSend(fallbackKind, {
+          allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
+        });
         debugLog("[net] sendCiphertext: fallback ok", {
           convId: payload.convId,
           messageId: payload.messageId,
@@ -286,18 +307,16 @@ export const sendCiphertext = async (
         });
         return { ok: true, transport: used };
       } catch (fallbackError) {
+        const fallbackErrorMessage = toErrorMessage(fallbackError);
         attemptErrors.push(
-          `${fallbackKind}: ${
-            fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
-          }`
+          `${fallbackKind}: ${fallbackErrorMessage}`
         );
         controller.reportSendFail(fallbackKind);
         debugLog("[net] sendCiphertext: fallback failed", {
           convId: payload.convId,
           messageId: payload.messageId,
           fallbackKind,
-          error:
-            fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+          error: fallbackErrorMessage,
         });
       }
     }
@@ -354,8 +373,15 @@ export const sendOutboxRecord = async (
     return { ok: false as const, retryable: false };
   }
 
-  const attemptSend = async (kind: TransportKind) => {
-    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "directP2P") {
+  const attemptSend = async (
+    kind: TransportKind,
+    options?: { allowDirectWhenOnionGuarded?: boolean }
+  ) => {
+    if (
+      (config.mode === "onionRouter" || config.onionEnabled) &&
+      kind === "directP2P" &&
+      !options?.allowDirectWhenOnionGuarded
+    ) {
       throw new Error("Direct P2P blocked in onion router mode");
     }
     if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "selfOnion") {
@@ -383,22 +409,29 @@ export const sendOutboxRecord = async (
     });
     return { ok: true as const };
   } catch (error) {
+    const primaryErrorMessage = toErrorMessage(error);
     controller.reportSendFail(chosen);
     debugLog("[net] sendOutboxRecord: send failed", {
       convId: record.convId,
       messageId: record.id,
       chosen,
-      error: error instanceof Error ? error.message : String(error),
+      error: primaryErrorMessage,
     });
+    const allowDirectFallback =
+      chosen === "onionRouter" && isRouteTargetMissingError(primaryErrorMessage);
     const fallbackKinds: TransportKind[] =
-      chosen === "directP2P"
+      allowDirectFallback
+        ? ["directP2P"]
+        : chosen === "directP2P"
         ? ["onionRouter", "selfOnion"]
         : config.mode === "selfOnion" && chosen === "selfOnion"
           ? ["onionRouter"]
           : [];
     for (const fallbackKind of fallbackKinds) {
       try {
-        await attemptSend(fallbackKind);
+        await attemptSend(fallbackKind, {
+          allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
+        });
         debugLog("[net] sendOutboxRecord: fallback ok", {
           convId: record.convId,
           messageId: record.id,
@@ -407,12 +440,12 @@ export const sendOutboxRecord = async (
         return { ok: true as const };
       } catch (fallbackError) {
         controller.reportSendFail(fallbackKind);
+        const fallbackErrorMessage = toErrorMessage(fallbackError);
         debugLog("[net] sendOutboxRecord: fallback failed", {
           convId: record.convId,
           messageId: record.id,
           fallbackKind,
-          error:
-            fallbackError instanceof Error ? fallbackError.message : String(fallbackError),
+          error: fallbackErrorMessage,
         });
       }
     }

@@ -88,4 +88,37 @@ describe("handleOnionSend routing", () => {
     expect(deps.socksFetch).not.toHaveBeenCalled();
     expect(deps.storeLocal).toHaveBeenCalledTimes(1);
   });
+
+  it("fails when route target is missing for non-loopback send", async () => {
+    const deps = baseDeps();
+    const result = await handleOnionSend(
+      {
+        toDeviceId: "peer-1",
+        fromDeviceId: "sender-1",
+        envelope: "env",
+      },
+      deps
+    );
+    expect(result.status).toBe(400);
+    expect(result.body.ok).toBe(false);
+    expect(result.body.error).toBe("forward_failed:no_route_target");
+    expect(deps.socksFetch).not.toHaveBeenCalled();
+    expect(deps.storeLocal).not.toHaveBeenCalled();
+  });
+
+  it("allows explicit loopback send without route target", async () => {
+    const deps = baseDeps();
+    const result = await handleOnionSend(
+      {
+        toDeviceId: "same-device",
+        fromDeviceId: "same-device",
+        envelope: "env",
+      },
+      deps
+    );
+    expect(result.status).toBe(200);
+    expect(result.body.ok).toBe(true);
+    expect(result.body.forwarded).toBe(false);
+    expect(deps.storeLocal).toHaveBeenCalledTimes(1);
+  });
 });
