@@ -7,6 +7,7 @@ import { getOrCreateDeviceId } from "../../security/deviceRole";
 import { getOnionControllerUrlOverride, getRoutePolicy } from "../../security/preferences";
 import type { RouteMode } from "../../main/routePolicy";
 import { TorRuntime } from "../../net/tor/TorRuntime";
+import { createTransportError } from "../../net/transportErrors";
 import type { Transport, TransportPacket, TransportState } from "./types";
 
 type Handler<T> = (payload: T) => void;
@@ -362,7 +363,7 @@ export const createOnionRouterTransport = ({
         console.warn(
           `[net][route] missing_to skip route=onionRouter opId=${(packet as { id?: string }).id ?? "unknown"}`
         );
-        return;
+        throw createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: missing destination 'to'");
       }
       try {
         await torRuntime.awaitReady(15_000, signal);

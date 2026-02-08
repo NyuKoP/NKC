@@ -243,21 +243,42 @@ const wait = (ms: number) =>
 
 const getByteLength = (value: string) => new TextEncoder().encode(value).byteLength;
 
-const emitRouteGateCheck = (
-  opId: string,
-  wanted: TransportKind,
+type RouteGateSnapshot = {
+  onionReady: boolean;
+  torBootstrapped: boolean | null;
+  torControlReady: null;
+  directOpen: boolean;
+  lokinetReady: boolean | null;
+  wakuReady: null;
+  hasRouteTarget: boolean;
+};
+
+type GateDecision =
+  | { ok: true; snapshot: RouteGateSnapshot }
+  | {
+      ok: false;
+      snapshot: RouteGateSnapshot;
+      kind: "DEFER";
+      reason: "INTERNAL_ONION_NOT_READY";
+      retryAfterMs: number | null;
+    }
+  | {
+      ok: false;
+      snapshot: RouteGateSnapshot;
+      kind: "FATAL";
+      reason: "MISSING_TO" | "MISCONFIG";
+    };
+
+const toRouteGateSnapshot = (
   config: NetConfig,
   route?: { torOnion?: string; lokinet?: string }
-) => {
+): RouteGateSnapshot => {
   const routeState = useInternalOnionRouteStore.getState().route;
   const connection = getConnectionStatus();
   const routerConnected =
     connection.transport === "onionRouter" &&
     (connection.state === "connected" || connection.state === "degraded");
-  emitFlowTraceLog({
-    event: "routeGate:check",
-    opId,
-    wanted,
+  return {
     onionReady: routeState.status === "ready",
     torBootstrapped: config.onionSelectedNetwork === "tor" ? routerConnected : null,
     torControlReady: null,
@@ -267,7 +288,58 @@ const emitRouteGateCheck = (
     lokinetReady: config.onionSelectedNetwork === "lokinet" ? routerConnected : null,
     wakuReady: null,
     hasRouteTarget: Boolean(route?.torOnion || route?.lokinet),
+  };
+};
+
+const emitRouteGateCheck = (
+  opId: string,
+  wanted: TransportKind,
+  snapshot: RouteGateSnapshot
+) => {
+  emitFlowTraceLog({
+    event: "routeGate:check",
+    opId,
+    wanted,
+    ...snapshot,
   });
+};
+
+const enforceRouteGate = (args: {
+  opId: string;
+  wanted: TransportKind;
+  config: NetConfig;
+  toDeviceId?: string;
+  route?: { torOnion?: string; lokinet?: string };
+}): GateDecision => {
+  const snapshot = toRouteGateSnapshot(args.config, args.route);
+  emitRouteGateCheck(args.opId, args.wanted, snapshot);
+
+  if (!args.toDeviceId || !args.toDeviceId.trim()) {
+    return {
+      ok: false,
+      snapshot,
+      kind: "FATAL",
+      reason: "MISSING_TO",
+    };
+  }
+
+  if (
+    (args.wanted === "onionRouter" || args.wanted === "selfOnion") &&
+    args.config.mode === "onionRouter" &&
+    args.config.onionEnabled &&
+    snapshot.hasRouteTarget &&
+    !snapshot.onionReady
+  ) {
+    return {
+      ok: false,
+      snapshot,
+      kind: "DEFER",
+      reason: "INTERNAL_ONION_NOT_READY",
+      retryAfterMs: null,
+    };
+  }
+
+  return { ok: true, snapshot };
 };
 
 const getPrewarmKinds = (
@@ -377,36 +449,70 @@ export const sendCiphertext = async (
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolve(config, controller);
-  emitRouteGateCheck(payload.messageId, chosen, config, route);
-  emitFlowTraceLog({
-    event: "routeSelect:decision",
-    opId: payload.messageId,
-    wanted: chosen,
-    attempted: [chosen],
-    fallbackUsed: false,
-    policy,
-    reason: "INITIAL_SELECTION",
-    why: "initial-selection",
-  });
   const attemptTrace: Array<{
     transport: TransportKind;
     phase: "primary" | "fallback";
     ok: boolean;
     error?: string;
   }> = [];
-  debugLog("[net] sendCiphertext: chosen transport", {
-    convId: payload.convId,
-    messageId: payload.messageId,
-    chosen,
-    mode: config.mode,
-    onionEnabled: config.onionEnabled,
-    onionSelectedNetwork: config.onionSelectedNetwork,
-    hasToDeviceId: Boolean(toDeviceId),
-    hasRoute: Boolean(route?.torOnion || route?.lokinet),
+  const gateDecision = enforceRouteGate({
+    opId: payload.messageId,
+    wanted: chosen,
+    config,
+    toDeviceId,
+    route,
   });
 
-  if (!toDeviceId) {
-    const misconfig = createMissingDestinationError(chosen, payload.messageId);
+  if (!gateDecision.ok) {
+    if (gateDecision.kind === "DEFER") {
+      await enqueueOutgoing(record);
+      emitFlowTraceLog({
+        event: "routeGate:block",
+        opId: payload.messageId,
+        reason: gateDecision.reason,
+        nextRetryAt: null,
+        backoffMs: gateDecision.retryAfterMs,
+      });
+      emitFlowTraceLog({
+        event: "routeSelect:decision",
+        opId: payload.messageId,
+        wanted: chosen,
+        attempted: [],
+        fallbackUsed: false,
+        policy,
+        reason: "ONION_NOT_READY_DEFER",
+        why: gateDecision.reason,
+      });
+      emitFlowTraceLog({
+        event: "requestSend:deferred",
+        opId: payload.messageId,
+        reason: "RETRYABLE_SEND_FAILURE",
+        nextRetryAt: null,
+        attempt: 0,
+        errCode: gateDecision.reason,
+      });
+      return {
+        ok: false,
+        transport: chosen,
+        error: `RETRYABLE_SEND_FAILURE:${gateDecision.reason}`,
+        diagnostic: {
+          chosenTransport: chosen,
+          attempts: attemptTrace,
+          deferredReason: gateDecision.reason,
+          hasToDeviceId: Boolean(toDeviceId),
+          hasTorOnion: Boolean(route?.torOnion),
+          hasLokinet: Boolean(route?.lokinet),
+          mode: config.mode,
+          onionEnabled: config.onionEnabled,
+          onionSelectedNetwork: config.onionSelectedNetwork,
+        },
+      };
+    }
+
+    const misconfig =
+      gateDecision.reason === "MISSING_TO"
+        ? createMissingDestinationError(chosen, payload.messageId)
+        : createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: route gate rejected send");
     emitFlowTraceLog({
       event: "routeSelect:decision",
       opId: payload.messageId,
@@ -432,7 +538,7 @@ export const sendCiphertext = async (
       diagnostic: {
         chosenTransport: chosen,
         attempts: attemptTrace,
-        hasToDeviceId: false,
+        hasToDeviceId: Boolean(toDeviceId),
         hasTorOnion: Boolean(route?.torOnion),
         hasLokinet: Boolean(route?.lokinet),
         mode: config.mode,
@@ -441,6 +547,27 @@ export const sendCiphertext = async (
       },
     };
   }
+
+  emitFlowTraceLog({
+    event: "routeSelect:decision",
+    opId: payload.messageId,
+    wanted: chosen,
+    attempted: [chosen],
+    fallbackUsed: false,
+    policy,
+    reason: "INITIAL_SELECTION",
+    why: "initial-selection",
+  });
+  debugLog("[net] sendCiphertext: chosen transport", {
+    convId: payload.convId,
+    messageId: payload.messageId,
+    chosen,
+    mode: config.mode,
+    onionEnabled: config.onionEnabled,
+    onionSelectedNetwork: config.onionSelectedNetwork,
+    hasToDeviceId: Boolean(toDeviceId),
+    hasRoute: Boolean(route?.torOnion || route?.lokinet),
+  });
 
   await enqueueOutgoing(record);
 
@@ -867,30 +994,51 @@ export const sendOutboxRecord = async (
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolve(config, controller);
-  emitRouteGateCheck(record.id, chosen, config, torOnion || lokinet ? { torOnion, lokinet } : undefined);
-  emitFlowTraceLog({
-    event: "routeSelect:decision",
+  const gateDecision = enforceRouteGate({
     opId: record.id,
     wanted: chosen,
-    attempted: [chosen],
-    fallbackUsed: false,
-    policy,
-    reason: "OUTBOX_SELECTION",
-    why: "outbox-selection",
-  });
-  debugLog("[net] sendOutboxRecord: chosen transport", {
-    convId: record.convId,
-    messageId: record.id,
-    chosen,
-    mode: config.mode,
-    onionEnabled: config.onionEnabled,
-    onionSelectedNetwork: config.onionSelectedNetwork,
-    hasToDeviceId: Boolean(toDeviceId),
-    hasRoute: Boolean(torOnion || lokinet),
+    config,
+    toDeviceId,
+    route: torOnion || lokinet ? { torOnion, lokinet } : undefined,
   });
 
-  if (!toDeviceId) {
-    const misconfig = createMissingDestinationError(chosen, record.id);
+  if (!gateDecision.ok) {
+    if (gateDecision.kind === "DEFER") {
+      emitFlowTraceLog({
+        event: "routeGate:block",
+        opId: record.id,
+        reason: gateDecision.reason,
+        nextRetryAt: record.nextAttemptAtMs,
+        backoffMs:
+          record.nextAttemptAtMs != null
+            ? Math.max(0, record.nextAttemptAtMs - Date.now())
+            : gateDecision.retryAfterMs,
+      });
+      emitFlowTraceLog({
+        event: "routeSelect:decision",
+        opId: record.id,
+        wanted: chosen,
+        attempted: [],
+        fallbackUsed: false,
+        policy,
+        reason: "ONION_NOT_READY_DEFER",
+        why: gateDecision.reason,
+      });
+      emitFlowTraceLog({
+        event: "requestSend:deferred",
+        opId: record.id,
+        reason: "RETRYABLE_SEND_FAILURE",
+        nextRetryAt: record.nextAttemptAtMs,
+        attempt: record.attempts,
+        errCode: gateDecision.reason,
+      });
+      return { ok: false as const, retryable: true };
+    }
+
+    const misconfig =
+      gateDecision.reason === "MISSING_TO"
+        ? createMissingDestinationError(chosen, record.id)
+        : createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: route gate rejected send");
     emitFlowTraceLog({
       event: "routeSelect:decision",
       opId: record.id,
@@ -911,6 +1059,27 @@ export const sendOutboxRecord = async (
     });
     return { ok: false as const, retryable: false };
   }
+
+  emitFlowTraceLog({
+    event: "routeSelect:decision",
+    opId: record.id,
+    wanted: chosen,
+    attempted: [chosen],
+    fallbackUsed: false,
+    policy,
+    reason: "OUTBOX_SELECTION",
+    why: "outbox-selection",
+  });
+  debugLog("[net] sendOutboxRecord: chosen transport", {
+    convId: record.convId,
+    messageId: record.id,
+    chosen,
+    mode: config.mode,
+    onionEnabled: config.onionEnabled,
+    onionSelectedNetwork: config.onionSelectedNetwork,
+    hasToDeviceId: Boolean(toDeviceId),
+    hasRoute: Boolean(torOnion || lokinet),
+  });
 
   if (config.onionEnabled && chosen === "selfOnion") {
     controller.reportSendFail(chosen);

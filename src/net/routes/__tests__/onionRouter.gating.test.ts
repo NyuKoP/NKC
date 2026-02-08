@@ -2,6 +2,46 @@ import { describe, expect, it, vi } from "vitest";
 import { createOnionRouterTransport } from "../../../adapters/transports/onionRouterTransport";
 
 describe("onionRouter transport gating", () => {
+  it("fails with FATAL_MISCONFIG when destination is missing", async () => {
+    const torRuntime = {
+      start: vi.fn(async () => {}),
+      awaitReady: vi.fn(async () => {}),
+      markDegraded: vi.fn(),
+    };
+    const transport = createOnionRouterTransport({
+      httpClient: {
+        request: vi.fn(async () => new Response()),
+        healthCheck: vi.fn(async () => ({ ok: true, message: "ok" })),
+      },
+      config: {
+        mode: "onionRouter",
+        onionProxyEnabled: true,
+        onionProxyUrl: "socks5://127.0.0.1:9050",
+        webrtcRelayOnly: true,
+        disableLinkPreview: true,
+        selfOnionEnabled: true,
+        selfOnionMinRelays: 3,
+        allowRemoteProxy: false,
+        onionEnabled: true,
+        onionSelectedNetwork: "tor",
+        tor: { installed: true, status: "ready", version: "1.0.0" },
+        lokinet: { installed: false, status: "idle" },
+        lastUpdateCheckAtMs: undefined,
+      },
+      torRuntime,
+    });
+
+    await expect(
+      transport.send({
+        id: "m-missing-to",
+        payload: "ciphertext",
+      } as unknown as Parameters<typeof transport.send>[0])
+    ).rejects.toMatchObject({
+      code: "FATAL_MISCONFIG",
+    });
+    expect(torRuntime.awaitReady).not.toHaveBeenCalled();
+  });
+
   it("returns TOR_NOT_READY quickly when Tor runtime is not READY", async () => {
     const torRuntime = {
       start: vi.fn(async () => {}),

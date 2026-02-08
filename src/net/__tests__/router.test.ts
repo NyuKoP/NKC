@@ -145,6 +145,57 @@ describe("router", () => {
     expect(store.size).toBe(0);
   });
 
+  it("defers onion send before transport attempt when onion route is not ready", async () => {
+    const store = new Map<string, OutboxRecord>();
+    vi.doMock("../../storage/outboxStore", () => {
+      return {
+        putOutbox: async (record: OutboxRecord) => {
+          store.set(record.id, record);
+        },
+        deleteOutbox: async (id: string) => {
+          store.delete(id);
+        },
+        deleteExpiredOutbox: async () => 0,
+      };
+    });
+
+    const router = await import("../router");
+    const onionRouterTransport = createTransport("onionRouter");
+    const result = await router.sendCiphertext(
+      {
+        convId: "c1",
+        messageId: "onion-not-ready",
+        ciphertext: "enc",
+        toDeviceId: "peer-device",
+        route: { torOnion: "peeraddress.onion" },
+      },
+      {
+        resolveTransport: () => "onionRouter",
+        config: {
+          mode: "onionRouter",
+          onionProxyEnabled: true,
+          onionProxyUrl: "socks5://127.0.0.1:9050",
+          webrtcRelayOnly: true,
+          disableLinkPreview: true,
+          selfOnionEnabled: true,
+          selfOnionMinRelays: 3,
+          allowRemoteProxy: false,
+          onionEnabled: true,
+          onionSelectedNetwork: "tor",
+          tor: { installed: true, status: "ready", version: "1.0.0" },
+          lokinet: { installed: false, status: "idle" },
+          lastUpdateCheckAtMs: undefined,
+        },
+        transports: { onionRouter: onionRouterTransport },
+      }
+    );
+
+    expect(result.ok).toBe(false);
+    expect(String((result as { error?: string }).error)).toContain("RETRYABLE_SEND_FAILURE");
+    expect(onionRouterTransport.send).not.toHaveBeenCalled();
+    expect(store.size).toBe(1);
+  });
+
   it("falls back to onionRouter when directP2P is blocked", async () => {
     const store = new Map<string, OutboxRecord>();
     vi.doMock("../../storage/outboxStore", () => {
