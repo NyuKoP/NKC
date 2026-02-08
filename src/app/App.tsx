@@ -104,7 +104,18 @@ import { getConvAllowDirect, setGroupAvatarOverride } from "../security/preferen
 import { setFriendAlias } from "../storage/friendStore";
 import { resolveDisplayName, resolveFriendDisplayName } from "../utils/displayName";
 import { startFriendRequestScheduler } from "../friends/friendRequestScheduler";
+import {
+  startFriendResponseScheduler,
+  type PendingFriendResponseType,
+} from "../friends/friendResponseScheduler";
 import { startFriendInboxListener } from "../friends/friendInbox";
+import {
+  isFriendControlFrame,
+  signFriendControlFrame,
+  stripFriendControlFrameSignature,
+  type FriendControlFrame,
+  type FriendControlFrameType,
+} from "../friends/friendControlFrame";
 import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
 import { onSyncRun, reportSyncResult } from "../appControl";
@@ -148,8 +159,6 @@ type FriendAddTestLog = {
   friendId?: string;
   requestSent?: boolean;
 };
-
-type FriendControlFrameType = "friend_req" | "friend_accept" | "friend_decline";
 
 type FriendRouteTestLog = {
   direction: "outgoing";
@@ -1170,22 +1179,25 @@ export default function App() {
       payload: unknown,
       priority: "high" | "normal" = "high"
     ) => {
-      const frameType = (payload as { type?: unknown }).type;
-      if (
-        frameType !== "friend_req" &&
-        frameType !== "friend_accept" &&
-        frameType !== "friend_decline"
-      ) {
+      if (!isFriendControlFrame(payload)) {
         throw new Error("Unsupported friend control frame");
       }
+      const unsignedPayload = stripFriendControlFrameSignature(payload);
+      const signedPayload: FriendControlFrame = payload.sig
+        ? payload
+        : {
+            ...unsignedPayload,
+            sig: await signFriendControlFrame(unsignedPayload, await getIdentityPrivateKey()),
+          };
+      const frameType = signedPayload.type;
       const messageId = createId();
       const routingMeta = buildRoutingMeta(partner);
       const senderDeviceId =
-        (payload as { from?: { deviceId?: string } }).from?.deviceId ?? getOrCreateDeviceId();
+        signedPayload.from?.deviceId ?? getOrCreateDeviceId();
       const result = await sendCiphertext({
         convId: conv.id,
         messageId,
-        ciphertext: JSON.stringify(payload),
+        ciphertext: JSON.stringify(signedPayload),
         priority,
         ...routingMeta,
       });
@@ -1203,7 +1215,7 @@ export default function App() {
           lokinet: routingMeta.route?.lokinet,
           error: result.error ?? "Friend control packet send failed",
         });
-        throw new Error(result.error ?? "Friend control packet send failed");
+        return false;
       }
       emitFriendRouteTestLog({
         direction: "outgoing",
@@ -1217,6 +1229,7 @@ export default function App() {
         torOnion: routingMeta.route?.torOnion,
         lokinet: routingMeta.route?.lokinet,
       });
+      return true;
     },
     [buildRoutingMeta, emitFriendRouteTestLog]
   );
@@ -1230,8 +1243,7 @@ export default function App() {
       if (!conv) return false;
       const payload = await buildFriendRequestPayload(conv.id);
       if (!payload) return false;
-      await sendFriendControlPacket(conv, friend, payload, "high");
-      return true;
+      return sendFriendControlPacket(conv, friend, payload, "high");
     },
     [buildFriendRequestPayload, ensureDirectConvForFriend, sendFriendControlPacket]
   );
@@ -1987,6 +1999,19 @@ export default function App() {
     await hydrateVault();
   };
 
+  const updateConversationOrThrow = useCallback(
+    async (convId: string, updates: Partial<Conversation>) => {
+      const target = useAppStore.getState().convs.find((conv) => conv.id === convId);
+      if (!target) {
+        throw new Error(`Conversation not found: ${convId}`);
+      }
+      const updated = { ...target, ...updates };
+      await saveConversation(updated);
+      await hydrateVault();
+    },
+    [hydrateVault]
+  );
+
   const handleSelectConv = (convId: string) => {
     setSelectedConv(convId);
     const target = convs.find((conv) => conv.id === convId);
@@ -2083,6 +2108,23 @@ export default function App() {
       addToast({ message: "친구 변경에 실패했습니다." });
     }
   };
+
+  const updateFriendOrThrow = useCallback(
+    async (friendId: string, updates: Partial<UserProfile>) => {
+      const target = useAppStore.getState().friends.find((friend) => friend.id === friendId);
+      if (!target) {
+        throw new Error(`Friend not found: ${friendId}`);
+      }
+      const updated: UserProfile = {
+        ...target,
+        ...updates,
+        updatedAt: Date.now(),
+      };
+      await saveProfile(updated);
+      await hydrateVault();
+    },
+    [hydrateVault]
+  );
 
   const handleFriendToggleFavorite = async (friendId: string) => {
     const target = friends.find((friend) => friend.id === friendId);
@@ -2795,46 +2837,89 @@ export default function App() {
     return resolveFriendDisplayName(partnerProfile ?? undefined, friendAliasesById);
   }, [currentConversation, friendAliasesById, partnerProfile]);
 
+  const sendFriendResponseControl = useCallback(
+    async (
+      conv: Conversation,
+      partner: UserProfile,
+      response: PendingFriendResponseType
+    ): Promise<{ ok: true } | { ok: false; reason: "missing-device" | "send-failed" }> => {
+      if (!partner.routingHints?.deviceId && !partner.primaryDeviceId && !partner.deviceId) {
+        return { ok: false, reason: "missing-device" };
+      }
+      const [identityPub, dhPub] = await Promise.all([getIdentityPublicKey(), getDhPublicKey()]);
+      const payload =
+        response === "accept"
+          ? {
+              type: "friend_accept" as const,
+              convId: conv.id,
+              from: {
+                identityPub: encodeBase64Url(identityPub),
+                dhPub: encodeBase64Url(dhPub),
+                deviceId: getOrCreateDeviceId(),
+              },
+              profile: {
+                displayName: userProfile?.displayName,
+                status: userProfile?.status,
+                avatarRef: userProfile?.avatarRef,
+              },
+              ts: Date.now(),
+            }
+          : {
+              type: "friend_decline" as const,
+              convId: conv.id,
+              from: {
+                identityPub: encodeBase64Url(identityPub),
+                dhPub: encodeBase64Url(dhPub),
+                deviceId: getOrCreateDeviceId(),
+              },
+              ts: Date.now(),
+            };
+      const sent = await sendFriendControlPacket(conv, partner, payload);
+      return sent ? { ok: true } : { ok: false, reason: "send-failed" };
+    },
+    [sendFriendControlPacket, userProfile?.avatarRef, userProfile?.displayName, userProfile?.status]
+  );
+
+  const applyFriendResponseLocally = useCallback(
+    async (convId: string, friendId: string, response: PendingFriendResponseType) => {
+      if (response === "accept") {
+        await updateFriendOrThrow(friendId, { friendStatus: "normal" });
+        await updateConversationOrThrow(convId, {
+          hidden: false,
+          pendingAcceptance: false,
+          pendingOutgoing: false,
+          pendingFriendResponse: undefined,
+        });
+        return;
+      }
+      await updateFriendOrThrow(friendId, { friendStatus: "blocked" });
+      await updateConversationOrThrow(convId, {
+        hidden: true,
+        pendingAcceptance: false,
+        pendingOutgoing: false,
+        pendingFriendResponse: undefined,
+      });
+    },
+    [updateConversationOrThrow, updateFriendOrThrow]
+  );
+
   const handleAcceptRequest = async () => {
     if (!currentConversation || !partnerProfile) return;
     try {
-      await updateFriend(partnerProfile.id, { friendStatus: "normal" });
-      await updateConversation(currentConversation.id, {
-        hidden: false,
-        pendingAcceptance: false,
-        pendingOutgoing: false,
-      });
-      try {
-        if (
-          !partnerProfile.routingHints?.deviceId &&
-          !partnerProfile.primaryDeviceId &&
-          !partnerProfile.deviceId
-        ) {
-          console.warn("[friend] missing deviceId; cannot send accept");
-          return;
-        }
-        const [identityPub, dhPub] = await Promise.all([
-          getIdentityPublicKey(),
-          getDhPublicKey(),
-        ]);
-        await sendFriendControlPacket(currentConversation, partnerProfile, {
-          type: "friend_accept",
-          convId: currentConversation.id,
-          from: {
-            identityPub: encodeBase64Url(identityPub),
-            dhPub: encodeBase64Url(dhPub),
-            deviceId: getOrCreateDeviceId(),
-          },
-          profile: {
-            displayName: userProfile?.displayName,
-            status: userProfile?.status,
-            avatarRef: userProfile?.avatarRef,
-          },
-          ts: Date.now(),
+      const outcome = await sendFriendResponseControl(currentConversation, partnerProfile, "accept");
+      if (!outcome.ok) {
+        await updateConversationOrThrow(currentConversation.id, {
+          pendingFriendResponse: "accept",
         });
-      } catch (error) {
-        console.warn("[friend] failed to send friend accept", error);
+        addToast({
+          message:
+            outcome.reason === "missing-device"
+              ? "상대 기기 정보가 없어 수락 전송이 지연됩니다. 정보가 갱신되면 자동 재시도합니다."
+              : "수락 전송이 지연되었습니다. 백그라운드에서 자동 재시도합니다.",
+        });
+        return;
       }
+      await applyFriendResponseLocally(currentConversation.id, partnerProfile.id, "accept");
     } catch (error) {
       console.error("Failed to accept request", error);
       addToast({ message: "메시지 요청 수락에 실패했습니다." });
@@ -2866,6 +2951,46 @@ export default function App() {
     });
     return () => scheduler.stop();
   }, [hydrateVault, sendFriendRequestForFriend, userProfile]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    const scheduler = startFriendResponseScheduler({
+      getTargets: () => {
+        const state = useAppStore.getState();
+        const myId = state.userProfile?.id;
+        if (!myId) return [];
+        return state.convs.flatMap((conv) => {
+          const pending = conv.pendingFriendResponse;
+          if (pending !== "accept" && pending !== "decline") return [];
+          const isDirect =
+            !(conv.type === "group" || conv.participants.length > 2) &&
+            conv.participants.length === 2;
+          if (!isDirect) return [];
+          const friendId = conv.participants.find((id) => id && id !== myId);
+          if (!friendId) return [];
+          const partner = state.friends.find((friend) => friend.id === friendId);
+          if (!partner) return [];
+          return [{ convId: conv.id, friendId: partner.id, response: pending }];
+        });
+      },
+      onAttempt: async (target) => {
+        const state = useAppStore.getState();
+        const conv = state.convs.find((item) => item.id === target.convId);
+        const partner = state.friends.find((item) => item.id === target.friendId);
+        if (!conv || !partner) return false;
+        try {
+          const outcome = await sendFriendResponseControl(conv, partner, target.response);
+          if (!outcome.ok) return false;
+          await applyFriendResponseLocally(conv.id, partner.id, target.response);
+          return true;
+        } catch (error) {
+          console.warn("[friend] response retry failed", error);
+          return false;
+        }
+      },
+    });
+    return () => scheduler.stop();
+  }, [applyFriendResponseLocally, sendFriendResponseControl, userProfile]);
 
   const runBackgroundSync = useCallback(async () => {
     await syncContactsNow();
@@ -2906,38 +3031,20 @@ export default function App() {
   const handleDeclineRequest = async () => {
     if (!currentConversation || !partnerProfile) return;
     try {
-      await updateFriend(partnerProfile.id, { friendStatus: "blocked" });
-      await updateConversation(currentConversation.id, {
-        hidden: true,
-        pendingAcceptance: false,
-        pendingOutgoing: false,
-      });
-      try {
-        if (
-          !partnerProfile.routingHints?.deviceId &&
-          !partnerProfile.primaryDeviceId &&
-          !partnerProfile.deviceId
-        ) {
-          console.warn("[friend] missing deviceId; cannot send decline");
-          return;
-        }
-        const [identityPub, dhPub] = await Promise.all([
-          getIdentityPublicKey(),
-          getDhPublicKey(),
-        ]);
-        await sendFriendControlPacket(currentConversation, partnerProfile, {
-          type: "friend_decline",
-          convId: currentConversation.id,
-          from: {
-            identityPub: encodeBase64Url(identityPub),
-            dhPub: encodeBase64Url(dhPub),
-            deviceId: getOrCreateDeviceId(),
-          },
-          ts: Date.now(),
+      const outcome = await sendFriendResponseControl(currentConversation, partnerProfile, "decline");
+      if (!outcome.ok) {
+        await updateConversationOrThrow(currentConversation.id, {
+          pendingFriendResponse: "decline",
         });
-      } catch (error) {
-        console.warn("[friend] failed to send friend decline", error);
+        addToast({
+          message:
+            outcome.reason === "missing-device"
+              ? "상대 기기 정보가 없어 거절 전송이 지연됩니다. 정보가 갱신되면 자동 재시도합니다."
+              : "거절 전송이 지연되었습니다. 백그라운드에서 자동 재시도합니다.",
+        });
+        return;
       }
+      await applyFriendResponseLocally(currentConversation.id, partnerProfile.id, "decline");
     } catch (error) {
       console.error("Failed to decline request", error);
       addToast({ message: "메시지 요청 거절에 실패했습니다." });
@@ -3177,12 +3284,6 @@ export default function App() {
     </>
   );
 }
-
-
-
-
-
-
 
 
 
