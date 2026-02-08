@@ -54,7 +54,7 @@ describe("testLogStore friend-flow mirror", () => {
     expect(friendFlowLogs[0].channel).toBe("friend-add");
   });
 
-  it("mirrors friend-route control frame logs to friend-flow file", async () => {
+  it("mirrors all friend-route logs to friend-flow file", async () => {
     const userDataPath = await createTempUserDataPath();
     await appendTestLogRecord(userDataPath, {
       channel: "friend-route",
@@ -66,8 +66,9 @@ describe("testLogStore friend-flow mirror", () => {
     });
 
     const friendFlowLogs = await readJsonLogLines(getFriendFlowTestLogPath(userDataPath));
-    expect(friendFlowLogs).toHaveLength(1);
+    expect(friendFlowLogs).toHaveLength(2);
     expect(friendFlowLogs[0].channel).toBe("friend-route");
+    expect(friendFlowLogs[1].channel).toBe("friend-route");
   });
 
   it("mirrors router logs to friend-flow file", async () => {

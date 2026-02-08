@@ -77,6 +77,15 @@ export type RouterInfoLogInput = {
   errorDetail?: InfoLogErrorDetail;
 };
 
+export type FlowTraceLogInput = {
+  event: string;
+  level?: "debug" | "info" | "warn" | "error";
+  source?: string;
+  operationId?: string;
+  traceId?: string;
+  [key: string]: unknown;
+};
+
 const dispatchInfoEvent = (eventName: string, payload: unknown) => {
   if (!isInfoCollectionEnabled()) return;
   if (typeof window === "undefined") return;
@@ -127,6 +136,27 @@ export const emitRouterInfoLog = (detail: RouterInfoLogInput) => {
     timestamp: new Date().toISOString(),
   });
   console.info("[test][router]", payload);
+  dispatchInfoEvent(INFO_EVENT_ROUTER, payload);
+};
+
+export const emitFlowTraceLog = (detail: FlowTraceLogInput) => {
+  if (!isInfoCollectionEnabled()) return;
+  const payload = withSequence({
+    ...detail,
+    timestamp: new Date().toISOString(),
+  });
+  const event = typeof payload.event === "string" ? payload.event : "unknown";
+  const label = `[trace][${event}]`;
+  const level = payload.level;
+  if (level === "debug") {
+    console.debug(label, payload);
+  } else if (level === "warn") {
+    console.warn(label, payload);
+  } else if (level === "error") {
+    console.error(label, payload);
+  } else {
+    console.info(label, payload);
+  }
   dispatchInfoEvent(INFO_EVENT_ROUTER, payload);
 };
 

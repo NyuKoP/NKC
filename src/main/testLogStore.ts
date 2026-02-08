@@ -9,11 +9,6 @@ export type TestLogAppendPayload = {
 
 const TEST_LOG_FILENAME = "nkc-test-events.log";
 const FRIEND_FLOW_TEST_LOG_FILENAME = "nkc-test-friend-flow.log";
-const FRIEND_FLOW_ROUTE_FRAME_TYPES = new Set([
-  "friend_req",
-  "friend_accept",
-  "friend_decline",
-]);
 
 export const getTestLogPath = (userDataPath: string) =>
   path.join(userDataPath, "logs", TEST_LOG_FILENAME);
@@ -22,13 +17,7 @@ export const getFriendFlowTestLogPath = (userDataPath: string) =>
   path.join(userDataPath, "logs", FRIEND_FLOW_TEST_LOG_FILENAME);
 
 const shouldMirrorToFriendFlowLog = (payload: TestLogAppendPayload) => {
-  if (payload.channel === "friend-add") return true;
-  if (payload.channel === "router") return true;
-  if (payload.channel !== "friend-route") return false;
-  const event = payload.event;
-  if (!event || typeof event !== "object") return false;
-  const frameType = (event as { frameType?: unknown }).frameType;
-  return typeof frameType === "string" && FRIEND_FLOW_ROUTE_FRAME_TYPES.has(frameType);
+  return typeof payload.channel === "string" && payload.channel.trim().length > 0;
 };
 
 const stringifyTestLogRecord = (payload: TestLogAppendPayload) => {

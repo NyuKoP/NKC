@@ -199,6 +199,17 @@ const collectHeaders = (headers: Headers | Record<string, string[] | string | un
 const decodeBase64 = (value: string) => Buffer.from(value, "base64");
 
 const encodeBase64 = (value: Uint8Array) => Buffer.from(value).toString("base64");
+const createAbortTraceId = () =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const emitAbortTrace = (
+  event: "abort:linked" | "abort:fired",
+  detail: Record<string, unknown>
+) => {
+  console.info(`[trace][${event}]`, {
+    ...detail,
+    ts: new Date().toISOString(),
+  });
+};
 
 const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchResponse> => {
   return new Promise((resolve) => {
@@ -214,12 +225,24 @@ const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchRes
         }
       }
       const timeoutMs = req.timeoutMs ?? 10000;
+      const abortId = `main-abort:${createAbortTraceId()}`;
+      emitAbortTrace("abort:linked", {
+        abortId,
+        opId: req.url,
+        source: "timeout",
+      });
       const timeout = setTimeout(() => {
         try {
           request.abort();
         } catch {
           // ignore abort errors
         }
+        emitAbortTrace("abort:fired", {
+          abortId,
+          opId: req.url,
+          source: "timeout",
+          reason: `net.request timeout ${timeoutMs}ms`,
+        });
         resolve({
           ok: false,
           status: 0,
@@ -274,7 +297,21 @@ const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchRes
 const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchResponse> => {
   const controller = new AbortController();
   const timeoutMs = req.timeoutMs ?? 10000;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abortId = `main-abort:${createAbortTraceId()}`;
+  emitAbortTrace("abort:linked", {
+    abortId,
+    opId: req.url,
+    source: "timeout",
+  });
+  const timeout = setTimeout(() => {
+    emitAbortTrace("abort:fired", {
+      abortId,
+      opId: req.url,
+      source: "timeout",
+      reason: `net.fetch timeout ${timeoutMs}ms`,
+    });
+    controller.abort();
+  }, timeoutMs);
   try {
     const fetchWithSession = net.fetch as unknown as (
       input: string,
@@ -349,7 +386,21 @@ const fetchOnionController = async (
   }
   const controller = new AbortController();
   const timeoutMs = req.timeoutMs ?? 10000;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  const abortId = `main-abort:${createAbortTraceId()}`;
+  emitAbortTrace("abort:linked", {
+    abortId,
+    opId: req.url,
+    source: "timeout",
+  });
+  const timeout = setTimeout(() => {
+    emitAbortTrace("abort:fired", {
+      abortId,
+      opId: req.url,
+      source: "timeout",
+      reason: `fetch timeout ${timeoutMs}ms`,
+    });
+    controller.abort();
+  }, timeoutMs);
   try {
     const response = await fetch(req.url, {
       method: req.method,
