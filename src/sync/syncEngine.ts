@@ -61,12 +61,37 @@ type EnvelopeEvent = {
   envelopeJson: string;
 };
 
+type PeerCaps = {
+  proto: number;
+  sync: { v: number };
+  ratchet?: { v: number };
+  media?: { chunks?: boolean; v?: number };
+  devices?: { roles?: boolean; v?: number };
+};
+
+type NormalizedPeerCaps = {
+  proto: number;
+  sync: { v: number };
+  ratchet: { v: number };
+  media: { chunks: boolean; v: number };
+  devices: { roles: boolean; v: number };
+};
+
+const LOCAL_CAPS: PeerCaps = {
+  proto: 1,
+  sync: { v: 1 },
+  ratchet: { v: 2 },
+  media: { chunks: true, v: 1 },
+  devices: { roles: true, v: 1 },
+};
+
 type HelloFrame = {
   type: "HELLO";
   deviceId: string;
   identityPub: string;
   nonce: string;
   sig: string;
+  caps?: PeerCaps;
   profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
 };
 
@@ -76,6 +101,7 @@ type AckFrame = {
   identityPub: string;
   nonce: string;
   sig: string;
+  caps?: PeerCaps;
 };
 
 type SyncReqFrame = {
@@ -101,6 +127,7 @@ export type PeerContext = PeerHint & {
   dhPub?: string;
   kind?: "friend" | "device";
   peerDeviceId?: string;
+  peerCaps?: NormalizedPeerCaps;
 };
 
 const contactsLogId = (convId: string) => `contacts:${convId}`;
@@ -108,6 +135,35 @@ const conversationsLogId = (convId: string) => `convs:${convId}`;
 const globalLogId = (convId: string) => `global:${convId}`;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+
+const normalizeCapVersion = (value: unknown, fallback: number) =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : fallback;
+
+const normalizePeerCaps = (caps?: PeerCaps): NormalizedPeerCaps => ({
+  proto: normalizeCapVersion(caps?.proto, 1),
+  sync: { v: normalizeCapVersion(caps?.sync?.v, 1) },
+  ratchet: { v: normalizeCapVersion(caps?.ratchet?.v, 0) },
+  media: {
+    chunks: Boolean(caps?.media?.chunks),
+    v: normalizeCapVersion(caps?.media?.v, 0),
+  },
+  devices: {
+    roles: Boolean(caps?.devices?.roles),
+    v: normalizeCapVersion(caps?.devices?.v, 0),
+  },
+});
+
+const logPeerCaps = (convId: string, caps: NormalizedPeerCaps) => {
+  console.debug("[sync] peer caps", {
+    convId,
+    proto: caps.proto,
+    ratchet: caps.ratchet.v,
+    mediaChunks: caps.media.chunks,
+    roles: caps.devices.roles,
+  });
+};
 
 const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
   console.debug(`[sync] ${label}`, meta);
@@ -451,6 +507,19 @@ export const handleIncomingFriendFrame = async (
     const convId = payload.convId ?? "";
     await applyFriendResponse(convId, payload);
   }
+};
+
+const verifyHandshakeCompat = async (
+  payloadWithCaps: Record<string, unknown>,
+  legacyPayload: Record<string, unknown>,
+  sigB64: string,
+  identityPubB64: string,
+  hasCaps: boolean
+) => {
+  const withCaps = await verifyHandshake(payloadWithCaps, sigB64, identityPubB64);
+  if (withCaps) return true;
+  if (hasCaps) return false;
+  return verifyHandshake(legacyPayload, sigB64, identityPubB64);
 };
 
 const toBytes = (frame: Frame) => textEncoder.encode(JSON.stringify(frame));
@@ -1172,24 +1241,41 @@ const handleHello = async (convId: string, frame: HelloFrame) => {
     identityPub: frame.identityPub,
     deviceId: frame.deviceId,
     nonce: frame.nonce,
+    caps: frame.caps ?? null,
   };
-  const ok = await verifyHandshake(payload, frame.sig, frame.identityPub);
+  const legacyPayload = {
+    type: "HELLO",
+    identityPub: frame.identityPub,
+    deviceId: frame.deviceId,
+    nonce: frame.nonce,
+  };
+  const ok = await verifyHandshakeCompat(
+    payload,
+    legacyPayload,
+    frame.sig,
+    frame.identityPub,
+    Boolean(frame.caps)
+  );
   if (!ok) {
     console.warn("[sync] invalid HELLO signature", { convId });
     return;
   }
+  const peerCaps = normalizePeerCaps(frame.caps);
   const existing = peerContexts.get(convId) ?? {};
   peerContexts.set(convId, {
     ...existing,
     identityPub: frame.identityPub,
     peerDeviceId: frame.deviceId,
+    peerCaps,
   });
+  logPeerCaps(convId, peerCaps);
   await applyVerification(frame.identityPub, frame.deviceId, frame.profile);
   const ackPayload = {
     type: "ACK",
     identityPub: encodeBase64Url(await getIdentityPublicKey()),
     deviceId: getOrCreateDeviceId(),
     nonce: frame.nonce,
+    caps: LOCAL_CAPS,
   } as const;
   const sig = await signHandshake(ackPayload);
   await sendFrame(convId, { ...ackPayload, sig });
@@ -1201,18 +1287,34 @@ const handleAck = async (convId: string, frame: AckFrame) => {
     identityPub: frame.identityPub,
     deviceId: frame.deviceId,
     nonce: frame.nonce,
+    caps: frame.caps ?? null,
   };
-  const ok = await verifyHandshake(payload, frame.sig, frame.identityPub);
+  const legacyPayload = {
+    type: "ACK",
+    identityPub: frame.identityPub,
+    deviceId: frame.deviceId,
+    nonce: frame.nonce,
+  };
+  const ok = await verifyHandshakeCompat(
+    payload,
+    legacyPayload,
+    frame.sig,
+    frame.identityPub,
+    Boolean(frame.caps)
+  );
   if (!ok) {
     console.warn("[sync] invalid ACK signature", { convId });
     return;
   }
+  const peerCaps = normalizePeerCaps(frame.caps);
   const existing = peerContexts.get(convId) ?? {};
   peerContexts.set(convId, {
     ...existing,
     identityPub: frame.identityPub,
     peerDeviceId: frame.deviceId,
+    peerCaps,
   });
+  logPeerCaps(convId, peerCaps);
   await applyVerification(frame.identityPub, frame.deviceId);
 };
 
@@ -1253,6 +1355,7 @@ export const connectConversation = async (convId: string, peerHint: PeerContext)
     deviceId: getOrCreateDeviceId(),
     identityPub: encodeBase64Url(identityPub),
     nonce: createNonce(),
+    caps: LOCAL_CAPS,
   } as const;
   const sig = await signHandshake(helloPayload);
   const localUserId = await resolveLocalUserId();
