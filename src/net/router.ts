@@ -179,12 +179,17 @@ const isRouteCandidateMissingError = (message: string) =>
   message.includes("forward_failed:no_route") &&
   !message.includes("forward_failed:no_route_target");
 
-const isOnionProxyUnavailableError = (message: string) =>
-  message.includes("forward_failed:no_proxy") ||
-  message.includes("forward_failed:proxy_unreachable") ||
-  message.toLowerCase().includes("proxy_unreachable") ||
-  message.toLowerCase().includes("tor_not_ready") ||
-  message.includes("onion controller unavailable");
+const isOnionProxyUnavailableError = (message: string) => {
+  const normalized = message.toLowerCase();
+  return (
+    message.includes("forward_failed:no_proxy") ||
+    message.includes("forward_failed:proxy_unreachable") ||
+    normalized.includes("proxy_unreachable") ||
+    normalized.includes("tor_not_ready") ||
+    normalized.includes("onion controller unavailable") ||
+    normalized.includes("operation was aborted")
+  );
+};
 
 const isSelfOnionRouteNotReadyError = (message: string) => {
   const normalized = message.toLowerCase();

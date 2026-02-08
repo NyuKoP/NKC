@@ -73,4 +73,34 @@ describe("OnionInboxClient.send", () => {
     expect(result.ok).toBe(false);
     expect(result.error).toBe("Send failed (status 502)");
   });
+
+  it("uses extended timeout for onion/send requests", async () => {
+    const onionControllerFetch = vi.fn().mockResolvedValue({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      bodyBase64: encodeJsonBody({ ok: true, msgId: "m-1" }),
+      error: undefined,
+    });
+    (
+      globalThis as {
+        nkc?: {
+          onionControllerFetch?: (req: unknown) => Promise<unknown>;
+        };
+      }
+    ).nkc = { onionControllerFetch };
+
+    const client = new OnionInboxClient({
+      baseUrl: "http://127.0.0.1:3210",
+      deviceId: "sender-device",
+    });
+
+    const result = await client.send("target-device", "envelope");
+
+    expect(result.ok).toBe(true);
+    expect(onionControllerFetch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        timeoutMs: 30_000,
+      })
+    );
+  });
 });

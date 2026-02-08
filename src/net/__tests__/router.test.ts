@@ -378,6 +378,68 @@ describe("router", () => {
     expect(store.size).toBe(1);
   });
 
+  it("falls back to selfOnion when onionRouter send is aborted", async () => {
+    const store = new Map<string, OutboxRecord>();
+    vi.doMock("../../storage/outboxStore", () => {
+      return {
+        putOutbox: async (record: OutboxRecord) => {
+          store.set(record.id, record);
+        },
+        deleteOutbox: async (id: string) => {
+          store.delete(id);
+        },
+        deleteExpiredOutbox: async () => 0,
+      };
+    });
+
+    const router = await import("../router");
+    const onionRouterTransport = createTransport("onionRouter", async () => {
+      throw new Error("onionrouter: This operation was aborted");
+    });
+    const directTransport = createTransport("directP2P", async () => {
+      throw new Error("direct channel not open");
+    });
+    const selfOnionTransport = createTransport("selfOnion");
+    const result = await router.sendCiphertext(
+      {
+        convId: "c1",
+        messageId: "m1e-aborted",
+        ciphertext: "enc",
+        priority: "high",
+      },
+      {
+        resolveTransport: () => "onionRouter",
+        config: {
+          mode: "onionRouter",
+          onionProxyEnabled: true,
+          onionProxyUrl: "socks5://127.0.0.1:9050",
+          webrtcRelayOnly: true,
+          disableLinkPreview: true,
+          selfOnionEnabled: true,
+          selfOnionMinRelays: 3,
+          allowRemoteProxy: false,
+          onionEnabled: true,
+          onionSelectedNetwork: "tor",
+          tor: { installed: true, status: "ready", version: "1.0.0" },
+          lokinet: { installed: false, status: "idle" },
+          lastUpdateCheckAtMs: undefined,
+        },
+        transports: {
+          onionRouter: onionRouterTransport,
+          directP2P: directTransport,
+          selfOnion: selfOnionTransport,
+        },
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.transport).toBe("selfOnion");
+    expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
+    expect(directTransport.send).not.toHaveBeenCalled();
+    expect(selfOnionTransport.send).toHaveBeenCalledTimes(1);
+    expect(store.size).toBe(1);
+  });
+
   it("retries selfOnion once before direct fallback when route is not ready", async () => {
     const store = new Map<string, OutboxRecord>();
     vi.doMock("../../storage/outboxStore", () => {
