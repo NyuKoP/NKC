@@ -23,6 +23,7 @@ export const getFriendFlowTestLogPath = (userDataPath: string) =>
 
 const shouldMirrorToFriendFlowLog = (payload: TestLogAppendPayload) => {
   if (payload.channel === "friend-add") return true;
+  if (payload.channel === "router") return true;
   if (payload.channel !== "friend-route") return false;
   const event = payload.event;
   if (!event || typeof event !== "object") return false;

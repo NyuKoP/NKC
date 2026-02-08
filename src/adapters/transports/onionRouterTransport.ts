@@ -50,7 +50,11 @@ const fromBase64 = (value: string) => {
 
 const isForwardProxyNotReadyError = (message: string) => {
   const text = message.toLowerCase();
-  return text.includes("forward_failed:proxy_unreachable") || text.includes("forward_failed:no_proxy");
+  return (
+    text.includes("forward_failed:proxy_unreachable") ||
+    text.includes("forward_failed:no_proxy") ||
+    (text.includes("forward_failed:no_route") && !text.includes("forward_failed:no_route_target"))
+  );
 };
 
 const getNkcBridge = () =>
