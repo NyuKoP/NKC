@@ -30,7 +30,7 @@ export type FriendAddInfoLogInput = {
 
 export type FriendRouteOutgoingInfoLogInput = {
   direction: "outgoing";
-  status: "sent" | "failed";
+  status: "attempt" | "sent" | "failed";
   frameType: FriendControlFrameType;
   source?: string;
   operationId?: string;
