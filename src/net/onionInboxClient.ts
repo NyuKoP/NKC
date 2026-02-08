@@ -1,3 +1,6 @@
+import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
+import { createId } from "../utils/ids";
+
 export type OnionInboxConfig = {
   baseUrl: string;
   deviceId: string;
@@ -111,7 +114,7 @@ export class OnionInboxClient {
 
   private async requestJson<T>(
     path: string,
-    init: { method: string; body?: unknown; timeoutMs?: number },
+    init: { method: string; body?: unknown; timeoutMs?: number; operationId?: string },
     signal?: AbortSignal
   ): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
     const url = new URL(path, this.baseUrl).toString();
@@ -119,43 +122,125 @@ export class OnionInboxClient {
       init.body !== undefined ? JSON.stringify(init.body) : undefined;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     const timeoutMs = init.timeoutMs ?? this.timeoutMs;
+    const operationId = init.operationId ?? path;
+    const abortId = `abort:${createId()}`;
 
     const controllerFetch = getNkcControllerFetch();
     if (controllerFetch) {
       try {
         if (signal?.aborted) {
+          emitFlowTraceLog({
+            event: "abort:fired",
+            abortId,
+            opId: operationId,
+            source: "upstream",
+            reason: "already-aborted-before-fetch",
+          });
           return { ok: false, status: 0, error: "aborted" };
         }
-        const response = await controllerFetch({
+        const fetchPromise = controllerFetch({
           url,
           method: init.method,
           headers,
           bodyBase64: body ? toBase64(new TextEncoder().encode(body)) : undefined,
           timeoutMs,
         });
-        const decoded = response.bodyBase64
-          ? new TextDecoder().decode(fromBase64(response.bodyBase64))
-          : "";
-        const parsed = decoded ? (JSON.parse(decoded) as T) : undefined;
-        return {
-          ok: response.status >= 200 && response.status < 300,
-          status: response.status,
-          data: parsed,
-          error: response.error,
-        };
+        if (!signal) {
+          const response = await fetchPromise;
+          const decoded = response.bodyBase64
+            ? new TextDecoder().decode(fromBase64(response.bodyBase64))
+            : "";
+          const parsed = decoded ? (JSON.parse(decoded) as T) : undefined;
+          return {
+            ok: response.status >= 200 && response.status < 300,
+            status: response.status,
+            data: parsed,
+            error: response.error,
+          };
+        }
+        emitFlowTraceLog({
+          event: "abort:linked",
+          abortId,
+          opId: operationId,
+          source: "upstream",
+        });
+        let onAbort: (() => void) | null = null;
+        try {
+          const abortedPromise = new Promise<never>((_resolve, reject) => {
+            onAbort = () => {
+              emitFlowTraceLog({
+                event: "abort:fired",
+                abortId,
+                opId: operationId,
+                source: "upstream",
+                reason: "signal-aborted-during-fetch",
+              });
+              reject(new Error("aborted"));
+            };
+            signal.addEventListener("abort", onAbort, { once: true });
+          });
+          const response = await Promise.race([fetchPromise, abortedPromise]);
+          const decoded = response.bodyBase64
+            ? new TextDecoder().decode(fromBase64(response.bodyBase64))
+            : "";
+          const parsed = decoded ? (JSON.parse(decoded) as T) : undefined;
+          return {
+            ok: response.status >= 200 && response.status < 300,
+            status: response.status,
+            data: parsed,
+            error: response.error,
+          };
+        } finally {
+          if (onAbort) {
+            signal.removeEventListener("abort", onAbort);
+          }
+        }
       } catch (error) {
         return { ok: false, status: 0, error: safeError(error) };
       }
     }
 
     const controller = new AbortController();
+    let onAbort: (() => void) | null = null;
     if (signal) {
       if (signal.aborted) {
+        emitFlowTraceLog({
+          event: "abort:fired",
+          abortId,
+          opId: operationId,
+          source: "upstream",
+          reason: "already-aborted-before-fetch",
+        });
         return { ok: false, status: 0, error: "aborted" };
       }
-      signal.addEventListener("abort", () => controller.abort(), { once: true });
+      emitFlowTraceLog({
+        event: "abort:linked",
+        abortId,
+        opId: operationId,
+        source: "upstream",
+      });
+      onAbort = () => {
+        emitFlowTraceLog({
+          event: "abort:fired",
+          abortId,
+          opId: operationId,
+          source: "upstream",
+          reason: "signal-aborted-during-fetch",
+        });
+        controller.abort();
+      };
+      signal.addEventListener("abort", onAbort, { once: true });
     }
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = setTimeout(() => {
+      emitFlowTraceLog({
+        event: "abort:fired",
+        abortId,
+        opId: operationId,
+        source: "timeout",
+        reason: `request-timeout-${timeoutMs}ms`,
+      });
+      controller.abort();
+    }, timeoutMs);
     try {
       const response = await fetch(url, {
         method: init.method,
@@ -170,6 +255,9 @@ export class OnionInboxClient {
       return { ok: false, status: 0, error: safeError(error) };
     } finally {
       clearTimeout(timeout);
+      if (signal && onAbort) {
+        signal.removeEventListener("abort", onAbort);
+      }
     }
   }
 
@@ -192,7 +280,8 @@ export class OnionInboxClient {
     envelope: string,
     ttlMs?: number,
     route?: { mode: "auto" | "preferLokinet" | "preferTor" | "manual"; torOnion?: string; lokinet?: string },
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    operationId?: string
   ): Promise<SendResponse> {
     const body: Record<string, unknown> = {
       to: route ? undefined : toDeviceId,
@@ -209,6 +298,7 @@ export class OnionInboxClient {
       method: "POST",
       body,
       timeoutMs: sendTimeoutMs,
+      operationId: operationId ?? toDeviceId,
     }, signal);
     if (!response.ok || !response.data) {
       const payloadError =

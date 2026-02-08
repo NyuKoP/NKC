@@ -10,9 +10,11 @@ import type { Transport, TransportPacket } from "../adapters/transports/types";
 import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { createSelfOnionTransport } from "../adapters/transports/selfOnionTransport";
 import { createOnionRouterTransport } from "../adapters/transports/onionRouterTransport";
-import { updateConnectionStatus } from "./connectionStatus";
+import { getConnectionStatus, updateConnectionStatus } from "./connectionStatus";
 import { decideRouterTransport } from "./transportPolicy";
 import { useAppStore } from "../app/store";
+import { useInternalOnionRouteStore } from "../stores/internalOnionRouteStore";
+import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 
 export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
 export type IncomingPacketMeta = {
@@ -207,6 +209,35 @@ const wait = (ms: number) =>
     setTimeout(resolve, ms);
   });
 
+const getByteLength = (value: string) => new TextEncoder().encode(value).byteLength;
+
+const emitRouteGateCheck = (
+  opId: string,
+  wanted: TransportKind,
+  config: NetConfig,
+  route?: { torOnion?: string; lokinet?: string }
+) => {
+  const routeState = useInternalOnionRouteStore.getState().route;
+  const connection = getConnectionStatus();
+  const routerConnected =
+    connection.transport === "onionRouter" &&
+    (connection.state === "connected" || connection.state === "degraded");
+  emitFlowTraceLog({
+    event: "routeGate:check",
+    opId,
+    wanted,
+    onionReady: routeState.status === "ready",
+    torBootstrapped: config.onionSelectedNetwork === "tor" ? routerConnected : null,
+    torControlReady: null,
+    directOpen:
+      connection.transport === "directP2P" &&
+      (connection.state === "connected" || connection.state === "degraded"),
+    lokinetReady: config.onionSelectedNetwork === "lokinet" ? routerConnected : null,
+    wakuReady: null,
+    hasRouteTarget: Boolean(route?.torOnion || route?.lokinet),
+  });
+};
+
 const getPrewarmKinds = (
   chosen: TransportKind,
   includeFallback: boolean
@@ -313,6 +344,16 @@ export const sendCiphertext = async (
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolve(config, controller);
+  emitRouteGateCheck(payload.messageId, chosen, config, route);
+  emitFlowTraceLog({
+    event: "routeSelect:decision",
+    opId: payload.messageId,
+    wanted: chosen,
+    attempted: [chosen],
+    fallbackUsed: false,
+    policy: config.mode === "onionRouter" || config.onionEnabled ? "STRICT" : "ALLOW_FALLBACK",
+    why: "initial-selection",
+  });
   const attemptTrace: Array<{
     transport: TransportKind;
     phase: "primary" | "fallback";
@@ -343,6 +384,13 @@ export const sendCiphertext = async (
       kind === "directP2P" &&
       !options?.allowDirectWhenOnionGuarded
     ) {
+      emitFlowTraceLog({
+        event: "routeGate:block",
+        opId: payload.messageId,
+        reason: "DIRECT_BLOCKED_IN_ONION_MODE",
+        nextRetryAt: null,
+        backoffMs: null,
+      });
       throw new Error("Direct P2P blocked in onion router mode");
     }
     if (
@@ -350,6 +398,13 @@ export const sendCiphertext = async (
       kind === "selfOnion" &&
       !options?.allowSelfOnionWhenOnionGuarded
     ) {
+      emitFlowTraceLog({
+        event: "routeGate:block",
+        opId: payload.messageId,
+        reason: "SELF_ONION_BLOCKED_WHILE_ROUTER_ENABLED",
+        nextRetryAt: null,
+        backoffMs: null,
+      });
       throw new Error("Self-onion blocked while onion router is enabled");
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
@@ -363,7 +418,38 @@ export const sendCiphertext = async (
       toDeviceId,
       route,
     } as TransportPacket;
-    await transport.send(packet);
+    const startedAt = Date.now();
+    emitFlowTraceLog({
+      event: "requestSend:start",
+      opId: payload.messageId,
+      routeAttempted: kind,
+      msgType: "ciphertext",
+      bytes: getByteLength(payload.ciphertext),
+      timeoutMs: null,
+    });
+    try {
+      await transport.send(packet);
+      emitFlowTraceLog({
+        event: "requestSend:ok",
+        opId: payload.messageId,
+        routeAttempted: kind,
+        durMs: Math.max(0, Date.now() - startedAt),
+      });
+    } catch (error) {
+      emitFlowTraceLog({
+        event: "requestSend:failed",
+        opId: payload.messageId,
+        routeAttempted: kind,
+        errCode:
+          error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+            ? ((error as { code?: string }).code ?? "UNKNOWN")
+            : "UNKNOWN",
+        errDetail: error instanceof Error ? error.message : String(error),
+        durMs: Math.max(0, Date.now() - startedAt),
+        attempt: record.attempts,
+      });
+      throw error;
+    }
     return kind;
   };
 
@@ -425,6 +511,15 @@ export const sendCiphertext = async (
         : config.mode === "selfOnion" && chosen === "selfOnion"
           ? ["onionRouter"]
           : [];
+    emitFlowTraceLog({
+      event: "routeSelect:decision",
+      opId: payload.messageId,
+      wanted: chosen,
+      attempted: [chosen, ...fallbackKinds],
+      fallbackUsed: fallbackKinds.length > 0,
+      policy: config.mode === "onionRouter" || config.onionEnabled ? "STRICT" : "ALLOW_FALLBACK",
+      why: primaryErrorMessage,
+    });
     for (const fallbackKind of fallbackKinds) {
       const maxAttempts = fallbackKind === "selfOnion" ? 2 : 1;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -495,6 +590,14 @@ export const sendCiphertext = async (
         }
       }
     }
+    emitFlowTraceLog({
+      event: "requestSend:failed",
+      opId: payload.messageId,
+      routeAttempted: chosen,
+      errCode: "ALL_ROUTE_ATTEMPTS_FAILED",
+      errDetail: attemptErrors.join(" || "),
+      attempt: attemptTrace.length,
+    });
     return {
       ok: false,
       transport: chosen,
@@ -545,6 +648,16 @@ export const sendOutboxRecord = async (
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolve(config, controller);
+  emitRouteGateCheck(record.id, chosen, config, torOnion || lokinet ? { torOnion, lokinet } : undefined);
+  emitFlowTraceLog({
+    event: "routeSelect:decision",
+    opId: record.id,
+    wanted: chosen,
+    attempted: [chosen],
+    fallbackUsed: false,
+    policy: config.mode === "onionRouter" || config.onionEnabled ? "STRICT" : "ALLOW_FALLBACK",
+    why: "outbox-selection",
+  });
   debugLog("[net] sendOutboxRecord: chosen transport", {
     convId: record.convId,
     messageId: record.id,
@@ -558,6 +671,20 @@ export const sendOutboxRecord = async (
 
   if (config.onionEnabled && chosen === "selfOnion") {
     controller.reportSendFail(chosen);
+    emitFlowTraceLog({
+      event: "routeGate:block",
+      opId: record.id,
+      reason: "SELF_ONION_BLOCKED_WHILE_ROUTER_ENABLED",
+      nextRetryAt: record.nextAttemptAtMs,
+      backoffMs: Math.max(0, (record.nextAttemptAtMs ?? Date.now()) - Date.now()),
+    });
+    emitFlowTraceLog({
+      event: "requestSend:deferred",
+      opId: record.id,
+      reason: "SELF_ONION_BLOCKED_WHILE_ROUTER_ENABLED",
+      nextRetryAt: record.nextAttemptAtMs,
+      attempt: record.attempts,
+    });
     return { ok: false as const, retryable: false };
   }
 
@@ -573,6 +700,13 @@ export const sendOutboxRecord = async (
       kind === "directP2P" &&
       !options?.allowDirectWhenOnionGuarded
     ) {
+      emitFlowTraceLog({
+        event: "routeGate:block",
+        opId: record.id,
+        reason: "DIRECT_BLOCKED_IN_ONION_MODE",
+        nextRetryAt: record.nextAttemptAtMs,
+        backoffMs: Math.max(0, (record.nextAttemptAtMs ?? Date.now()) - Date.now()),
+      });
       throw new Error("Direct P2P blocked in onion router mode");
     }
     if (
@@ -580,6 +714,13 @@ export const sendOutboxRecord = async (
       kind === "selfOnion" &&
       !options?.allowSelfOnionWhenOnionGuarded
     ) {
+      emitFlowTraceLog({
+        event: "routeGate:block",
+        opId: record.id,
+        reason: "SELF_ONION_BLOCKED_WHILE_ROUTER_ENABLED",
+        nextRetryAt: record.nextAttemptAtMs,
+        backoffMs: Math.max(0, (record.nextAttemptAtMs ?? Date.now()) - Date.now()),
+      });
       throw new Error("Self-onion blocked while onion router is enabled");
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
@@ -591,7 +732,38 @@ export const sendOutboxRecord = async (
       route:
         torOnion || lokinet ? { torOnion, lokinet } : undefined,
     } as TransportPacket;
-    await transport.send(packet);
+    const startedAt = Date.now();
+    emitFlowTraceLog({
+      event: "requestSend:start",
+      opId: record.id,
+      routeAttempted: kind,
+      msgType: "ciphertext",
+      bytes: getByteLength(record.ciphertext),
+      timeoutMs: null,
+    });
+    try {
+      await transport.send(packet);
+      emitFlowTraceLog({
+        event: "requestSend:ok",
+        opId: record.id,
+        routeAttempted: kind,
+        durMs: Math.max(0, Date.now() - startedAt),
+      });
+    } catch (error) {
+      emitFlowTraceLog({
+        event: "requestSend:failed",
+        opId: record.id,
+        routeAttempted: kind,
+        errCode:
+          error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+            ? ((error as { code?: string }).code ?? "UNKNOWN")
+            : "UNKNOWN",
+        errDetail: error instanceof Error ? error.message : String(error),
+        durMs: Math.max(0, Date.now() - startedAt),
+        attempt: (record.attempts ?? 0) + 1,
+      });
+      throw error;
+    }
     return kind;
   };
 
@@ -630,6 +802,15 @@ export const sendOutboxRecord = async (
         : config.mode === "selfOnion" && chosen === "selfOnion"
           ? ["onionRouter"]
           : [];
+    emitFlowTraceLog({
+      event: "routeSelect:decision",
+      opId: record.id,
+      wanted: chosen,
+      attempted: [chosen, ...fallbackKinds],
+      fallbackUsed: fallbackKinds.length > 0,
+      policy: config.mode === "onionRouter" || config.onionEnabled ? "STRICT" : "ALLOW_FALLBACK",
+      why: primaryErrorMessage,
+    });
     for (const fallbackKind of fallbackKinds) {
       const maxAttempts = fallbackKind === "selfOnion" ? 2 : 1;
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -674,6 +855,13 @@ export const sendOutboxRecord = async (
         }
       }
     }
+    emitFlowTraceLog({
+      event: "requestSend:deferred",
+      opId: record.id,
+      reason: "ALL_ROUTE_ATTEMPTS_FAILED",
+      nextRetryAt: record.nextAttemptAtMs,
+      attempt: record.attempts,
+    });
     return { ok: false as const, retryable: true };
   }
 };

@@ -388,7 +388,8 @@ export const createOnionRouterTransport = ({
             }
           : undefined;
       let route = initialRoute ? normalizeSendRoute(initialRoute, selectedNetwork) : undefined;
-      const sendOnce = () => activeClient.send(toDeviceId, envelope, DEFAULT_TTL_MS, route, signal);
+      const sendOnce = () =>
+        activeClient.send(toDeviceId, envelope, DEFAULT_TTL_MS, route, signal, packet.id);
       if (!torOnion) {
         const result = await sendOnce();
         if (!result.ok) {

@@ -5,6 +5,8 @@ import { getDiscoveredRelayPeerIds, getInternalOnionRouteManager, syncInternalOn
 import { useInternalOnionRouteStore } from "../../stores/internalOnionRouteStore";
 import type { InternalOnionRouteState } from "../../net/internalOnion/types";
 import { sendDataViaCurrentRoute } from "../../net/internalOnion/relayNetwork";
+import { createId } from "../../utils/ids";
+import { emitFlowTraceLog } from "../../diagnostics/infoCollectionLogs";
 
 type Handler<T> = (payload: T) => void;
 
@@ -30,6 +32,7 @@ export const createSelfOnionTransport = ({
   const stateHandlers: Array<Handler<TransportState>> = [];
   let routeUnsubscribe: (() => void) | null = null;
   const routeManager = getInternalOnionRouteManager();
+  let readyState = useInternalOnionRouteStore.getState().route.status === "ready";
 
   const emitState = (next: TransportState) => {
     if (state === next) return;
@@ -45,6 +48,16 @@ export const createSelfOnionTransport = ({
 
   const syncFromRouteState = (route: InternalOnionRouteState) => {
     emitState(toTransportState(route.status));
+    const nextReady = route.status === "ready";
+    if (readyState !== nextReady) {
+      emitFlowTraceLog({
+        event: "selfOnion:readyChange",
+        from: readyState,
+        to: nextReady,
+        why: route.status,
+      });
+      readyState = nextReady;
+    }
     if (route.status === "degraded" || route.status === "idle" || route.status === "expired") {
       routeController.reportRouteBuildFail();
     }
@@ -63,8 +76,37 @@ export const createSelfOnionTransport = ({
       }
       const config = useNetConfigStore.getState().config;
       syncInternalOnionRouteRuntimeWithConfig(config);
-      await routeManager.start(config.selfOnionMinRelays);
-      syncFromRouteState(useInternalOnionRouteStore.getState().route);
+      const operationId = `self-onion-publish:${createId()}`;
+      const startedAt = Date.now();
+      emitFlowTraceLog({
+        event: "selfOnion:publish:start",
+        operationId,
+        hsType: "v3",
+        portMapCount: 1,
+      });
+      try {
+        await routeManager.start(config.selfOnionMinRelays);
+        syncFromRouteState(useInternalOnionRouteStore.getState().route);
+        emitFlowTraceLog({
+          event: "selfOnion:publish:ok",
+          operationId,
+          hsType: "v3",
+          durMs: Math.max(0, Date.now() - startedAt),
+        });
+      } catch (error) {
+        emitFlowTraceLog({
+          event: "selfOnion:publish:fail",
+          operationId,
+          hsType: "v3",
+          durMs: Math.max(0, Date.now() - startedAt),
+          errCode:
+            error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+              ? ((error as { code?: string }).code ?? "UNKNOWN")
+              : "UNKNOWN",
+          errDetail: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
     },
     async stop() {
       if (routeUnsubscribe) {
