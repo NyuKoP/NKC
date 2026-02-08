@@ -177,7 +177,11 @@ export const createDirectP2PTransport = (): Transport => {
     },
     async send(packet: TransportPacket) {
       if (!dataChannel || dataChannel.readyState !== "open") {
-        throw new Error("Direct P2P data channel is not open");
+        const error = new Error("DIRECT_NOT_OPEN: Direct P2P data channel is not open") as Error & {
+          code?: string;
+        };
+        error.code = "DIRECT_NOT_OPEN";
+        throw error;
       }
       dataChannel.send(JSON.stringify(packet));
       ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));

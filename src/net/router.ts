@@ -160,22 +160,37 @@ const warnOnionRouterGuards = (config: NetConfig) => {
   }
 };
 
-const toErrorMessage = (error: unknown) =>
-  error instanceof Error ? error.message : String(error);
+const toErrorMessage = (error: unknown) => {
+  const code =
+    error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
+      ? ((error as { code?: string }).code ?? "")
+      : "";
+  const message = error instanceof Error ? error.message : String(error);
+  if (!code) return message;
+  if (message.toLowerCase().includes(code.toLowerCase())) return message;
+  return `${code}:${message}`;
+};
 
 const isRouteTargetMissingError = (message: string) =>
   message.includes("forward_failed:no_route_target") ||
   message.includes("forward_failed:no_route");
 
+const isRouteCandidateMissingError = (message: string) =>
+  message.includes("forward_failed:no_route") &&
+  !message.includes("forward_failed:no_route_target");
+
 const isOnionProxyUnavailableError = (message: string) =>
   message.includes("forward_failed:no_proxy") ||
   message.includes("forward_failed:proxy_unreachable") ||
+  message.toLowerCase().includes("proxy_unreachable") ||
+  message.toLowerCase().includes("tor_not_ready") ||
   message.includes("onion controller unavailable");
 
 const isSelfOnionRouteNotReadyError = (message: string) => {
   const normalized = message.toLowerCase();
   return (
     normalized.includes("internal onion route is not ready") ||
+    normalized.includes("internal_onion_not_ready") ||
     normalized.includes("route_not_ready")
   );
 };
@@ -392,7 +407,9 @@ export const sendCiphertext = async (
       (isRouteTargetMissingError(primaryErrorMessage) ||
         isOnionProxyUnavailableError(primaryErrorMessage));
     const allowSelfOnionFallback =
-      chosen === "onionRouter" && isOnionProxyUnavailableError(primaryErrorMessage);
+      chosen === "onionRouter" &&
+      (isOnionProxyUnavailableError(primaryErrorMessage) ||
+        isRouteCandidateMissingError(primaryErrorMessage));
     const fallbackKinds: TransportKind[] =
       allowSelfOnionFallback
         ? ["selfOnion", "directP2P"]
@@ -595,7 +612,9 @@ export const sendOutboxRecord = async (
       (isRouteTargetMissingError(primaryErrorMessage) ||
         isOnionProxyUnavailableError(primaryErrorMessage));
     const allowSelfOnionFallback =
-      chosen === "onionRouter" && isOnionProxyUnavailableError(primaryErrorMessage);
+      chosen === "onionRouter" &&
+      (isOnionProxyUnavailableError(primaryErrorMessage) ||
+        isRouteCandidateMissingError(primaryErrorMessage));
     const fallbackKinds: TransportKind[] =
       allowSelfOnionFallback
         ? ["selfOnion", "directP2P"]

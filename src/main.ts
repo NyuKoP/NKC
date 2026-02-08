@@ -11,6 +11,7 @@ import {
 } from "electron";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import nodeNet from "node:net";
 import path from "node:path";
 import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
@@ -71,6 +72,10 @@ type OnionControllerFetchResponse = {
   headers: Record<string, string>;
   bodyBase64: string;
   error?: string;
+};
+
+type StartTorPayload = {
+  profileScopedDataDir?: boolean;
 };
 
 type SyncStatusPayload = {
@@ -370,6 +375,37 @@ const fetchOnionController = async (
   }
 };
 
+const checkSocksProxyReachable = async (socksUrl: string, timeoutMs = 2000) => {
+  let parsed: URL;
+  try {
+    parsed = new URL(socksUrl);
+  } catch {
+    return false;
+  }
+  if (!parsed.hostname) return false;
+  const port = parsed.port ? Number.parseInt(parsed.port, 10) : 0;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return false;
+  }
+  return new Promise<boolean>((resolve) => {
+    const socket = nodeNet.connect({
+      host: parsed.hostname,
+      port,
+    });
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(Math.max(1, timeoutMs));
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
+};
+
 const registerOnionControllerIpc = () => {
   ipcMain.handle("nkc:getOnionControllerUrl", async () => onionControllerUrl);
   ipcMain.handle("nkc:setOnionForwardProxy", async (_event, proxyUrl: string | null) => {
@@ -380,9 +416,9 @@ const registerOnionControllerIpc = () => {
     return fetchOnionController(req);
   });
   ipcMain.handle("nkc:getTorStatus", async () => torManager?.getStatus() ?? { state: "unavailable" });
-  ipcMain.handle("nkc:startTor", async () => {
+  ipcMain.handle("nkc:startTor", async (_event, payload?: StartTorPayload) => {
     if (!torManager) return { ok: false };
-    await torManager.start();
+    await torManager.start(payload);
     return { ok: true };
   });
   ipcMain.handle("nkc:stopTor", async () => {
@@ -390,6 +426,13 @@ const registerOnionControllerIpc = () => {
     await torManager.stop();
     return { ok: true };
   });
+  ipcMain.handle(
+    "nkc:checkSocksProxyReachable",
+    async (_event, payload: { socksUrl?: string; timeoutMs?: number }) => {
+      if (!payload?.socksUrl || typeof payload.socksUrl !== "string") return false;
+      return checkSocksProxyReachable(payload.socksUrl, payload.timeoutMs ?? 2000);
+    }
+  );
   ipcMain.handle("nkc:ensureHiddenService", async () => {
     if (!torManager || !onionController) {
       throw new Error("tor-or-controller-unavailable");

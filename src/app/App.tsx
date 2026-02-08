@@ -80,6 +80,7 @@ import { prewarmRouter, sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
 import { useNetConfigStore } from "../net/netConfigStore";
+import { TorRuntime } from "../net/tor/TorRuntime";
 import { sanitizeRoutingHints } from "../net/privacy";
 import {
   buildGroupInviteEvent,
@@ -153,6 +154,7 @@ const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
 const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
 const READ_CURSOR_THROTTLE_MS = 1500;
 const ROUTE_PENDING_TOAST_COOLDOWN_MS = 10_000;
+const FRIEND_ROUTE_SEND_DEADLINE_MS = 30_000;
 
 const newClientBatchId = () => {
   if (globalThis.crypto?.randomUUID) {
@@ -182,15 +184,6 @@ type RuntimeNetworkSnapshot = {
   torDetail: string | null;
   lokinetState: string | null;
   lokinetDetail: string | null;
-};
-
-const toRuntimeTorSocksProxyUrl = (value: unknown) => {
-  if (!value || typeof value !== "object") return null;
-  const state = (value as { state?: unknown }).state;
-  const proxy = (value as { socksProxyUrl?: unknown }).socksProxyUrl;
-  if (state !== "running" || typeof proxy !== "string") return null;
-  const trimmed = proxy.trim();
-  return trimmed.length > 0 ? trimmed : null;
 };
 
 const toRuntimeState = (value: unknown) => {
@@ -277,6 +270,7 @@ export default function App() {
   const readCursorThrottleTimerRef = useRef<Record<string, number | undefined>>({});
   const routePendingToastRef = useRef<Record<string, number>>({});
   const onionBootstrapToastAtRef = useRef(0);
+  const routerBootstrapRunKeyRef = useRef<string | null>(null);
 
   const connectionToastShown = useRef(false);
   const connectionToastKey = "nkc.sessionConnectedToastShown";
@@ -731,20 +725,27 @@ export default function App() {
   }, [hydrateVault, ui.mode]);
 
   useEffect(() => {
-    if (ui.mode !== "app") return;
+    if (ui.mode !== "app") {
+      routerBootstrapRunKeyRef.current = null;
+      return;
+    }
+    const mode = netConfig.mode;
+    const onionEnabled = netConfig.onionEnabled;
+    const onionSelectedNetwork = netConfig.onionSelectedNetwork;
+    const onionActive = mode === "onionRouter" || onionEnabled;
+    const runKey = `${ui.mode}:${String(onionActive)}:${onionSelectedNetwork}`;
+    if (routerBootstrapRunKeyRef.current === runKey) return;
+    routerBootstrapRunKeyRef.current = runKey;
     let cancelled = false;
     const operationId = `router-bootstrap:${newClientBatchId()}`;
     const startedAt = nowMonotonicMs();
     const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
     void (async () => {
-      const onionActive = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
       const runtimeBootstrap: Record<string, unknown> = {};
       const baseContext = {
-        mode: netConfig.mode,
-        onionEnabled: netConfig.onionEnabled,
-        onionSelectedNetwork: netConfig.onionSelectedNetwork,
-        torStatus: netConfig.tor.status,
-        lokinetStatus: netConfig.lokinet.status,
+        mode,
+        onionEnabled,
+        onionSelectedNetwork,
       };
       emitRouterTestLog({
         status: "attempt",
@@ -759,83 +760,32 @@ export default function App() {
       });
       try {
         if (onionActive) {
-          const nkc = (
-            globalThis as {
-              nkc?: {
-                getTorStatus?: () => Promise<unknown>;
-                startTor?: () => Promise<unknown>;
-                setOnionForwardProxy?: (proxyUrl: string | null) => Promise<unknown>;
-                getLokinetStatus?: () => Promise<unknown>;
-                startLokinet?: () => Promise<unknown>;
-              };
-            }
-          ).nkc;
-          if (netConfig.onionSelectedNetwork === "tor") {
-            const torBefore = nkc?.getTorStatus ? await nkc.getTorStatus() : null;
-            runtimeBootstrap.torBefore = toRuntimeState(torBefore);
-            runtimeBootstrap.torBeforeDetail = toRuntimeDetail(torBefore);
-            if (nkc?.startTor && toRuntimeState(torBefore) !== "running") {
+          const torRuntime = TorRuntime.getInstance();
+          try {
+            await torRuntime.start({ timeoutMs: 15_000 });
+            await torRuntime.awaitReady(15_000);
+            runtimeBootstrap.torRuntimeState = torRuntime.getState();
+            runtimeBootstrap.torDataDir = torRuntime.getDataDir();
+            runtimeBootstrap.torSocksPort = (() => {
+              const socks = torRuntime.getSocksUrl();
+              if (!socks) return null;
               try {
-                await nkc.startTor();
-              } catch (error) {
-                runtimeBootstrap.torStartError =
-                  error instanceof Error ? error.message : String(error);
+                const parsed = new URL(socks);
+                return parsed.port || null;
+              } catch {
+                return null;
               }
-            }
-            const torAfter = nkc?.getTorStatus ? await nkc.getTorStatus() : null;
-            runtimeBootstrap.torAfter = toRuntimeState(torAfter);
-            runtimeBootstrap.torAfterDetail = toRuntimeDetail(torAfter);
-            if (nkc?.setOnionForwardProxy) {
-              try {
-                const proxyUrl = toRuntimeTorSocksProxyUrl(torAfter);
-                await nkc.setOnionForwardProxy(proxyUrl);
-                runtimeBootstrap.torForwardProxySynced = Boolean(proxyUrl);
-              } catch (error) {
-                runtimeBootstrap.torForwardProxySyncError =
-                  error instanceof Error ? error.message : String(error);
-              }
-            }
-          } else if (netConfig.onionSelectedNetwork === "lokinet") {
-            const lokinetBefore = nkc?.getLokinetStatus ? await nkc.getLokinetStatus() : null;
-            runtimeBootstrap.lokinetBefore = toRuntimeState(lokinetBefore);
-            runtimeBootstrap.lokinetBeforeDetail = toRuntimeDetail(lokinetBefore);
-            if (nkc?.startLokinet && toRuntimeState(lokinetBefore) !== "running") {
-              try {
-                await nkc.startLokinet();
-              } catch (error) {
-                runtimeBootstrap.lokinetStartError =
-                  error instanceof Error ? error.message : String(error);
-              }
-            }
-            const lokinetAfter = nkc?.getLokinetStatus ? await nkc.getLokinetStatus() : null;
-            runtimeBootstrap.lokinetAfter = toRuntimeState(lokinetAfter);
-            runtimeBootstrap.lokinetAfterDetail = toRuntimeDetail(lokinetAfter);
+            })();
+          } catch (error) {
+            runtimeBootstrap.torRuntimeError =
+              error instanceof Error ? error.message : String(error);
           }
         }
-        const warmupConfig = onionActive ? { ...netConfig, mode: "onionRouter" as const } : netConfig;
-        let warmup = await prewarmRouter({ includeFallback: true, config: warmupConfig });
-        if (onionActive && !warmup.started.includes("onionRouter")) {
-          emitRouterTestLog({
-            status: "progress",
-            stage: "app-bootstrap:warmup-retry",
-            source: "app:routerBootstrap",
-            operationId,
-            elapsedMs: elapsedMs(),
-            message: "Onion router not opened on first warmup, retrying",
-            context: {
-              ...baseContext,
-              firstWarmupStarted: warmup.started,
-              firstWarmupFailed: warmup.failed,
-            },
-          });
-          runtimeBootstrap.routerWarmupRetry = "scheduled";
-          await waitMs(700);
-          warmup = await prewarmRouter({ includeFallback: true, config: warmupConfig });
-          runtimeBootstrap.routerWarmupRetry = {
-            started: warmup.started,
-            failed: warmup.failed,
-          };
-        }
+        const currentConfig = useNetConfigStore.getState().config;
+        const warmupConfig = onionActive
+          ? { ...currentConfig, mode: "onionRouter" as const }
+          : currentConfig;
+        const warmup = await prewarmRouter({ includeFallback: true, config: warmupConfig });
         if (!cancelled) {
           const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
           devLog("router:prewarm", {
@@ -850,11 +800,11 @@ export default function App() {
             runtimeSnapshot,
           });
           const selectedRuntimeState =
-            netConfig.onionSelectedNetwork === "tor"
+            onionSelectedNetwork === "tor"
               ? runtimeSnapshot.torState
               : runtimeSnapshot.lokinetState;
           const selectedRuntimeDetail =
-            netConfig.onionSelectedNetwork === "tor"
+            onionSelectedNetwork === "tor"
               ? runtimeSnapshot.torDetail
               : runtimeSnapshot.lokinetDetail;
           const routerOpened = warmup.started.includes("onionRouter");
@@ -920,12 +870,9 @@ export default function App() {
     addToast,
     devLog,
     emitRouterTestLog,
-    netConfig,
-    netConfig.lokinet.status,
     netConfig.mode,
     netConfig.onionEnabled,
     netConfig.onionSelectedNetwork,
-    netConfig.tor.status,
     resolveRuntimeNetworkSnapshot,
     ui.mode,
   ]);
@@ -1570,10 +1517,14 @@ export default function App() {
           },
         });
         try {
-          prewarmResult = await prewarmRouter({
-            config: routingConfig,
-            includeFallback: true,
-          });
+          prewarmResult = await withTimeout(
+            prewarmRouter({
+              config: routingConfig,
+              includeFallback: true,
+            }),
+            "friend-control:prewarm",
+            FRIEND_ROUTE_SEND_DEADLINE_MS
+          );
           const prewarmOpened = prewarmResult.started.includes("onionRouter");
           emitRouterTestLog({
             status: prewarmOpened ? "ready" : "failed",
@@ -1610,7 +1561,7 @@ export default function App() {
               partnerProfileId: partner.id,
             },
           });
-          throw error;
+          return false;
         }
       }
       const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
@@ -1681,13 +1632,20 @@ export default function App() {
         },
       });
       try {
-        result = await sendCiphertext({
-          convId: conv.id,
-          messageId,
-          ciphertext: payloadJson,
-          priority,
-          ...routingMeta,
-        }, { config: routingConfig });
+        result = await withTimeout(
+          sendCiphertext(
+            {
+              convId: conv.id,
+              messageId,
+              ciphertext: payloadJson,
+              priority,
+              ...routingMeta,
+            },
+            { config: routingConfig }
+          ),
+          "friend-control:send",
+          FRIEND_ROUTE_SEND_DEADLINE_MS
+        );
       } catch (error) {
         const thrownMessage = error instanceof Error ? error.message : String(error);
         const errorParts = splitRouteErrorParts(thrownMessage);
@@ -1718,129 +1676,8 @@ export default function App() {
         });
         return false;
       }
-      let retriedWithRouterWarmup = false;
-      let finalErrorMessage = result.error ?? "Friend control packet send failed";
-      if (!result.ok) {
-        let errorMessage = finalErrorMessage;
-        if (
-          frameType === "friend_req" &&
-          Boolean(routingMeta.route?.torOnion || routingMeta.route?.lokinet)
-        ) {
-          const normalized = errorMessage.toLowerCase();
-          const shouldRetryWithRouterWarmup =
-            normalized.includes("onion controller") ||
-            normalized.includes("forward_failed:no_proxy") ||
-            normalized.includes("forward_failed:proxy_unreachable") ||
-            normalized.includes("forward_failed:no_route") ||
-            normalized.includes("forward_failed:no_route_target");
-          if (shouldRetryWithRouterWarmup) {
-            const forcedConfig = {
-              ...routingConfig,
-              mode: "onionRouter" as const,
-              onionEnabled: true,
-            };
-            try {
-              emitRouterTestLog({
-                status: "attempt",
-                stage: "friend-control:retry-warmup:start",
-                source: "app:sendFriendControlPacket",
-                operationId,
-                elapsedMs: elapsedMs(),
-                context: {
-                  frameType,
-                  convId: conv.id,
-                  partnerProfileId: partner.id,
-                  previousError: errorMessage,
-                },
-              });
-              const retryWarmup = await prewarmRouter({
-                config: forcedConfig,
-                includeFallback: true,
-              });
-              const retryWarmupOpened = retryWarmup.started.includes("onionRouter");
-              emitRouterTestLog({
-                status: retryWarmupOpened ? "progress" : "failed",
-                stage: "friend-control:retry-warmup:result",
-                source: "app:sendFriendControlPacket",
-                operationId,
-                elapsedMs: elapsedMs(),
-                error: retryWarmupOpened ? undefined : retryWarmup.failed.join(" || "),
-                context: {
-                  frameType,
-                  convId: conv.id,
-                  partnerProfileId: partner.id,
-                  chosenTransport: retryWarmup.chosenTransport,
-                  requestedTransports: retryWarmup.requested,
-                  startedTransports: retryWarmup.started,
-                  failedTransports: retryWarmup.failed,
-                },
-              });
-              await waitMs(700);
-              const retryResult = await sendCiphertext({
-                convId: conv.id,
-                messageId,
-                ciphertext: payloadJson,
-                priority,
-                ...routingMeta,
-              }, { config: forcedConfig });
-              if (retryResult.ok) {
-                result = retryResult;
-                retriedWithRouterWarmup = true;
-                emitRouterTestLog({
-                  status: "ready",
-                  stage: "friend-control:retry-send:result",
-                  source: "app:sendFriendControlPacket",
-                  operationId,
-                  elapsedMs: elapsedMs(),
-                  context: {
-                    frameType,
-                    convId: conv.id,
-                    partnerProfileId: partner.id,
-                    via: retryResult.transport,
-                    routerDiagnostic: retryResult.diagnostic ?? null,
-                  },
-                });
-              } else {
-                errorMessage = retryResult.error ?? errorMessage;
-                emitRouterTestLog({
-                  status: "failed",
-                  stage: "friend-control:retry-send:result",
-                  source: "app:sendFriendControlPacket",
-                  operationId,
-                  elapsedMs: elapsedMs(),
-                  error: retryResult.error ?? "retry send failed",
-                  context: {
-                    frameType,
-                    convId: conv.id,
-                    partnerProfileId: partner.id,
-                    via: retryResult.transport,
-                    routerDiagnostic: retryResult.diagnostic ?? null,
-                  },
-                });
-              }
-            } catch (retryError) {
-              const retryMessage =
-                retryError instanceof Error ? retryError.message : String(retryError);
-              errorMessage = `${errorMessage} || router_warmup_retry:${retryMessage}`;
-              emitRouterTestLog({
-                status: "failed",
-                stage: "friend-control:retry-warmup:exception",
-                source: "app:sendFriendControlPacket",
-                operationId,
-                elapsedMs: elapsedMs(),
-                error: retryMessage,
-                errorDetail: toInfoLogErrorDetail(retryError),
-                context: {
-                  frameType,
-                  convId: conv.id,
-                  partnerProfileId: partner.id,
-                },
-              });
-            }
-          }
-        }
-        finalErrorMessage = errorMessage;
-      }
+      const retriedWithRouterWarmup = false;
+      const finalErrorMessage = result.error ?? "Friend control packet send failed";
       if (!result.ok) {
         const errorMessage = finalErrorMessage;
         const errorParts = splitRouteErrorParts(errorMessage);
@@ -1908,7 +1745,7 @@ export default function App() {
       });
       return true;
     },
-    [buildRoutingMeta, emitFriendRouteTestLog, emitRouterTestLog, resolveRuntimeNetworkSnapshot]
+    [buildRoutingMeta, emitFriendRouteTestLog, emitRouterTestLog, resolveRuntimeNetworkSnapshot, withTimeout]
   );
 
   const sendFriendRequestForFriend = useCallback(
@@ -2958,9 +2795,13 @@ export default function App() {
         }
       ).nkc;
       if (nkc) {
-        if (netConfig.onionSelectedNetwork === "tor" && nkc.startTor) {
+        if (netConfig.onionSelectedNetwork === "tor") {
           try {
-            await nkc.startTor();
+            const torRuntime = TorRuntime.getInstance();
+            await torRuntime.start({ timeoutMs: 15_000 });
+            await torRuntime.awaitReady(15_000);
+            runtimeBootstrap.torRuntimeState = torRuntime.getState();
+            runtimeBootstrap.torDataDir = torRuntime.getDataDir();
           } catch (error) {
             runtimeBootstrap.torStartError = error instanceof Error ? error.message : String(error);
           }
@@ -2987,30 +2828,10 @@ export default function App() {
         mode: "onionRouter" as const,
         onionEnabled: true,
       };
-      let warmup = await prewarmRouter({
+      const warmup = await prewarmRouter({
         config: warmupConfig,
         includeFallback: true,
       });
-      if (!warmup.started.includes("onionRouter")) {
-        emitRouterTestLog({
-          status: "progress",
-          stage: "friend-route-resolve:warmup-retry",
-          source: "app:handleResolveFriendRoute",
-          operationId,
-          elapsedMs: elapsedMs(),
-          message: "Route resolve warmup did not open onion router on first attempt",
-          context: {
-            ...baseContext,
-            firstWarmupStarted: warmup.started,
-            firstWarmupFailed: warmup.failed,
-          },
-        });
-        await waitMs(700);
-        warmup = await prewarmRouter({
-          config: warmupConfig,
-          includeFallback: true,
-        });
-      }
 
       let refreshed = "";
       let hasRouteTarget = false;
