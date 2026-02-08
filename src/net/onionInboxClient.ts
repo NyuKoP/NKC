@@ -205,9 +205,14 @@ export class OnionInboxClient {
       body,
     });
     if (!response.ok || !response.data) {
+      const payloadError =
+        response.data && typeof response.data.error === "string" && response.data.error.trim()
+          ? response.data.error
+          : null;
+      const statusHint = response.status > 0 ? ` (status ${response.status})` : "";
       return {
         ok: false,
-        error: response.error ?? "Send failed",
+        error: payloadError ?? response.error ?? `Send failed${statusHint}`,
       };
     }
     return response.data;
