@@ -24,6 +24,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node scripts/start-electron.cjs",
+    "analyze:router-errors": "node scripts/analyze-router-errors.cjs",
     "phase:lock:check": "node scripts/check-phase-lock.mjs"
   },
   "dependencies": {

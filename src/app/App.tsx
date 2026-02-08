@@ -79,6 +79,7 @@ import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
 import { sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
+import { useNetConfigStore } from "../net/netConfigStore";
 import { sanitizeRoutingHints } from "../net/privacy";
 import {
   buildGroupInviteEvent,
@@ -120,9 +121,14 @@ import {
   emitFriendAddInfoLog,
   emitFriendRouteOutgoingInfoLog,
   type FriendAddInfoLogInput,
-  type InfoLogErrorDetail,
   type FriendRouteOutgoingInfoLogInput,
 } from "../diagnostics/infoCollectionLogs";
+import {
+  classifyRouteFailure,
+  collectRouteErrorCodes,
+  splitRouteErrorParts,
+  toInfoLogErrorDetail,
+} from "../diagnostics/friendRouteLogUtils";
 import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
 import { onSyncRun, reportSyncResult } from "../appControl";
@@ -162,29 +168,6 @@ const nowMonotonicMs = () => {
     return performance.now();
   }
   return Date.now();
-};
-
-const toInfoLogErrorDetail = (error: unknown): InfoLogErrorDetail => {
-  if (error instanceof Error) {
-    const code =
-      typeof (error as { code?: unknown }).code === "string"
-        ? ((error as { code?: string }).code ?? undefined)
-        : undefined;
-    const cause =
-      typeof (error as { cause?: unknown }).cause === "string"
-        ? ((error as { cause?: string }).cause ?? undefined)
-        : undefined;
-    return {
-      name: error.name,
-      message: error.message,
-      code,
-      stackTop: error.stack?.split("\n").slice(0, 3).join("\n"),
-      causeMessage: cause,
-    };
-  }
-  return {
-    message: String(error),
-  };
 };
 
 export default function App() {
@@ -1176,28 +1159,87 @@ export default function App() {
       const startedAt = nowMonotonicMs();
       const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
       const routingMeta = buildRoutingMeta(partner);
+      const toDeviceIdSource = partner.routingHints?.deviceId
+        ? "routingHints.deviceId"
+        : partner.primaryDeviceId
+          ? "primaryDeviceId"
+          : partner.deviceId
+            ? "deviceId"
+            : "none";
+      const payloadHasSigBeforeSign = Boolean(
+        (payload as { sig?: unknown } | null | undefined)?.sig
+      );
+      const payloadJson = JSON.stringify(signedPayload);
+      const payloadByteLength = new TextEncoder().encode(payloadJson).byteLength;
+      const netConfig = useNetConfigStore.getState().config;
       const senderDeviceId =
         signedPayload.from?.deviceId ?? getOrCreateDeviceId();
       const commonContext = {
         priority,
         partnerProfileId: partner.id,
         partnerFriendId: partner.friendId,
+        partnerFriendStatus: partner.friendStatus,
+        partnerReachabilityStatus: partner.reachability?.status ?? null,
         hasToDeviceId: Boolean(routingMeta.toDeviceId),
         hasTorOnion: Boolean(routingMeta.route?.torOnion),
         hasLokinet: Boolean(routingMeta.route?.lokinet),
+        hasRoutingHintDeviceId: Boolean(partner.routingHints?.deviceId),
+        hasPrimaryDeviceId: Boolean(partner.primaryDeviceId),
+        hasLegacyDeviceId: Boolean(partner.deviceId),
+        toDeviceIdSource,
+        hasRoutingHintOnion: Boolean(partner.routingHints?.onionAddr),
+        hasRoutingHintLokinet: Boolean(partner.routingHints?.lokinetAddr),
+        convPendingOutgoing: Boolean(conv.pendingOutgoing),
+        convPendingAcceptance: Boolean(conv.pendingAcceptance),
+        convPendingFriendResponse: conv.pendingFriendResponse ?? null,
+        payloadHasSigBeforeSign,
+        payloadHasSigAfterSign: Boolean(signedPayload.sig),
+        payloadByteLength,
+        payloadTimestamp: signedPayload.ts ?? null,
+        payloadConvId: signedPayload.convId ?? null,
+        netMode: netConfig.mode,
+        onionEnabled: netConfig.onionEnabled,
+        onionSelectedNetwork: netConfig.onionSelectedNetwork,
+        onionProxyEnabled: netConfig.onionProxyEnabled,
+        webrtcRelayOnly: netConfig.webrtcRelayOnly,
+        disableLinkPreview: netConfig.disableLinkPreview,
+        torStatus: netConfig.tor?.status ?? null,
+        lokinetStatus: netConfig.lokinet?.status ?? null,
       };
       let result:
         | Awaited<ReturnType<typeof sendCiphertext>>
         | null = null;
+      emitFriendRouteTestLog({
+        direction: "outgoing",
+        status: "attempt",
+        frameType,
+        source: "app:sendFriendControlPacket",
+        operationId,
+        elapsedMs: 0,
+        messageId,
+        convId: conv.id,
+        senderDeviceId,
+        toDeviceId: routingMeta.toDeviceId,
+        torOnion: routingMeta.route?.torOnion,
+        lokinet: routingMeta.route?.lokinet,
+        context: {
+          ...commonContext,
+          checkpoint: "sendCiphertext:start",
+        },
+      });
       try {
         result = await sendCiphertext({
           convId: conv.id,
           messageId,
-          ciphertext: JSON.stringify(signedPayload),
+          ciphertext: payloadJson,
           priority,
           ...routingMeta,
         });
       } catch (error) {
+        const thrownMessage = error instanceof Error ? error.message : String(error);
+        const errorParts = splitRouteErrorParts(thrownMessage);
+        const normalizedErrorParts = errorParts.length > 0 ? errorParts : [thrownMessage];
+        const errorCodes = collectRouteErrorCodes(normalizedErrorParts);
         emitFriendRouteTestLog({
           direction: "outgoing",
           status: "failed",
@@ -1211,16 +1253,23 @@ export default function App() {
           toDeviceId: routingMeta.toDeviceId,
           torOnion: routingMeta.route?.torOnion,
           lokinet: routingMeta.route?.lokinet,
-          error: "sendCiphertext threw",
+          error: `sendCiphertext threw: ${thrownMessage}`,
           errorDetail: toInfoLogErrorDetail(error),
           context: {
             ...commonContext,
-            checkpoint: "sendCiphertext",
+            checkpoint: "sendCiphertext:throw",
+            errorParts: normalizedErrorParts,
+            errorCodes,
+            failureClass: classifyRouteFailure(errorCodes, normalizedErrorParts),
           },
         });
         return false;
       }
       if (!result.ok) {
+        const errorMessage = result.error ?? "Friend control packet send failed";
+        const errorParts = splitRouteErrorParts(errorMessage);
+        const normalizedErrorParts = errorParts.length > 0 ? errorParts : [errorMessage];
+        const errorCodes = collectRouteErrorCodes(normalizedErrorParts);
         emitFriendRouteTestLog({
           direction: "outgoing",
           status: "failed",
@@ -1235,10 +1284,14 @@ export default function App() {
           toDeviceId: routingMeta.toDeviceId,
           torOnion: routingMeta.route?.torOnion,
           lokinet: routingMeta.route?.lokinet,
-          error: result.error ?? "Friend control packet send failed",
+          error: errorMessage,
           context: {
             ...commonContext,
             checkpoint: "sendCiphertext:result-not-ok",
+            errorParts: normalizedErrorParts,
+            errorCodes,
+            failureClass: classifyRouteFailure(errorCodes, normalizedErrorParts),
+            routerDiagnostic: result.diagnostic ?? null,
             ...(frameType === "friend_req"
               ? {
                   peerReceiptConfirmed: false,
@@ -1265,6 +1318,9 @@ export default function App() {
         lokinet: routingMeta.route?.lokinet,
         context: {
           ...commonContext,
+          checkpoint: "sendCiphertext:result-ok",
+          finalVia: result.transport,
+          routerDiagnostic: result.diagnostic ?? null,
           ...(frameType === "friend_req"
             ? {
                 peerReceiptConfirmed: false,

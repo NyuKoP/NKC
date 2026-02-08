@@ -224,6 +224,12 @@ export const sendCiphertext = async (
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolve(config, controller);
+  const attemptTrace: Array<{
+    transport: TransportKind;
+    phase: "primary" | "fallback";
+    ok: boolean;
+    error?: string;
+  }> = [];
   debugLog("[net] sendCiphertext: chosen transport", {
     convId: payload.convId,
     messageId: payload.messageId,
@@ -267,14 +273,34 @@ export const sendCiphertext = async (
 
   try {
     const used = await attemptSend(chosen);
+    attemptTrace.push({ transport: chosen, phase: "primary", ok: true });
     debugLog("[net] sendCiphertext: send ok", {
       convId: payload.convId,
       messageId: payload.messageId,
       transport: used,
     });
-    return { ok: true, transport: used };
+    return {
+      ok: true,
+      transport: used,
+      diagnostic: {
+        chosenTransport: chosen,
+        attempts: attemptTrace,
+        hasToDeviceId: Boolean(toDeviceId),
+        hasTorOnion: Boolean(route?.torOnion),
+        hasLokinet: Boolean(route?.lokinet),
+        mode: config.mode,
+        onionEnabled: config.onionEnabled,
+        onionSelectedNetwork: config.onionSelectedNetwork,
+      },
+    };
   } catch (error) {
     const primaryErrorMessage = toErrorMessage(error);
+    attemptTrace.push({
+      transport: chosen,
+      phase: "primary",
+      ok: false,
+      error: primaryErrorMessage,
+    });
     const attemptErrors: string[] = [
       `${chosen}: ${primaryErrorMessage}`,
     ];
@@ -300,14 +326,36 @@ export const sendCiphertext = async (
         const used = await attemptSend(fallbackKind, {
           allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
         });
+        attemptTrace.push({ transport: fallbackKind, phase: "fallback", ok: true });
         debugLog("[net] sendCiphertext: fallback ok", {
           convId: payload.convId,
           messageId: payload.messageId,
           transport: used,
         });
-        return { ok: true, transport: used };
+        return {
+          ok: true,
+          transport: used,
+          diagnostic: {
+            chosenTransport: chosen,
+            attempts: attemptTrace,
+            allowDirectFallback,
+            fallbackKinds,
+            hasToDeviceId: Boolean(toDeviceId),
+            hasTorOnion: Boolean(route?.torOnion),
+            hasLokinet: Boolean(route?.lokinet),
+            mode: config.mode,
+            onionEnabled: config.onionEnabled,
+            onionSelectedNetwork: config.onionSelectedNetwork,
+          },
+        };
       } catch (fallbackError) {
         const fallbackErrorMessage = toErrorMessage(fallbackError);
+        attemptTrace.push({
+          transport: fallbackKind,
+          phase: "fallback",
+          ok: false,
+          error: fallbackErrorMessage,
+        });
         attemptErrors.push(
           `${fallbackKind}: ${fallbackErrorMessage}`
         );
@@ -324,6 +372,18 @@ export const sendCiphertext = async (
       ok: false,
       transport: chosen,
       error: attemptErrors.join(" || "),
+      diagnostic: {
+        chosenTransport: chosen,
+        attempts: attemptTrace,
+        allowDirectFallback,
+        fallbackKinds,
+        hasToDeviceId: Boolean(toDeviceId),
+        hasTorOnion: Boolean(route?.torOnion),
+        hasLokinet: Boolean(route?.lokinet),
+        mode: config.mode,
+        onionEnabled: config.onionEnabled,
+        onionSelectedNetwork: config.onionSelectedNetwork,
+      },
     };
   }
 };
