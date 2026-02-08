@@ -3,6 +3,7 @@ import { isInfoCollectionEnabled } from "./infoCollectionConfig";
 
 export const INFO_EVENT_FRIEND_ADD = "nkc:test:friend-add";
 export const INFO_EVENT_FRIEND_ROUTE = "nkc:test:friend-route";
+export const INFO_EVENT_ROUTER = "nkc:test:router";
 
 type FriendControlFrameType = "friend_req" | "friend_accept" | "friend_decline";
 
@@ -64,6 +65,18 @@ export type FriendRouteIncomingInfoLogInput = {
   errorDetail?: InfoLogErrorDetail;
 };
 
+export type RouterInfoLogInput = {
+  status: "attempt" | "progress" | "ready" | "failed";
+  stage: string;
+  source?: string;
+  operationId?: string;
+  elapsedMs?: number;
+  message?: string;
+  context?: Record<string, unknown>;
+  error?: string;
+  errorDetail?: InfoLogErrorDetail;
+};
+
 const dispatchInfoEvent = (eventName: string, payload: unknown) => {
   if (!isInfoCollectionEnabled()) return;
   if (typeof window === "undefined") return;
@@ -107,6 +120,16 @@ export const emitFriendRouteIncomingInfoLog = (detail: FriendRouteIncomingInfoLo
   dispatchInfoEvent(INFO_EVENT_FRIEND_ROUTE, payload);
 };
 
+export const emitRouterInfoLog = (detail: RouterInfoLogInput) => {
+  if (!isInfoCollectionEnabled()) return;
+  const payload = withSequence({
+    ...detail,
+    timestamp: new Date().toISOString(),
+  });
+  console.info("[test][router]", payload);
+  dispatchInfoEvent(INFO_EVENT_ROUTER, payload);
+};
+
 let infoSinkAttached = false;
 
 export const attachInfoCollectionLogSink = () => {
@@ -123,13 +146,19 @@ export const attachInfoCollectionLogSink = () => {
     const detail = (event as CustomEvent<unknown>).detail;
     void appendTestLog("friend-route", detail);
   };
+  const handleRouter = (event: Event) => {
+    const detail = (event as CustomEvent<unknown>).detail;
+    void appendTestLog("router", detail);
+  };
 
   window.addEventListener(INFO_EVENT_FRIEND_ADD, handleFriendAdd as EventListener);
   window.addEventListener(INFO_EVENT_FRIEND_ROUTE, handleFriendRoute as EventListener);
+  window.addEventListener(INFO_EVENT_ROUTER, handleRouter as EventListener);
 
   return () => {
     infoSinkAttached = false;
     window.removeEventListener(INFO_EVENT_FRIEND_ADD, handleFriendAdd as EventListener);
     window.removeEventListener(INFO_EVENT_FRIEND_ROUTE, handleFriendRoute as EventListener);
+    window.removeEventListener(INFO_EVENT_ROUTER, handleRouter as EventListener);
   };
 };
