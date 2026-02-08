@@ -76,7 +76,7 @@ import {
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { computeEnvelopeHash, deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
 import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
-import { sendCiphertext } from "../net/router";
+import { prewarmRouter, sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
 import { useNetConfigStore } from "../net/netConfigStore";
@@ -170,6 +170,27 @@ const nowMonotonicMs = () => {
   return Date.now();
 };
 
+type RuntimeNetworkSnapshot = {
+  torState: string | null;
+  torDetail: string | null;
+  lokinetState: string | null;
+  lokinetDetail: string | null;
+};
+
+const toRuntimeState = (value: unknown) => {
+  if (!value || typeof value !== "object") return null;
+  const state = (value as { state?: unknown }).state;
+  return typeof state === "string" && state.trim().length > 0 ? state : null;
+};
+
+const toRuntimeDetail = (value: unknown) => {
+  if (!value || typeof value !== "object") return null;
+  const details = (value as { details?: unknown; error?: unknown }).details;
+  const fallback = (value as { details?: unknown; error?: unknown }).error;
+  const source = details ?? fallback;
+  return typeof source === "string" && source.trim().length > 0 ? source : null;
+};
+
 export default function App() {
   const ui = useAppStore((state) => state.ui);
   const userProfile = useAppStore((state) => state.userProfile);
@@ -207,6 +228,7 @@ export default function App() {
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
   >({});
+  const netConfig = useNetConfigStore((state) => state.config);
 
   const {
     groupAvatarOverrides,
@@ -229,6 +251,7 @@ export default function App() {
   >({});
   const readCursorThrottleTimerRef = useRef<Record<string, number | undefined>>({});
   const routePendingToastRef = useRef<Record<string, number>>({});
+  const onionBootstrapToastAtRef = useRef(0);
 
   const connectionToastShown = useRef(false);
   const connectionToastKey = "nkc.sessionConnectedToastShown";
@@ -248,43 +271,85 @@ export default function App() {
   const emitFriendRouteTestLog = useCallback((detail: FriendRouteOutgoingInfoLogInput) => {
     emitFriendRouteOutgoingInfoLog(detail);
   }, []);
+  const resolveRuntimeNetworkSnapshot = useCallback(async (): Promise<RuntimeNetworkSnapshot> => {
+    const nkc = (
+      globalThis as {
+        nkc?: {
+          getTorStatus?: () => Promise<unknown>;
+          getLokinetStatus?: () => Promise<unknown>;
+        };
+      }
+    ).nkc;
+    if (!nkc) {
+      return {
+        torState: null,
+        torDetail: null,
+        lokinetState: null,
+        lokinetDetail: null,
+      };
+    }
+    const [torRaw, lokinetRaw] = await Promise.all([
+      nkc.getTorStatus ? nkc.getTorStatus() : Promise.resolve(null),
+      nkc.getLokinetStatus ? nkc.getLokinetStatus() : Promise.resolve(null),
+    ]);
+    return {
+      torState: toRuntimeState(torRaw),
+      torDetail: toRuntimeDetail(torRaw),
+      lokinetState: toRuntimeState(lokinetRaw),
+      lokinetDetail: toRuntimeDetail(lokinetRaw),
+    };
+  }, []);
   useEffect(() => {
     return attachInfoCollectionLogSink();
   }, []);
 
   const settingsOpen = location.pathname === "/settings";
   const getRoutePendingToast = useCallback((error?: string) => {
-    const message = (error ?? "").toLowerCase();
-    if (message.includes("missing destination 'to'") || message.includes("missing-to-device")) {
+    const errorParts = splitRouteErrorParts(error);
+    const normalizedErrorParts = errorParts.length > 0 ? errorParts : error ? [error] : [];
+    const errorCodes = collectRouteErrorCodes(normalizedErrorParts);
+    const failureClass = classifyRouteFailure(errorCodes, normalizedErrorParts);
+
+    if (failureClass === "missing-device-id") {
       return {
         key: "missing-device-id",
         text:
           "상대 기기 ID가 없어 전송 경로를 만들 수 없습니다. 친구 코드를 다시 받아 업데이트하세요.",
       };
     }
-    if (
-      message.includes("forward_failed:no_proxy") ||
-      message.includes("forward_failed:proxy_unreachable") ||
-      message.includes("onion controller unavailable")
-    ) {
+    if (failureClass === "onion-proxy-not-ready") {
       return {
         key: "onion-proxy-not-ready",
         text:
           "Tor/Lokinet 프록시가 아직 준비되지 않았습니다. Onion 적용 후 연결되면 자동 재시도됩니다.",
       };
     }
-    if (message.includes("forward_failed:no_route_target") || message.includes("forward_failed:no_route")) {
+    if (failureClass === "direct-channel-not-open") {
+      return {
+        key: "direct-not-open",
+        text:
+          "Direct P2P 연결이 아직 열리지 않았습니다. 연결 수립 후 자동 재시도됩니다.",
+      };
+    }
+    if (failureClass === "self-onion-not-ready") {
+      return {
+        key: "self-onion-not-ready",
+        text:
+          "내부 Onion 라우트가 아직 준비되지 않았습니다. 네트워크 안정화 후 자동 재시도됩니다.",
+      };
+    }
+    if (failureClass === "missing-route-target") {
       return {
         key: "route-target-missing",
         text:
           "상대의 최신 라우팅 정보(onion/lokinet 또는 최신 기기 ID)가 없어 전송할 수 없습니다. 상대에게 최신 친구 코드를 다시 받아주세요.",
       };
     }
-    if (message.includes("direct p2p data channel is not open")) {
+    if (failureClass === "transport-aborted") {
       return {
-        key: "direct-not-open",
+        key: "transport-aborted",
         text:
-          "Direct P2P 연결이 아직 열리지 않았습니다. 연결 수립 후 자동 재시도됩니다.",
+          "라우터 초기화/재시작 중으로 전송이 중단되었습니다. 잠시 후 자동 재시도됩니다.",
       };
     }
     return {
@@ -613,6 +678,100 @@ export default function App() {
     });
     friendInboxStarted.current = true;
   }, [hydrateVault, ui.mode]);
+
+  useEffect(() => {
+    if (ui.mode !== "app") return;
+    let cancelled = false;
+    void (async () => {
+      const onionActive = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
+      const runtimeBootstrap: Record<string, unknown> = {};
+      if (onionActive) {
+        const nkc = (
+          globalThis as {
+            nkc?: {
+              getTorStatus?: () => Promise<unknown>;
+              startTor?: () => Promise<unknown>;
+              getLokinetStatus?: () => Promise<unknown>;
+              startLokinet?: () => Promise<unknown>;
+            };
+          }
+        ).nkc;
+        if (netConfig.onionSelectedNetwork === "tor") {
+          const torBefore = nkc?.getTorStatus ? await nkc.getTorStatus() : null;
+          runtimeBootstrap.torBefore = toRuntimeState(torBefore);
+          runtimeBootstrap.torBeforeDetail = toRuntimeDetail(torBefore);
+          if (nkc?.startTor && toRuntimeState(torBefore) !== "running") {
+            try {
+              await nkc.startTor();
+            } catch (error) {
+              runtimeBootstrap.torStartError =
+                error instanceof Error ? error.message : String(error);
+            }
+          }
+          const torAfter = nkc?.getTorStatus ? await nkc.getTorStatus() : null;
+          runtimeBootstrap.torAfter = toRuntimeState(torAfter);
+          runtimeBootstrap.torAfterDetail = toRuntimeDetail(torAfter);
+        } else if (netConfig.onionSelectedNetwork === "lokinet") {
+          const lokinetBefore = nkc?.getLokinetStatus ? await nkc.getLokinetStatus() : null;
+          runtimeBootstrap.lokinetBefore = toRuntimeState(lokinetBefore);
+          runtimeBootstrap.lokinetBeforeDetail = toRuntimeDetail(lokinetBefore);
+          if (nkc?.startLokinet && toRuntimeState(lokinetBefore) !== "running") {
+            try {
+              await nkc.startLokinet();
+            } catch (error) {
+              runtimeBootstrap.lokinetStartError =
+                error instanceof Error ? error.message : String(error);
+            }
+          }
+          const lokinetAfter = nkc?.getLokinetStatus ? await nkc.getLokinetStatus() : null;
+          runtimeBootstrap.lokinetAfter = toRuntimeState(lokinetAfter);
+          runtimeBootstrap.lokinetAfterDetail = toRuntimeDetail(lokinetAfter);
+        }
+      }
+      const warmup = await prewarmRouter({ includeFallback: true });
+      if (!cancelled) {
+        const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
+        devLog("router:prewarm", {
+          chosen: warmup.chosenTransport,
+          requested: warmup.requested,
+          started: warmup.started,
+          failed: warmup.failed,
+          mode: warmup.mode,
+          onionEnabled: warmup.onionEnabled,
+          onionSelectedNetwork: warmup.onionSelectedNetwork,
+          runtimeBootstrap,
+          runtimeSnapshot,
+        });
+        const selectedRuntimeState =
+          netConfig.onionSelectedNetwork === "tor"
+            ? runtimeSnapshot.torState
+            : runtimeSnapshot.lokinetState;
+        if (onionActive && selectedRuntimeState !== "running") {
+          const now = Date.now();
+          if (now - onionBootstrapToastAtRef.current > 15_000) {
+            onionBootstrapToastAtRef.current = now;
+            addToast({
+              message:
+                "Onion 네트워크가 아직 준비되지 않았습니다. 설정에서 Tor/Lokinet 상태를 확인해 주세요.",
+            });
+          }
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    addToast,
+    devLog,
+    netConfig.lokinet.status,
+    netConfig.mode,
+    netConfig.onionEnabled,
+    netConfig.onionSelectedNetwork,
+    netConfig.tor.status,
+    resolveRuntimeNetworkSnapshot,
+    ui.mode,
+  ]);
 
   // cleanup 메모리 문제(EffectCallback) + unsubscribe 방어
   useEffect(() => {
@@ -1176,6 +1335,7 @@ export default function App() {
       const payloadJson = JSON.stringify(signedPayload);
       const payloadByteLength = new TextEncoder().encode(payloadJson).byteLength;
       const netConfig = useNetConfigStore.getState().config;
+      const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
       const senderDeviceId =
         signedPayload.from?.deviceId ?? getOrCreateDeviceId();
       const commonContext = {
@@ -1209,6 +1369,10 @@ export default function App() {
         disableLinkPreview: netConfig.disableLinkPreview,
         torStatus: netConfig.tor?.status ?? null,
         lokinetStatus: netConfig.lokinet?.status ?? null,
+        torRuntimeState: runtimeSnapshot.torState,
+        torRuntimeDetail: runtimeSnapshot.torDetail,
+        lokinetRuntimeState: runtimeSnapshot.lokinetState,
+        lokinetRuntimeDetail: runtimeSnapshot.lokinetDetail,
       };
       let result:
         | Awaited<ReturnType<typeof sendCiphertext>>
@@ -1335,7 +1499,7 @@ export default function App() {
       });
       return true;
     },
-    [buildRoutingMeta, emitFriendRouteTestLog]
+    [buildRoutingMeta, emitFriendRouteTestLog, resolveRuntimeNetworkSnapshot]
   );
 
   const sendFriendRequestForFriend = useCallback(

@@ -443,4 +443,43 @@ describe("router", () => {
     expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
     expect(store.size).toBe(1);
   });
+
+  it("prewarms chosen and fallback transports in onion mode", async () => {
+    const router = await import("../router");
+    const onionRouterTransport = createTransport("onionRouter");
+    const directTransport = createTransport("directP2P");
+    const selfOnionTransport = createTransport("selfOnion");
+
+    const warmup = await router.prewarmRouter({
+      resolveTransport: () => "onionRouter",
+      config: {
+        mode: "onionRouter",
+        onionProxyEnabled: true,
+        onionProxyUrl: "socks5://127.0.0.1:9050",
+        webrtcRelayOnly: true,
+        disableLinkPreview: true,
+        selfOnionEnabled: true,
+        selfOnionMinRelays: 3,
+        allowRemoteProxy: false,
+        onionEnabled: true,
+        onionSelectedNetwork: "tor",
+        tor: { installed: true, status: "ready", version: "1.0.0" },
+        lokinet: { installed: false, status: "idle" },
+        lastUpdateCheckAtMs: undefined,
+      },
+      transports: {
+        onionRouter: onionRouterTransport,
+        directP2P: directTransport,
+        selfOnion: selfOnionTransport,
+      },
+    });
+
+    expect(warmup.chosenTransport).toBe("onionRouter");
+    expect(warmup.requested).toEqual(["onionRouter", "directP2P", "selfOnion"]);
+    expect(warmup.failed).toEqual([]);
+    expect(warmup.started).toEqual(["onionRouter", "directP2P", "selfOnion"]);
+    expect(onionRouterTransport.start).toHaveBeenCalledTimes(1);
+    expect(directTransport.start).toHaveBeenCalledTimes(1);
+    expect(selfOnionTransport.start).toHaveBeenCalledTimes(1);
+  });
 });
