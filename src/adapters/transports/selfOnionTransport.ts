@@ -76,7 +76,11 @@ export const createSelfOnionTransport = ({
     async send(packet: TransportPacket) {
       const route = useInternalOnionRouteStore.getState().route;
       if (route.status !== "ready") {
-        throw new Error("Internal onion route is not ready");
+        const error = new Error(
+          "INTERNAL_ONION_NOT_READY: Internal onion route is not ready"
+        ) as Error & { code?: string };
+        error.code = "INTERNAL_ONION_NOT_READY";
+        throw error;
       }
       await sendDataViaCurrentRoute(packet);
       const rttMs = route.hops.reduce((acc, hop) => Math.max(acc, hop.rttMs ?? 0), 0);

@@ -188,7 +188,8 @@ export class OnionInboxClient {
     toDeviceId: string,
     envelope: string,
     ttlMs?: number,
-    route?: { mode: "auto" | "preferalternateRoute" | "preferTor" | "manual"; torOnion?: string; alternateRoute?: string }
+    route?: { mode: "auto" | "preferalternateRoute" | "preferTor" | "manual"; torOnion?: string; alternateRoute?: string },
+    signal?: AbortSignal
   ): Promise<SendResponse> {
     const body: Record<string, unknown> = {
       to: route ? undefined : toDeviceId,
@@ -203,7 +204,7 @@ export class OnionInboxClient {
     const response = await this.requestJson<SendResponse>("/onion/send", {
       method: "POST",
       body,
-    });
+    }, signal);
     if (!response.ok || !response.data) {
       const payloadError =
         response.data && typeof response.data.error === "string" && response.data.error.trim()

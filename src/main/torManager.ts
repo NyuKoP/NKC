@@ -17,6 +17,10 @@ type HiddenServiceConfig = {
   virtPort: number;
 };
 
+type TorStartOptions = {
+  profileScopedDataDir?: boolean;
+};
+
 type StatusListener = (status: TorStatus) => void;
 
 const TOR_ENV_PATH = "NKC_TOR_PATH";
@@ -57,9 +61,10 @@ const getAvailablePort = async () => {
   });
 };
 
-const waitForPort = async (port: number, timeoutMs: number) => {
+const waitForPort = async (port: number, timeoutMs: number, shouldAbort?: () => boolean) => {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (shouldAbort?.()) return false;
     const ok = await new Promise<boolean>((resolve) => {
       const socket = net.connect(port, "127.0.0.1");
       socket.once("connect", () => {
@@ -94,12 +99,15 @@ export class TorManager {
   private status: TorStatus = { state: "unavailable", details: "not-started" };
   private listeners = new Set<StatusListener>();
   private torPath: string | null = null;
+  private readonly baseDataDir: string;
   private dataDir: string;
   private hsConfig: HiddenServiceConfig | null = null;
   private logTail = "";
+  private startPromise: Promise<void> | null = null;
 
   constructor(opts: { appDataDir: string }) {
-    this.dataDir = path.join(opts.appDataDir, "nkc-tor");
+    this.baseDataDir = path.join(opts.appDataDir, "nkc-tor");
+    this.dataDir = this.baseDataDir;
   }
 
   private emit(next: TorStatus) {
@@ -174,13 +182,34 @@ export class TorManager {
     return lines.join("\n");
   }
 
-  async start() {
+  private resolveDataDir(opts?: TorStartOptions) {
+    if (!opts?.profileScopedDataDir) return this.baseDataDir;
+    const suffix = `profile-${process.pid}`;
+    return `${this.baseDataDir}-${suffix}`;
+  }
+
+  private isDataDirConflict(details: string | undefined) {
+    if (!details) return false;
+    return details.toLowerCase().includes("another tor process is running with the same data directory");
+  }
+
+  async start(opts?: TorStartOptions) {
+    if (this.process) return;
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startInternal(opts).finally(() => {
+      this.startPromise = null;
+    });
+    return this.startPromise;
+  }
+
+  private async startInternal(opts?: TorStartOptions) {
     if (this.process) return;
     const torPath = await this.resolveTorPath();
     if (!torPath) {
       this.emit({ state: "unavailable", details: "tor-binary-not-found" });
       return;
     }
+    this.dataDir = this.resolveDataDir(opts);
     this.logTail = "";
     this.emit({ state: "starting", details: "starting-tor" });
     await fsPromises.mkdir(this.dataDir, { recursive: true });
@@ -208,8 +237,14 @@ export class TorManager {
         details: `tor-exited(code=${code ?? "null"},signal=${signal ?? "none"})${tail}`,
       });
     });
-    const ready = await waitForPort(socksPort, START_TIMEOUT_MS);
+    const ready = await waitForPort(socksPort, START_TIMEOUT_MS, () => this.status.state === "failed");
     if (!ready) {
+      if (this.status.state === "failed" && this.isDataDirConflict(this.status.details)) {
+        return;
+      }
+      if (this.status.state === "failed") {
+        return;
+      }
       this.emit({ state: "failed", details: "socks-not-ready" });
       await this.stop();
       return;
