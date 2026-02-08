@@ -86,6 +86,9 @@ const fromBase64 = (value: string) => {
 const safeError = (error: unknown) =>
   error instanceof Error ? error.message : String(error ?? "Unknown error");
 
+const DEFAULT_TIMEOUT_MS = 10_000;
+const SEND_TIMEOUT_MS = 30_000;
+
 const getNkcControllerFetch = () =>
   (
     globalThis as {
@@ -103,19 +106,19 @@ export class OnionInboxClient {
   constructor(cfg: OnionInboxConfig) {
     this.baseUrl = cfg.baseUrl;
     this.deviceId = cfg.deviceId;
-    this.timeoutMs = cfg.timeoutMs ?? 10000;
+    this.timeoutMs = cfg.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   private async requestJson<T>(
     path: string,
-    init: { method: string; body?: unknown },
+    init: { method: string; body?: unknown; timeoutMs?: number },
     signal?: AbortSignal
   ): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
     const url = new URL(path, this.baseUrl).toString();
     const body =
       init.body !== undefined ? JSON.stringify(init.body) : undefined;
     const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const timeoutMs = this.timeoutMs;
+    const timeoutMs = init.timeoutMs ?? this.timeoutMs;
 
     const controllerFetch = getNkcControllerFetch();
     if (controllerFetch) {
@@ -201,9 +204,11 @@ export class OnionInboxClient {
     if (route) {
       body.route = route;
     }
+    const sendTimeoutMs = Math.max(this.timeoutMs, SEND_TIMEOUT_MS);
     const response = await this.requestJson<SendResponse>("/onion/send", {
       method: "POST",
       body,
+      timeoutMs: sendTimeoutMs,
     }, signal);
     if (!response.ok || !response.data) {
       const payloadError =
