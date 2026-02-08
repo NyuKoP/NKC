@@ -332,6 +332,9 @@ export class TorManager {
       await this.stop();
     }
     await this.start();
+    if (this.status.state !== "running" && this.isDataDirConflict(this.status.details)) {
+      await this.start({ profileScopedDataDir: true });
+    }
     if (this.status.state !== "running") {
       throw new Error(this.status.state === "failed" ? this.status.details : "tor-unavailable");
     }
