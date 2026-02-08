@@ -93,6 +93,24 @@ const safeError = (error: unknown) =>
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const SEND_TIMEOUT_MS = 30_000;
+const POLL_BASE_DELAY_MS = 1000;
+const POLL_MAX_DELAY_MS = 8000;
+
+const sharedInFlightRequests = new Map<string, Promise<unknown>>();
+
+type SharedPollerState = {
+  subscribers: Set<PollerHandlers>;
+  active: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+  aborter: AbortController | null;
+  cursor: string | null;
+  failureCount: number;
+  limit: number;
+  tick: () => Promise<void>;
+  schedule: (delayMs: number) => void;
+};
+
+const sharedPollers = new Map<string, SharedPollerState>();
 
 const getNkcControllerFetch = () =>
   (
@@ -107,7 +125,6 @@ export class OnionInboxClient {
   private readonly baseUrl: string;
   private readonly deviceId: string;
   private readonly timeoutMs: number;
-  private readonly inFlightRequests = new Map<string, Promise<unknown>>();
 
   constructor(cfg: OnionInboxConfig) {
     this.baseUrl = cfg.baseUrl;
@@ -131,6 +148,16 @@ export class OnionInboxClient {
     return null;
   }
 
+  private toSharedRequestKey(path: string) {
+    const key = this.toCoalesceKey(path);
+    if (!key) return null;
+    return `${this.baseUrl}|${key}`;
+  }
+
+  private toPollerKey() {
+    return `${this.baseUrl}|inbox:${this.deviceId}`;
+  }
+
   private formatTransportError(error: unknown) {
     const code = getTransportErrorCode(error);
     if (!code) return safeError(error);
@@ -146,22 +173,22 @@ export class OnionInboxClient {
     init: { method: string; body?: unknown; timeoutMs?: number; operationId?: string },
     signal?: AbortSignal
   ): Promise<{ ok: boolean; status: number; data?: T; error?: string }> {
-    const coalesceKey = this.toCoalesceKey(path);
+    const coalesceKey = this.toSharedRequestKey(path);
     if (!coalesceKey) {
       return this.requestJsonUncoalesced<T>(path, init, signal);
     }
-    const existing = this.inFlightRequests.get(coalesceKey);
+    const existing = sharedInFlightRequests.get(coalesceKey);
     if (existing) {
       return (await existing) as { ok: boolean; status: number; data?: T; error?: string };
     }
     const requestPromise = this.requestJsonUncoalesced<T>(path, init, signal);
-    this.inFlightRequests.set(coalesceKey, requestPromise);
+    sharedInFlightRequests.set(coalesceKey, requestPromise);
     try {
       return await requestPromise;
     } finally {
-      const current = this.inFlightRequests.get(coalesceKey);
+      const current = sharedInFlightRequests.get(coalesceKey);
       if (current === requestPromise) {
-        this.inFlightRequests.delete(coalesceKey);
+        sharedInFlightRequests.delete(coalesceKey);
       }
     }
   }
@@ -395,60 +422,100 @@ export class OnionInboxClient {
     handlers: PollerHandlers,
     options?: { after?: string | null; limit?: number }
   ): PollerHandle {
-    const baseDelayMs = 1000;
-    const maxDelayMs = 8000;
-    let cursor = options?.after ?? null;
-    let failureCount = 0;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let active = true;
-    let aborter: AbortController | null = null;
+    const pollerKey = this.toPollerKey();
+    const desiredLimit = options?.limit ?? 50;
+    const desiredCursor = options?.after ?? null;
+    const existing = sharedPollers.get(pollerKey);
+    if (existing) {
+      existing.subscribers.add(handlers);
+      if (desiredCursor && !existing.cursor) {
+        existing.cursor = desiredCursor;
+      }
+      if (desiredLimit > existing.limit) {
+        existing.limit = desiredLimit;
+      }
+      return {
+        stop: () => {
+          existing.subscribers.delete(handlers);
+          if (existing.subscribers.size > 0) return;
+          existing.active = false;
+          if (existing.timer) {
+            clearTimeout(existing.timer);
+            existing.timer = null;
+          }
+          if (existing.aborter) {
+            existing.aborter.abort();
+            existing.aborter = null;
+          }
+          sharedPollers.delete(pollerKey);
+        },
+      };
+    }
+
+    const state: SharedPollerState = {
+      subscribers: new Set([handlers]),
+      active: true,
+      timer: null,
+      aborter: null,
+      cursor: desiredCursor,
+      failureCount: 0,
+      limit: desiredLimit,
+      tick: async () => {},
+      schedule: () => {},
+    };
+    sharedPollers.set(pollerKey, state);
 
     const jitterDelay = (value: number) => value + Math.floor(Math.random() * 251);
 
-    const schedule = (delayMs: number) => {
-      if (!active) return;
-      timer = setTimeout(() => void tick(), jitterDelay(delayMs));
+    state.schedule = (delayMs: number) => {
+      if (!state.active) return;
+      state.timer = setTimeout(() => void state.tick(), jitterDelay(delayMs));
     };
 
-    const tick = async () => {
-      if (!active) return;
-      aborter = new AbortController();
+    state.tick = async () => {
+      if (!state.active || state.subscribers.size === 0) return;
+      state.aborter = new AbortController();
       try {
-        const result = await this.pollInternal(cursor, options?.limit ?? 50, aborter.signal);
-        if (!active || aborter.signal.aborted) return;
+        const result = await this.pollInternal(state.cursor, state.limit, state.aborter.signal);
+        if (!state.active || state.aborter.signal.aborted) return;
         if (result.ok) {
-          if (failureCount > 0) {
-            failureCount = 0;
+          if (state.failureCount > 0) {
+            state.failureCount = 0;
           }
-          cursor = result.nextAfter;
-          handlers.onResult(result);
-          schedule(baseDelayMs);
+          state.cursor = result.nextAfter;
+          state.subscribers.forEach((subscriber) => subscriber.onResult(result));
+          state.schedule(POLL_BASE_DELAY_MS);
           return;
         }
-        failureCount += 1;
-        handlers.onError(result.error ?? "Poll failed");
+        state.failureCount += 1;
+        state.subscribers.forEach((subscriber) =>
+          subscriber.onError(result.error ?? "Poll failed")
+        );
       } catch (error) {
-        if (!active || aborter.signal.aborted) return;
-        failureCount += 1;
-        handlers.onError(safeError(error));
+        if (!state.active || state.aborter.signal.aborted) return;
+        state.failureCount += 1;
+        state.subscribers.forEach((subscriber) => subscriber.onError(safeError(error)));
       }
-      const backoffMs = Math.min(maxDelayMs, baseDelayMs * Math.pow(2, failureCount));
-      schedule(backoffMs);
+      const backoffMs = Math.min(POLL_MAX_DELAY_MS, POLL_BASE_DELAY_MS * Math.pow(2, state.failureCount));
+      state.schedule(backoffMs);
     };
 
-    schedule(baseDelayMs);
+    state.schedule(POLL_BASE_DELAY_MS);
 
     return {
       stop: () => {
-        active = false;
-        if (timer) {
-          clearTimeout(timer);
-          timer = null;
+        state.subscribers.delete(handlers);
+        if (state.subscribers.size > 0) return;
+        state.active = false;
+        if (state.timer) {
+          clearTimeout(state.timer);
+          state.timer = null;
         }
-        if (aborter) {
-          aborter.abort();
-          aborter = null;
+        if (state.aborter) {
+          state.aborter.abort();
+          state.aborter = null;
         }
+        sharedPollers.delete(pollerKey);
       },
     };
   }
