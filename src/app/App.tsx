@@ -286,6 +286,13 @@ export default function App() {
           "Tor/Lokinet 프록시가 아직 준비되지 않았습니다. Onion 적용 후 연결되면 자동 재시도됩니다.",
       };
     }
+    if (message.includes("forward_failed:no_route_target") || message.includes("forward_failed:no_route")) {
+      return {
+        key: "route-target-missing",
+        text:
+          "상대의 최신 라우팅 정보(onion/lokinet 또는 최신 기기 ID)가 없어 전송할 수 없습니다. 상대에게 최신 친구 코드를 다시 받아주세요.",
+      };
+    }
     if (message.includes("direct p2p data channel is not open")) {
       return {
         key: "direct-not-open",

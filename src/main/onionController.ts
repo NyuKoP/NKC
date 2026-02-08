@@ -204,6 +204,11 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
     return { status: 400, body: { ok: false, error: "forward_failed:no_route" } };
   }
 
+  // Legacy/local fallback is only safe for explicit loopback sends.
+  if (fromDeviceId && fromDeviceId !== toDeviceId) {
+    return { status: 400, body: { ok: false, error: "forward_failed:no_route_target" } };
+  }
+
   deps.storeLocal(toDeviceId, {
     id: msgId,
     ts,
