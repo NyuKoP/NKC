@@ -32,6 +32,24 @@ const resolveToDeviceId = (packet: TransportPacket) =>
   (packet as { to?: string }).to ??
   (packet as { route?: { toDeviceId?: string; to?: string } }).route?.to;
 
+const toInfoLogErrorDetail = (error: unknown) => {
+  if (error instanceof Error) {
+    const code =
+      typeof (error as { code?: unknown }).code === "string"
+        ? ((error as { code?: string }).code ?? undefined)
+        : undefined;
+    return {
+      name: error.name,
+      message: error.message,
+      code,
+      stackTop: error.stack?.split("\n").slice(0, 3).join("\n"),
+    };
+  }
+  return {
+    message: String(error),
+  };
+};
+
 export const startFriendInboxListener = (onChange?: () => void) => {
   if (onChange) {
     onChangeCallback = onChange;
@@ -69,8 +87,46 @@ export const startFriendInboxListener = (onChange?: () => void) => {
         convId?: string;
         from?: { deviceId?: string };
       };
+      const commonContext = {
+        relayed: relay.handled,
+        hadDeliveredPacket: Boolean(relay.deliveredPacket),
+      };
       emitFriendRouteIncomingInfoLog({
         direction: "incoming",
+        status: "received",
+        frameType: frame.type,
+        source: "friends:startFriendInboxListener",
+        via: meta.via,
+        packetId: effectivePacket.id,
+        convId: frame.convId,
+        fromDeviceId: frame.from?.deviceId,
+        toDeviceId: resolveToDeviceId(effectivePacket),
+        context: commonContext,
+      });
+      try {
+        await handleIncomingFriendFrame(
+          parsed as Parameters<typeof handleIncomingFriendFrame>[0]
+        );
+      } catch (error) {
+        emitFriendRouteIncomingInfoLog({
+          direction: "incoming",
+          status: "failed",
+          frameType: frame.type,
+          source: "friends:startFriendInboxListener",
+          via: meta.via,
+          packetId: effectivePacket.id,
+          convId: frame.convId,
+          fromDeviceId: frame.from?.deviceId,
+          toDeviceId: resolveToDeviceId(effectivePacket),
+          error: error instanceof Error ? error.message : String(error),
+          errorDetail: toInfoLogErrorDetail(error),
+          context: commonContext,
+        });
+        throw error;
+      }
+      emitFriendRouteIncomingInfoLog({
+        direction: "incoming",
+        status: "handled",
         frameType: frame.type,
         source: "friends:startFriendInboxListener",
         via: meta.via,
@@ -79,13 +135,11 @@ export const startFriendInboxListener = (onChange?: () => void) => {
         fromDeviceId: frame.from?.deviceId,
         toDeviceId: resolveToDeviceId(effectivePacket),
         context: {
-          relayed: relay.handled,
-          hadDeliveredPacket: Boolean(relay.deliveredPacket),
+          ...commonContext,
+          peerReceiptConfirmed:
+            frame.type === "friend_accept" || frame.type === "friend_decline",
         },
       });
-      await handleIncomingFriendFrame(
-        parsed as Parameters<typeof handleIncomingFriendFrame>[0]
-      );
       onChangeCallback?.();
     })().catch((error) => console.warn("[friend] inbox handle failed", error));
   });

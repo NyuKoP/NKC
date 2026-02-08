@@ -49,6 +49,7 @@ export type FriendRouteOutgoingInfoLogInput = {
 
 export type FriendRouteIncomingInfoLogInput = {
   direction: "incoming";
+  status: "received" | "handled" | "failed";
   frameType: FriendControlFrameType;
   source?: string;
   operationId?: string;
@@ -58,6 +59,7 @@ export type FriendRouteIncomingInfoLogInput = {
   convId?: string;
   fromDeviceId?: string;
   toDeviceId?: string;
+  error?: string;
   context?: Record<string, unknown>;
   errorDetail?: InfoLogErrorDetail;
 };
