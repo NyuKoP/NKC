@@ -88,7 +88,11 @@ export const classifyRouteFailure = (errorCodes: string[], errorParts: string[])
   if (text.includes("route_not_ready")) {
     return "self-onion-not-ready";
   }
-  if (text.includes("no_proxy") || text.includes("onion controller unavailable")) {
+  if (
+    text.includes("no_proxy") ||
+    text.includes("proxy_unreachable") ||
+    text.includes("onion controller unavailable")
+  ) {
     return "onion-proxy-not-ready";
   }
   if (text.includes("aborted")) {
