@@ -104,6 +104,9 @@ export class TorManager {
   private hsConfig: HiddenServiceConfig | null = null;
   private logTail = "";
   private startPromise: Promise<void> | null = null;
+  private stopPromise: Promise<void> | null = null;
+  private ensureHiddenServicePromise: Promise<{ onionHost: string }> | null = null;
+  private expectProcessExit = false;
 
   constructor(opts: { appDataDir: string }) {
     this.baseDataDir = path.join(opts.appDataDir, "nkc-tor");
@@ -193,7 +196,14 @@ export class TorManager {
     return details.toLowerCase().includes("another tor process is running with the same data directory");
   }
 
+  private isStartingStatus() {
+    return this.status.state === "starting";
+  }
+
   async start(opts?: TorStartOptions) {
+    if (this.stopPromise) {
+      await this.stopPromise;
+    }
     if (this.process) return;
     if (this.startPromise) return this.startPromise;
     this.startPromise = this.startInternal(opts).finally(() => {
@@ -218,6 +228,8 @@ export class TorManager {
     await fsPromises.writeFile(torrcPath, this.buildTorrc(socksPort, this.hsConfig), "utf8");
     await this.ensureExecutable(torPath);
     await this.clearMacQuarantine(torPath);
+    if (!this.isStartingStatus()) return;
+    this.expectProcessExit = false;
     this.process = spawn(torPath, ["-f", torrcPath], {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: this.resolveBundleRoot(torPath),
@@ -227,22 +239,29 @@ export class TorManager {
     this.process.once("error", (error) => {
       const detail = error instanceof Error ? error.message : String(error);
       this.process = null;
+      this.expectProcessExit = false;
       this.emit({ state: "failed", details: `tor-spawn-failed: ${detail}` });
     });
     this.process.once("exit", (code, signal) => {
+      const expectedExit = this.expectProcessExit;
       this.process = null;
+      this.expectProcessExit = false;
+      if (expectedExit) return;
       const tail = this.logTail ? ` | ${this.logTail}` : "";
       this.emit({
         state: "failed",
         details: `tor-exited(code=${code ?? "null"},signal=${signal ?? "none"})${tail}`,
       });
     });
-    const ready = await waitForPort(socksPort, START_TIMEOUT_MS, () => this.status.state === "failed");
+    const ready = await waitForPort(socksPort, START_TIMEOUT_MS, () => !this.isStartingStatus());
     if (!ready) {
       if (this.status.state === "failed" && this.isDataDirConflict(this.status.details)) {
         return;
       }
       if (this.status.state === "failed") {
+        return;
+      }
+      if (!this.isStartingStatus()) {
         return;
       }
       this.emit({ state: "failed", details: "socks-not-ready" });
@@ -257,10 +276,37 @@ export class TorManager {
   }
 
   async stop() {
-    if (this.process) {
-      this.process.kill();
-      this.process = null;
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this.stopInternal().finally(() => {
+      this.stopPromise = null;
+    });
+    return this.stopPromise;
+  }
+
+  private async stopInternal() {
+    const proc = this.process;
+    if (!proc) {
+      this.expectProcessExit = false;
+      this.emit({ state: "unavailable", details: "stopped" });
+      return;
     }
+    this.expectProcessExit = true;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      proc.once("exit", finish);
+      try {
+        proc.kill();
+      } catch {
+        finish();
+      }
+      setTimeout(finish, 3000);
+    });
+    this.process = null;
     this.emit({ state: "unavailable", details: "stopped" });
   }
 
@@ -269,8 +315,20 @@ export class TorManager {
   }
 
   async ensureHiddenService(opts: { localPort: number; virtPort: number }) {
+    if (this.ensureHiddenServicePromise) return this.ensureHiddenServicePromise;
+    this.ensureHiddenServicePromise = this.ensureHiddenServiceInternal(opts).finally(() => {
+      this.ensureHiddenServicePromise = null;
+    });
+    return this.ensureHiddenServicePromise;
+  }
+
+  private async ensureHiddenServiceInternal(opts: { localPort: number; virtPort: number }) {
+    const hsChanged =
+      !this.hsConfig ||
+      this.hsConfig.localPort !== opts.localPort ||
+      this.hsConfig.virtPort !== opts.virtPort;
     this.hsConfig = opts;
-    if (this.process) {
+    if (hsChanged && this.process) {
       await this.stop();
     }
     await this.start();
