@@ -87,6 +87,7 @@ export type Conversation = {
   blocked: boolean;
   pendingAcceptance?: boolean;
   pendingOutgoing?: boolean;
+  pendingFriendResponse?: "accept" | "decline";
   lastTs: number;
   lastMessage: string;
   participants: string[];

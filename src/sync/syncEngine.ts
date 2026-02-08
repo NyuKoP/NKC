@@ -44,6 +44,13 @@ import { sanitizeRoutingHints } from "../net/privacy";
 import { putReadCursor } from "../storage/receiptStore";
 import { applyGroupEvent, isGroupEventPayload } from "./groupSync";
 import { getSodium } from "../security/sodium";
+import {
+  isFriendControlFrame,
+  verifyFriendControlFrameSignature,
+  type FriendControlFrame,
+  type FriendRequestFrame,
+  type FriendResponseFrame,
+} from "../friends/friendControlFrame";
 
 type EnvelopeEvent = {
   eventId: string;
@@ -218,22 +225,6 @@ const computeSafetyNumber = async (identityA: string, identityB: string) => {
   return formatSafetyNumber(encodeBase64Url(hash));
 };
 
-type FriendRequestFrame = {
-  type: "friend_req";
-  convId?: string;
-  from: { identityPub: string; dhPub: string; deviceId?: string; friendCode?: string };
-  profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
-  ts?: number;
-};
-
-type FriendResponseFrame = {
-  type: "friend_accept" | "friend_decline";
-  convId?: string;
-  from: { identityPub: string; dhPub: string; deviceId?: string };
-  profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
-  ts?: number;
-};
-
 const resolveFriendByIdentity = async (identityPub?: string) => {
   if (!identityPub) return null;
   const profiles = await listProfiles();
@@ -315,6 +306,13 @@ const upsertFriendFromRequest = async (
     return next;
   })();
 
+  const existingStatus = existing?.friendStatus;
+  const preserveExistingStatus =
+    existingStatus === "normal" || existingStatus === "hidden" || existingStatus === "blocked";
+  const nextFriendStatus = preserveExistingStatus ? existingStatus : "request_in";
+  const shouldMarkPending = nextFriendStatus === "request_in";
+  const forceHidden = nextFriendStatus === "blocked" || nextFriendStatus === "hidden";
+
   const profile: UserProfile = {
     id: existing?.id ?? createId(),
     friendId,
@@ -322,7 +320,7 @@ const upsertFriendFromRequest = async (
     status: payload.profile?.status ?? existing?.status ?? "",
     theme: existing?.theme ?? "dark",
     kind: "friend",
-    friendStatus: "request_in",
+    friendStatus: nextFriendStatus,
     isFavorite: existing?.isFavorite ?? false,
     identityPub: payload.from.identityPub,
     dhPub: payload.from.dhPub,
@@ -353,11 +351,18 @@ const upsertFriendFromRequest = async (
   if (existingConv) {
     const updated: Conversation = {
       ...existingConv,
-      pendingAcceptance: true,
-      pendingOutgoing: false,
-      hidden: false,
+      pendingAcceptance: shouldMarkPending ? true : existingConv.pendingAcceptance ?? false,
+      pendingOutgoing: shouldMarkPending ? false : existingConv.pendingOutgoing,
+      pendingFriendResponse: shouldMarkPending
+        ? undefined
+        : existingConv.pendingFriendResponse,
+      hidden: forceHidden ? true : shouldMarkPending ? false : existingConv.hidden,
     };
     await saveConversation(updated);
+    return;
+  }
+
+  if (!shouldMarkPending) {
     return;
   }
 
@@ -372,6 +377,7 @@ const upsertFriendFromRequest = async (
     blocked: false,
     pendingAcceptance: true,
     pendingOutgoing: false,
+    pendingFriendResponse: undefined,
     lastTs: payload.ts ?? now,
     lastMessage: "친구 요청",
     participants: [currentUserId, profile.id],
@@ -419,14 +425,23 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
     ...conv,
     pendingAcceptance: false,
     pendingOutgoing: false,
+    pendingFriendResponse: undefined,
     hidden: friendStatus === "blocked" ? true : conv.hidden,
   });
 };
 
 export const handleIncomingFriendFrame = async (
-  payload: FriendRequestFrame | FriendResponseFrame
+  payload: FriendControlFrame,
+  options: { trustedEnvelope?: boolean } = {}
 ) => {
-  if (!payload || typeof payload !== "object") return;
+  if (!isFriendControlFrame(payload)) return;
+  if (!options.trustedEnvelope) {
+    const verified = await verifyFriendControlFrameSignature(payload);
+    if (!verified) {
+      console.warn("[friend] dropped control frame: invalid signature", { type: payload.type });
+      return;
+    }
+  }
   if (payload.type === "friend_req") {
     const convId = payload.convId ?? createId();
     await upsertFriendFromRequest(convId, payload);
@@ -602,11 +617,11 @@ const applyDecryptedBody = async (
     return;
   }
   if (typed.type === "friend_req") {
-    await upsertFriendFromRequest(envelope.header.convId, body as FriendRequestFrame);
+    await handleIncomingFriendFrame(body as FriendControlFrame, { trustedEnvelope: true });
     return;
   }
   if (typed.type === "friend_accept" || typed.type === "friend_decline") {
-    await applyFriendResponse(envelope.header.convId, body as FriendResponseFrame);
+    await handleIncomingFriendFrame(body as FriendControlFrame, { trustedEnvelope: true });
     return;
   }
   if (typed.type === "contact") {
@@ -720,6 +735,7 @@ const applyConversationEvent = async (body: { type: "conv"; conv: Conversation }
     blocked: incoming.blocked ?? existing?.blocked ?? false,
     pendingAcceptance: incoming.pendingAcceptance ?? existing?.pendingAcceptance,
     pendingOutgoing: incoming.pendingOutgoing ?? existing?.pendingOutgoing,
+    pendingFriendResponse: incoming.pendingFriendResponse ?? existing?.pendingFriendResponse,
     lastTs: incoming.lastTs ?? existing?.lastTs ?? Date.now(),
     lastMessage: incoming.lastMessage ?? existing?.lastMessage ?? "",
     participants: incoming.participants ?? existing?.participants ?? [],
@@ -1509,6 +1525,8 @@ const buildConversationEvents = async (convId: string) => {
           muted: conversation.muted,
           blocked: conversation.blocked,
           pendingAcceptance: conversation.pendingAcceptance,
+          pendingOutgoing: conversation.pendingOutgoing,
+          pendingFriendResponse: conversation.pendingFriendResponse,
           lastTs: conversation.lastTs,
           lastMessage: conversation.lastMessage,
           participants: conversation.participants,

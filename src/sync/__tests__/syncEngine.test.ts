@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { __testApplyEnvelopeEvents, __testResetSyncState, __testSetPeerContext } from "../syncEngine";
+import {
+  __testApplyEnvelopeEvents,
+  __testResetSyncState,
+  __testSetPeerContext,
+  handleIncomingFriendFrame,
+} from "../syncEngine";
 import { encodeBase64Url } from "../../security/base64url";
 import type { Conversation, UserProfile } from "../../db/repo";
 
@@ -40,6 +45,7 @@ vi.mock("../../db/repo", () => {
       status: "",
       theme: "dark",
       kind: "friend",
+      friendStatus: "blocked",
       createdAt: 0,
       updatedAt: 0,
     },
@@ -49,6 +55,7 @@ vi.mock("../../db/repo", () => {
     listProfiles: vi.fn(async () => profiles),
     getEvent: vi.fn(async () => null),
     getLastEventHash: vi.fn(async () => "prev-hash"),
+    saveMessage: vi.fn(async () => {}),
     saveEvent: vi.fn(async () => {}),
     saveConversation: vi.fn(async () => {}),
     saveProfile: vi.fn(async () => {}),
@@ -160,6 +167,75 @@ describe("syncEngine signature verification", () => {
     const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
     expect(vi.mocked(repo.saveEvent)).toHaveBeenCalledWith(
       expect.objectContaining({ conflict: true })
+    );
+  });
+
+  it("drops untrusted friend frames without valid signature", async () => {
+    await handleIncomingFriendFrame({
+      type: "friend_accept",
+      convId: "c1",
+      from: {
+        identityPub: encodeBase64Url(new Uint8Array(32).fill(1)),
+        dhPub: encodeBase64Url(new Uint8Array(32).fill(2)),
+      },
+      ts: Date.now(),
+    });
+
+    const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    expect(vi.mocked(repo.saveProfile)).not.toHaveBeenCalled();
+    expect(vi.mocked(repo.saveConversation)).not.toHaveBeenCalled();
+  });
+
+  it("keeps blocked status on incoming friend request", async () => {
+    const identityPub = encodeBase64Url(new Uint8Array(32).fill(1));
+    const dhPub = encodeBase64Url(new Uint8Array(32).fill(2));
+    const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    vi.mocked(repo.listProfiles).mockResolvedValue([
+      {
+        id: "local",
+        displayName: "Local",
+        status: "",
+        theme: "dark",
+        kind: "user",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      {
+        id: "peer",
+        friendId: "peer",
+        displayName: "Peer",
+        status: "",
+        theme: "dark",
+        kind: "friend",
+        friendStatus: "blocked",
+        identityPub,
+        dhPub,
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    ]);
+    await handleIncomingFriendFrame(
+      {
+        type: "friend_req",
+        convId: "c1",
+        from: {
+          identityPub,
+          dhPub,
+          deviceId: "peer-device",
+        },
+        profile: {
+          displayName: "Peer",
+        },
+        ts: Date.now(),
+      },
+      { trustedEnvelope: true }
+    );
+
+    expect(vi.mocked(repo.saveProfile)).toHaveBeenCalledWith(
+      expect.objectContaining({ friendStatus: "blocked" })
+    );
+    expect(vi.mocked(repo.saveConversation)).toHaveBeenCalledWith(
+      expect.objectContaining({ hidden: true, pendingAcceptance: false })
     );
   });
 });
