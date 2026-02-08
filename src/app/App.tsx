@@ -1232,6 +1232,12 @@ export default function App() {
           context: {
             ...commonContext,
             checkpoint: "sendCiphertext:result-not-ok",
+            ...(frameType === "friend_req"
+              ? {
+                  peerReceiptConfirmed: false,
+                  receiptConfirmation: "awaiting-friend_accept-or-friend_decline",
+                }
+              : {}),
           },
         });
         return false;
@@ -1250,7 +1256,15 @@ export default function App() {
         toDeviceId: routingMeta.toDeviceId,
         torOnion: routingMeta.route?.torOnion,
         lokinet: routingMeta.route?.lokinet,
-        context: commonContext,
+        context: {
+          ...commonContext,
+          ...(frameType === "friend_req"
+            ? {
+                peerReceiptConfirmed: false,
+                receiptConfirmation: "awaiting-friend_accept-or-friend_decline",
+              }
+            : {}),
+        },
       });
       return true;
     },
