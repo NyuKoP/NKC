@@ -103,4 +103,47 @@ describe("OnionInboxClient.send", () => {
       })
     );
   });
+
+  it("coalesces concurrent /onion/inbox requests into one fetch", async () => {
+    let resolveFetch!: (value: unknown) => void;
+    const onionControllerFetch = vi.fn().mockImplementation(
+      () =>
+        new Promise<unknown>((resolve) => {
+          resolveFetch = resolve;
+        })
+    );
+    (
+      globalThis as {
+        nkc?: {
+          onionControllerFetch?: (req: unknown) => Promise<unknown>;
+        };
+      }
+    ).nkc = { onionControllerFetch };
+
+    const client = new OnionInboxClient({
+      baseUrl: "http://127.0.0.1:3210",
+      deviceId: "sender-device",
+    });
+
+    const pending = Array.from({ length: 10 }, () => client.poll(null, 50));
+    await Promise.resolve();
+    expect(onionControllerFetch).toHaveBeenCalledTimes(1);
+
+    resolveFetch({
+      status: 200,
+      headers: { "content-type": "application/json" },
+      bodyBase64: encodeJsonBody({
+        ok: true,
+        items: [],
+        nextAfter: null,
+      }),
+      error: undefined,
+    });
+    const results = await Promise.all(pending);
+    expect(results).toHaveLength(10);
+    results.forEach((result) => {
+      expect(result.ok).toBe(true);
+      expect(result.items).toEqual([]);
+    });
+  });
 });
