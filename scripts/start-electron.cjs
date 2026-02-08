@@ -67,12 +67,30 @@ const buildOutdated = !hasBuildOutput || latestSourceMtime > oldestBuildMtime;
 const shouldSkipBuild = process.env.NKC_SKIP_BUILD === "1";
 
 if (!shouldSkipBuild && buildOutdated) {
-  const npmCmd = process.platform === "win32" ? "npm.cmd" : "npm";
-  const build = spawnSync(npmCmd, ["run", "build"], {
-    cwd: rootDir,
-    stdio: "inherit",
-    env: childEnv,
-  });
+  const build =
+    process.platform === "win32"
+      ? (() => {
+          const npmExecPath = process.env.npm_execpath;
+          if (npmExecPath && fs.existsSync(npmExecPath)) {
+            return spawnSync(process.execPath, [npmExecPath, "run", "build"], {
+              cwd: rootDir,
+              stdio: "inherit",
+              env: childEnv,
+            });
+          }
+          const comspec = process.env.ComSpec || process.env.COMSPEC || "cmd.exe";
+          return spawnSync(comspec, ["/d", "/s", "/c", "npm run build"], {
+            cwd: rootDir,
+            stdio: "inherit",
+            env: childEnv,
+            windowsHide: false,
+          });
+        })()
+      : spawnSync("npm", ["run", "build"], {
+          cwd: rootDir,
+          stdio: "inherit",
+          env: childEnv,
+        });
   if (build.error) {
     console.error("[start] failed to run build:", build.error);
     process.exit(1);
