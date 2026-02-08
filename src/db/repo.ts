@@ -1,6 +1,12 @@
 import Dexie from "dexie";
 import { db, ensureDbOpen, resetDb } from "./schema";
-import type { EncryptedRecord, EventRecord, MediaChunkRecord, MessageRecord } from "./schema";
+import type {
+  EncryptedRecord,
+  EventRecord,
+  MediaChunkRecord,
+  MessageRecord,
+  OutboxRecord,
+} from "./schema";
 import type { Envelope } from "../crypto/box";
 import {
   chunkBuffer,
@@ -17,6 +23,7 @@ import { clearVaultKey, getVaultKey, setVaultKey } from "../crypto/sessionKeyrin
 import { createId } from "../utils/ids";
 import { mapLimit } from "../utils/async";
 import { parseAvatarRef, serializeAvatarRef } from "../utils/avatarRefs";
+import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 
 export type AvatarRef = {
   ownerType: "profile" | "group";
@@ -117,6 +124,17 @@ export type StoredMessageRecord =
   | { kind: "envelope"; record: MessageEnvelopeRecord }
   | { kind: "legacy"; record: Message };
 
+export type OutboxPayload = { payloadB64u: string };
+export type OutboxItem = {
+  id: string;
+  convId: string;
+  createdAt: number;
+  ttlMs: number;
+  attempt: number;
+  nextAttemptAt: number;
+  lastError?: string;
+};
+
 const VAULT_META_KEY = "vault_header_v2";
 const VAULT_KEY_ID_KEY = "vault_key_id_v1";
 const TEXT_ENCODING_FIX_KEY = "text_encoding_fix_v1";
@@ -128,6 +146,7 @@ const MEDIA_YIELD_EVERY = 6;
 const MEDIA_DECRYPT_LARGE_CHUNKS = 32;
 const MEDIA_DECRYPT_LARGE_CONCURRENCY = 3;
 const MEDIA_DECRYPT_BATCH_MULTIPLIER = 4;
+const OUTBOX_BACKOFF = [1000, 5000, 30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000] as const;
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -138,6 +157,9 @@ const resolveMediaDecryptConcurrency = (totalChunks: number) =>
   totalChunks >= MEDIA_DECRYPT_LARGE_CHUNKS
     ? Math.min(MEDIA_DECRYPT_LARGE_CONCURRENCY, MEDIA_DECRYPT_CONCURRENCY)
     : MEDIA_DECRYPT_CONCURRENCY;
+
+const nextOutboxAttemptAt = (attempt: number, now: number) =>
+  now + OUTBOX_BACKOFF[Math.min(OUTBOX_BACKOFF.length - 1, Math.max(0, attempt))];
 
 const decryptMediaChunks = async (vk: Uint8Array, chunks: MediaChunkRecord[]) => {
   const total = chunks.length;
@@ -928,6 +950,101 @@ export const getVaultUsage = async (): Promise<VaultUsage> => {
       breakdown.meta,
     breakdown,
   };
+};
+
+type DecryptedOutboxRecord = OutboxItem & { payload: OutboxPayload };
+
+export const enqueueOutbox = async (item: OutboxItem, payload: Uint8Array) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const payloadB64u = encodeBase64Url(payload);
+  const ciphertext = await encryptJsonRecord(vk, item.id, "outbox", {
+    ...item,
+    payload: { payloadB64u },
+  } satisfies DecryptedOutboxRecord);
+  const record: OutboxRecord = {
+    ...item,
+    lastError: item.lastError ?? "",
+    ciphertext,
+    createdAtMs: item.createdAt,
+    expiresAtMs: item.createdAt + item.ttlMs,
+    nextAttemptAtMs: item.nextAttemptAt,
+    attempts: item.attempt,
+    status: "pending",
+  };
+  await db.outbox.put(record);
+};
+
+export const listDueOutboxByConv = async (convId: string, now: number, limit = 10) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const records = await db.outbox
+    .where("[convId+nextAttemptAt]")
+    .between([convId, Dexie.minKey], [convId, now], true, true)
+    .limit(limit)
+    .toArray();
+
+  const decoded = await Promise.all(
+    records.map(async (record) => {
+      const item = await decryptJsonRecord<DecryptedOutboxRecord>(
+        vk,
+        record.id,
+        "outbox",
+        record.ciphertext
+      );
+      const meta: OutboxItem = {
+        id: record.id,
+        convId: record.convId,
+        createdAt: record.createdAt ?? item.createdAt,
+        ttlMs: record.ttlMs ?? item.ttlMs,
+        attempt: record.attempt ?? item.attempt,
+        nextAttemptAt: record.nextAttemptAt ?? item.nextAttemptAt,
+        lastError: record.lastError || undefined,
+      };
+      return {
+        meta,
+        payload: decodeBase64Url(item.payload.payloadB64u),
+      };
+    })
+  );
+
+  return decoded;
+};
+
+export const markOutboxRetry = async (id: string, err: string) => {
+  await ensureDbOpen();
+  const record = await db.outbox.get(id);
+  if (!record) return;
+  const now = Date.now();
+  const nextAttempt = (record.attempt ?? 0) + 1;
+  const nextAttemptAt = nextOutboxAttemptAt(nextAttempt, now);
+  await db.outbox.update(id, {
+    attempt: nextAttempt,
+    attempts: nextAttempt,
+    nextAttemptAt,
+    nextAttemptAtMs: nextAttemptAt,
+    lastError: err,
+    status: "pending",
+  });
+};
+
+export const removeOutbox = async (id: string) => {
+  await ensureDbOpen();
+  await db.outbox.delete(id);
+};
+
+export const dropExpiredOutboxByConv = async (convId: string, now: number) => {
+  await ensureDbOpen();
+  const records = await db.outbox.where("convId").equals(convId).toArray();
+  const expired = records.filter((record) => {
+    const createdAt = record.createdAt ?? record.createdAtMs ?? 0;
+    const ttlMs =
+      record.ttlMs ??
+      (typeof record.expiresAtMs === "number" ? Math.max(0, record.expiresAtMs - createdAt) : 0);
+    return createdAt + ttlMs <= now;
+  });
+  if (!expired.length) return;
+  await db.outbox.bulkDelete(expired.map((record) => record.id));
 };
 
 const randomBytes = (length: number) => {
