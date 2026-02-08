@@ -262,7 +262,11 @@ export default function App() {
           "상대 기기 ID가 없어 전송 경로를 만들 수 없습니다. 친구 코드를 다시 받아 업데이트하세요.",
       };
     }
-    if (message.includes("forward_failed:no_proxy") || message.includes("onion controller unavailable")) {
+    if (
+      message.includes("forward_failed:no_proxy") ||
+      message.includes("forward_failed:proxy_unreachable") ||
+      message.includes("onion controller unavailable")
+    ) {
       return {
         key: "onion-proxy-not-ready",
         text:

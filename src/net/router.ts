@@ -163,6 +163,11 @@ const isRouteTargetMissingError = (message: string) =>
   message.includes("forward_failed:no_route_target") ||
   message.includes("forward_failed:no_route");
 
+const isOnionProxyUnavailableError = (message: string) =>
+  message.includes("forward_failed:no_proxy") ||
+  message.includes("forward_failed:proxy_unreachable") ||
+  message.includes("onion controller unavailable");
+
 const inboundHandlers = new Set<(packet: TransportPacket, meta: IncomingPacketMeta) => void>();
 let inboundAttached = false;
 let inboundStartPromise: Promise<void> | null = null;
@@ -244,7 +249,10 @@ export const sendCiphertext = async (
 
   const attemptSend = async (
     kind: TransportKind,
-    options?: { allowDirectWhenOnionGuarded?: boolean }
+    options?: {
+      allowDirectWhenOnionGuarded?: boolean;
+      allowSelfOnionWhenOnionGuarded?: boolean;
+    }
   ) => {
     if (
       (config.mode === "onionRouter" || config.onionEnabled) &&
@@ -253,7 +261,11 @@ export const sendCiphertext = async (
     ) {
       throw new Error("Direct P2P blocked in onion router mode");
     }
-    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "selfOnion") {
+    if (
+      (config.mode === "onionRouter" || config.onionEnabled) &&
+      kind === "selfOnion" &&
+      !options?.allowSelfOnionWhenOnionGuarded
+    ) {
       throw new Error("Self-onion blocked while onion router is enabled");
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
@@ -312,9 +324,15 @@ export const sendCiphertext = async (
       error: primaryErrorMessage,
     });
     const allowDirectFallback =
-      chosen === "onionRouter" && isRouteTargetMissingError(primaryErrorMessage);
+      chosen === "onionRouter" &&
+      (isRouteTargetMissingError(primaryErrorMessage) ||
+        isOnionProxyUnavailableError(primaryErrorMessage));
+    const allowSelfOnionFallback =
+      chosen === "onionRouter" && isOnionProxyUnavailableError(primaryErrorMessage);
     const fallbackKinds: TransportKind[] =
-      allowDirectFallback
+      allowSelfOnionFallback
+        ? ["directP2P", "selfOnion"]
+        : allowDirectFallback
         ? ["directP2P"]
         : chosen === "directP2P"
         ? ["onionRouter", "selfOnion"]
@@ -325,6 +343,8 @@ export const sendCiphertext = async (
       try {
         const used = await attemptSend(fallbackKind, {
           allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
+          allowSelfOnionWhenOnionGuarded:
+            allowSelfOnionFallback && fallbackKind === "selfOnion",
         });
         attemptTrace.push({ transport: fallbackKind, phase: "fallback", ok: true });
         debugLog("[net] sendCiphertext: fallback ok", {
@@ -339,6 +359,7 @@ export const sendCiphertext = async (
             chosenTransport: chosen,
             attempts: attemptTrace,
             allowDirectFallback,
+            allowSelfOnionFallback,
             fallbackKinds,
             hasToDeviceId: Boolean(toDeviceId),
             hasTorOnion: Boolean(route?.torOnion),
@@ -376,6 +397,7 @@ export const sendCiphertext = async (
         chosenTransport: chosen,
         attempts: attemptTrace,
         allowDirectFallback,
+        allowSelfOnionFallback,
         fallbackKinds,
         hasToDeviceId: Boolean(toDeviceId),
         hasTorOnion: Boolean(route?.torOnion),
@@ -435,7 +457,10 @@ export const sendOutboxRecord = async (
 
   const attemptSend = async (
     kind: TransportKind,
-    options?: { allowDirectWhenOnionGuarded?: boolean }
+    options?: {
+      allowDirectWhenOnionGuarded?: boolean;
+      allowSelfOnionWhenOnionGuarded?: boolean;
+    }
   ) => {
     if (
       (config.mode === "onionRouter" || config.onionEnabled) &&
@@ -444,7 +469,11 @@ export const sendOutboxRecord = async (
     ) {
       throw new Error("Direct P2P blocked in onion router mode");
     }
-    if ((config.mode === "onionRouter" || config.onionEnabled) && kind === "selfOnion") {
+    if (
+      (config.mode === "onionRouter" || config.onionEnabled) &&
+      kind === "selfOnion" &&
+      !options?.allowSelfOnionWhenOnionGuarded
+    ) {
       throw new Error("Self-onion blocked while onion router is enabled");
     }
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
@@ -478,9 +507,15 @@ export const sendOutboxRecord = async (
       error: primaryErrorMessage,
     });
     const allowDirectFallback =
-      chosen === "onionRouter" && isRouteTargetMissingError(primaryErrorMessage);
+      chosen === "onionRouter" &&
+      (isRouteTargetMissingError(primaryErrorMessage) ||
+        isOnionProxyUnavailableError(primaryErrorMessage));
+    const allowSelfOnionFallback =
+      chosen === "onionRouter" && isOnionProxyUnavailableError(primaryErrorMessage);
     const fallbackKinds: TransportKind[] =
-      allowDirectFallback
+      allowSelfOnionFallback
+        ? ["directP2P", "selfOnion"]
+        : allowDirectFallback
         ? ["directP2P"]
         : chosen === "directP2P"
         ? ["onionRouter", "selfOnion"]
@@ -491,6 +526,8 @@ export const sendOutboxRecord = async (
       try {
         await attemptSend(fallbackKind, {
           allowDirectWhenOnionGuarded: allowDirectFallback && fallbackKind === "directP2P",
+          allowSelfOnionWhenOnionGuarded:
+            allowSelfOnionFallback && fallbackKind === "selfOnion",
         });
         debugLog("[net] sendOutboxRecord: fallback ok", {
           convId: record.convId,
