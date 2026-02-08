@@ -39,6 +39,10 @@ type SendDeps = {
   resolveTransport?: (config: NetConfig, controller: RouteController) => TransportKind;
 };
 
+type PrewarmDeps = SendDeps & {
+  includeFallback?: boolean;
+};
+
 const defaultRouteController = createRouteController();
 const defaultHttpClient = createHttpClient();
 const transportCache = new Map<TransportKind, Transport>();
@@ -168,9 +172,54 @@ const isOnionProxyUnavailableError = (message: string) =>
   message.includes("forward_failed:proxy_unreachable") ||
   message.includes("onion controller unavailable");
 
+const getPrewarmKinds = (
+  chosen: TransportKind,
+  includeFallback: boolean
+): TransportKind[] => {
+  if (!includeFallback) return [chosen];
+  if (chosen === "onionRouter") return ["onionRouter", "directP2P", "selfOnion"];
+  if (chosen === "directP2P") return ["directP2P", "onionRouter", "selfOnion"];
+  return ["selfOnion", "onionRouter", "directP2P"];
+};
+
 const inboundHandlers = new Set<(packet: TransportPacket, meta: IncomingPacketMeta) => void>();
 let inboundAttached = false;
 let inboundStartPromise: Promise<void> | null = null;
+
+export const prewarmRouter = async (deps: PrewarmDeps = {}) => {
+  const config = deps.config ?? useNetConfigStore.getState().config;
+  const controller = deps.routeController ?? defaultRouteController;
+  const httpClient = deps.httpClient ?? defaultHttpClient;
+  const resolve = deps.resolveTransport ?? resolveTransport;
+  const chosen = resolve(config, controller);
+  const requested = [...new Set(getPrewarmKinds(chosen, deps.includeFallback ?? true))];
+  const settled = await Promise.all(
+    requested.map(async (kind) => {
+      try {
+        const transport = getTransport(kind, config, controller, httpClient, deps.transports);
+        await ensureStarted(transport);
+        return { kind, ok: true as const };
+      } catch (error) {
+        controller.reportSendFail(kind);
+        return { kind, ok: false as const, error: toErrorMessage(error) };
+      }
+    })
+  );
+  return {
+    chosenTransport: chosen,
+    requested,
+    started: settled.filter((item) => item.ok).map((item) => item.kind),
+    failed: settled
+      .filter((item) => !item.ok)
+      .map((item) => ({
+        transport: item.kind,
+        error: (item as { error?: string }).error ?? "unknown error",
+      })),
+    mode: config.mode,
+    onionEnabled: config.onionEnabled,
+    onionSelectedNetwork: config.onionSelectedNetwork,
+  };
+};
 
 const ensureInboundListener = async () => {
   if (inboundStartPromise) return inboundStartPromise;

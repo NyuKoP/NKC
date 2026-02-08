@@ -76,17 +76,8 @@ export const collectRouteErrorCodes = (errorParts: string[]) => {
 
 export const classifyRouteFailure = (errorCodes: string[], errorParts: string[]) => {
   const text = `${errorCodes.join(" ")} ${errorParts.join(" ")}`.toLowerCase();
-  if (text.includes("forward_failed:no_route_target") || text.includes("forward_failed:no_route")) {
-    return "missing-route-target";
-  }
   if (text.includes("missing destination 'to'") || text.includes("missing-to-device")) {
     return "missing-device-id";
-  }
-  if (text.includes("channel_not_open")) {
-    return "direct-channel-not-open";
-  }
-  if (text.includes("route_not_ready")) {
-    return "self-onion-not-ready";
   }
   if (
     text.includes("no_proxy") ||
@@ -94,6 +85,15 @@ export const classifyRouteFailure = (errorCodes: string[], errorParts: string[])
     text.includes("onion controller unavailable")
   ) {
     return "onion-proxy-not-ready";
+  }
+  if (text.includes("channel_not_open")) {
+    return "direct-channel-not-open";
+  }
+  if (text.includes("route_not_ready")) {
+    return "self-onion-not-ready";
+  }
+  if (text.includes("forward_failed:no_route_target") || text.includes("forward_failed:no_route")) {
+    return "missing-route-target";
   }
   if (text.includes("aborted")) {
     return "transport-aborted";
