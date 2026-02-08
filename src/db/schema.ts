@@ -23,7 +23,13 @@ export type EventRecord = {
 export type OutboxRecord = {
   id: string;
   convId: string;
+  createdAt?: number;
+  ttlMs?: number;
+  attempt?: number;
+  nextAttemptAt?: number;
+  lastError?: string;
   ciphertext: string;
+  // Legacy metadata kept for compatibility with existing delivery modules.
   toDeviceId?: string;
   torOnion?: string;
   lokinet?: string;
@@ -83,6 +89,8 @@ export type FriendAliasRecord = {
   alias: string;
   updatedAt: number;
 };
+
+const OUTBOX_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 export class NKCVaultDB extends Dexie {
   meta!: Table<MetaRecord, string>;
@@ -225,6 +233,50 @@ export class NKCVaultDB extends Dexie {
       tombstones: "id, type, deletedAt",
       friendAliases: "friendId, updatedAt",
     });
+    this.version(11)
+      .stores({
+        meta: "key",
+        profiles: "id, updatedAt",
+        conversations: "id, updatedAt",
+        messages: "id, convId, ts",
+        events: "eventId, convId, ts, lamport, authorDeviceId, [convId+lamport], [convId+ts]",
+        outbox:
+          "id, convId, nextAttemptAt, [convId+nextAttemptAt], status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
+        mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+        mediaIndex: "mediaId, convId, createdAt, complete",
+        mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
+        receipts:
+          "id, msgId, convId, kind, actorId, cursorTs, ts, [convId+kind], [convId+actorId+kind], [convId+msgId], [msgId+kind]",
+        tombstones: "id, type, deletedAt",
+        friendAliases: "friendId, updatedAt",
+      })
+      .upgrade((tx) =>
+        tx
+          .table("outbox")
+          .toCollection()
+          .modify((record: OutboxRecord) => {
+            const createdAt = record.createdAt ?? record.createdAtMs ?? Date.now();
+            const nextAttemptAt = record.nextAttemptAt ?? record.nextAttemptAtMs ?? createdAt;
+            const attempt = record.attempt ?? record.attempts ?? 0;
+            const ttlMs =
+              record.ttlMs ??
+              (typeof record.expiresAtMs === "number" && record.expiresAtMs > createdAt
+                ? record.expiresAtMs - createdAt
+                : OUTBOX_DEFAULT_TTL_MS);
+            record.createdAt = createdAt;
+            record.nextAttemptAt = nextAttemptAt;
+            record.attempt = attempt;
+            record.ttlMs = ttlMs;
+            record.createdAtMs = record.createdAtMs ?? createdAt;
+            record.nextAttemptAtMs = record.nextAttemptAtMs ?? nextAttemptAt;
+            record.attempts = record.attempts ?? attempt;
+            record.expiresAtMs = record.expiresAtMs ?? createdAt + ttlMs;
+            record.status = record.status ?? "pending";
+            if (typeof record.lastError !== "string") {
+              record.lastError = "";
+            }
+          })
+      );
   }
 }
 

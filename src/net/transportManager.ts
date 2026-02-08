@@ -4,6 +4,13 @@ import { createDirectTransport } from "./directTransport";
 import { redactIPs } from "./privacy";
 import { decideConversationTransport } from "./transportPolicy";
 import { useNetConfigStore } from "./netConfigStore";
+import {
+  dropExpiredOutboxByConv,
+  enqueueOutbox,
+  listDueOutboxByConv,
+  markOutboxRetry,
+  removeOutbox,
+} from "../db/repo";
 
 export type ConversationTransportStatus = TransportStatus & {
   kind?: TransportKind;
@@ -42,6 +49,9 @@ const BACKOFF_RESET_MS = 10_000;
 const MAX_FRAME_BYTES = 256 * 1024;
 const RATE_WINDOW_MS = 1000;
 const MAX_MESSAGES_PER_WINDOW = 20;
+const DEFAULT_SEND_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const OUTBOX_FLUSH_BATCH = 10;
+const outboxFlushes = new Map<string, Promise<void>>();
 
 const notify = (convId: string, status: ConversationTransportStatus) => {
   listeners.forEach((listener) => listener(convId, status));
@@ -138,6 +148,75 @@ const scheduleRetry = (convId: string) => {
   state.backoffMs = Math.min(state.backoffMs * 2, MAX_BACKOFF_MS);
 };
 
+const createOutboxId = () => {
+  if (globalThis.crypto?.randomUUID) {
+    return globalThis.crypto.randomUUID();
+  }
+  return `outbox-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+};
+
+const toErrorDetail = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const queueConversationOutbox = async (
+  convId: string,
+  payload: Uint8Array,
+  lastError?: string
+) => {
+  const now = Date.now();
+  try {
+    await enqueueOutbox(
+      {
+        id: createOutboxId(),
+        convId,
+        createdAt: now,
+        ttlMs: DEFAULT_SEND_TTL_MS,
+        attempt: 0,
+        nextAttemptAt: now,
+        lastError,
+      },
+      payload
+    );
+  } catch (error) {
+    const detail = toErrorDetail(error);
+    if (detail.includes("Vault is locked")) {
+      throw new Error(`Outbox enqueue failed: Vault is locked (${detail})`);
+    }
+    throw new Error(`Outbox enqueue failed: ${detail}`);
+  }
+};
+
+const flushConversationOutbox = (convId: string, transport: Transport) => {
+  const inFlight = outboxFlushes.get(convId);
+  if (inFlight) return inFlight;
+  const flushPromise = (async () => {
+    const now = Date.now();
+    await dropExpiredOutboxByConv(convId, now);
+    const due = await listDueOutboxByConv(convId, now, OUTBOX_FLUSH_BATCH);
+    let shouldReconnect = false;
+    for (const item of due) {
+      try {
+        await transport.send(item.payload);
+        await removeOutbox(item.meta.id);
+      } catch (error) {
+        shouldReconnect = true;
+        const detail = toErrorDetail(error);
+        await markOutboxRetry(item.meta.id, detail);
+      }
+    }
+    if (shouldReconnect) {
+      scheduleRetry(convId);
+    }
+  })()
+    .catch((error) => {
+      console.warn("[transport] outbox flush failed", { convId, error: toErrorDetail(error) });
+    })
+    .finally(() => {
+      outboxFlushes.delete(convId);
+    });
+  outboxFlushes.set(convId, flushPromise);
+  return flushPromise;
+};
+
 const connectTransport = async (transport: Transport, peerHint?: PeerHint) => {
   await transport.connect(peerHint);
 };
@@ -219,6 +298,7 @@ export const connectConversation = async (convId: string, peerHint?: PeerHint) =
         attachHandlers(state, transport);
         setStatus(convId, { state: "connected", kind, warning: kind === "direct" });
         scheduleBackoffReset(convId);
+        void flushConversationOutbox(convId, transport);
         return true;
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error);
@@ -269,10 +349,19 @@ export const disconnectConversation = async (convId: string) => {
 
 export const sendToConversation = async (convId: string, payload: Uint8Array) => {
   const state = getState(convId);
-  if (!state.transport) {
-    throw new Error("Transport not connected");
+  if (!state.transport || state.status.state !== "connected") {
+    await queueConversationOutbox(convId, payload);
+    void connectConversation(convId, state.peerHint);
+    return;
   }
-  await state.transport.send(payload);
+  try {
+    await state.transport.send(payload);
+  } catch (error) {
+    const detail = toErrorDetail(error);
+    await queueConversationOutbox(convId, payload, detail);
+    scheduleRetry(convId);
+    return;
+  }
 };
 
 export const onConversationMessage = (
