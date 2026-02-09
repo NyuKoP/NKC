@@ -6,7 +6,7 @@ import type { OutboxRecord } from "../db/schema";
 import { computeExpiresAt } from "../policies/ttl";
 import { enqueueOutgoing, onAckReceived } from "../policies/deliveryPolicy";
 import { putOutbox, updateOutbox } from "../storage/outboxStore";
-import type { Transport, TransportPacket } from "../adapters/transports/types";
+import type { Transport, TransportPacket, TransportState } from "../adapters/transports/types";
 import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { createSelfOnionTransport } from "../adapters/transports/selfOnionTransport";
 import { createOnionRouterTransport } from "../adapters/transports/onionRouterTransport";
@@ -51,6 +51,7 @@ const defaultHttpClient = createHttpClient();
 const transportCache = new Map<TransportKind, Transport>();
 let transportStarted = new WeakSet<Transport>();
 const inboundAttachedKinds = new Set<TransportKind>();
+const transportStateByKind: Partial<Record<TransportKind, TransportState>> = {};
 
 const debugLog = (label: string, payload: Record<string, unknown>) => {
   try {
@@ -106,6 +107,7 @@ const attachHandlers = (
     void onAckReceived(messageId);
   });
   transport.onState((state) => {
+    transportStateByKind[kind] = state;
     updateConnectionStatus(state, kind);
   });
 };
@@ -154,6 +156,9 @@ export const __testResetRouter = () => {
   transportCache.clear();
   transportStarted = new WeakSet<Transport>();
   inboundAttachedKinds.clear();
+  delete transportStateByKind.directP2P;
+  delete transportStateByKind.onionRouter;
+  delete transportStateByKind.selfOnion;
 };
 
 const warnOnionRouterGuards = (config: NetConfig) => {
@@ -275,9 +280,18 @@ const toRouteGateSnapshot = (
 ): RouteGateSnapshot => {
   const routeState = useInternalOnionRouteStore.getState().route;
   const connection = getConnectionStatus();
+  const onionRouterState = transportStateByKind.onionRouter;
   const routerConnected =
-    connection.transport === "onionRouter" &&
-    (connection.state === "connected" || connection.state === "degraded");
+    onionRouterState === "connected" ||
+    onionRouterState === "degraded" ||
+    (connection.transport === "onionRouter" &&
+      (connection.state === "connected" || connection.state === "degraded"));
+  const directState = transportStateByKind.directP2P;
+  const directOpen =
+    directState === "connected" ||
+    directState === "degraded" ||
+    (connection.transport === "directP2P" &&
+      (connection.state === "connected" || connection.state === "degraded"));
   const onionReady =
     config.mode === "onionRouter" || config.onionEnabled
       ? routerConnected
@@ -286,9 +300,7 @@ const toRouteGateSnapshot = (
     onionReady,
     torBootstrapped: config.onionSelectedNetwork === "tor" ? routerConnected : null,
     torControlReady: null,
-    directOpen:
-      connection.transport === "directP2P" &&
-      (connection.state === "connected" || connection.state === "degraded"),
+    directOpen,
     lokinetReady: config.onionSelectedNetwork === "lokinet" ? routerConnected : null,
     wakuReady: null,
     hasRouteTarget: Boolean(route?.torOnion || route?.lokinet),
