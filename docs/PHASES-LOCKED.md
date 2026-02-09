@@ -1,6 +1,6 @@
-# Phase Lock: 4.6
+# Phase Lock: 4.7
 
-Phase 4.6 internal system is LOCKED as the stability baseline.
+Phase 4.7 internal system is LOCKED as the stability baseline.
 
 ## Locked modules and guarantees
 - `src/main/socksHttpClient.ts`: SOCKS safety limits, timeout taxonomy, inflight cap, socks5h DNS.
@@ -18,7 +18,7 @@ UI-only changes are allowed. Any changes to locked core modules require an expli
 phase bump documented here.
 
 ## Unlocked By
-- Date: TBD
-- Author: TBD
-- Reason: TBD
-- Files: TBD
+- Date: 2026-02-09
+- Author: Codex
+- Reason: Fix Tor onionRouter proxy recovery and stabilize route gating when multiple transports are prewarmed.
+- Files: src/adapters/transports/onionRouterTransport.ts, src/net/router.ts
