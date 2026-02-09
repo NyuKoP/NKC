@@ -112,6 +112,7 @@ import {
 } from "../friends/friendResponseScheduler";
 import { startFriendInboxListener } from "../friends/friendInbox";
 import {
+  enrichFriendControlFrameWithProtocol,
   isFriendControlFrame,
   signFriendControlFrame,
   stripFriendControlFrameSignature,
@@ -1534,12 +1535,21 @@ export default function App() {
         throw new Error("Unsupported friend control frame");
       }
       const unsignedPayload = stripFriendControlFrameSignature(payload);
-      const signedPayload: FriendControlFrame = payload.sig
-        ? payload
-        : {
-            ...unsignedPayload,
-            sig: await signFriendControlFrame(unsignedPayload, await getIdentityPrivateKey()),
-          };
+      let signedPayload: FriendControlFrame;
+      if (payload.sig) {
+        signedPayload = payload;
+      } else {
+        const identityPriv = await getIdentityPrivateKey();
+        const protocolReadyPayload = await enrichFriendControlFrameWithProtocol(
+          unsignedPayload,
+          identityPriv,
+          { pskHint: partner.friendId ?? partner.id }
+        );
+        signedPayload = {
+          ...protocolReadyPayload,
+          sig: await signFriendControlFrame(protocolReadyPayload, identityPriv),
+        };
+      }
       const frameType = signedPayload.type;
       const messageId = createId();
       const operationId = `friend-route:${newClientBatchId()}`;

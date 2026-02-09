@@ -186,6 +186,48 @@ describe("syncEngine signature verification", () => {
     expect(vi.mocked(repo.saveConversation)).not.toHaveBeenCalled();
   });
 
+  it("drops friend frames when briar protocol verification fails", async () => {
+    const identityPub = encodeBase64Url(new Uint8Array(32).fill(1));
+    const dhPub = encodeBase64Url(new Uint8Array(32).fill(2));
+    await handleIncomingFriendFrame(
+      {
+        type: "friend_req",
+        convId: "c1",
+        from: {
+          identityPub,
+          dhPub,
+          deviceId: "peer-device",
+        },
+        ts: Date.now(),
+        protocol: {
+          v: 1,
+          handshake: {
+            v: 1,
+            transcriptHash: "bad",
+            proofSig: "bad",
+          },
+          contactExchange: {
+            v: 1,
+            profileHash: "bad",
+            keyCommitment: "bad",
+            profileSig: "bad",
+          },
+          keyAgreement: {
+            v: 1,
+            method: "identity_dh",
+            nonce: "bad",
+            confirmation: "bad",
+          },
+        },
+      },
+      { trustedEnvelope: true }
+    );
+
+    const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    expect(vi.mocked(repo.saveProfile)).not.toHaveBeenCalled();
+    expect(vi.mocked(repo.saveConversation)).not.toHaveBeenCalled();
+  });
+
   it("keeps blocked status on incoming friend request", async () => {
     const identityPub = encodeBase64Url(new Uint8Array(32).fill(1));
     const dhPub = encodeBase64Url(new Uint8Array(32).fill(2));
