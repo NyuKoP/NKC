@@ -42,13 +42,7 @@ const transportCache = new Map<TransportKind, Transport>();
 let transportStarted = new WeakSet<Transport>();
 const inboundAttachedKinds = new Set<TransportKind>();
 
-const debugLog = (label: string, payload: Record<string, unknown>) => {
-  try {
-    console.debug(label, JSON.stringify(payload));
-  } catch {
-    console.debug(label, payload);
-  }
-};
+const debugLog = (_label: string, _payload: Record<string, unknown>) => {};
 
 const deriveRoutingMetaFromStores = (
   convId: string
@@ -141,9 +135,7 @@ export const __testResetRouter = () => {
 
 const warnOnionRouterGuards = (config: NetConfig) => {
   if (config.mode !== "onionRouter" && !config.onionEnabled) return;
-  if (!config.disableLinkPreview || !config.webrtcRelayOnly) {
-    console.warn("[net] Onion router guards should be enabled.");
-  }
+  if (!config.disableLinkPreview || !config.webrtcRelayOnly) return;
 };
 
 const inboundHandlers = new Set<(packet: TransportPacket) => void>();
@@ -171,7 +163,7 @@ const ensureInboundListener = async () => {
     })
     .catch((error) => {
       inboundStartPromise = null;
-      console.warn("[net] inbound listener failed to start", error);
+      void error;
     });
   return inboundStartPromise;
 };
