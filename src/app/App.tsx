@@ -1561,13 +1561,7 @@ export default function App() {
       const payloadJson = JSON.stringify(signedPayload);
       const payloadByteLength = new TextEncoder().encode(payloadJson).byteLength;
       const netConfig = useNetConfigStore.getState().config;
-      const shouldPreferOnionRouterForFriendControl =
-        frameType === "friend_req" &&
-        netConfig.mode === "directP2P" &&
-        Boolean(routingMeta.route?.torOnion || routingMeta.route?.lokinet);
-      const routingConfig = shouldPreferOnionRouterForFriendControl
-        ? { ...netConfig, mode: "onionRouter" as const }
-        : netConfig;
+      const routingConfig = netConfig;
       const shouldPrewarmOnionRoute =
         frameType === "friend_req" &&
         routingConfig.mode === "onionRouter" &&
@@ -1665,9 +1659,7 @@ export default function App() {
         payloadConvId: signedPayload.convId ?? null,
         netMode: netConfig.mode,
         effectiveNetMode: routingConfig.mode,
-        routeModeOverride: shouldPreferOnionRouterForFriendControl
-          ? "friend_req:onionRouter"
-          : null,
+        routeModeOverride: null,
         prewarmChosenTransport: prewarmResult?.chosenTransport ?? null,
         prewarmStartedTransports: prewarmResult?.started ?? null,
         prewarmFailedTransports: prewarmResult?.failed ?? null,

@@ -97,4 +97,81 @@ describe("socksFetch", () => {
     expect(socket.writes.length).toBeGreaterThanOrEqual(2);
     expect(socket.writes[1][3]).toBe(0x03);
   });
+
+  it("supports socks5 username/password authentication", async () => {
+    const socket = new FakeSocket();
+    socket.onWrite = (data, count) => {
+      if (count === 1) {
+        expect(Array.from(data)).toEqual([0x05, 0x01, 0x02]);
+        setTimeout(() => socket.emit("data", Buffer.from([0x05, 0x02])), 0);
+      }
+      if (count === 2) {
+        expect(data[0]).toBe(0x01);
+        const usernameLen = data[1];
+        const username = data.subarray(2, 2 + usernameLen).toString("utf8");
+        const passwordLen = data[2 + usernameLen];
+        const password = data
+          .subarray(3 + usernameLen, 3 + usernameLen + passwordLen)
+          .toString("utf8");
+        expect(username).toBe("alice");
+        expect(password).toBe("secret");
+        setTimeout(() => socket.emit("data", Buffer.from([0x01, 0x00])), 0);
+      }
+      if (count === 3) {
+        setTimeout(() => socket.emit("data", successHead), 0);
+        setTimeout(() => socket.emit("data", successAddr), 1);
+        setTimeout(() => socket.emit("data", successPort), 2);
+      }
+      if (count >= 4) {
+        setTimeout(() => {
+          socket.emit(
+            "data",
+            Buffer.from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+          );
+          socket.end();
+        }, 10);
+      }
+    };
+    const socketFactory: SocketFactory = async () => socket;
+    await expect(
+      socksFetch("http://example.com/", {
+        method: "GET",
+        socksProxyUrl: "socks5://alice:secret@127.0.0.1:9050",
+        socketFactory,
+      })
+    ).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("handles coalesced SOCKS replies without dropping buffered bytes", async () => {
+    const socket = new FakeSocket();
+    socket.onWrite = (_data, count) => {
+      if (count === 1) {
+        const combined = Buffer.concat([
+          Buffer.from([0x05, 0x00]),
+          successHead,
+          successAddr,
+          successPort,
+        ]);
+        setTimeout(() => socket.emit("data", combined), 0);
+      }
+      if (count >= 3) {
+        setTimeout(() => {
+          socket.emit(
+            "data",
+            Buffer.from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+          );
+          socket.end();
+        }, 10);
+      }
+    };
+    const socketFactory: SocketFactory = async () => socket;
+    await expect(
+      socksFetch("http://example.com/", {
+        method: "GET",
+        socksProxyUrl: "socks5://127.0.0.1:9050",
+        socketFactory,
+        timeoutMs: 300,
+      })
+    ).resolves.toMatchObject({ status: 200 });
+  });
 });

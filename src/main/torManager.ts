@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { readCurrentPointer } from "./onion/install/swapperRollback";
 import { getBinaryPath } from "./onion/componentRegistry";
+import { needsLyrebird, resolveBridgeSelection } from "./tor/torCircumvention";
 
 export type TorStatus =
   | { state: "unavailable"; details?: string }
@@ -24,6 +25,8 @@ type TorStartOptions = {
 type StatusListener = (status: TorStatus) => void;
 
 const TOR_ENV_PATH = "NKC_TOR_PATH";
+const TOR_BRIDGES_ENV = "NKC_TOR_BRIDGES";
+const TOR_COUNTRY_ENV = "NKC_TOR_COUNTRY";
 const DEFAULT_SOCKS_PORT = 9050;
 const START_TIMEOUT_MS = 30000;
 const HOSTNAME_TIMEOUT_MS = 15000;
@@ -107,6 +110,7 @@ export class TorManager {
   private stopPromise: Promise<void> | null = null;
   private ensureHiddenServicePromise: Promise<{ onionHost: string }> | null = null;
   private expectProcessExit = false;
+  private bridgeDetail: string | null = null;
 
   constructor(opts: { appDataDir: string }) {
     this.baseDataDir = path.join(opts.appDataDir, "nkc-tor");
@@ -172,11 +176,79 @@ export class TorManager {
     });
   }
 
-  private buildTorrc(socksPort: number, hsConfig?: HiddenServiceConfig | null) {
+  private resolveCountryCode() {
+    const envCountry = process.env[TOR_COUNTRY_ENV];
+    if (envCountry && /^[A-Za-z]{2}$/.test(envCountry.trim())) {
+      return envCountry.trim().toUpperCase();
+    }
+    try {
+      const locale = Intl.DateTimeFormat().resolvedOptions().locale;
+      const localeCtor = (Intl as unknown as { Locale?: new (input: string) => { region?: string } }).Locale;
+      if (localeCtor) {
+        const region = new localeCtor(locale).region;
+        if (region && /^[A-Z]{2}$/.test(region)) return region;
+      }
+      const match = locale.match(/[-_]([A-Za-z]{2})(?:[-_]|$)/);
+      if (match) return match[1].toUpperCase();
+    } catch {
+      // ignore locale parse failure
+    }
+    return "ZZ";
+  }
+
+  private resolveLyrebirdPath(torPath: string) {
+    const basename = process.platform === "win32" ? "lyrebird.exe" : "lyrebird";
+    const candidate = path.join(path.dirname(torPath), basename);
+    return fs.existsSync(candidate) ? candidate : null;
+  }
+
+  private buildTorrc(
+    socksPort: number,
+    torPath: string,
+    hsConfig?: HiddenServiceConfig | null
+  ) {
     const lines = [
       `DataDirectory ${this.dataDir}`,
       `SocksPort 127.0.0.1:${socksPort}`,
+      "SafeSocks 1",
     ];
+
+    const bridgeSelection = resolveBridgeSelection({
+      countryCode: this.resolveCountryCode(),
+      mode: process.env[TOR_BRIDGES_ENV],
+    });
+    this.bridgeDetail = null;
+    if (bridgeSelection.enabled) {
+      const lyrebirdPath = this.resolveLyrebirdPath(torPath);
+      let bridgeLines = [...bridgeSelection.lines];
+      if (bridgeSelection.requiresLyrebird && !lyrebirdPath) {
+        bridgeLines = bridgeLines.filter((line) => !needsLyrebird(line));
+        this.bridgeDetail = `bridges-enabled-without-lyrebird(mode=${bridgeSelection.mode}, country=${bridgeSelection.countryCode})`;
+      }
+      if (bridgeLines.length > 0) {
+        lines.push("UseBridges 1");
+        if (bridgeLines.some((line) => needsLyrebird(line)) && lyrebirdPath) {
+          lines.push(`ClientTransportPlugin obfs4 exec "${lyrebirdPath}"`);
+          lines.push(`ClientTransportPlugin meek_lite exec "${lyrebirdPath}"`);
+          lines.push(`ClientTransportPlugin snowflake exec "${lyrebirdPath}"`);
+        }
+        lines.push(...bridgeLines);
+        if (!this.bridgeDetail) {
+          this.bridgeDetail = `bridges-enabled(mode=${bridgeSelection.mode}, country=${bridgeSelection.countryCode}, count=${bridgeLines.length})`;
+        }
+      } else {
+        lines.push("UseBridges 0");
+        this.bridgeDetail =
+          this.bridgeDetail ??
+          `bridges-skipped-no-compatible-lines(mode=${bridgeSelection.mode}, country=${bridgeSelection.countryCode})`;
+      }
+    } else {
+      lines.push("UseBridges 0");
+      if (bridgeSelection.reason) {
+        this.bridgeDetail = `bridges-disabled(reason=${bridgeSelection.reason}, mode=${bridgeSelection.mode}, country=${bridgeSelection.countryCode})`;
+      }
+    }
+
     if (hsConfig) {
       const hsDir = path.join(this.dataDir, "hs-onion");
       lines.push(`HiddenServiceDir ${hsDir}`);
@@ -225,7 +297,7 @@ export class TorManager {
     await fsPromises.mkdir(this.dataDir, { recursive: true });
     const socksPort = await getAvailablePort();
     const torrcPath = path.join(this.dataDir, "torrc");
-    await fsPromises.writeFile(torrcPath, this.buildTorrc(socksPort, this.hsConfig), "utf8");
+    await fsPromises.writeFile(torrcPath, this.buildTorrc(socksPort, torPath, this.hsConfig), "utf8");
     await this.ensureExecutable(torPath);
     await this.clearMacQuarantine(torPath);
     if (!this.isStartingStatus()) return;
@@ -272,6 +344,7 @@ export class TorManager {
       state: "running",
       socksProxyUrl: `socks5://127.0.0.1:${socksPort}`,
       dataDir: this.dataDir,
+      details: this.bridgeDetail ?? undefined,
     });
   }
 
