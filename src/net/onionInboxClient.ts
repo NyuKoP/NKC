@@ -111,6 +111,7 @@ type SharedPollerState = {
 };
 
 const sharedPollers = new Map<string, SharedPollerState>();
+const isInboxPollOperation = (opId: string) => opId.startsWith("/onion/inbox?");
 
 const getNkcControllerFetch = () =>
   (
@@ -208,12 +209,14 @@ export class OnionInboxClient {
     const controllerFetch = getNkcControllerFetch();
     if (controllerFetch) {
       const abortId = `abort:${createId()}`;
-      emitFlowTraceLog({
-        event: "abort:linked",
-        abortId,
-        opId: operationId,
-        source: "controller-fetch",
-      });
+      if (!isInboxPollOperation(operationId)) {
+        emitFlowTraceLog({
+          event: "abort:linked",
+          abortId,
+          opId: operationId,
+          source: "controller-fetch",
+        });
+      }
       let onAbort: (() => void) | null = null;
       let timeout: ReturnType<typeof setTimeout> | null = null;
       try {
@@ -302,6 +305,9 @@ export class OnionInboxClient {
           opId: operationId,
           traceSource: "fetch",
           onTrace: (trace) => {
+            if (trace.event === "abort:linked" && isInboxPollOperation(trace.opId)) {
+              return;
+            }
             emitFlowTraceLog({
               event: trace.event,
               abortId: trace.abortId,

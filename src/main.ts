@@ -206,6 +206,12 @@ const emitAbortTrace = (
   event: "abort:linked" | "abort:fired",
   detail: Record<string, unknown>
 ) => {
+  if (event === "abort:linked") {
+    const opId = typeof detail.opId === "string" ? detail.opId : "";
+    if (opId.includes("/onion/inbox")) {
+      return;
+    }
+  }
   console.info(`[trace][${event}]`, {
     ...detail,
     ts: new Date().toISOString(),

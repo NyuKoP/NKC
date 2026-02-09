@@ -15,6 +15,16 @@ export type HandshakeFrameInput = {
   };
 };
 
+export type FriendCodePayload = {
+  v: 1;
+  commitment: string;
+  identityPub: string;
+  dhPub: string;
+  deviceId?: string;
+  onionAddr?: string;
+  alternateRouteAddr?: string;
+};
+
 export type externalHandshakeRecord = {
   v: 1;
   transcriptHash: string;
@@ -30,9 +40,13 @@ export type externalContactExchangeRecord = {
 
 export type externalKeyAgreementRecord = {
   v: 1;
-  method: "identity_dh";
+  method: "identity_dh" | "friend_code_oob_v1";
   nonce: string;
   confirmation: string;
+  commitment?: string;
+  payload?: string;
+  role?: "alice" | "bob";
+  masterKeyHint?: string;
   pskHint?: string;
 };
 
@@ -47,4 +61,3 @@ export type ProtocolVerifyResult = {
   ok: boolean;
   reason?: string;
 };
-
