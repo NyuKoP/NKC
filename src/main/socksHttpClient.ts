@@ -55,21 +55,30 @@ const parseSocksUrl = (value: string) => {
   if (url.protocol !== "socks5:" && url.protocol !== "socks5h:") {
     throw new Error("unsupported_socks_protocol");
   }
-  if (url.username || url.password) {
-    throw new Error("socks_auth_unsupported");
-  }
   const host = url.hostname;
   const port = Number(url.port || "0");
   if (!host || !Number.isInteger(port) || port <= 0) {
     throw new Error("invalid_socks_proxy");
   }
-  return { host, port, protocol: url.protocol };
+  const username = url.username ? decodeURIComponent(url.username) : null;
+  const password = url.password ? decodeURIComponent(url.password) : null;
+  const hasAuth = username !== null || password !== null;
+  if (hasAuth) {
+    if (!username || !password) throw new Error("invalid_socks_auth");
+    const usernameLen = Buffer.byteLength(username, "utf8");
+    const passwordLen = Buffer.byteLength(password, "utf8");
+    if (usernameLen > 255 || passwordLen > 255) throw new Error("invalid_socks_auth");
+  }
+  return { host, port, protocol: url.protocol, username, password };
 };
 
 export type SocketLike = {
   on: (event: "data", listener: (chunk: Buffer) => void) => void;
   once: (event: "end" | "error", listener: (...args: unknown[]) => void) => void;
-  off: (event: "data", listener: (chunk: Buffer) => void) => void;
+  off: (
+    event: "data" | "end" | "error",
+    listener: ((chunk: Buffer) => void) | ((...args: unknown[]) => void)
+  ) => void;
   write: (data: Buffer) => boolean;
   end: () => void;
   destroy: () => void;
@@ -77,24 +86,85 @@ export type SocketLike = {
 
 export type SocketFactory = (opts: { host: string; port: number }) => Promise<SocketLike>;
 
-const readExactly = (socket: net.Socket, size: number) =>
-  new Promise<Buffer>((resolve, reject) => {
-    let buffer = Buffer.alloc(0);
-    const onData = (chunk: Buffer) => {
-      buffer = Buffer.concat([buffer, chunk]);
-      if (buffer.length >= size) {
-        socket.off("data", onData);
-        resolve(buffer.slice(0, size));
+type BufferedSocketReader = {
+  readExactly: (size: number) => Promise<Buffer>;
+  dispose: () => void;
+};
+
+const createBufferedSocketReader = (socket: SocketLike): BufferedSocketReader => {
+  let buffered = Buffer.alloc(0);
+  let closedError: Error | null = null;
+  let pending:
+    | {
+        size: number;
+        resolve: (value: Buffer) => void;
+        reject: (reason?: unknown) => void;
       }
-    };
-    const onError = (error: unknown) => {
+    | null = null;
+
+  const tryResolvePending = () => {
+    if (!pending) return;
+    if (buffered.length >= pending.size) {
+      const out = buffered.subarray(0, pending.size);
+      buffered = buffered.subarray(pending.size);
+      const { resolve } = pending;
+      pending = null;
+      resolve(Buffer.from(out));
+      return;
+    }
+    if (closedError) {
+      const { reject } = pending;
+      pending = null;
+      reject(closedError);
+    }
+  };
+
+  const onData = (chunk: Buffer) => {
+    const incoming = Buffer.from(chunk);
+    buffered = buffered.length === 0 ? incoming : Buffer.concat([buffered, incoming]);
+    tryResolvePending();
+  };
+
+  const onEnd = () => {
+    closedError = new Error("eof");
+    tryResolvePending();
+  };
+
+  const onError = (error: unknown) => {
+    closedError = error instanceof Error ? error : new Error(String(error));
+    tryResolvePending();
+  };
+
+  socket.on("data", onData);
+  socket.once("end", onEnd);
+  socket.once("error", onError);
+
+  return {
+    readExactly: (size: number) =>
+      new Promise<Buffer>((resolve, reject) => {
+        if (size <= 0) {
+          resolve(Buffer.alloc(0));
+          return;
+        }
+        if (pending) {
+          reject(new Error("concurrent_read_not_supported"));
+          return;
+        }
+        pending = { size, resolve, reject };
+        tryResolvePending();
+      }),
+    dispose: () => {
       socket.off("data", onData);
-      const err = error instanceof Error ? error : new Error(String(error));
-      reject(err);
-    };
-    socket.on("data", onData);
-    socket.once("error", onError);
-  });
+      socket.off("end", onEnd);
+      socket.off("error", onError);
+      buffered = Buffer.alloc(0);
+      if (pending) {
+        pending.reject(new Error("reader_disposed"));
+        pending = null;
+      }
+    },
+  };
+};
 
 const connectSocks = async (
   targetHost: string,
@@ -119,44 +189,69 @@ const connectSocks = async (
     socket.destroy();
     throw new Error("timeout");
   }
-  socket.write(Buffer.from([0x05, 0x01, 0x00]));
-  const methodReply = await readExactly(socket as net.Socket, 2);
-  if (methodReply[0] !== 0x05 || methodReply[1] !== 0x00) {
+  const reader = createBufferedSocketReader(socket);
+  try {
+    const authRequested = Boolean(proxy.username && proxy.password);
+    const requestedMethod = authRequested ? 0x02 : 0x00;
+    socket.write(Buffer.from([0x05, 0x01, requestedMethod]));
+    const methodReply = await reader.readExactly(2);
+    if (methodReply[0] !== 0x05 || methodReply[1] !== requestedMethod) {
+      throw new Error("socks_auth_failed");
+    }
+
+    if (authRequested) {
+      const usernameBytes = Buffer.from(proxy.username!, "utf8");
+      const passwordBytes = Buffer.from(proxy.password!, "utf8");
+      const authReq = Buffer.concat([
+        Buffer.from([0x01, usernameBytes.length]),
+        usernameBytes,
+        Buffer.from([passwordBytes.length]),
+        passwordBytes,
+      ]);
+      socket.write(authReq);
+      const authReply = await reader.readExactly(2);
+      if (authReply[0] !== 0x01 || authReply[1] !== 0x00) {
+        throw new Error("socks_auth_failed");
+      }
+    }
+
+    const ipVersion = proxy.protocol === "socks5h:" ? 0 : net.isIP(targetHost);
+    let addrType = 0x03;
+    let addrPayload: Buffer;
+    if (ipVersion === 4) {
+      addrType = 0x01;
+      addrPayload = Buffer.from(targetHost.split(".").map((part) => Number(part)));
+    } else {
+      const hostBuf = Buffer.from(targetHost, "utf8");
+      if (hostBuf.length > 255) throw new Error("socks_connect_failed");
+      addrPayload = Buffer.concat([Buffer.from([hostBuf.length]), hostBuf]);
+    }
+
+    const portBuf = Buffer.alloc(2);
+    portBuf.writeUInt16BE(targetPort, 0);
+    const req = Buffer.concat([Buffer.from([0x05, 0x01, 0x00, addrType]), addrPayload, portBuf]);
+    socket.write(req);
+
+    const replyHead = await reader.readExactly(4);
+    if (replyHead[1] !== 0x00) {
+      throw new Error("socks_connect_failed");
+    }
+    const replyAddrType = replyHead[3];
+    if (replyAddrType === 0x01) {
+      await reader.readExactly(4);
+    } else if (replyAddrType === 0x03) {
+      const len = await reader.readExactly(1);
+      await reader.readExactly(len[0]);
+    } else if (replyAddrType === 0x04) {
+      await reader.readExactly(16);
+    }
+    await reader.readExactly(2);
+  } catch (error) {
     socket.destroy();
-    throw new Error("socks_auth_failed");
+    throw error;
+  } finally {
+    reader.dispose();
   }
-
-  const ipVersion = proxy.protocol === "socks5h:" ? 0 : net.isIP(targetHost);
-  let addrType = 0x03;
-  let addrPayload: Buffer;
-  if (ipVersion === 4) {
-    addrType = 0x01;
-    addrPayload = Buffer.from(targetHost.split(".").map((part) => Number(part)));
-  } else {
-    const hostBuf = Buffer.from(targetHost, "utf8");
-    addrPayload = Buffer.concat([Buffer.from([hostBuf.length]), hostBuf]);
-  }
-
-  const portBuf = Buffer.alloc(2);
-  portBuf.writeUInt16BE(targetPort, 0);
-  const req = Buffer.concat([Buffer.from([0x05, 0x01, 0x00, addrType]), addrPayload, portBuf]);
-  socket.write(req);
-
-  const replyHead = await readExactly(socket as net.Socket, 4);
-  if (replyHead[1] !== 0x00) {
-    socket.destroy();
-    throw new Error("socks_connect_failed");
-  }
-  const replyAddrType = replyHead[3];
-  if (replyAddrType === 0x01) {
-    await readExactly(socket as net.Socket, 4);
-  } else if (replyAddrType === 0x03) {
-    const len = await readExactly(socket as net.Socket, 1);
-    await readExactly(socket as net.Socket, len[0]);
-  } else if (replyAddrType === 0x04) {
-    await readExactly(socket as net.Socket, 16);
-  }
-  await readExactly(socket as net.Socket, 2);
 
   if (timeoutState?.timedOut) {
     socket.destroy();
@@ -342,7 +437,7 @@ const normalizeSocksError = (error: unknown): Error => {
     text.includes("socks_connect_failed") ||
     text.includes("unsupported_socks_protocol") ||
     text.includes("invalid_socks_proxy") ||
-    text.includes("socks_auth_unsupported")
+    text.includes("invalid_socks_auth")
   ) {
     code = "handshake_failed";
   }

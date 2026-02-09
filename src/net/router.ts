@@ -278,8 +278,12 @@ const toRouteGateSnapshot = (
   const routerConnected =
     connection.transport === "onionRouter" &&
     (connection.state === "connected" || connection.state === "degraded");
+  const onionReady =
+    config.mode === "onionRouter" || config.onionEnabled
+      ? routerConnected
+      : routeState.status === "ready";
   return {
-    onionReady: routeState.status === "ready",
+    onionReady,
     torBootstrapped: config.onionSelectedNetwork === "tor" ? routerConnected : null,
     torControlReady: null,
     directOpen:
