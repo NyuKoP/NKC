@@ -1543,7 +1543,16 @@ export default function App() {
         const protocolReadyPayload = await enrichFriendControlFrameWithProtocol(
           unsignedPayload,
           identityPriv,
-          { pskHint: partner.friendId ?? partner.id }
+          {
+            pskHint: partner.friendId ?? partner.id,
+            localFriendCode: unsignedPayload.from.friendCode,
+            remoteFriendCode: partner.profileVcard?.friendCode,
+            remoteIdentityPub: partner.identityPub,
+            remoteDhPub: partner.dhPub,
+            remoteDeviceId: partner.routingHints?.deviceId ?? partner.primaryDeviceId,
+            remoteOnionAddr: partner.routingHints?.onionAddr,
+            remoteLokinetAddr: partner.routingHints?.lokinetAddr,
+          }
         );
         signedPayload = {
           ...protocolReadyPayload,

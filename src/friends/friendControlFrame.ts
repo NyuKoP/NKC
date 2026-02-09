@@ -84,13 +84,29 @@ export const signFriendControlFrame = async (
 export const enrichFriendControlFrameWithProtocol = async (
   frame: UnsignedFriendControlFrame,
   identityPriv: Uint8Array,
-  options?: { pskHint?: string }
+  options?: {
+    pskHint?: string;
+    localFriendCode?: string;
+    remoteFriendCode?: string;
+    remoteIdentityPub?: string;
+    remoteDhPub?: string;
+    remoteDeviceId?: string;
+    remoteOnionAddr?: string;
+    remoteLokinetAddr?: string;
+  }
 ): Promise<UnsignedFriendControlFrame> => {
   if ((frame as FriendControlFrame).protocol) return frame;
   const handshake = await buildHandshakeRecord(frame, identityPriv);
   const contactExchange = await buildContactExchangeRecord(frame, handshake, identityPriv);
   const keyAgreement = await buildKeyAgreementRecord(handshake, contactExchange, {
     pskHint: options?.pskHint,
+    localFriendCode: options?.localFriendCode,
+    remoteFriendCode: options?.remoteFriendCode,
+    remoteIdentityPub: options?.remoteIdentityPub,
+    remoteDhPub: options?.remoteDhPub,
+    remoteDeviceId: options?.remoteDeviceId,
+    remoteOnionAddr: options?.remoteOnionAddr,
+    remoteLokinetAddr: options?.remoteLokinetAddr,
   });
   return {
     ...frame,
@@ -103,7 +119,10 @@ export const enrichFriendControlFrameWithProtocol = async (
   };
 };
 
-export const verifyFriendControlFrameProtocol = async (frame: FriendControlFrame) => {
+export const verifyFriendControlFrameProtocol = async (
+  frame: FriendControlFrame,
+  options?: { localFriendCode?: string }
+) => {
   const protocol = frame.protocol;
   if (!protocol) return { ok: true, verified: false as const };
   if (protocol.v !== 1) {
@@ -126,9 +145,11 @@ export const verifyFriendControlFrameProtocol = async (frame: FriendControlFrame
     };
   }
   const keyAgreement = await verifyKeyAgreementRecord(
+    frame,
     protocol.handshake,
     protocol.contactExchange,
-    protocol.keyAgreement
+    protocol.keyAgreement,
+    options
   );
   if (!keyAgreement.ok) {
     return {
