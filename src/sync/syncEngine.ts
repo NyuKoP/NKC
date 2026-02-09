@@ -47,6 +47,7 @@ import { getSodium } from "../security/sodium";
 import {
   isFriendControlFrame,
   verifyFriendControlFrameSignature,
+  verifyFriendControlFrameProtocol,
   type FriendControlFrame,
   type FriendRequestFrame,
   type FriendResponseFrame,
@@ -587,6 +588,14 @@ export const handleIncomingFriendFrame = async (
       console.warn("[friend] dropped control frame: invalid signature", { type: payload.type });
       return;
     }
+  }
+  const protocolCheck = await verifyFriendControlFrameProtocol(payload);
+  if (!protocolCheck.ok) {
+    console.warn("[friend] dropped control frame: invalid protocol", {
+      type: payload.type,
+      reason: protocolCheck.reason,
+    });
+    return;
   }
   if (payload.type === "friend_req") {
     const convId = payload.convId ?? createId();
