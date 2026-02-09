@@ -1380,6 +1380,11 @@ export default function SettingsDialog({
               linkStatusClass={deviceSyncSettings.linkStatusClass}
               linkMessage={deviceSyncSettings.linkMessage}
               onSubmitLink={deviceSyncSettings.handleSubmitLink}
+              rendezvousBaseUrlDraft={deviceSyncSettings.rendezvousBaseUrlDraft}
+              onRendezvousBaseUrlChange={deviceSyncSettings.handleRendezvousBaseUrlChange}
+              onRendezvousBaseUrlBlur={deviceSyncSettings.handleRendezvousBaseUrlBlur}
+              rendezvousUseOnionProxy={deviceSyncSettings.rendezvousUseOnionProxy}
+              onRendezvousUseOnionChange={deviceSyncSettings.handleRendezvousUseOnionChange}
               hostRendezvousStatus={deviceSyncSettings.hostRendezvousStatus}
               guestRendezvousStatus={deviceSyncSettings.guestRendezvousStatus}
             />

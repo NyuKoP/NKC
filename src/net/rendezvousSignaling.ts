@@ -5,6 +5,7 @@ export type RendezvousConfig = {
   baseUrl: string;
   useOnionProxy: boolean;
   onionProxyUrl?: string | null;
+  onOnionProxyFallback?: (detail: { url: string; reason: string }) => void;
 };
 
 export type RendezvousItem = { id: string; ts: number; payload: string };
@@ -41,9 +42,30 @@ const hashFallback = async (value: string) => {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
 };
 
-const fetchRendezvous = async (url: string, init: FetchInit, useOnionProxy: boolean) => {
+const toErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error ?? "unknown_error");
+
+const isOnionUnavailableError = (error: unknown) =>
+  toErrorMessage(error).toLowerCase().includes("onion fetch unavailable");
+
+const fetchRendezvous = async (
+  url: string,
+  init: FetchInit,
+  useOnionProxy: boolean,
+  onOnionProxyFallback?: (detail: { url: string; reason: string }) => void
+) => {
   if (useOnionProxy) {
-    return onionFetch(url, init);
+    try {
+      return await onionFetch(url, init);
+    } catch (error) {
+      if (!isOnionUnavailableError(error)) {
+        throw error;
+      }
+      onOnionProxyFallback?.({
+        url,
+        reason: toErrorMessage(error),
+      });
+    }
   }
   const timeoutMs = init.timeoutMs ?? 10_000;
   const { timeoutMs: _timeoutMs, signal: parentSignal, ...fetchInit } = init;
@@ -94,7 +116,8 @@ export class RendezvousClient {
         body: JSON.stringify({ deviceId, items }),
         timeoutMs: 10_000,
       },
-      this.config.useOnionProxy
+      this.config.useOnionProxy,
+      this.config.onOnionProxyFallback
     );
     if (!response.ok) {
       throw new Error(`Rendezvous publish failed (${response.status})`);
@@ -112,7 +135,8 @@ export class RendezvousClient {
     const response = await fetchRendezvous(
       url.toString(),
       { method: "GET", timeoutMs: 10_000 },
-      this.config.useOnionProxy
+      this.config.useOnionProxy,
+      this.config.onOnionProxyFallback
     );
     if (!response.ok) {
       throw new Error(`Rendezvous poll failed (${response.status})`);
