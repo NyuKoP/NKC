@@ -8,6 +8,7 @@ import { emitFriendRouteIncomingInfoLog } from "../diagnostics/infoCollectionLog
 const textDecoder = new TextDecoder();
 let started = false;
 let onChangeCallback: (() => void) | null = null;
+let getLocalFriendCodeCallback: (() => Promise<string | undefined>) | null = null;
 
 type FriendFrameType = "friend_req" | "friend_accept" | "friend_decline";
 
@@ -50,9 +51,15 @@ const toInfoLogErrorDetail = (error: unknown) => {
   };
 };
 
-export const startFriendInboxListener = (onChange?: () => void) => {
+export const startFriendInboxListener = (
+  onChange?: () => void,
+  options?: { getLocalFriendCode?: () => Promise<string | undefined> }
+) => {
   if (onChange) {
     onChangeCallback = onChange;
+  }
+  if (options?.getLocalFriendCode) {
+    getLocalFriendCodeCallback = options.getLocalFriendCode;
   }
   if (started) return;
   started = true;
@@ -105,7 +112,8 @@ export const startFriendInboxListener = (onChange?: () => void) => {
       });
       try {
         await handleIncomingFriendFrame(
-          parsed as Parameters<typeof handleIncomingFriendFrame>[0]
+          parsed as Parameters<typeof handleIncomingFriendFrame>[0],
+          { localFriendCode: await getLocalFriendCodeCallback?.() }
         );
       } catch (error) {
         emitFriendRouteIncomingInfoLog({

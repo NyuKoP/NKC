@@ -454,9 +454,10 @@ const upsertFriendFromRequest = async (
   })();
 
   const existingStatus = existing?.friendStatus;
+  const isMutualRequest = existingStatus === "request_out";
   const preserveExistingStatus =
     existingStatus === "normal" || existingStatus === "hidden" || existingStatus === "blocked";
-  const nextFriendStatus = preserveExistingStatus ? existingStatus : "request_in";
+  const nextFriendStatus = isMutualRequest ? "normal" : preserveExistingStatus ? existingStatus : "request_in";
   const shouldMarkPending = nextFriendStatus === "request_in";
   const forceHidden = nextFriendStatus === "blocked" || nextFriendStatus === "hidden";
 
@@ -498,11 +499,9 @@ const upsertFriendFromRequest = async (
   if (existingConv) {
     const updated: Conversation = {
       ...existingConv,
-      pendingAcceptance: shouldMarkPending ? true : existingConv.pendingAcceptance ?? false,
-      pendingOutgoing: shouldMarkPending ? false : existingConv.pendingOutgoing,
-      pendingFriendResponse: shouldMarkPending
-        ? undefined
-        : existingConv.pendingFriendResponse,
+      pendingAcceptance: shouldMarkPending ? true : false,
+      pendingOutgoing: shouldMarkPending ? false : false,
+      pendingFriendResponse: undefined,
       hidden: forceHidden ? true : shouldMarkPending ? false : existingConv.hidden,
     };
     await saveConversation(updated);
@@ -538,20 +537,37 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
   if (!existing) return;
   const now = Date.now();
   const friendStatus = payload.type === "friend_accept" ? "normal" : "blocked";
+  const decodedFriendCode =
+    typeof payload.from.friendCode === "string" && payload.from.friendCode.trim()
+      ? decodeFriendCodeV1(payload.from.friendCode)
+      : null;
+  const codeHints =
+    decodedFriendCode && !("error" in decodedFriendCode)
+      ? sanitizeRoutingHints({
+          deviceId: decodedFriendCode.deviceId,
+          onionAddr: decodedFriendCode.onionAddr,
+          alternateRouteAddr: decodedFriendCode.alternateRouteAddr,
+        })
+      : undefined;
+  const resolvedDeviceId =
+    payload.from.deviceId ??
+    (decodedFriendCode && !("error" in decodedFriendCode) ? decodedFriendCode.deviceId : undefined) ??
+    existing.primaryDeviceId;
   await saveProfile({
     ...existing,
     friendStatus,
-    primaryDeviceId: payload.from.deviceId ?? existing.primaryDeviceId,
+    primaryDeviceId: resolvedDeviceId,
     routingHints: sanitizeRoutingHints({
-      deviceId: payload.from.deviceId,
-      onionAddr: existing.routingHints?.onionAddr,
-      alternateRouteAddr: existing.routingHints?.alternateRouteAddr,
+      deviceId: resolvedDeviceId,
+      onionAddr: codeHints?.onionAddr ?? existing.routingHints?.onionAddr,
+      alternateRouteAddr: codeHints?.alternateRouteAddr ?? existing.routingHints?.alternateRouteAddr,
     }),
     profileVcard: payload.profile
       ? {
           displayName: payload.profile.displayName,
           status: payload.profile.status,
           avatarRef: payload.profile.avatarRef,
+          friendCode: payload.from.friendCode ?? existing.profileVcard?.friendCode,
           updatedAt: payload.ts ?? now,
         }
       : existing.profileVcard,
@@ -579,7 +595,7 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
 
 export const handleIncomingFriendFrame = async (
   payload: FriendControlFrame,
-  options: { trustedEnvelope?: boolean } = {}
+  options: { trustedEnvelope?: boolean; localFriendCode?: string } = {}
 ) => {
   if (!isFriendControlFrame(payload)) return;
   if (!options.trustedEnvelope) {
@@ -589,7 +605,9 @@ export const handleIncomingFriendFrame = async (
       return;
     }
   }
-  const protocolCheck = await verifyFriendControlFrameProtocol(payload);
+  const protocolCheck = await verifyFriendControlFrameProtocol(payload, {
+    localFriendCode: options.localFriendCode,
+  });
   if (!protocolCheck.ok) {
     console.warn("[friend] dropped control frame: invalid protocol", {
       type: payload.type,
