@@ -6,6 +6,7 @@ import {
   handleIncomingFriendFrame,
 } from "../syncEngine";
 import { encodeBase64Url } from "../../security/base64url";
+import { encodeFriendCodeV1 } from "../../security/friendCode";
 import type { Conversation, UserProfile } from "../../db/repo";
 
 const mocks = vi.hoisted(() => ({
@@ -278,6 +279,178 @@ describe("syncEngine signature verification", () => {
     );
     expect(vi.mocked(repo.saveConversation)).toHaveBeenCalledWith(
       expect.objectContaining({ hidden: true, pendingAcceptance: false })
+    );
+  });
+
+  it("completes friendship when an incoming request matches an outgoing request", async () => {
+    const identityPub = encodeBase64Url(new Uint8Array(32).fill(1));
+    const dhPub = encodeBase64Url(new Uint8Array(32).fill(2));
+    const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    vi.mocked(repo.listProfiles).mockResolvedValue([
+      {
+        id: "local",
+        displayName: "Local",
+        status: "",
+        theme: "dark",
+        kind: "user",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      {
+        id: "peer",
+        friendId: "peer",
+        displayName: "Peer",
+        status: "",
+        theme: "dark",
+        kind: "friend",
+        friendStatus: "request_out",
+        identityPub,
+        dhPub,
+        routingHints: {
+          deviceId: "11111111-1111-4111-8111-111111111111",
+          onionAddr: "oldpeer.onion",
+        },
+        primaryDeviceId: "11111111-1111-4111-8111-111111111111",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    ]);
+    vi.mocked(repo.listConversations).mockResolvedValue([
+      {
+        id: "c1",
+        type: "direct",
+        name: "Peer",
+        pinned: false,
+        unread: 0,
+        hidden: false,
+        muted: false,
+        blocked: false,
+        pendingOutgoing: true,
+        pendingAcceptance: false,
+        lastTs: 0,
+        lastMessage: "",
+        participants: ["local", "peer"],
+      },
+    ]);
+
+    const friendCode = encodeFriendCodeV1({
+      v: 1,
+      identityPub,
+      dhPub,
+      deviceId: "22222222-2222-4222-8222-222222222222",
+      onionAddr: "newpeer.onion",
+      lokinetAddr: "newpeer.loki",
+    });
+
+    await handleIncomingFriendFrame(
+      {
+        type: "friend_req",
+        convId: "c1",
+        from: {
+          identityPub,
+          dhPub,
+          deviceId: "22222222-2222-4222-8222-222222222222",
+          friendCode,
+        },
+        profile: {
+          displayName: "Peer",
+        },
+        ts: Date.now(),
+      },
+      { trustedEnvelope: true }
+    );
+
+    expect(vi.mocked(repo.saveProfile)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        friendStatus: "normal",
+        primaryDeviceId: "22222222-2222-4222-8222-222222222222",
+        routingHints: {
+          deviceId: "22222222-2222-4222-8222-222222222222",
+          onionAddr: "newpeer.onion",
+          lokinetAddr: "newpeer.loki",
+        },
+      })
+    );
+    expect(vi.mocked(repo.saveConversation)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pendingOutgoing: false,
+        pendingAcceptance: false,
+        pendingFriendResponse: undefined,
+      })
+    );
+  });
+
+  it("updates routing hints from an incoming accept friend code", async () => {
+    const identityPub = encodeBase64Url(new Uint8Array(32).fill(4));
+    const dhPub = encodeBase64Url(new Uint8Array(32).fill(5));
+    const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    vi.mocked(repo.listProfiles).mockResolvedValue([
+      {
+        id: "local",
+        displayName: "Local",
+        status: "",
+        theme: "dark",
+        kind: "user",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      {
+        id: "peer",
+        friendId: "peer",
+        displayName: "Peer",
+        status: "",
+        theme: "dark",
+        kind: "friend",
+        friendStatus: "request_out",
+        identityPub,
+        dhPub,
+        routingHints: {
+          deviceId: "11111111-1111-4111-8111-111111111111",
+        },
+        primaryDeviceId: "11111111-1111-4111-8111-111111111111",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+    ]);
+
+    const friendCode = encodeFriendCodeV1({
+      v: 1,
+      identityPub,
+      dhPub,
+      deviceId: "33333333-3333-4333-8333-333333333333",
+      onionAddr: "acceptpeer.onion",
+      lokinetAddr: "acceptpeer.loki",
+    });
+
+    await handleIncomingFriendFrame(
+      {
+        type: "friend_accept",
+        convId: "c1",
+        from: {
+          identityPub,
+          dhPub,
+          deviceId: "33333333-3333-4333-8333-333333333333",
+          friendCode,
+        },
+        profile: {
+          displayName: "Peer",
+        },
+        ts: Date.now(),
+      },
+      { trustedEnvelope: true }
+    );
+
+    expect(vi.mocked(repo.saveProfile)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        friendStatus: "normal",
+        primaryDeviceId: "33333333-3333-4333-8333-333333333333",
+        routingHints: {
+          deviceId: "33333333-3333-4333-8333-333333333333",
+          onionAddr: "acceptpeer.onion",
+          lokinetAddr: "acceptpeer.loki",
+        },
+        profileVcard: expect.objectContaining({ friendCode }),
+      })
     );
   });
 });

@@ -794,9 +794,14 @@ export default function App() {
     if (friendInboxStarted.current) return;
     startFriendInboxListener(() => {
       void hydrateVault();
+    }, {
+      getLocalFriendCode: async () => {
+        const payload = await buildLocalFriendCodePayload();
+        return encodeFriendCodeV1({ v: 1, ...payload });
+      },
     });
     friendInboxStarted.current = true;
-  }, [hydrateVault, ui.mode]);
+  }, [buildLocalFriendCodePayload, hydrateVault, ui.mode]);
 
   useEffect(() => {
     if (ui.mode !== "app") {
@@ -3556,6 +3561,10 @@ export default function App() {
           };
         })();
 
+        const nextFriendStatus =
+          existing?.friendStatus === "request_in"
+            ? "normal"
+            : existing?.friendStatus ?? "request_out";
         const friend: UserProfile = {
           id: existing?.id ?? createId(),
           friendId,
@@ -3563,7 +3572,7 @@ export default function App() {
           status: existing?.status ?? "Friend",
           theme: existing?.theme ?? "dark",
           kind: "friend",
-          friendStatus: existing?.friendStatus ?? "request_out",
+          friendStatus: nextFriendStatus,
           isFavorite: existing?.isFavorite ?? false,
           identityPub: decoded.identityPub,
           dhPub: decoded.dhPub,
@@ -3578,6 +3587,22 @@ export default function App() {
         };
 
         await saveProfile(friend);
+        if (existing?.friendStatus === "request_in") {
+          const existingConv = convs.find(
+            (conv) =>
+              !(conv.type === "group" || conv.participants.length > 2) &&
+              conv.participants.includes(friend.id)
+          );
+          if (existingConv) {
+            await saveConversation({
+              ...existingConv,
+              pendingAcceptance: false,
+              pendingOutgoing: false,
+              pendingFriendResponse: undefined,
+              hidden: false,
+            });
+          }
+        }
         emitProgressWithTestLog("progress:profile-saved", {
           friendId,
           profileId: friend.id,
@@ -3880,6 +3905,11 @@ export default function App() {
         return { ok: false, reason: "missing-device" };
       }
       const [identityPub, dhPub] = await Promise.all([getIdentityPublicKey(), getDhPublicKey()]);
+      const localFriendCodePayload = await buildLocalFriendCodePayload();
+      const localFriendCode = encodeFriendCodeV1({
+        v: 1,
+        ...localFriendCodePayload,
+      });
       const payload =
         response === "accept"
           ? {
@@ -3889,6 +3919,7 @@ export default function App() {
                 identityPub: encodeBase64Url(identityPub),
                 dhPub: encodeBase64Url(dhPub),
                 deviceId: getOrCreateDeviceId(),
+                friendCode: localFriendCode,
               },
               profile: {
                 displayName: userProfile?.displayName,
@@ -3904,13 +3935,14 @@ export default function App() {
                 identityPub: encodeBase64Url(identityPub),
                 dhPub: encodeBase64Url(dhPub),
                 deviceId: getOrCreateDeviceId(),
+                friendCode: localFriendCode,
               },
               ts: Date.now(),
             };
       const sent = await sendFriendControlPacket(conv, partner, payload);
       return sent ? { ok: true } : { ok: false, reason: "send-failed" };
     },
-    [buildRoutingMeta, sendFriendControlPacket, userProfile?.avatarRef, userProfile?.displayName, userProfile?.status]
+    [buildLocalFriendCodePayload, buildRoutingMeta, sendFriendControlPacket, userProfile?.avatarRef, userProfile?.displayName, userProfile?.status]
   );
 
   const applyFriendResponseLocally = useCallback(

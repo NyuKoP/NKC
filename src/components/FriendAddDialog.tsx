@@ -68,6 +68,7 @@ export default function FriendAddDialog({
               내 코드
               <input
                 value={myCode}
+                data-testid="friend-add-my-code"
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 font-mono text-sm text-nkc-text"
                 placeholder="코드를 생성하는 중..."
                 readOnly
@@ -102,6 +103,7 @@ export default function FriendAddDialog({
               친구 코드
               <input
                 value={code}
+                data-testid="friend-add-code-input"
                 onChange={(event) => setCode(event.target.value)}
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
                 placeholder="NKC1-... (선택: NKI1-...)"
@@ -117,6 +119,7 @@ export default function FriendAddDialog({
               <button
                 type="button"
                 onClick={() => void handleAdd()}
+                data-testid="friend-add-submit"
                 className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                 disabled={!code.trim() || busy}
               >
