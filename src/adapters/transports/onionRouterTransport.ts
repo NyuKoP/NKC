@@ -282,6 +282,16 @@ export const createOnionRouterTransport = ({
     }
   };
 
+  const ensureTorReady = async (signal?: AbortSignal) => {
+    try {
+      await torRuntime.start({ timeoutMs: 15_000 });
+      await torRuntime.awaitReady(15_000, signal);
+      await syncOnionForwardProxyFromRuntime();
+    } catch {
+      throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: Tor runtime is not ready");
+    }
+  };
+
   const resolveControllerUrl = async () => {
     const nkc = (
       globalThis as { nkc?: { getOnionControllerUrl?: () => Promise<string> } }
@@ -323,13 +333,13 @@ export const createOnionRouterTransport = ({
     async start() {
       void httpClient;
       requestState("connecting", true);
-      try {
-        await torRuntime.start({ timeoutMs: 15_000 });
-        await torRuntime.awaitReady(15_000);
-        await syncOnionForwardProxyFromRuntime();
-      } catch {
-        requestState("failed", true);
-        throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: Tor runtime is not ready");
+      if (config.onionSelectedNetwork === "tor") {
+        try {
+          await ensureTorReady();
+        } catch {
+          requestState("failed", true);
+          throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: Tor runtime is not ready");
+        }
       }
       const baseUrl = await resolveControllerUrl();
       client = new OnionInboxClient({
@@ -402,10 +412,20 @@ export const createOnionRouterTransport = ({
         );
         throw createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: missing destination 'to'");
       }
-      try {
-        await torRuntime.awaitReady(15_000, signal);
-      } catch {
-        throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: Tor runtime is not ready");
+      const initialRoute =
+        torOnion || alternateRoute
+          ? {
+              mode: routeMode,
+              torOnion,
+              alternateRoute,
+            }
+          : undefined;
+      let route = initialRoute ? normalizeSendRoute(initialRoute, selectedNetwork) : undefined;
+      const requiresTor =
+        Boolean(route?.torOnion) ||
+        (!route && selectedNetwork === "tor");
+      if (requiresTor) {
+        await ensureTorReady(signal);
       }
       if (signal?.aborted) {
         throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: send aborted");
@@ -417,15 +437,6 @@ export const createOnionRouterTransport = ({
       const envelope = encodeBase64Url(
         new TextEncoder().encode(JSON.stringify(packet))
       );
-      const initialRoute =
-        torOnion || alternateRoute
-          ? {
-              mode: routeMode,
-              torOnion,
-              alternateRoute,
-            }
-          : undefined;
-      let route = initialRoute ? normalizeSendRoute(initialRoute, selectedNetwork) : undefined;
       const sendOnce = () =>
         activeClient.send(toDeviceId, envelope, DEFAULT_TTL_MS, route, signal, packet.id);
       if (!torOnion) {
