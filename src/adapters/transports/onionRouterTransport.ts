@@ -1,10 +1,13 @@
 import type { HttpClient } from "../../net/httpClient";
 import type { NetConfig } from "../../net/netConfig";
+import { useNetConfigStore } from "../../net/netConfigStore";
 import { OnionInboxClient } from "../../net/onionInboxClient";
 import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
 import { getOrCreateDeviceId } from "../../security/deviceRole";
 import { getOnionControllerUrlOverride, getRoutePolicy } from "../../security/preferences";
 import type { RouteMode } from "../../main/routePolicy";
+import { TorRuntime } from "../../net/tor/TorRuntime";
+import { createTransportError } from "../../net/transportErrors";
 import type { Transport, TransportPacket, TransportState } from "./types";
 
 type Handler<T> = (payload: T) => void;
@@ -12,6 +15,8 @@ type Handler<T> = (payload: T) => void;
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_SEEN_IDS = 500;
 const STATE_DEBOUNCE_MS = 1000;
+const START_HEALTH_RETRY_DELAYS_MS = [0, 350, 900] as const;
+const SEND_PROXY_RETRY_DELAYS_MS = [0, 250, 700] as const;
 
 type OnionFetchRequest = {
   url: string;
@@ -29,6 +34,11 @@ type OnionFetchResponse = {
   error?: string;
 };
 
+type TorStatusResponse = {
+  state?: unknown;
+  socksProxyUrl?: unknown;
+};
+
 const toBase64 = (bytes: Uint8Array) => {
   let binary = "";
   bytes.forEach((value) => {
@@ -44,6 +54,119 @@ const fromBase64 = (value: string) => {
     bytes[i] = binary.charCodeAt(i);
   }
   return bytes;
+};
+
+const isForwardProxyNotReadyError = (message: string) => {
+  const text = message.toLowerCase();
+  return (
+    text.includes("forward_failed:proxy_unreachable") ||
+    text.includes("forward_failed:no_proxy")
+  );
+};
+
+const isForwardNoRouteError = (message: string) => {
+  const text = message.toLowerCase();
+  return text.includes("forward_failed:no_route") && !text.includes("forward_failed:no_route_target");
+};
+
+type RouteCodedError = Error & { code: string };
+
+const createRouteError = (code: string, message: string) => {
+  const err = new Error(message) as RouteCodedError;
+  err.code = code;
+  return err;
+};
+
+const wait = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+const normalizeSocksProxyUrl = (raw: unknown) =>
+  typeof raw === "string" && raw.trim() ? raw.trim() : null;
+
+const syncOnionForwardProxyFromRuntime = async () => {
+  const nkc = (
+    globalThis as {
+      nkc?: {
+        getTorStatus?: () => Promise<unknown>;
+        setOnionForwardProxy?: (proxyUrl: string | null) => Promise<unknown>;
+      };
+    }
+  ).nkc;
+  if (!nkc?.getTorStatus || !nkc?.setOnionForwardProxy) {
+    return false;
+  }
+  try {
+    const status = (await nkc.getTorStatus()) as TorStatusResponse;
+    if (status?.state !== "running") {
+      return false;
+    }
+    const socksProxyUrl = normalizeSocksProxyUrl(status.socksProxyUrl);
+    if (!socksProxyUrl) {
+      return false;
+    }
+    await nkc.setOnionForwardProxy(socksProxyUrl);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+const extractAbortSignal = (packet: TransportPacket) =>
+  (packet as { signal?: AbortSignal }).signal ??
+  (packet as { meta?: { signal?: AbortSignal } }).meta?.signal ??
+  (packet as { route?: { signal?: AbortSignal } }).route?.signal;
+
+type SendRoute = {
+  mode: RouteMode;
+  torOnion?: string;
+  lokinet?: string;
+};
+
+const normalizeSendRoute = (
+  route: SendRoute,
+  selectedNetwork: "tor" | "lokinet"
+): SendRoute => {
+  const hasTor = Boolean(route.torOnion);
+  const hasLokinet = Boolean(route.lokinet);
+  if (!hasTor && !hasLokinet) {
+    return route;
+  }
+  if (route.mode === "preferLokinet" && !hasLokinet && hasTor) {
+    return { ...route, mode: "preferTor" };
+  }
+  if (route.mode === "preferTor" && !hasTor && hasLokinet) {
+    return { ...route, mode: "preferLokinet" };
+  }
+  if (route.mode === "manual" && hasTor && hasLokinet) {
+    if (selectedNetwork === "lokinet") {
+      return {
+        mode: "manual",
+        lokinet: route.lokinet,
+      };
+    }
+    return {
+      mode: "manual",
+      torOnion: route.torOnion,
+    };
+  }
+  return route;
+};
+
+const buildRelaxedRoute = (route: SendRoute): SendRoute => {
+  const hasTor = Boolean(route.torOnion);
+  const hasLokinet = Boolean(route.lokinet);
+  if (hasTor && hasLokinet) {
+    return { ...route, mode: "auto" };
+  }
+  if (hasTor) {
+    return { ...route, mode: "preferTor" };
+  }
+  if (hasLokinet) {
+    return { ...route, mode: "preferLokinet" };
+  }
+  return route;
 };
 
 export async function onionFetch(
@@ -84,12 +207,15 @@ export async function onionFetch(
 type OnionRouterOptions = {
   httpClient: HttpClient;
   config: NetConfig;
+  torRuntime?: Pick<TorRuntime, "start" | "awaitReady" | "markDegraded">;
 };
 
 export const createOnionRouterTransport = ({
   httpClient,
   config,
+  torRuntime: torRuntimeOverride,
 }: OnionRouterOptions): Transport => {
+  const torRuntime = torRuntimeOverride ?? TorRuntime.getInstance();
   let state: TransportState = "idle";
   let client: OnionInboxClient | null = null;
   let pollerStop: (() => void) | null = null;
@@ -156,6 +282,16 @@ export const createOnionRouterTransport = ({
     }
   };
 
+  const ensureTorReady = async (signal?: AbortSignal) => {
+    try {
+      await torRuntime.start({ timeoutMs: 15_000 });
+      await torRuntime.awaitReady(15_000, signal);
+      await syncOnionForwardProxyFromRuntime();
+    } catch {
+      throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: Tor runtime is not ready");
+    }
+  };
+
   const resolveControllerUrl = async () => {
     const nkc = (
       globalThis as { nkc?: { getOnionControllerUrl?: () => Promise<string> } }
@@ -196,14 +332,26 @@ export const createOnionRouterTransport = ({
     name: "onionRouter",
     async start() {
       void httpClient;
-      void config;
       requestState("connecting", true);
+      if (config.onionSelectedNetwork === "tor") {
+        try {
+          await ensureTorReady();
+        } catch {
+          requestState("failed", true);
+          throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: Tor runtime is not ready");
+        }
+      }
       const baseUrl = await resolveControllerUrl();
       client = new OnionInboxClient({
         baseUrl,
         deviceId: getOrCreateDeviceId(),
       });
-      const health = await client.health();
+      let health = await client.health();
+      for (const delayMs of START_HEALTH_RETRY_DELAYS_MS.slice(1)) {
+        if (health.ok) break;
+        await wait(delayMs);
+        health = await client.health();
+      }
       if (!health.ok) {
         requestState("failed", true);
         throw new Error(health.details ?? "Onion controller unavailable");
@@ -233,6 +381,7 @@ export const createOnionRouterTransport = ({
       requestState("idle", true);
     },
     async send(packet: TransportPacket) {
+      const signal = extractAbortSignal(packet);
       const torOnion =
         (packet as { torOnion?: string }).torOnion ??
         (packet as { toOnion?: string }).toOnion ??
@@ -249,6 +398,7 @@ export const createOnionRouterTransport = ({
           (packet as { meta?: { routeMode?: RouteMode } }).meta?.routeMode ??
           (packet as { meta?: { routePolicy?: RouteMode } }).meta?.routePolicy) ??
         ((await getRoutePolicy()) as RouteMode);
+      const selectedNetwork = useNetConfigStore.getState().config.onionSelectedNetwork ?? config.onionSelectedNetwork;
       const toDeviceId =
         (packet as { toDeviceId?: string }).toDeviceId ??
         (packet as { meta?: { toDeviceId?: string } }).meta?.toDeviceId ??
@@ -256,19 +406,13 @@ export const createOnionRouterTransport = ({
         (packet as { to?: string }).to ??
         (packet as { route?: { to?: string } }).route?.to ??
         (packet as { meta?: { to?: string } }).meta?.to;
-      if (!toDeviceId) {
-        console.warn("[onion] missing toDeviceId for outbound packet", {
-          id: (packet as { id?: string }).id,
-        });
-        throw new Error("onionRouterTransport: missing destination 'to'");
+      if (!toDeviceId || !toDeviceId.trim()) {
+        console.warn(
+          `[net][route] missing_to skip route=onionRouter opId=${(packet as { id?: string }).id ?? "unknown"}`
+        );
+        throw createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: missing destination 'to'");
       }
-      if (!client) {
-        throw new Error("Onion controller is not ready");
-      }
-      const envelope = encodeBase64Url(
-        new TextEncoder().encode(JSON.stringify(packet))
-      );
-      const route =
+      const initialRoute =
         torOnion || lokinet
           ? {
               mode: routeMode,
@@ -276,11 +420,87 @@ export const createOnionRouterTransport = ({
               lokinet,
             }
           : undefined;
-      const result = await client.send(toDeviceId, envelope, DEFAULT_TTL_MS, route);
-      if (!result.ok) {
-        throw new Error(result.error ?? "Onion send failed");
+      let route = initialRoute ? normalizeSendRoute(initialRoute, selectedNetwork) : undefined;
+      const requiresTor =
+        Boolean(route?.torOnion) ||
+        (!route && selectedNetwork === "tor");
+      if (requiresTor) {
+        await ensureTorReady(signal);
       }
-      ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
+      if (signal?.aborted) {
+        throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: send aborted");
+      }
+      if (!client) {
+        throw new Error("Onion controller is not ready");
+      }
+      const activeClient = client;
+      const envelope = encodeBase64Url(
+        new TextEncoder().encode(JSON.stringify(packet))
+      );
+      const sendOnce = () =>
+        activeClient.send(toDeviceId, envelope, DEFAULT_TTL_MS, route, signal, packet.id);
+      if (!torOnion) {
+        let result = await sendOnce();
+        if (!result.ok) {
+          const message = result.error ?? "Onion send failed";
+          if (isForwardProxyNotReadyError(message)) {
+            const resynced = await syncOnionForwardProxyFromRuntime();
+            if (resynced) {
+              result = await sendOnce();
+            }
+            if (!result.ok) {
+              const fallbackMessage = result.error ?? message;
+              torRuntime.markDegraded("proxy_unreachable", fallbackMessage);
+              throw createRouteError("PROXY_UNREACHABLE", `PROXY_UNREACHABLE: ${fallbackMessage}`);
+            }
+            ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
+            return;
+          }
+          throw new Error(message);
+        }
+        ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
+        return;
+      }
+      let lastError = "Onion send failed";
+      let relaxedRouteTried = false;
+      let proxyResynced = false;
+      for (const delayMs of SEND_PROXY_RETRY_DELAYS_MS) {
+        if (signal?.aborted) {
+          throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: send aborted");
+        }
+        if (delayMs > 0) {
+          await wait(delayMs);
+        }
+        const result = await sendOnce();
+        if (result.ok) {
+          ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
+          return;
+        }
+        lastError = result.error ?? "Onion send failed";
+        if (
+          route &&
+          !relaxedRouteTried &&
+          isForwardNoRouteError(lastError)
+        ) {
+          route = buildRelaxedRoute(route);
+          relaxedRouteTried = true;
+          continue;
+        }
+        if (isForwardProxyNotReadyError(lastError) && !proxyResynced) {
+          proxyResynced = await syncOnionForwardProxyFromRuntime();
+          if (proxyResynced) {
+            continue;
+          }
+        }
+        if (!isForwardProxyNotReadyError(lastError)) {
+          break;
+        }
+      }
+      if (isForwardProxyNotReadyError(lastError)) {
+        torRuntime.markDegraded("proxy_unreachable", lastError);
+        throw createRouteError("PROXY_UNREACHABLE", `PROXY_UNREACHABLE: ${lastError}`);
+      }
+      throw new Error(lastError);
     },
     onMessage(cb) {
       messageHandlers.push(cb);

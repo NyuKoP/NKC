@@ -44,6 +44,14 @@ import { sanitizeRoutingHints } from "../net/privacy";
 import { putReadCursor } from "../storage/receiptStore";
 import { applyGroupEvent, isGroupEventPayload } from "./groupSync";
 import { getSodium } from "../security/sodium";
+import {
+  isFriendControlFrame,
+  verifyFriendControlFrameSignature,
+  verifyFriendControlFrameProtocol,
+  type FriendControlFrame,
+  type FriendRequestFrame,
+  type FriendResponseFrame,
+} from "../friends/friendControlFrame";
 
 type EnvelopeEvent = {
   eventId: string;
@@ -54,12 +62,45 @@ type EnvelopeEvent = {
   envelopeJson: string;
 };
 
+type PeerCaps = {
+  proto: number;
+  sync: { v: number };
+  ratchet?: { v: number };
+  media?: { chunks?: boolean; v?: number };
+  devices?: { roles?: boolean; v?: number };
+};
+
+type NormalizedPeerCaps = {
+  proto: number;
+  sync: { v: number };
+  ratchet: { v: number };
+  media: { chunks: boolean; v: number };
+  devices: { roles: boolean; v: number };
+};
+
+const LEGACY_PEER_CAPS: NormalizedPeerCaps = {
+  proto: 1,
+  sync: { v: 1 },
+  ratchet: { v: 0 },
+  media: { chunks: false, v: 0 },
+  devices: { roles: false, v: 0 },
+};
+
+const LOCAL_CAPS: PeerCaps = {
+  proto: 1,
+  sync: { v: 1 },
+  ratchet: { v: 2 },
+  media: { chunks: true, v: 1 },
+  devices: { roles: true, v: 1 },
+};
+
 type HelloFrame = {
   type: "HELLO";
   deviceId: string;
   identityPub: string;
   nonce: string;
   sig: string;
+  caps?: PeerCaps;
   profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
 };
 
@@ -69,6 +110,7 @@ type AckFrame = {
   identityPub: string;
   nonce: string;
   sig: string;
+  caps?: PeerCaps;
 };
 
 type SyncReqFrame = {
@@ -94,6 +136,7 @@ export type PeerContext = PeerHint & {
   dhPub?: string;
   kind?: "friend" | "device";
   peerDeviceId?: string;
+  peerCaps?: NormalizedPeerCaps;
 };
 
 const contactsLogId = (convId: string) => `contacts:${convId}`;
@@ -101,6 +144,82 @@ const conversationsLogId = (convId: string) => `convs:${convId}`;
 const globalLogId = (convId: string) => `global:${convId}`;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+
+const normalizeCapVersion = (value: unknown, fallback: number) =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : fallback;
+
+const normalizePeerCaps = (caps?: PeerCaps): NormalizedPeerCaps => ({
+  proto: normalizeCapVersion(caps?.proto, LEGACY_PEER_CAPS.proto),
+  sync: { v: normalizeCapVersion(caps?.sync?.v, LEGACY_PEER_CAPS.sync.v) },
+  ratchet: { v: normalizeCapVersion(caps?.ratchet?.v, LEGACY_PEER_CAPS.ratchet.v) },
+  media: {
+    chunks: Boolean(caps?.media?.chunks),
+    v: normalizeCapVersion(caps?.media?.v, LEGACY_PEER_CAPS.media.v),
+  },
+  devices: {
+    roles: Boolean(caps?.devices?.roles),
+    v: normalizeCapVersion(caps?.devices?.v, LEGACY_PEER_CAPS.devices.v),
+  },
+});
+
+const getPeerCaps = (convId: string): NormalizedPeerCaps =>
+  peerContexts.get(convId)?.peerCaps ?? LEGACY_PEER_CAPS;
+
+const hasKnownPeerCaps = (convId: string) => Boolean(peerContexts.get(convId)?.peerCaps);
+
+const getPeerCapsForEvent = (convKeyId: string, eventConvId: string) => {
+  const eventCaps = peerContexts.get(eventConvId)?.peerCaps;
+  if (eventCaps) return eventCaps;
+  const contextCaps = peerContexts.get(convKeyId)?.peerCaps;
+  if (contextCaps) return contextCaps;
+  return LEGACY_PEER_CAPS;
+};
+
+const getPeerRatchetVersion = (caps: NormalizedPeerCaps) => {
+  if (caps.ratchet.v >= 2) return 2;
+  if (caps.ratchet.v >= 1) return 1;
+  return 0;
+};
+
+const canUseRoleEvents = (caps: NormalizedPeerCaps) => caps.devices.roles && caps.devices.v >= 1;
+
+const resolveSendEnvelopeKey = async (
+  convId: string,
+  logId: string,
+  ratchetBaseKey: Uint8Array,
+  legacyKey: Uint8Array
+) => {
+  const ratchetVersion = getPeerRatchetVersion(getPeerCaps(convId));
+  if (ratchetVersion >= 2) {
+    try {
+      const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
+      return { msgKey: ratchet.msgKey, headerRk: ratchet.headerRk };
+    } catch (error) {
+      console.warn("[ratchet] send v2 fallback", { convId, logId, error });
+    }
+  }
+  if (ratchetVersion >= 1) {
+    try {
+      const ratchet = await nextSendKey(logId, ratchetBaseKey);
+      return { msgKey: ratchet.msgKey, headerRk: ratchet.headerRk };
+    } catch (error) {
+      console.warn("[ratchet] send v1 fallback", { convId, logId, error });
+    }
+  }
+  return { msgKey: legacyKey };
+};
+
+const logPeerCaps = (convId: string, caps: NormalizedPeerCaps) => {
+  console.debug("[sync] peer caps", {
+    convId,
+    proto: caps.proto,
+    ratchet: caps.ratchet.v,
+    mediaChunks: caps.media.chunks,
+    roles: caps.devices.roles,
+  });
+};
 
 const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
   console.debug(`[sync] ${label}`, meta);
@@ -139,8 +258,43 @@ const isDeviceSyncAllowed = async (convId: string, reason: string) => {
 const perAuthorLamportSeen = new Map<string, number>();
 const perConvLamportSeen = new Map<string, Map<string, number>>();
 const peerContexts = new Map<string, PeerContext>();
+const deferredRoleEvents = new Map<string, Map<string, RoleChangeEvent>>();
 const convSubscriptions = new Map<string, () => void>();
 let localUserIdCache: string | null | undefined;
+
+const deferRoleChangeEvent = (convId: string, eventId: string, event: RoleChangeEvent) => {
+  let pending = deferredRoleEvents.get(convId);
+  if (!pending) {
+    pending = new Map();
+    deferredRoleEvents.set(convId, pending);
+  }
+  pending.set(eventId, event);
+};
+
+const flushDeferredRoleEvents = async (convId: string) => {
+  const pending = deferredRoleEvents.get(convId);
+  if (!pending || pending.size === 0) return;
+  if (!hasKnownPeerCaps(convId)) return;
+  if (!canUseRoleEvents(getPeerCaps(convId))) {
+    console.warn("[sync] deferred role changes dropped: peer capability missing", {
+      convId,
+      capsState: "known_unsupported",
+      count: pending.size,
+    });
+    deferredRoleEvents.delete(convId);
+    return;
+  }
+  const entries = Array.from(pending.entries()).sort((lhs, rhs) => lhs[1].ts - rhs[1].ts);
+  for (const [eventId, roleEvent] of entries) {
+    try {
+      await updateFromRoleEvent(roleEvent);
+      pending.delete(eventId);
+    } catch (error) {
+      console.warn("[sync] deferred role change apply failed", { convId, eventId, error });
+    }
+  }
+  if (pending.size === 0) deferredRoleEvents.delete(convId);
+};
 
 const resolveLocalUserId = async () => {
   if (localUserIdCache !== undefined) return localUserIdCache;
@@ -216,22 +370,6 @@ const computeSafetyNumber = async (identityA: string, identityB: string) => {
   });
   const hash = sodium.crypto_generichash(16, new Uint8Array([...pair[0], ...pair[1]]));
   return formatSafetyNumber(encodeBase64Url(hash));
-};
-
-type FriendRequestFrame = {
-  type: "friend_req";
-  convId?: string;
-  from: { identityPub: string; dhPub: string; deviceId?: string; friendCode?: string };
-  profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
-  ts?: number;
-};
-
-type FriendResponseFrame = {
-  type: "friend_accept" | "friend_decline";
-  convId?: string;
-  from: { identityPub: string; dhPub: string; deviceId?: string };
-  profile?: { displayName?: string; status?: string; avatarRef?: UserProfile["avatarRef"] };
-  ts?: number;
 };
 
 const resolveFriendByIdentity = async (identityPub?: string) => {
@@ -315,6 +453,14 @@ const upsertFriendFromRequest = async (
     return next;
   })();
 
+  const existingStatus = existing?.friendStatus;
+  const isMutualRequest = existingStatus === "request_out";
+  const preserveExistingStatus =
+    existingStatus === "normal" || existingStatus === "hidden" || existingStatus === "blocked";
+  const nextFriendStatus = isMutualRequest ? "normal" : preserveExistingStatus ? existingStatus : "request_in";
+  const shouldMarkPending = nextFriendStatus === "request_in";
+  const forceHidden = nextFriendStatus === "blocked" || nextFriendStatus === "hidden";
+
   const profile: UserProfile = {
     id: existing?.id ?? createId(),
     friendId,
@@ -322,7 +468,7 @@ const upsertFriendFromRequest = async (
     status: payload.profile?.status ?? existing?.status ?? "",
     theme: existing?.theme ?? "dark",
     kind: "friend",
-    friendStatus: "request_in",
+    friendStatus: nextFriendStatus,
     isFavorite: existing?.isFavorite ?? false,
     identityPub: payload.from.identityPub,
     dhPub: payload.from.dhPub,
@@ -353,11 +499,16 @@ const upsertFriendFromRequest = async (
   if (existingConv) {
     const updated: Conversation = {
       ...existingConv,
-      pendingAcceptance: true,
-      pendingOutgoing: false,
-      hidden: false,
+      pendingAcceptance: shouldMarkPending ? true : false,
+      pendingOutgoing: shouldMarkPending ? false : false,
+      pendingFriendResponse: undefined,
+      hidden: forceHidden ? true : shouldMarkPending ? false : existingConv.hidden,
     };
     await saveConversation(updated);
+    return;
+  }
+
+  if (!shouldMarkPending) {
     return;
   }
 
@@ -372,6 +523,7 @@ const upsertFriendFromRequest = async (
     blocked: false,
     pendingAcceptance: true,
     pendingOutgoing: false,
+    pendingFriendResponse: undefined,
     lastTs: payload.ts ?? now,
     lastMessage: "친구 요청",
     participants: [currentUserId, profile.id],
@@ -385,20 +537,37 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
   if (!existing) return;
   const now = Date.now();
   const friendStatus = payload.type === "friend_accept" ? "normal" : "blocked";
+  const decodedFriendCode =
+    typeof payload.from.friendCode === "string" && payload.from.friendCode.trim()
+      ? decodeFriendCodeV1(payload.from.friendCode)
+      : null;
+  const codeHints =
+    decodedFriendCode && !("error" in decodedFriendCode)
+      ? sanitizeRoutingHints({
+          deviceId: decodedFriendCode.deviceId,
+          onionAddr: decodedFriendCode.onionAddr,
+          lokinetAddr: decodedFriendCode.lokinetAddr,
+        })
+      : undefined;
+  const resolvedDeviceId =
+    payload.from.deviceId ??
+    (decodedFriendCode && !("error" in decodedFriendCode) ? decodedFriendCode.deviceId : undefined) ??
+    existing.primaryDeviceId;
   await saveProfile({
     ...existing,
     friendStatus,
-    primaryDeviceId: payload.from.deviceId ?? existing.primaryDeviceId,
+    primaryDeviceId: resolvedDeviceId,
     routingHints: sanitizeRoutingHints({
-      deviceId: payload.from.deviceId,
-      onionAddr: existing.routingHints?.onionAddr,
-      lokinetAddr: existing.routingHints?.lokinetAddr,
+      deviceId: resolvedDeviceId,
+      onionAddr: codeHints?.onionAddr ?? existing.routingHints?.onionAddr,
+      lokinetAddr: codeHints?.lokinetAddr ?? existing.routingHints?.lokinetAddr,
     }),
     profileVcard: payload.profile
       ? {
           displayName: payload.profile.displayName,
           status: payload.profile.status,
           avatarRef: payload.profile.avatarRef,
+          friendCode: payload.from.friendCode ?? existing.profileVcard?.friendCode,
           updatedAt: payload.ts ?? now,
         }
       : existing.profileVcard,
@@ -419,14 +588,33 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
     ...conv,
     pendingAcceptance: false,
     pendingOutgoing: false,
+    pendingFriendResponse: undefined,
     hidden: friendStatus === "blocked" ? true : conv.hidden,
   });
 };
 
 export const handleIncomingFriendFrame = async (
-  payload: FriendRequestFrame | FriendResponseFrame
+  payload: FriendControlFrame,
+  options: { trustedEnvelope?: boolean; localFriendCode?: string } = {}
 ) => {
-  if (!payload || typeof payload !== "object") return;
+  if (!isFriendControlFrame(payload)) return;
+  if (!options.trustedEnvelope) {
+    const verified = await verifyFriendControlFrameSignature(payload);
+    if (!verified) {
+      console.warn("[friend] dropped control frame: invalid signature", { type: payload.type });
+      return;
+    }
+  }
+  const protocolCheck = await verifyFriendControlFrameProtocol(payload, {
+    localFriendCode: options.localFriendCode,
+  });
+  if (!protocolCheck.ok) {
+    console.warn("[friend] dropped control frame: invalid protocol", {
+      type: payload.type,
+      reason: protocolCheck.reason,
+    });
+    return;
+  }
   if (payload.type === "friend_req") {
     const convId = payload.convId ?? createId();
     await upsertFriendFromRequest(convId, payload);
@@ -436,6 +624,19 @@ export const handleIncomingFriendFrame = async (
     const convId = payload.convId ?? "";
     await applyFriendResponse(convId, payload);
   }
+};
+
+const verifyHandshakeCompat = async (
+  payloadWithCaps: Record<string, unknown>,
+  legacyPayload: Record<string, unknown>,
+  sigB64: string,
+  identityPubB64: string,
+  hasCaps: boolean
+) => {
+  const withCaps = await verifyHandshake(payloadWithCaps, sigB64, identityPubB64);
+  if (withCaps) return true;
+  if (hasCaps) return false;
+  return verifyHandshake(legacyPayload, sigB64, identityPubB64);
 };
 
 const toBytes = (frame: Frame) => textEncoder.encode(JSON.stringify(frame));
@@ -602,11 +803,11 @@ const applyDecryptedBody = async (
     return;
   }
   if (typed.type === "friend_req") {
-    await upsertFriendFromRequest(envelope.header.convId, body as FriendRequestFrame);
+    await handleIncomingFriendFrame(body as FriendControlFrame, { trustedEnvelope: true });
     return;
   }
   if (typed.type === "friend_accept" || typed.type === "friend_decline") {
-    await applyFriendResponse(envelope.header.convId, body as FriendResponseFrame);
+    await handleIncomingFriendFrame(body as FriendControlFrame, { trustedEnvelope: true });
     return;
   }
   if (typed.type === "contact") {
@@ -618,7 +819,26 @@ const applyDecryptedBody = async (
     return;
   }
   if (typed.kind === "ROLE_CHANGE") {
-    await updateFromRoleEvent(body as RoleChangeEvent);
+    const roleEvent = body as RoleChangeEvent;
+    if (canUseRoleEvents(getPeerCaps(peerConvId))) {
+      await updateFromRoleEvent(roleEvent);
+      return;
+    }
+    if (!hasKnownPeerCaps(peerConvId)) {
+      deferRoleChangeEvent(peerConvId, envelope.header.eventId, roleEvent);
+      console.info("[sync] role change deferred: peer caps unconfirmed", {
+        convId: peerConvId,
+        eventId: envelope.header.eventId,
+      });
+      return;
+    }
+    if (!canUseRoleEvents(getPeerCaps(peerConvId))) {
+      console.warn("[sync] role change dropped: peer capability missing", {
+        convId: peerConvId,
+        capsState: "known_unsupported",
+      });
+      return;
+    }
   }
 };
 
@@ -720,6 +940,7 @@ const applyConversationEvent = async (body: { type: "conv"; conv: Conversation }
     blocked: incoming.blocked ?? existing?.blocked ?? false,
     pendingAcceptance: incoming.pendingAcceptance ?? existing?.pendingAcceptance,
     pendingOutgoing: incoming.pendingOutgoing ?? existing?.pendingOutgoing,
+    pendingFriendResponse: incoming.pendingFriendResponse ?? existing?.pendingFriendResponse,
     lastTs: incoming.lastTs ?? existing?.lastTs ?? Date.now(),
     lastMessage: incoming.lastMessage ?? existing?.lastMessage ?? "",
     participants: incoming.participants ?? existing?.participants ?? [],
@@ -924,7 +1145,16 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
       }
 
       const rk = envelope.header.rk;
+      const peerRatchetVersion = getPeerRatchetVersion(
+        getPeerCapsForEvent(convKeyId, event.convId)
+      );
       if (rk && rk.v === 2 && Number.isFinite(rk.i) && typeof rk.dh === "string") {
+        if (peerRatchetVersion < 2) {
+          console.warn("[sync] rk v2 received with caps mismatch; trying decrypt anyway", {
+            convId: event.convId,
+            eventId: event.eventId,
+          });
+        }
         logDecrypt("path", { convId: event.convId, eventId: event.eventId, mode: "v2" });
         const ratchetBaseKey = await resolveRatchetBaseKey(convKeyId, envelope.header.convId);
         if (!ratchetBaseKey) {
@@ -967,6 +1197,12 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
       }
 
       if (rk && rk.v === 1 && Number.isFinite(rk.i)) {
+        if (peerRatchetVersion < 1) {
+          console.warn("[sync] rk v1 received with caps mismatch; trying decrypt anyway", {
+            convId: event.convId,
+            eventId: event.eventId,
+          });
+        }
         logDecrypt("path", { convId: event.convId, eventId: event.eventId, mode: "v1" });
         const ratchetBaseKey = await resolveRatchetBaseKey(convKeyId, envelope.header.convId);
         if (!ratchetBaseKey) {
@@ -1156,24 +1392,42 @@ const handleHello = async (convId: string, frame: HelloFrame) => {
     identityPub: frame.identityPub,
     deviceId: frame.deviceId,
     nonce: frame.nonce,
+    caps: frame.caps ?? null,
   };
-  const ok = await verifyHandshake(payload, frame.sig, frame.identityPub);
+  const legacyPayload = {
+    type: "HELLO",
+    identityPub: frame.identityPub,
+    deviceId: frame.deviceId,
+    nonce: frame.nonce,
+  };
+  const ok = await verifyHandshakeCompat(
+    payload,
+    legacyPayload,
+    frame.sig,
+    frame.identityPub,
+    Boolean(frame.caps)
+  );
   if (!ok) {
     console.warn("[sync] invalid HELLO signature", { convId });
     return;
   }
+  const peerCaps = normalizePeerCaps(frame.caps);
   const existing = peerContexts.get(convId) ?? {};
   peerContexts.set(convId, {
     ...existing,
     identityPub: frame.identityPub,
     peerDeviceId: frame.deviceId,
+    peerCaps,
   });
+  logPeerCaps(convId, peerCaps);
+  await flushDeferredRoleEvents(convId);
   await applyVerification(frame.identityPub, frame.deviceId, frame.profile);
   const ackPayload = {
     type: "ACK",
     identityPub: encodeBase64Url(await getIdentityPublicKey()),
     deviceId: getOrCreateDeviceId(),
     nonce: frame.nonce,
+    caps: LOCAL_CAPS,
   } as const;
   const sig = await signHandshake(ackPayload);
   await sendFrame(convId, { ...ackPayload, sig });
@@ -1185,18 +1439,35 @@ const handleAck = async (convId: string, frame: AckFrame) => {
     identityPub: frame.identityPub,
     deviceId: frame.deviceId,
     nonce: frame.nonce,
+    caps: frame.caps ?? null,
   };
-  const ok = await verifyHandshake(payload, frame.sig, frame.identityPub);
+  const legacyPayload = {
+    type: "ACK",
+    identityPub: frame.identityPub,
+    deviceId: frame.deviceId,
+    nonce: frame.nonce,
+  };
+  const ok = await verifyHandshakeCompat(
+    payload,
+    legacyPayload,
+    frame.sig,
+    frame.identityPub,
+    Boolean(frame.caps)
+  );
   if (!ok) {
     console.warn("[sync] invalid ACK signature", { convId });
     return;
   }
+  const peerCaps = normalizePeerCaps(frame.caps);
   const existing = peerContexts.get(convId) ?? {};
   peerContexts.set(convId, {
     ...existing,
     identityPub: frame.identityPub,
     peerDeviceId: frame.deviceId,
+    peerCaps,
   });
+  logPeerCaps(convId, peerCaps);
+  await flushDeferredRoleEvents(convId);
   await applyVerification(frame.identityPub, frame.deviceId);
 };
 
@@ -1237,6 +1508,7 @@ export const connectConversation = async (convId: string, peerHint: PeerContext)
     deviceId: getOrCreateDeviceId(),
     identityPub: encodeBase64Url(identityPub),
     nonce: createNonce(),
+    caps: LOCAL_CAPS,
   } as const;
   const sig = await signHandshake(helloPayload);
   const localUserId = await resolveLocalUserId();
@@ -1311,22 +1583,10 @@ const buildRoleChangeEvent = async (
     authorDeviceId: deviceId,
   };
   header.prev = await getLastEventHash(logId);
-  let keyForEnvelope = legacyKey;
-  try {
-    const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
-    header.rk = ratchet.headerRk;
-    keyForEnvelope = ratchet.msgKey;
-  } catch {
-    try {
-      const ratchet = await nextSendKey(logId, ratchetBaseKey);
-      header.rk = ratchet.headerRk;
-      keyForEnvelope = ratchet.msgKey;
-    } catch (error) {
-      console.warn("[ratchet] global send fallback to legacy", error);
-    }
-  }
+  const keyForEnvelope = await resolveSendEnvelopeKey(convId, logId, ratchetBaseKey, legacyKey);
+  if (keyForEnvelope.headerRk) header.rk = keyForEnvelope.headerRk;
 
-  const envelope = await encryptEnvelope(keyForEnvelope, header, payload, identityPriv);
+  const envelope = await encryptEnvelope(keyForEnvelope.msgKey, header, payload, identityPriv);
   const eventHash = await computeEnvelopeHash(envelope);
   const event: EnvelopeEvent = {
     eventId: header.eventId,
@@ -1350,6 +1610,8 @@ export const emitRoleChangeEvent = async (payload: RoleChangeEvent) => {
   const activeConvs = Array.from(peerContexts.keys());
   for (const convId of activeConvs) {
     try {
+      const capsKnown = hasKnownPeerCaps(convId);
+      if (capsKnown && !canUseRoleEvents(getPeerCaps(convId))) continue;
       const event = await buildRoleChangeEvent(convId, payload, identityPriv);
       if (!event) continue;
       const frame: SyncResFrame = {
@@ -1393,22 +1655,10 @@ const buildContactEvents = async (convId: string) => {
       authorDeviceId: deviceId,
     };
     header.prev = prevHash;
-    let keyForEnvelope = legacyKey;
-    try {
-      const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
-      header.rk = ratchet.headerRk;
-      keyForEnvelope = ratchet.msgKey;
-    } catch {
-      try {
-        const ratchet = await nextSendKey(logId, ratchetBaseKey);
-        header.rk = ratchet.headerRk;
-        keyForEnvelope = ratchet.msgKey;
-      } catch (error) {
-        console.warn("[ratchet] contacts send fallback to legacy", error);
-      }
-    }
+    const keyForEnvelope = await resolveSendEnvelopeKey(convId, logId, ratchetBaseKey, legacyKey);
+    if (keyForEnvelope.headerRk) header.rk = keyForEnvelope.headerRk;
     const envelope = await encryptEnvelope(
-      keyForEnvelope,
+      keyForEnvelope.msgKey,
       header,
       {
         type: "contact",
@@ -1479,23 +1729,11 @@ const buildConversationEvents = async (convId: string) => {
       authorDeviceId: deviceId,
     };
     header.prev = prevHash;
-    let keyForEnvelope = legacyKey;
-    try {
-      const ratchet = await nextSendDhKey(logId, ratchetBaseKey);
-      header.rk = ratchet.headerRk;
-      keyForEnvelope = ratchet.msgKey;
-    } catch {
-      try {
-        const ratchet = await nextSendKey(logId, ratchetBaseKey);
-        header.rk = ratchet.headerRk;
-        keyForEnvelope = ratchet.msgKey;
-      } catch (error) {
-        console.warn("[ratchet] conversations send fallback to legacy", error);
-      }
-    }
+    const keyForEnvelope = await resolveSendEnvelopeKey(convId, logId, ratchetBaseKey, legacyKey);
+    if (keyForEnvelope.headerRk) header.rk = keyForEnvelope.headerRk;
 
     const envelope = await encryptEnvelope(
-      keyForEnvelope,
+      keyForEnvelope.msgKey,
       header,
       {
         type: "conv",
@@ -1509,6 +1747,8 @@ const buildConversationEvents = async (convId: string) => {
           muted: conversation.muted,
           blocked: conversation.blocked,
           pendingAcceptance: conversation.pendingAcceptance,
+          pendingOutgoing: conversation.pendingOutgoing,
+          pendingFriendResponse: conversation.pendingFriendResponse,
           lastTs: conversation.lastTs,
           lastMessage: conversation.lastMessage,
           participants: conversation.participants,
@@ -1618,4 +1858,5 @@ export const __testResetSyncState = () => {
   perAuthorLamportSeen.clear();
   perConvLamportSeen.clear();
   peerContexts.clear();
+  deferredRoleEvents.clear();
 };

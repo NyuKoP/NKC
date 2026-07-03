@@ -61,8 +61,11 @@ contextBridge.exposeInMainWorld("nkc", {
     timeoutMs?: number;
   }) => ipcRenderer.invoke("nkc:onionControllerFetch", req) as Promise<unknown>,
   getTorStatus: () => ipcRenderer.invoke("nkc:getTorStatus") as Promise<unknown>,
-  startTor: () => ipcRenderer.invoke("nkc:startTor") as Promise<unknown>,
+  startTor: (payload?: { profileScopedDataDir?: boolean }) =>
+    ipcRenderer.invoke("nkc:startTor", payload) as Promise<unknown>,
   stopTor: () => ipcRenderer.invoke("nkc:stopTor") as Promise<unknown>,
+  checkSocksProxyReachable: (payload: { socksUrl: string; timeoutMs?: number }) =>
+    ipcRenderer.invoke("nkc:checkSocksProxyReachable", payload) as Promise<boolean>,
   ensureHiddenService: () => ipcRenderer.invoke("nkc:ensureHiddenService") as Promise<unknown>,
   getMyOnionAddress: () => ipcRenderer.invoke("nkc:getMyOnionAddress") as Promise<string>,
   getLokinetStatus: () => ipcRenderer.invoke("nkc:getLokinetStatus") as Promise<unknown>,
@@ -101,4 +104,11 @@ contextBridge.exposeInMainWorld("appControls", {
     ipcRenderer.on("background:status", handler);
     return () => ipcRenderer.removeListener("background:status", handler);
   },
+});
+
+contextBridge.exposeInMainWorld("testLog", {
+  append: (payload: { channel: string; event: unknown; at?: string }) =>
+    ipcRenderer.invoke("testLog:append", payload) as Promise<{ ok: boolean; path: string }>,
+  getPath: () => ipcRenderer.invoke("testLog:path") as Promise<string>,
+  getFriendFlowPath: () => ipcRenderer.invoke("testLog:friendFlowPath") as Promise<string>,
 });

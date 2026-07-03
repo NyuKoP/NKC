@@ -26,6 +26,11 @@ import {
   startDeviceSyncAsInitiator,
 } from "../../../devices/deviceSync";
 import { resolveInternalRendezvousConfig } from "../../../net/rendezvousConfig";
+import type { RendezvousConfig } from "../../../net/rendezvousSignaling";
+import {
+  setRendezvousBaseUrl as persistRendezvousBaseUrl,
+  setRendezvousUseOnion as persistRendezvousUseOnion,
+} from "../../../security/preferences";
 import { getDhPublicKey, getIdentityPublicKey } from "../../../security/identityKeys";
 import type { DeviceSyncTransportPolicy } from "../../../preferences";
 
@@ -76,6 +81,14 @@ export const useDeviceSyncSettings = ({
   const [linkMessage, setLinkMessage] = useState("");
   const [linkBusy, setLinkBusy] = useState(false);
   const linkTimeoutRef = useRef<number | null>(null);
+  const initialRendezvousConfigRef = useRef(resolveInternalRendezvousConfig());
+  const [rendezvousBaseUrlDraft, setRendezvousBaseUrlDraft] = useState(
+    initialRendezvousConfigRef.current.baseUrl
+  );
+  const [rendezvousUseOnionProxy, setRendezvousUseOnionProxy] = useState(
+    initialRendezvousConfigRef.current.useOnionProxy
+  );
+  const rendezvousOnionFallbackWarnedRef = useRef(false);
 
   const [hostRendezvousStatus, setHostRendezvousStatus] =
     useState<RendezvousPairingStatus>("idle");
@@ -106,13 +119,42 @@ export const useDeviceSyncSettings = ({
     setGuestRendezvousStatus("idle");
   }, []);
 
+  useEffect(() => {
+    if (!open || view !== "devices") return;
+    const config = resolveInternalRendezvousConfig();
+    setRendezvousBaseUrlDraft(config.baseUrl);
+    setRendezvousUseOnionProxy(config.useOnionProxy);
+  }, [open, view]);
+
+  const buildRendezvousConfig = useCallback((): RendezvousConfig => {
+    const fallback = resolveInternalRendezvousConfig();
+    const baseUrl = rendezvousBaseUrlDraft.trim() || fallback.baseUrl;
+    const useOnionProxy = rendezvousUseOnionProxy;
+    return {
+      baseUrl,
+      useOnionProxy,
+      onionProxyUrl: null,
+      onOnionProxyFallback: () => {
+        if (rendezvousOnionFallbackWarnedRef.current) return;
+        rendezvousOnionFallbackWarnedRef.current = true;
+        addToast({
+          message: t(
+            "Onion signaling unavailable, falling back to direct signaling.",
+            "Onion signaling unavailable, falling back to direct signaling."
+          ),
+        });
+      },
+    };
+  }, [addToast, rendezvousBaseUrlDraft, rendezvousUseOnionProxy, t]);
+
   const startHostRendezvous = useCallback(
     (syncCode: string) => {
       stopHostRendezvous();
+      rendezvousOnionFallbackWarnedRef.current = false;
       const session = startRendezvousPairingAsHost({
         syncCode,
         deviceId: getOrCreateDeviceId(),
-        rendezvousConfig: resolveInternalRendezvousConfig(),
+        rendezvousConfig: buildRendezvousConfig(),
       });
       hostRendezvousRef.current = session;
       setHostRendezvousStatus(session.getStatus());
@@ -120,16 +162,17 @@ export const useDeviceSyncSettings = ({
         setHostRendezvousStatus(status);
       });
     },
-    [stopHostRendezvous]
+    [buildRendezvousConfig, stopHostRendezvous]
   );
 
   const startGuestRendezvous = useCallback(
     (syncCode: string) => {
       stopGuestRendezvous();
+      rendezvousOnionFallbackWarnedRef.current = false;
       const session = startRendezvousPairingAsGuest({
         syncCode,
         deviceId: getOrCreateDeviceId(),
-        rendezvousConfig: resolveInternalRendezvousConfig(),
+        rendezvousConfig: buildRendezvousConfig(),
       });
       guestRendezvousRef.current = session;
       setGuestRendezvousStatus(session.getStatus());
@@ -137,7 +180,36 @@ export const useDeviceSyncSettings = ({
         setGuestRendezvousStatus(status);
       });
     },
-    [stopGuestRendezvous]
+    [buildRendezvousConfig, stopGuestRendezvous]
+  );
+
+  const handleRendezvousBaseUrlChange = useCallback((value: string) => {
+    setRendezvousBaseUrlDraft(value);
+  }, []);
+
+  const handleRendezvousBaseUrlBlur = useCallback(() => {
+    const normalized = rendezvousBaseUrlDraft.trim();
+    setRendezvousBaseUrlDraft(normalized);
+    void persistRendezvousBaseUrl(normalized).catch((error) => {
+      console.error("Failed to save rendezvous URL", error);
+      addToast({ message: t("Failed to save rendezvous URL.", "Failed to save rendezvous URL.") });
+    });
+  }, [addToast, rendezvousBaseUrlDraft, t]);
+
+  const handleRendezvousUseOnionChange = useCallback(
+    (value: boolean) => {
+      setRendezvousUseOnionProxy(value);
+      void persistRendezvousUseOnion(value).catch((error) => {
+        console.error("Failed to save onion signaling option", error);
+        addToast({
+          message: t(
+            "Failed to save onion signaling option.",
+            "Failed to save onion signaling option."
+          ),
+        });
+      });
+    },
+    [addToast, t]
   );
 
   const handleApprovedResult = useCallback(
@@ -415,6 +487,11 @@ export const useDeviceSyncSettings = ({
     linkStatusClass,
     linkMessage,
     handleSubmitLink,
+    rendezvousBaseUrlDraft,
+    rendezvousUseOnionProxy,
+    handleRendezvousBaseUrlChange,
+    handleRendezvousBaseUrlBlur,
+    handleRendezvousUseOnionChange,
     hostRendezvousStatus,
     guestRendezvousStatus,
     handleDeviceSyncPolicyChange,

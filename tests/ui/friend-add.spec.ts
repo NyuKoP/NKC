@@ -1,7 +1,14 @@
 import http from "node:http";
 import { randomBytes, randomUUID } from "node:crypto";
 import { test, expect } from "@playwright/test";
-import { disableAnimations, ensureOnboarded } from "./helpers";
+import {
+  disableAnimations,
+  enableFriendFlowCapture,
+  ensureOnboarded,
+  filterFriendFlowLogsByAction,
+  readFriendFlowLogs,
+  resetFriendFlowLogs,
+} from "./helpers";
 
 type OnionInboxItem = {
   id: string;
@@ -12,6 +19,7 @@ type OnionInboxItem = {
 
 type OnionTestServer = {
   baseUrl: string;
+  getInboxCount: (deviceId: string) => number;
   close: () => Promise<void>;
 };
 
@@ -127,6 +135,7 @@ const startOnionTestServer = async (): Promise<OnionTestServer> => {
 
   return {
     baseUrl,
+    getInboxCount: (deviceId: string) => inbox.get(deviceId)?.length ?? 0,
     close: async () => {
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
@@ -196,9 +205,55 @@ const makeFriendCode = () => {
 
 const seedNetworkConfig = async (
   page: import("@playwright/test").Page,
-  onionControllerUrl: string
+  onionControllerUrl: string,
+  options?: { selectedNetwork?: "tor" | "lokinet"; serviceAddress?: string }
 ) => {
-  await page.addInitScript((url) => {
+  await page.addInitScript(({ url, selectedNetwork, serviceAddress }) => {
+    const encodeBase64 = (value: string) => {
+      const bytes = new TextEncoder().encode(value);
+      let binary = "";
+      bytes.forEach((byte) => {
+        binary += String.fromCharCode(byte);
+      });
+      return btoa(binary);
+    };
+    const decodeBase64 = (value: string) => {
+      const binary = atob(value);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i += 1) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new TextDecoder().decode(bytes);
+    };
+    Object.defineProperty(window, "nkc", {
+      configurable: true,
+      value: {
+        getOnionControllerUrl: async () => url,
+        onionControllerFetch: async (req: {
+          url: string;
+          method: string;
+          headers?: Record<string, string>;
+          bodyBase64?: string;
+        }) => {
+          const response = await fetch(req.url, {
+            method: req.method,
+            headers: req.headers,
+            body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
+          });
+          const body = await response.text();
+          return {
+            status: response.status,
+            headers: Object.fromEntries(response.headers.entries()),
+            bodyBase64: encodeBase64(body),
+          };
+        },
+        ensureHiddenService: async () => ({ ok: true }),
+        getMyOnionAddress: async () => (selectedNetwork === "tor" ? serviceAddress ?? "" : ""),
+        getMyLokinetAddress: async () => (selectedNetwork === "lokinet" ? serviceAddress ?? "" : ""),
+        getTorStatus: async () => ({ state: "running", socksProxyUrl: "socks5://127.0.0.1:9050" }),
+        setOnionForwardProxy: async () => ({ ok: true }),
+      },
+    });
     localStorage.setItem(
       "netConfig.v1",
       JSON.stringify({
@@ -211,13 +266,64 @@ const seedNetworkConfig = async (
         selfOnionMinRelays: 3,
         allowRemoteProxy: false,
         onionEnabled: true,
-        onionSelectedNetwork: "tor",
-        tor: { installed: false, status: "idle" },
-        lokinet: { installed: false, status: "idle" },
+        onionSelectedNetwork: selectedNetwork,
+        tor: { installed: selectedNetwork === "tor", status: selectedNetwork === "tor" ? "ready" : "idle" },
+        lokinet: {
+          installed: selectedNetwork === "lokinet",
+          status: selectedNetwork === "lokinet" ? "ready" : "idle",
+        },
       })
     );
     localStorage.setItem("onion_controller_url_v1", url);
-  }, onionControllerUrl);
+  }, {
+    url: onionControllerUrl,
+    selectedNetwork: options?.selectedNetwork ?? "tor",
+    serviceAddress: options?.serviceAddress ?? "",
+  });
+};
+
+const onboardAs = async (page: import("@playwright/test").Page, displayName: string) => {
+  const createButton = page.getByTestId("onboarding-create-button");
+  if (await createButton.isVisible()) {
+    await page.getByTestId("onboarding-display-name").fill(displayName);
+    await page.getByTestId("onboarding-confirm-checkbox").check();
+    await createButton.click();
+  }
+  await expect(page.getByTestId("open-settings")).toBeVisible();
+};
+
+const openFriendAddDialog = async (page: import("@playwright/test").Page) => {
+  await page.getByTestId("list-mode-friends").click();
+  await page.getByRole("button", { name: /친구 추가|Add friend/i }).first().click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+};
+
+const readOwnFriendCode = async (page: import("@playwright/test").Page) => {
+  await openFriendAddDialog(page);
+  const input = page.getByTestId("friend-add-my-code");
+  await expect.poll(async () => input.inputValue()).toMatch(/^NKC1-/);
+  const code = await input.inputValue();
+  await page.getByRole("button", { name: /닫기|Close/i }).click();
+  return code;
+};
+
+const addFriendCode = async (page: import("@playwright/test").Page, code: string) => {
+  await openFriendAddDialog(page);
+  await page.getByTestId("friend-add-code-input").fill(code);
+  await page.getByTestId("friend-add-submit").click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+};
+
+const decodeFriendCodePayload = (code: string) => {
+  const raw = code.replace(/^NKC1-/i, "");
+  const normalized = raw.replace(/-/g, "+").replace(/_/g, "/");
+  const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+  const decoded = Buffer.from(padded, "base64");
+  return JSON.parse(decoded.slice(0, -4).toString("utf8")) as {
+    deviceId?: string;
+    onionAddr?: string;
+    lokinetAddr?: string;
+  };
 };
 
 test.describe("Friend add E2E", () => {
@@ -234,10 +340,12 @@ test.describe("Friend add E2E", () => {
   test("adds friend and shows it in friend list", async ({ page }) => {
     const { friendCode, expectedDisplayName } = makeFriendCode();
     await seedNetworkConfig(page, onionServer.baseUrl);
+    await enableFriendFlowCapture(page);
 
     await page.goto("/");
     await disableAnimations(page);
     await ensureOnboarded(page);
+    await resetFriendFlowLogs(page);
 
     await page.getByTestId("list-mode-friends").click();
     await page.getByRole("button", { name: /친구 추가|Add friend/i }).first().click();
@@ -253,5 +361,103 @@ test.describe("Friend add E2E", () => {
 
     await page.getByTestId("list-mode-friends").click();
     await expect(page.getByTestId("sidebar").getByText(expectedDisplayName, { exact: true })).toBeVisible();
+
+    await expect
+      .poll(async () => {
+        const logs = await readFriendFlowLogs(page);
+        const addLogs = filterFriendFlowLogsByAction(logs, "add");
+        return addLogs.length;
+      })
+      .toBeGreaterThan(0);
+
+    await expect
+      .poll(async () => {
+        const logs = await readFriendFlowLogs(page);
+        const addLogs = filterFriendFlowLogsByAction(logs, "add");
+        const events = addLogs
+          .map((record) => record.event)
+          .filter((event): event is { result?: unknown; stage?: unknown } => {
+            return Boolean(event && typeof event === "object");
+          });
+        const startIndex = events.findIndex(
+          (event) => event.result === "progress" && event.stage === "progress:start"
+        );
+        const doneIndex = events.findIndex(
+          (event) =>
+            event.result === "added" &&
+            typeof event.stage === "string" &&
+            event.stage.startsWith("result:added-")
+        );
+        return startIndex >= 0 && doneIndex > startIndex;
+      })
+      .toBe(true);
+  });
+
+  test("mutual endpoint exchange completes over onion controller", async ({ browser }) => {
+    const aliceContext = await browser.newContext();
+    const bobContext = await browser.newContext();
+    const alice = await aliceContext.newPage();
+    const bob = await bobContext.newPage();
+    await seedNetworkConfig(alice, onionServer.baseUrl, {
+      selectedNetwork: "lokinet",
+      serviceAddress: "alice.loki",
+    });
+    await seedNetworkConfig(bob, onionServer.baseUrl, {
+      selectedNetwork: "lokinet",
+      serviceAddress: "bob.loki",
+    });
+    await enableFriendFlowCapture(alice);
+    await enableFriendFlowCapture(bob);
+
+    try {
+      await alice.goto("/");
+      await bob.goto("/");
+      await disableAnimations(alice);
+      await disableAnimations(bob);
+      await onboardAs(alice, "Alice");
+      await onboardAs(bob, "Bob");
+      await resetFriendFlowLogs(alice);
+      await resetFriendFlowLogs(bob);
+
+      const aliceCode = await readOwnFriendCode(alice);
+      const bobCode = await readOwnFriendCode(bob);
+      expect(decodeFriendCodePayload(aliceCode).lokinetAddr).toBe("alice.loki");
+      const bobPayload = decodeFriendCodePayload(bobCode);
+      expect(bobPayload.lokinetAddr).toBe("bob.loki");
+      expect(bobPayload.deviceId).toBeTruthy();
+
+      await addFriendCode(alice, bobCode);
+      await expect
+        .poll(() => onionServer.getInboxCount(bobPayload.deviceId ?? ""), { timeout: 10_000 })
+        .toBeGreaterThan(0);
+      await expect
+        .poll(async () => {
+          await bob.getByTestId("list-mode-friends").click();
+          return bob.getByTestId("sidebar").getByText("Alice", { exact: true }).count();
+        }, { timeout: 30_000 })
+        .toBeGreaterThan(0);
+
+      await addFriendCode(bob, aliceCode);
+      await expect
+        .poll(async () => {
+          await alice.getByTestId("list-mode-friends").click();
+          return alice.getByTestId("sidebar").getByText("Bob", { exact: true }).count();
+        }, { timeout: 30_000 })
+        .toBeGreaterThan(0);
+      await expect
+        .poll(async () => {
+          const aliceLogs = await readFriendFlowLogs(alice);
+          const bobLogs = await readFriendFlowLogs(bob);
+          return [...aliceLogs, ...bobLogs].some((record) => {
+            if (record.channel !== "friend-route") return false;
+            const event = record.event as { status?: unknown; frameType?: unknown };
+            return event.status === "sent" && event.frameType === "friend_req";
+          });
+        })
+        .toBe(true);
+    } finally {
+      await aliceContext.close();
+      await bobContext.close();
+    }
   });
 });

@@ -35,6 +35,11 @@ type DevicesSettingsProps = {
   linkStatusClass: string;
   linkMessage: string;
   onSubmitLink: () => void | Promise<void>;
+  rendezvousBaseUrlDraft: string;
+  onRendezvousBaseUrlChange: (value: string) => void;
+  onRendezvousBaseUrlBlur: () => void;
+  rendezvousUseOnionProxy: boolean;
+  onRendezvousUseOnionChange: (value: boolean) => void;
   hostRendezvousStatus: RendezvousPairingStatus;
   guestRendezvousStatus: RendezvousPairingStatus;
 };
@@ -76,6 +81,11 @@ export default function DevicesSettings({
   linkStatusClass,
   linkMessage,
   onSubmitLink,
+  rendezvousBaseUrlDraft,
+  onRendezvousBaseUrlChange,
+  onRendezvousBaseUrlBlur,
+  rendezvousUseOnionProxy,
+  onRendezvousUseOnionChange,
   hostRendezvousStatus,
   guestRendezvousStatus,
 }: DevicesSettingsProps) {
@@ -127,17 +137,17 @@ export default function DevicesSettings({
         </div>
         <div className="mt-4 grid gap-2">
           <input
-            type="hidden"
-            value=""
-            readOnly
+            value={rendezvousBaseUrlDraft}
+            onChange={(event) => onRendezvousBaseUrlChange(event.target.value)}
+            onBlur={onRendezvousBaseUrlBlur}
             placeholder="https://example.com"
             className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
           />
-          <label className="hidden items-center gap-2 text-xs text-nkc-text">
+          <label className="flex items-center gap-2 text-xs text-nkc-text">
             <input
               type="checkbox"
-              checked={false}
-              readOnly
+              checked={rendezvousUseOnionProxy}
+              onChange={(event) => onRendezvousUseOnionChange(event.target.checked)}
             />
             <span>{t("신호 요청을 Onion 프록시로 전송", "Send signaling through Onion proxy")}</span>
           </label>

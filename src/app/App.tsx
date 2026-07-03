@@ -76,9 +76,11 @@ import {
 import { getOrCreateDeviceId } from "../security/deviceRole";
 import { computeEnvelopeHash, deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
 import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
-import { sendCiphertext } from "../net/router";
+import { prewarmRouter, sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
+import { useNetConfigStore } from "../net/netConfigStore";
+import { TorRuntime } from "../net/tor/TorRuntime";
 import { sanitizeRoutingHints } from "../net/privacy";
 import {
   buildGroupInviteEvent,
@@ -104,7 +106,33 @@ import { getConvAllowDirect, setGroupAvatarOverride } from "../security/preferen
 import { setFriendAlias } from "../storage/friendStore";
 import { resolveDisplayName, resolveFriendDisplayName } from "../utils/displayName";
 import { startFriendRequestScheduler } from "../friends/friendRequestScheduler";
+import {
+  startFriendResponseScheduler,
+  type PendingFriendResponseType,
+} from "../friends/friendResponseScheduler";
 import { startFriendInboxListener } from "../friends/friendInbox";
+import {
+  enrichFriendControlFrameWithProtocol,
+  isFriendControlFrame,
+  signFriendControlFrame,
+  stripFriendControlFrameSignature,
+  type FriendControlFrame,
+} from "../friends/friendControlFrame";
+import {
+  attachInfoCollectionLogSink,
+  emitFriendAddInfoLog,
+  emitFriendRouteOutgoingInfoLog,
+  type FriendAddInfoLogInput,
+  type FriendRouteOutgoingInfoLogInput,
+  emitRouterInfoLog,
+  type RouterInfoLogInput,
+} from "../diagnostics/infoCollectionLogs";
+import {
+  classifyRouteFailure,
+  collectRouteErrorCodes,
+  splitRouteErrorParts,
+  toInfoLogErrorDetail,
+} from "../diagnostics/friendRouteLogUtils";
 import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
 import { onSyncRun, reportSyncResult } from "../appControl";
@@ -126,6 +154,8 @@ const buildNameMap = (
 const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
 const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
 const READ_CURSOR_THROTTLE_MS = 1500;
+const ROUTE_PENDING_TOAST_COOLDOWN_MS = 10_000;
+const FRIEND_ROUTE_SEND_DEADLINE_MS = 45_000;
 
 const newClientBatchId = () => {
   if (globalThis.crypto?.randomUUID) {
@@ -136,7 +166,61 @@ const newClientBatchId = () => {
     globalThis.crypto.getRandomValues(bytes);
   }
   return encodeBase64Url(bytes);
-};      
+};
+
+const nowMonotonicMs = () => {
+  if (typeof performance !== "undefined" && typeof performance.now === "function") {
+    return performance.now();
+  }
+  return Date.now();
+};
+
+const waitMs = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+type RuntimeNetworkSnapshot = {
+  torState: string | null;
+  torDetail: string | null;
+  lokinetState: string | null;
+  lokinetDetail: string | null;
+};
+
+const EMPTY_RUNTIME_NETWORK_SNAPSHOT: RuntimeNetworkSnapshot = {
+  torState: null,
+  torDetail: null,
+  lokinetState: null,
+  lokinetDetail: null,
+};
+
+const toRuntimeState = (value: unknown) => {
+  if (!value || typeof value !== "object") return null;
+  const state = (value as { state?: unknown }).state;
+  return typeof state === "string" && state.trim().length > 0 ? state : null;
+};
+
+const toRuntimeDetail = (value: unknown) => {
+  if (!value || typeof value !== "object") return null;
+  const details = (value as { details?: unknown; error?: unknown }).details;
+  const fallback = (value as { details?: unknown; error?: unknown }).error;
+  const source = details ?? fallback;
+  return typeof source === "string" && source.trim().length > 0 ? source : null;
+};
+
+const sameRoutingHints = (
+  lhs?: { onionAddr?: string; lokinetAddr?: string; deviceId?: string },
+  rhs?: { onionAddr?: string; lokinetAddr?: string; deviceId?: string }
+) =>
+  (lhs?.deviceId ?? "") === (rhs?.deviceId ?? "") &&
+  (lhs?.onionAddr ?? "") === (rhs?.onionAddr ?? "") &&
+  (lhs?.lokinetAddr ?? "") === (rhs?.lokinetAddr ?? "");
+
+const sameRuntimeNetworkSnapshot = (lhs: RuntimeNetworkSnapshot, rhs: RuntimeNetworkSnapshot) =>
+  lhs.torState === rhs.torState &&
+  lhs.torDetail === rhs.torDetail &&
+  lhs.lokinetState === rhs.lokinetState &&
+  lhs.lokinetDetail === rhs.lokinetDetail;
 
 export default function App() {
   const ui = useAppStore((state) => state.ui);
@@ -168,13 +252,18 @@ export default function App() {
 
   const [onboardingError, setOnboardingError] = useState("");
   const [friendAddOpen, setFriendAddOpen] = useState(false);
+  const [routeResolveBusy, setRouteResolveBusy] = useState(false);
   const [groupCreateOpen, setGroupCreateOpen] = useState(false);
   const [groupInviteOpen, setGroupInviteOpen] = useState(false);
   const [groupInviteConvId, setGroupInviteConvId] = useState<string | null>(null);
   const [myFriendCode, setMyFriendCode] = useState("");
+  const [friendCodeRuntimeSnapshot, setFriendCodeRuntimeSnapshot] = useState<RuntimeNetworkSnapshot>(
+    EMPTY_RUNTIME_NETWORK_SNAPSHOT
+  );
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
   >({});
+  const netConfig = useNetConfigStore((state) => state.config);
 
   const {
     groupAvatarOverrides,
@@ -196,6 +285,9 @@ export default function App() {
     Record<string, { cursorTs: number; anchorMsgId: string } | undefined>
   >({});
   const readCursorThrottleTimerRef = useRef<Record<string, number | undefined>>({});
+  const routePendingToastRef = useRef<Record<string, number>>({});
+  const onionBootstrapToastAtRef = useRef(0);
+  const routerBootstrapRunKeyRef = useRef<string | null>(null);
 
   const connectionToastShown = useRef(false);
   const connectionToastKey = "nkc.sessionConnectedToastShown";
@@ -209,8 +301,116 @@ export default function App() {
     },
     [isDev]
   );
+  const emitFriendAddTestLog = useCallback((detail: FriendAddInfoLogInput) => {
+    emitFriendAddInfoLog(detail);
+  }, []);
+  const emitFriendRouteTestLog = useCallback((detail: FriendRouteOutgoingInfoLogInput) => {
+    emitFriendRouteOutgoingInfoLog(detail);
+  }, []);
+  const emitRouterTestLog = useCallback((detail: RouterInfoLogInput) => {
+    emitRouterInfoLog(detail);
+  }, []);
+  const resolveRuntimeNetworkSnapshot = useCallback(async (): Promise<RuntimeNetworkSnapshot> => {
+    const nkc = (
+      globalThis as {
+        nkc?: {
+          getTorStatus?: () => Promise<unknown>;
+          getLokinetStatus?: () => Promise<unknown>;
+        };
+      }
+    ).nkc;
+    if (!nkc) {
+      return {
+        torState: null,
+        torDetail: null,
+        lokinetState: null,
+        lokinetDetail: null,
+      };
+    }
+    const [torRaw, lokinetRaw] = await Promise.all([
+      nkc.getTorStatus ? nkc.getTorStatus() : Promise.resolve(null),
+      nkc.getLokinetStatus ? nkc.getLokinetStatus() : Promise.resolve(null),
+    ]);
+    return {
+      torState: toRuntimeState(torRaw),
+      torDetail: toRuntimeDetail(torRaw),
+      lokinetState: toRuntimeState(lokinetRaw),
+      lokinetDetail: toRuntimeDetail(lokinetRaw),
+    };
+  }, []);
+  useEffect(() => {
+    return attachInfoCollectionLogSink();
+  }, []);
 
   const settingsOpen = location.pathname === "/settings";
+  const getRoutePendingToast = useCallback((error?: string) => {
+    const errorParts = splitRouteErrorParts(error);
+    const normalizedErrorParts = errorParts.length > 0 ? errorParts : error ? [error] : [];
+    const errorCodes = collectRouteErrorCodes(normalizedErrorParts);
+    const failureClass = classifyRouteFailure(errorCodes, normalizedErrorParts);
+
+    if (failureClass === "missing-device-id") {
+      return {
+        key: "missing-device-id",
+        text:
+          "상대 기기 ID가 없어 전송 경로를 만들 수 없습니다. 친구 코드를 다시 받아 업데이트하세요.",
+      };
+    }
+    if (failureClass === "onion-proxy-not-ready") {
+      return {
+        key: "onion-proxy-not-ready",
+        text:
+          "Tor/Lokinet 프록시가 아직 준비되지 않았습니다. Onion 적용 후 연결되면 자동 재시도됩니다.",
+      };
+    }
+    if (failureClass === "direct-channel-not-open") {
+      return {
+        key: "direct-not-open",
+        text:
+          "Direct P2P 연결이 아직 열리지 않았습니다. 연결 수립 후 자동 재시도됩니다.",
+      };
+    }
+    if (failureClass === "self-onion-not-ready") {
+      return {
+        key: "self-onion-not-ready",
+        text:
+          "내부 Onion 라우트가 아직 준비되지 않았습니다. 네트워크 안정화 후 자동 재시도됩니다.",
+      };
+    }
+    if (failureClass === "missing-route-target") {
+      return {
+        key: "route-target-missing",
+        text:
+          "상대의 최신 라우팅 정보(onion/lokinet 또는 최신 기기 ID)가 없어 전송할 수 없습니다. 상대에게 최신 친구 코드를 다시 받아주세요.",
+      };
+    }
+    if (failureClass === "transport-aborted") {
+      return {
+        key: "transport-aborted",
+        text:
+          "라우터 초기화/재시작 중으로 전송이 중단되었습니다. 잠시 후 자동 재시도됩니다.",
+      };
+    }
+    return {
+      key: "generic-route-not-ready",
+      text:
+        "전송 경로가 준비되지 않아 메시지가 대기열에 남았습니다. 연결 후 자동 재시도됩니다.",
+    };
+  }, []);
+  const notifyRoutePendingToast = useCallback(
+    (convId: string, error?: string) => {
+      const info = getRoutePendingToast(error);
+      const now = Date.now();
+      const key = `${convId}:${info.key}`;
+      const lastAt = routePendingToastRef.current[key] ?? 0;
+      if (now - lastAt < ROUTE_PENDING_TOAST_COOLDOWN_MS) {
+        return;
+      }
+      routePendingToastRef.current[key] = now;
+      addToast({ message: info.text });
+    },
+    [addToast, getRoutePendingToast]
+  );
   const clearConnectionToastGuard = useCallback(() => {
     connectionToastShown.current = false;
     if (typeof window !== "undefined") {
@@ -243,10 +443,10 @@ export default function App() {
     ).nkc;
     if (!nkc) return fallback;
 
-    let onionAddr = fallback?.onionAddr;
-    let lokinetAddr = fallback?.lokinetAddr;
+    let onionAddr: string | undefined;
+    let lokinetAddr: string | undefined;
 
-    if (!onionAddr && nkc.ensureHiddenService) {
+    if (netConfig.onionSelectedNetwork === "tor" && nkc.ensureHiddenService) {
       try {
         await nkc.ensureHiddenService();
       } catch {
@@ -270,14 +470,18 @@ export default function App() {
       }
     }
 
-    return (
-      sanitizeRoutingHints({
-        deviceId: localDeviceId,
-        onionAddr,
-        lokinetAddr,
-      }) ?? fallback
-    );
-  }, [userProfile?.routingHints?.lokinetAddr, userProfile?.routingHints?.onionAddr]);
+    const liveHints = sanitizeRoutingHints({
+      deviceId: localDeviceId,
+      onionAddr,
+      lokinetAddr,
+    });
+    if (liveHints) return liveHints;
+    return sanitizeRoutingHints({ deviceId: localDeviceId }) ?? fallback;
+  }, [
+    netConfig.onionSelectedNetwork,
+    userProfile?.routingHints?.lokinetAddr,
+    userProfile?.routingHints?.onionAddr,
+  ]);
 
   const buildLocalFriendCodePayload = useCallback(async (): Promise<Omit<FriendCodeV1, "v">> => {
     const [identityPub, dhPub, localHints] = await Promise.all([
@@ -294,18 +498,94 @@ export default function App() {
     };
   }, [resolveLocalRoutingHintsForFriendCode]);
 
+  const refreshFriendCodeRuntimeSnapshot = useCallback(async () => {
+    const snapshot = await resolveRuntimeNetworkSnapshot();
+    setFriendCodeRuntimeSnapshot((prev) =>
+      sameRuntimeNetworkSnapshot(prev, snapshot) ? prev : snapshot
+    );
+    return snapshot;
+  }, [resolveRuntimeNetworkSnapshot]);
+
+  const refreshMyFriendCode = useCallback(async () => {
+    if (!friendAddOpen || !userProfile) return;
+    const payload = await buildLocalFriendCodePayload();
+    const nextCode = encodeFriendCodeV1({
+      v: 1,
+      ...payload,
+    });
+    setMyFriendCode((prev) => (prev === nextCode ? prev : nextCode));
+  }, [buildLocalFriendCodePayload, friendAddOpen, userProfile]);
+
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;
-    buildLocalFriendCodePayload()
-      .then((payload) =>
-        encodeFriendCodeV1({
-          v: 1,
-          ...payload,
-        })
-      )
-      .then(setMyFriendCode)
-      .catch((error) => console.error("Failed to compute friend code", error));
-  }, [buildLocalFriendCodePayload, friendAddOpen, userProfile]);
+    let disposed = false;
+    const refreshAll = async () => {
+      const [runtimeResult, codeResult] = await Promise.allSettled([
+        refreshFriendCodeRuntimeSnapshot(),
+        refreshMyFriendCode(),
+      ]);
+      if (disposed) return;
+      if (runtimeResult.status === "rejected") {
+        console.error("Failed to refresh friend code runtime snapshot", runtimeResult.reason);
+      }
+      if (codeResult.status === "rejected") {
+        console.error("Failed to refresh friend code", codeResult.reason);
+      }
+      if (
+        runtimeResult.status === "rejected" &&
+        codeResult.status === "rejected"
+      ) {
+        console.error("Failed to refresh friend code/runtime snapshot", {
+          runtimeError: runtimeResult.reason,
+          friendCodeError: codeResult.reason,
+        });
+      }
+    };
+    void refreshAll();
+    const timer = window.setInterval(() => {
+      void refreshAll();
+    }, 4_000);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    friendAddOpen,
+    userProfile,
+    refreshFriendCodeRuntimeSnapshot,
+    refreshMyFriendCode,
+    netConfig.onionEnabled,
+    netConfig.onionSelectedNetwork,
+    netConfig.mode,
+  ]);
+
+  const friendAddHint = useMemo(() => {
+    if (!friendAddOpen) return null;
+    if (!myFriendCode) {
+      return "친구 코드를 준비 중입니다.";
+    }
+    const decoded = decodeFriendCodeV1(myFriendCode);
+    if ("error" in decoded) {
+      return "친구 코드 생성이 불완전할 수 있습니다. 잠시 후 다시 복사해 주세요.";
+    }
+
+    const hasRouteTarget = Boolean(decoded.onionAddr || decoded.lokinetAddr);
+    const onionMode = netConfig.onionEnabled || netConfig.mode === "onionRouter";
+    const selectedNetwork = netConfig.onionSelectedNetwork;
+    const selectedLabel = selectedNetwork === "tor" ? "Tor" : "Lokinet";
+    const selectedStatus = selectedNetwork === "tor"
+      ? friendCodeRuntimeSnapshot.torState
+      : friendCodeRuntimeSnapshot.lokinetState;
+    const selectedReady = selectedStatus === "running";
+
+    if (onionMode && !hasRouteTarget) {
+      if (selectedReady) {
+        return `${selectedLabel} 런타임은 동작 중이지만 코드의 라우팅 주소가 아직 준비되지 않았습니다. 잠시 후 코드를 다시 복사하세요.`;
+      }
+      return `${selectedLabel} 연결이 아직 준비되지 않아 코드에 라우팅 주소가 없을 수 있습니다. 대안: 내 코드를 먼저 상대에게 보내 상대가 먼저 친구 추가하게 하거나, 네트워크 설정에서 ${selectedLabel} 연결 후 코드를 다시 복사하세요.`;
+    }
+    return null;
+  }, [friendAddOpen, myFriendCode, netConfig, friendCodeRuntimeSnapshot]);
 
   useEffect(() => {
     const unsubscribe = onTransportStatusChange((convId, status) => {
@@ -514,9 +794,167 @@ export default function App() {
     if (friendInboxStarted.current) return;
     startFriendInboxListener(() => {
       void hydrateVault();
+    }, {
+      getLocalFriendCode: async () => {
+        const payload = await buildLocalFriendCodePayload();
+        return encodeFriendCodeV1({ v: 1, ...payload });
+      },
     });
     friendInboxStarted.current = true;
-  }, [hydrateVault, ui.mode]);
+  }, [buildLocalFriendCodePayload, hydrateVault, ui.mode]);
+
+  useEffect(() => {
+    if (ui.mode !== "app") {
+      routerBootstrapRunKeyRef.current = null;
+      return;
+    }
+    const mode = netConfig.mode;
+    const onionEnabled = netConfig.onionEnabled;
+    const onionSelectedNetwork = netConfig.onionSelectedNetwork;
+    const onionActive = mode === "onionRouter" || onionEnabled;
+    const runKey = `${ui.mode}:${String(onionActive)}:${onionSelectedNetwork}`;
+    if (routerBootstrapRunKeyRef.current === runKey) return;
+    routerBootstrapRunKeyRef.current = runKey;
+    let cancelled = false;
+    const operationId = `router-bootstrap:${newClientBatchId()}`;
+    const startedAt = nowMonotonicMs();
+    const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
+    void (async () => {
+      const runtimeBootstrap: Record<string, unknown> = {};
+      const baseContext = {
+        mode,
+        onionEnabled,
+        onionSelectedNetwork,
+      };
+      emitRouterTestLog({
+        status: "attempt",
+        stage: "app-bootstrap:start",
+        source: "app:routerBootstrap",
+        operationId,
+        elapsedMs: 0,
+        context: {
+          ...baseContext,
+          onionActive,
+        },
+      });
+      try {
+        if (onionActive) {
+          const torRuntime = TorRuntime.getInstance();
+          try {
+            await torRuntime.start({ timeoutMs: 15_000 });
+            await torRuntime.awaitReady(15_000);
+            runtimeBootstrap.torRuntimeState = torRuntime.getState();
+            runtimeBootstrap.torDataDir = torRuntime.getDataDir();
+            runtimeBootstrap.torSocksPort = (() => {
+              const socks = torRuntime.getSocksUrl();
+              if (!socks) return null;
+              try {
+                const parsed = new URL(socks);
+                return parsed.port || null;
+              } catch {
+                return null;
+              }
+            })();
+          } catch (error) {
+            runtimeBootstrap.torRuntimeError =
+              error instanceof Error ? error.message : String(error);
+          }
+        }
+        const currentConfig = useNetConfigStore.getState().config;
+        const warmupConfig = onionActive
+          ? { ...currentConfig, mode: "onionRouter" as const }
+          : currentConfig;
+        const warmup = await prewarmRouter({ includeFallback: true, config: warmupConfig });
+        if (!cancelled) {
+          const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
+          devLog("router:prewarm", {
+            chosen: warmup.chosenTransport,
+            requested: warmup.requested,
+            started: warmup.started,
+            failed: warmup.failed,
+            mode: warmup.mode,
+            onionEnabled: warmup.onionEnabled,
+            onionSelectedNetwork: warmup.onionSelectedNetwork,
+            runtimeBootstrap,
+            runtimeSnapshot,
+          });
+          const selectedRuntimeState =
+            onionSelectedNetwork === "tor"
+              ? runtimeSnapshot.torState
+              : runtimeSnapshot.lokinetState;
+          const selectedRuntimeDetail =
+            onionSelectedNetwork === "tor"
+              ? runtimeSnapshot.torDetail
+              : runtimeSnapshot.lokinetDetail;
+          const routerOpened = warmup.started.includes("onionRouter");
+          const warmupComplete = !onionActive || (selectedRuntimeState === "running" && routerOpened);
+          emitRouterTestLog({
+            status: warmupComplete ? "ready" : "failed",
+            stage: "app-bootstrap:result",
+            source: "app:routerBootstrap",
+            operationId,
+            elapsedMs: elapsedMs(),
+            message: warmupComplete ? "Router prewarm completed" : "Router prewarm incomplete",
+            error: warmupComplete
+              ? undefined
+              : `selectedRuntimeState:${selectedRuntimeState ?? "unknown"}|routerOpened:${String(routerOpened)}`,
+            context: {
+              ...baseContext,
+              chosenTransport: warmup.chosenTransport,
+              requestedTransports: warmup.requested,
+              startedTransports: warmup.started,
+              failedTransports: warmup.failed,
+              runtimeBootstrap,
+              runtimeSnapshot,
+              selectedRuntimeState,
+              selectedRuntimeDetail,
+              routerOpened,
+            },
+          });
+          if (onionActive && (selectedRuntimeState !== "running" || !routerOpened)) {
+            const now = Date.now();
+            if (now - onionBootstrapToastAtRef.current > 15_000) {
+              onionBootstrapToastAtRef.current = now;
+              addToast({
+                message: routerOpened
+                  ? "Onion 네트워크가 아직 준비되지 않았습니다. 설정에서 Tor/Lokinet 상태를 확인해 주세요."
+                  : "Onion 라우터 초기화에 실패했습니다. 잠시 후 다시 시도하거나 네트워크 설정을 확인해 주세요.",
+              });
+            }
+          }
+        }
+      } catch (error) {
+        if (!cancelled) {
+          emitRouterTestLog({
+            status: "failed",
+            stage: "app-bootstrap:exception",
+            source: "app:routerBootstrap",
+            operationId,
+            elapsedMs: elapsedMs(),
+            error: error instanceof Error ? error.message : String(error),
+            errorDetail: toInfoLogErrorDetail(error),
+            context: {
+              ...baseContext,
+              runtimeBootstrap,
+            },
+          });
+          console.error("Failed to bootstrap router warmup", error);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    addToast,
+    devLog,
+    emitRouterTestLog,
+    netConfig.mode,
+    netConfig.onionEnabled,
+    netConfig.onionSelectedNetwork,
+    resolveRuntimeNetworkSnapshot,
+    ui.mode,
+  ]);
 
   // cleanup 메모리 문제(EffectCallback) + unsubscribe 방어
   useEffect(() => {
@@ -897,19 +1335,66 @@ export default function App() {
     await hydrateVault();
   };
 
+  const recoverRoutingHintsFromFriendCode = useCallback((profile: UserProfile) => {
+    const code = profile.profileVcard?.friendCode?.trim();
+    if (!code) return undefined;
+    const decoded = decodeFriendCodeV1(code);
+    if ("error" in decoded) return undefined;
+    return sanitizeRoutingHints({
+      deviceId: decoded.deviceId,
+      onionAddr: decoded.onionAddr,
+      lokinetAddr: decoded.lokinetAddr,
+    });
+  }, []);
 
-  const buildRoutingMeta = useCallback((partner: UserProfile) => ({
-    toDeviceId:
-      partner.routingHints?.deviceId ??
-      partner.primaryDeviceId ??
-      partner.deviceId ??
-      partner.friendId ??
-      partner.id,
-    route: {
-      torOnion: partner.routingHints?.onionAddr,
-      lokinet: partner.routingHints?.lokinetAddr,
+  const buildResolvedRoutingMeta = useCallback(
+    (profile: UserProfile) => {
+      const recovered = recoverRoutingHintsFromFriendCode(profile);
+      const toDeviceId =
+        profile.routingHints?.deviceId ??
+        profile.primaryDeviceId ??
+        profile.deviceId ??
+        recovered?.deviceId;
+      const torOnion = profile.routingHints?.onionAddr ?? recovered?.onionAddr;
+      const lokinet = profile.routingHints?.lokinetAddr ?? recovered?.lokinetAddr;
+      return {
+        toDeviceId,
+        route: torOnion || lokinet ? { torOnion, lokinet } : undefined,
+      };
     },
-  }), []);
+    [recoverRoutingHintsFromFriendCode]
+  );
+
+  const recoverAndPersistFriendRouting = useCallback(
+    async (friend: UserProfile) => {
+      const recovered = recoverRoutingHintsFromFriendCode(friend);
+      if (!recovered) return friend;
+      const mergedHints = sanitizeRoutingHints({
+        deviceId: friend.routingHints?.deviceId ?? recovered.deviceId,
+        onionAddr: friend.routingHints?.onionAddr ?? recovered.onionAddr,
+        lokinetAddr: friend.routingHints?.lokinetAddr ?? recovered.lokinetAddr,
+      });
+      const mergedPrimaryDeviceId = friend.primaryDeviceId ?? friend.deviceId ?? recovered.deviceId;
+      const nextRoutingHints = mergedHints ?? friend.routingHints;
+      const changed =
+        !sameRoutingHints(nextRoutingHints, friend.routingHints) ||
+        (mergedPrimaryDeviceId ?? "") !== (friend.primaryDeviceId ?? "");
+      if (!changed) return friend;
+      const updated: UserProfile = {
+        ...friend,
+        routingHints: nextRoutingHints,
+        primaryDeviceId: mergedPrimaryDeviceId,
+        updatedAt: Date.now(),
+      };
+      await saveProfile(updated);
+      return updated;
+    },
+    [recoverRoutingHintsFromFriendCode]
+  );
+
+  const buildRoutingMeta = useCallback((partner: UserProfile) => {
+    return buildResolvedRoutingMeta(partner);
+  }, [buildResolvedRoutingMeta]);
 
   const sendDirectEnvelope = useCallback(
     async (
@@ -1051,34 +1536,332 @@ export default function App() {
       payload: unknown,
       priority: "high" | "normal" = "high"
     ) => {
-      const messageId = createId();
-      const result = await sendCiphertext({
-        convId: conv.id,
-        messageId,
-        ciphertext: JSON.stringify(payload),
-        priority,
-        ...buildRoutingMeta(partner),
-      });
-      if (!result.ok) {
-        throw new Error(result.error ?? "Friend control packet send failed");
+      if (!isFriendControlFrame(payload)) {
+        throw new Error("Unsupported friend control frame");
       }
+      const unsignedPayload = stripFriendControlFrameSignature(payload);
+      let signedPayload: FriendControlFrame;
+      if (payload.sig) {
+        signedPayload = payload;
+      } else {
+        const identityPriv = await getIdentityPrivateKey();
+        const protocolReadyPayload = await enrichFriendControlFrameWithProtocol(
+          unsignedPayload,
+          identityPriv,
+          {
+            pskHint: partner.friendId ?? partner.id,
+            localFriendCode: unsignedPayload.from.friendCode,
+            remoteFriendCode: partner.profileVcard?.friendCode,
+            remoteIdentityPub: partner.identityPub,
+            remoteDhPub: partner.dhPub,
+            remoteDeviceId: partner.routingHints?.deviceId ?? partner.primaryDeviceId,
+            remoteOnionAddr: partner.routingHints?.onionAddr,
+            remoteLokinetAddr: partner.routingHints?.lokinetAddr,
+          }
+        );
+        signedPayload = {
+          ...protocolReadyPayload,
+          sig: await signFriendControlFrame(protocolReadyPayload, identityPriv),
+        };
+      }
+      const frameType = signedPayload.type;
+      const messageId = createId();
+      const operationId = `friend-route:${newClientBatchId()}`;
+      const startedAt = nowMonotonicMs();
+      const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
+      const routingMeta = buildRoutingMeta(partner);
+      const toDeviceIdSource = partner.routingHints?.deviceId
+        ? "routingHints.deviceId"
+        : partner.primaryDeviceId
+          ? "primaryDeviceId"
+          : partner.deviceId
+            ? "deviceId"
+            : partner.profileVcard?.friendCode
+              ? "profileVcard.friendCode"
+              : "none";
+      const payloadHasSigBeforeSign = Boolean(
+        (payload as { sig?: unknown } | null | undefined)?.sig
+      );
+      const payloadJson = JSON.stringify(signedPayload);
+      const payloadByteLength = new TextEncoder().encode(payloadJson).byteLength;
+      const netConfig = useNetConfigStore.getState().config;
+      const routingConfig = netConfig;
+      const shouldPrewarmOnionRoute =
+        frameType === "friend_req" &&
+        routingConfig.mode === "onionRouter" &&
+        Boolean(routingMeta.route?.torOnion || routingMeta.route?.lokinet);
+      let prewarmResult: Awaited<ReturnType<typeof prewarmRouter>> | null = null;
+      if (shouldPrewarmOnionRoute) {
+        emitRouterTestLog({
+          status: "attempt",
+          stage: "friend-control:prewarm:start",
+          source: "app:sendFriendControlPacket",
+          operationId,
+          elapsedMs: elapsedMs(),
+          context: {
+            frameType,
+            convId: conv.id,
+            partnerProfileId: partner.id,
+            onionSelectedNetwork: routingConfig.onionSelectedNetwork,
+            hasTorOnion: Boolean(routingMeta.route?.torOnion),
+            hasLokinet: Boolean(routingMeta.route?.lokinet),
+          },
+        });
+        try {
+          prewarmResult = await withTimeout(
+            prewarmRouter({
+              config: routingConfig,
+              includeFallback: true,
+            }),
+            "friend-control:prewarm",
+            FRIEND_ROUTE_SEND_DEADLINE_MS
+          );
+          const prewarmOpened = prewarmResult.started.includes("onionRouter");
+          emitRouterTestLog({
+            status: prewarmOpened ? "ready" : "failed",
+            stage: "friend-control:prewarm:result",
+            source: "app:sendFriendControlPacket",
+            operationId,
+            elapsedMs: elapsedMs(),
+            message: prewarmOpened
+              ? "Friend control prewarm opened onion router"
+              : "Friend control prewarm failed to open onion router",
+            error: prewarmOpened ? undefined : prewarmResult.failed.join(" || "),
+            context: {
+              frameType,
+              convId: conv.id,
+              partnerProfileId: partner.id,
+              chosenTransport: prewarmResult.chosenTransport,
+              requestedTransports: prewarmResult.requested,
+              startedTransports: prewarmResult.started,
+              failedTransports: prewarmResult.failed,
+            },
+          });
+        } catch (error) {
+          emitRouterTestLog({
+            status: "failed",
+            stage: "friend-control:prewarm:exception",
+            source: "app:sendFriendControlPacket",
+            operationId,
+            elapsedMs: elapsedMs(),
+            error: error instanceof Error ? error.message : String(error),
+            errorDetail: toInfoLogErrorDetail(error),
+            context: {
+              frameType,
+              convId: conv.id,
+              partnerProfileId: partner.id,
+            },
+          });
+          return false;
+        }
+      }
+      const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
+      const senderDeviceId =
+        signedPayload.from?.deviceId ?? getOrCreateDeviceId();
+      const commonContext = {
+        priority,
+        partnerProfileId: partner.id,
+        partnerFriendId: partner.friendId,
+        partnerFriendStatus: partner.friendStatus,
+        partnerReachabilityStatus: partner.reachability?.status ?? null,
+        hasToDeviceId: Boolean(routingMeta.toDeviceId),
+        hasTorOnion: Boolean(routingMeta.route?.torOnion),
+        hasLokinet: Boolean(routingMeta.route?.lokinet),
+        hasRoutingHintDeviceId: Boolean(partner.routingHints?.deviceId || routingMeta.toDeviceId),
+        hasPrimaryDeviceId: Boolean(partner.primaryDeviceId),
+        hasLegacyDeviceId: Boolean(partner.deviceId),
+        toDeviceIdSource,
+        hasRoutingHintOnion: Boolean(partner.routingHints?.onionAddr || routingMeta.route?.torOnion),
+        hasRoutingHintLokinet: Boolean(partner.routingHints?.lokinetAddr || routingMeta.route?.lokinet),
+        convPendingOutgoing: Boolean(conv.pendingOutgoing),
+        convPendingAcceptance: Boolean(conv.pendingAcceptance),
+        convPendingFriendResponse: conv.pendingFriendResponse ?? null,
+        payloadHasSigBeforeSign,
+        payloadHasSigAfterSign: Boolean(signedPayload.sig),
+        payloadByteLength,
+        payloadTimestamp: signedPayload.ts ?? null,
+        payloadConvId: signedPayload.convId ?? null,
+        netMode: netConfig.mode,
+        effectiveNetMode: routingConfig.mode,
+        routeModeOverride: null,
+        prewarmChosenTransport: prewarmResult?.chosenTransport ?? null,
+        prewarmStartedTransports: prewarmResult?.started ?? null,
+        prewarmFailedTransports: prewarmResult?.failed ?? null,
+        onionEnabled: netConfig.onionEnabled,
+        onionSelectedNetwork: netConfig.onionSelectedNetwork,
+        onionProxyEnabled: netConfig.onionProxyEnabled,
+        webrtcRelayOnly: netConfig.webrtcRelayOnly,
+        disableLinkPreview: netConfig.disableLinkPreview,
+        torStatus: netConfig.tor?.status ?? null,
+        lokinetStatus: netConfig.lokinet?.status ?? null,
+        torRuntimeState: runtimeSnapshot.torState,
+        torRuntimeDetail: runtimeSnapshot.torDetail,
+        lokinetRuntimeState: runtimeSnapshot.lokinetState,
+        lokinetRuntimeDetail: runtimeSnapshot.lokinetDetail,
+      };
+      let result:
+        | Awaited<ReturnType<typeof sendCiphertext>>
+        | null = null;
+      emitFriendRouteTestLog({
+        direction: "outgoing",
+        status: "attempt",
+        frameType,
+        source: "app:sendFriendControlPacket",
+        operationId,
+        elapsedMs: 0,
+        messageId,
+        convId: conv.id,
+        senderDeviceId,
+        toDeviceId: routingMeta.toDeviceId,
+        torOnion: routingMeta.route?.torOnion,
+        lokinet: routingMeta.route?.lokinet,
+        context: {
+          ...commonContext,
+          checkpoint: "sendCiphertext:start",
+        },
+      });
+      try {
+        result = await withTimeout(
+          sendCiphertext(
+            {
+              convId: conv.id,
+              messageId,
+              ciphertext: payloadJson,
+              priority,
+              ...routingMeta,
+            },
+            { config: routingConfig }
+          ),
+          "friend-control:send",
+          FRIEND_ROUTE_SEND_DEADLINE_MS
+        );
+      } catch (error) {
+        const thrownMessage = error instanceof Error ? error.message : String(error);
+        const errorParts = splitRouteErrorParts(thrownMessage);
+        const normalizedErrorParts = errorParts.length > 0 ? errorParts : [thrownMessage];
+        const errorCodes = collectRouteErrorCodes(normalizedErrorParts);
+        emitFriendRouteTestLog({
+          direction: "outgoing",
+          status: "failed",
+          frameType,
+          messageId,
+          convId: conv.id,
+          source: "app:sendFriendControlPacket",
+          operationId,
+          elapsedMs: elapsedMs(),
+          senderDeviceId,
+          toDeviceId: routingMeta.toDeviceId,
+          torOnion: routingMeta.route?.torOnion,
+          lokinet: routingMeta.route?.lokinet,
+          error: `sendCiphertext threw: ${thrownMessage}`,
+          errorDetail: toInfoLogErrorDetail(error),
+          context: {
+            ...commonContext,
+            checkpoint: "sendCiphertext:throw",
+            errorParts: normalizedErrorParts,
+            errorCodes,
+            failureClass: classifyRouteFailure(errorCodes, normalizedErrorParts),
+          },
+        });
+        return false;
+      }
+      const retriedWithRouterWarmup = false;
+      const finalErrorMessage = result.error ?? "Friend control packet send failed";
+      if (!result.ok) {
+        const errorMessage = finalErrorMessage;
+        const errorParts = splitRouteErrorParts(errorMessage);
+        const normalizedErrorParts = errorParts.length > 0 ? errorParts : [errorMessage];
+        const errorCodes = collectRouteErrorCodes(normalizedErrorParts);
+        emitFriendRouteTestLog({
+          direction: "outgoing",
+          status: "failed",
+          frameType,
+          source: "app:sendFriendControlPacket",
+          operationId,
+          elapsedMs: elapsedMs(),
+          via: result.transport,
+          messageId,
+          convId: conv.id,
+          senderDeviceId,
+          toDeviceId: routingMeta.toDeviceId,
+          torOnion: routingMeta.route?.torOnion,
+          lokinet: routingMeta.route?.lokinet,
+          error: errorMessage,
+          context: {
+            ...commonContext,
+            checkpoint: "sendCiphertext:result-not-ok",
+            errorParts: normalizedErrorParts,
+            errorCodes,
+            failureClass: classifyRouteFailure(errorCodes, normalizedErrorParts),
+            routerDiagnostic: result.diagnostic ?? null,
+            retriedWithRouterWarmup,
+            ...(frameType === "friend_req"
+              ? {
+                  peerReceiptConfirmed: false,
+                  receiptConfirmation: "awaiting-friend_accept-or-friend_decline",
+                }
+              : {}),
+          },
+        });
+        return false;
+      }
+      emitFriendRouteTestLog({
+        direction: "outgoing",
+        status: "sent",
+        frameType,
+        source: "app:sendFriendControlPacket",
+        operationId,
+        elapsedMs: elapsedMs(),
+        via: result.transport,
+        messageId,
+        convId: conv.id,
+        senderDeviceId,
+        toDeviceId: routingMeta.toDeviceId,
+        torOnion: routingMeta.route?.torOnion,
+        lokinet: routingMeta.route?.lokinet,
+        context: {
+          ...commonContext,
+          checkpoint: "sendCiphertext:result-ok",
+          finalVia: result.transport,
+          routerDiagnostic: result.diagnostic ?? null,
+          ...(frameType === "friend_req"
+            ? {
+                peerReceiptConfirmed: false,
+                receiptConfirmation: "awaiting-friend_accept-or-friend_decline",
+              }
+            : {}),
+        },
+      });
+      return true;
     },
-    [buildRoutingMeta]
+    [buildRoutingMeta, emitFriendRouteTestLog, emitRouterTestLog, resolveRuntimeNetworkSnapshot, withTimeout]
   );
 
   const sendFriendRequestForFriend = useCallback(
     async (friend: UserProfile) => {
-      if (!friend.routingHints?.deviceId && !friend.primaryDeviceId && !friend.deviceId) {
+      let target = friend;
+      try {
+        target = await recoverAndPersistFriendRouting(friend);
+      } catch (error) {
+        console.warn("[friend] failed to recover routing hints from friendCode", error);
+      }
+      const routingMeta = buildRoutingMeta(target);
+      if (!routingMeta.toDeviceId) {
         return false;
       }
-      const conv = await ensureDirectConvForFriend(friend);
+      const netConfig = useNetConfigStore.getState().config;
+      const routeRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
+      const hasRouteTarget = Boolean(routingMeta.route?.torOnion || routingMeta.route?.lokinet);
+      if (routeRequired && !hasRouteTarget) {
+        return false;
+      }
+      const conv = await ensureDirectConvForFriend(target);
       if (!conv) return false;
       const payload = await buildFriendRequestPayload(conv.id);
       if (!payload) return false;
-      await sendFriendControlPacket(conv, friend, payload, "high");
-      return true;
+      return sendFriendControlPacket(conv, target, payload, "high");
     },
-    [buildFriendRequestPayload, ensureDirectConvForFriend, sendFriendControlPacket]
+    [buildFriendRequestPayload, buildRoutingMeta, ensureDirectConvForFriend, recoverAndPersistFriendRouting, sendFriendControlPacket]
   );
 
   const handleSendMessage = async (text: string, clientBatchId: string) => {
@@ -1108,7 +1891,6 @@ export default function App() {
           lamport,
           authorDeviceId: getOrCreateDeviceId(),
         };
-        header.prev = await getLastEventHash(conv.id);
         header.prev = await getLastEventHash(conv.id);
 
         const dhPriv = await getDhPrivateKey();
@@ -1182,10 +1964,7 @@ export default function App() {
         });
         if (!routed.ok) {
           console.error("Failed to route message", routed.error);
-          addToast({
-            message:
-              "전송 경로가 준비되지 않아 메시지가 대기열에 남았습니다. 연결 후 자동 재시도됩니다.",
-          });
+          notifyRoutePendingToast(conv.id, routed.error);
         }
 
         const updatedConv: Conversation = {
@@ -1222,10 +2001,7 @@ export default function App() {
     });
     if (!routed.ok) {
       console.error("Failed to route message", routed.error);
-      addToast({
-        message:
-          "전송 경로가 준비되지 않아 메시지가 대기열에 남았습니다. 연결 후 자동 재시도됩니다.",
-      });
+      notifyRoutePendingToast(conv.id, routed.error);
     }
 
     const updatedConv: Conversation = {
@@ -1839,6 +2615,19 @@ export default function App() {
     await hydrateVault();
   };
 
+  const updateConversationOrThrow = useCallback(
+    async (convId: string, updates: Partial<Conversation>) => {
+      const target = useAppStore.getState().convs.find((conv) => conv.id === convId);
+      if (!target) {
+        throw new Error(`Conversation not found: ${convId}`);
+      }
+      const updated = { ...target, ...updates };
+      await saveConversation(updated);
+      await hydrateVault();
+    },
+    [hydrateVault]
+  );
+
   const handleSelectConv = (convId: string) => {
     setSelectedConv(convId);
     const target = convs.find((conv) => conv.id === convId);
@@ -1936,6 +2725,23 @@ export default function App() {
     }
   };
 
+  const updateFriendOrThrow = useCallback(
+    async (friendId: string, updates: Partial<UserProfile>) => {
+      const target = useAppStore.getState().friends.find((friend) => friend.id === friendId);
+      if (!target) {
+        throw new Error(`Friend not found: ${friendId}`);
+      }
+      const updated: UserProfile = {
+        ...target,
+        ...updates,
+        updatedAt: Date.now(),
+      };
+      await saveProfile(updated);
+      await hydrateVault();
+    },
+    [hydrateVault]
+  );
+
   const handleFriendToggleFavorite = async (friendId: string) => {
     const target = friends.find((friend) => friend.id === friendId);
     if (!target) return;
@@ -2032,12 +2838,173 @@ export default function App() {
     try {
       if (!myFriendCode) return;
       await navigator.clipboard.writeText(myFriendCode);
-      addToast({ message: "친구 코드가 복사되었습니다." });
+      const decoded = decodeFriendCodeV1(myFriendCode);
+      const hasRouteTarget =
+        !("error" in decoded) && Boolean(decoded.onionAddr || decoded.lokinetAddr);
+      addToast({
+        message: hasRouteTarget
+          ? "친구 코드가 복사되었습니다."
+          : "친구 코드는 복사되었지만 onion/lokinet 주소가 없어 상대가 먼저 연결하지 못할 수 있습니다. 네트워크 연결 후 다시 복사해 주세요.",
+      });
     } catch (error) {
       console.error("Failed to copy friend code", error);
       addToast({ message: "친구 코드 복사에 실패했습니다." });
     }
   };
+  const handleResolveFriendRoute = useCallback(async () => {
+    if (routeResolveBusy) return;
+    const operationId = `friend-route-resolve:${newClientBatchId()}`;
+    const startedAt = nowMonotonicMs();
+    const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
+    const baseContext = {
+      mode: netConfig.mode,
+      onionEnabled: netConfig.onionEnabled,
+      onionSelectedNetwork: netConfig.onionSelectedNetwork,
+      torStatus: netConfig.tor.status,
+      lokinetStatus: netConfig.lokinet.status,
+    };
+    const runtimeBootstrap: Record<string, unknown> = {};
+    emitRouterTestLog({
+      status: "attempt",
+      stage: "friend-route-resolve:start",
+      source: "app:handleResolveFriendRoute",
+      operationId,
+      elapsedMs: 0,
+      context: baseContext,
+    });
+    setRouteResolveBusy(true);
+    try {
+      const nkc = (
+        globalThis as {
+          nkc?: {
+            startTor?: () => Promise<unknown>;
+            startLokinet?: () => Promise<unknown>;
+            ensureHiddenService?: () => Promise<unknown>;
+          };
+        }
+      ).nkc;
+      if (nkc) {
+        if (netConfig.onionSelectedNetwork === "tor") {
+          try {
+            const torRuntime = TorRuntime.getInstance();
+            await torRuntime.start({ timeoutMs: 15_000 });
+            await torRuntime.awaitReady(15_000);
+            runtimeBootstrap.torRuntimeState = torRuntime.getState();
+            runtimeBootstrap.torDataDir = torRuntime.getDataDir();
+          } catch (error) {
+            runtimeBootstrap.torStartError = error instanceof Error ? error.message : String(error);
+          }
+        }
+        if (netConfig.onionSelectedNetwork === "lokinet" && nkc.startLokinet) {
+          try {
+            await nkc.startLokinet();
+          } catch (error) {
+            runtimeBootstrap.lokinetStartError =
+              error instanceof Error ? error.message : String(error);
+          }
+        }
+        if (nkc.ensureHiddenService) {
+          try {
+            await nkc.ensureHiddenService();
+          } catch (error) {
+            runtimeBootstrap.hiddenServiceError =
+              error instanceof Error ? error.message : String(error);
+          }
+        }
+      }
+      const warmupConfig = {
+        ...netConfig,
+        mode: "onionRouter" as const,
+        onionEnabled: true,
+      };
+      const warmup = await prewarmRouter({
+        config: warmupConfig,
+        includeFallback: true,
+      });
+
+      let refreshed = "";
+      let hasRouteTarget = false;
+      let refreshAttempts = 0;
+      for (const delayMs of [0, 700, 1400]) {
+        if (delayMs > 0) {
+          await waitMs(delayMs);
+        }
+        refreshAttempts += 1;
+        const payload = await buildLocalFriendCodePayload();
+        refreshed = encodeFriendCodeV1({ v: 1, ...payload });
+        setMyFriendCode(refreshed);
+        const decoded = decodeFriendCodeV1(refreshed);
+        hasRouteTarget =
+          !("error" in decoded) && Boolean(decoded.onionAddr || decoded.lokinetAddr);
+        if (hasRouteTarget) break;
+      }
+
+      const routerOpened = warmup.started.includes("onionRouter");
+      const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
+      setFriendCodeRuntimeSnapshot((prev) =>
+        sameRuntimeNetworkSnapshot(prev, runtimeSnapshot) ? prev : runtimeSnapshot
+      );
+      const resolved = hasRouteTarget && routerOpened;
+      emitRouterTestLog({
+        status: resolved ? "ready" : "failed",
+        stage: "friend-route-resolve:result",
+        source: "app:handleResolveFriendRoute",
+        operationId,
+        elapsedMs: elapsedMs(),
+        message: resolved
+          ? "Friend route resolve completed with onion route target"
+          : "Friend route resolve completed without stable router/route target",
+        error: resolved
+          ? undefined
+          : `hasRouteTarget:${String(hasRouteTarget)}|routerOpened:${String(routerOpened)}`,
+        context: {
+          ...baseContext,
+          runtimeBootstrap,
+          chosenTransport: warmup.chosenTransport,
+          requestedTransports: warmup.requested,
+          startedTransports: warmup.started,
+          failedTransports: warmup.failed,
+          hasRouteTarget,
+          routerOpened,
+          refreshAttempts,
+          friendCodeLength: refreshed.length,
+          runtimeSnapshot,
+        },
+      });
+      addToast({
+        message: hasRouteTarget && routerOpened
+          ? "경로 정보를 찾았습니다. 코드를 다시 복사해 전달해 주세요."
+          : hasRouteTarget
+            ? "코드 경로 정보는 준비됐지만 라우터 초기화가 지연됩니다. 잠시 후 다시 시도해 주세요."
+            : "아직 경로 정보를 찾지 못했습니다. 잠시 후 다시 시도하거나 상대가 먼저 친구 추가하도록 안내해 주세요.",
+      });
+    } catch (error) {
+      emitRouterTestLog({
+        status: "failed",
+        stage: "friend-route-resolve:exception",
+        source: "app:handleResolveFriendRoute",
+        operationId,
+        elapsedMs: elapsedMs(),
+        error: error instanceof Error ? error.message : String(error),
+        errorDetail: toInfoLogErrorDetail(error),
+        context: {
+          ...baseContext,
+          runtimeBootstrap,
+        },
+      });
+      console.error("Failed to resolve friend route", error);
+      addToast({ message: "경로 확인에 실패했습니다." });
+    } finally {
+      setRouteResolveBusy(false);
+    }
+  }, [
+    addToast,
+    buildLocalFriendCodePayload,
+    emitRouterTestLog,
+    netConfig,
+    resolveRuntimeNetworkSnapshot,
+    routeResolveBusy,
+  ]);
   const normalizeInviteCode = (value: string) => {
     let next = value.replace(/[\u200B-\u200D\uFEFF]/g, "").trim();
     next = next.replace(/^[\s"'`([{<]+/, "");
@@ -2271,11 +3238,70 @@ export default function App() {
   };
 
   const handleAddFriend = async (payload: { code: string; psk?: string }) => {
-    if (!userProfile) return { ok: false as const, error: "User profile missing." };
+    type FriendAddLogExtras = Omit<
+      FriendAddInfoLogInput,
+      "result" | "stage" | "source" | "operationId" | "elapsedMs"
+    >;
+    const operationId = `friend-add:${newClientBatchId()}`;
+    const startedAt = nowMonotonicMs();
+    const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
+    const emitFriendAddWithMeta = (
+      detail: Omit<FriendAddInfoLogInput, "source" | "operationId" | "elapsedMs">
+    ) => {
+      emitFriendAddTestLog({
+        source: "app:handleAddFriend",
+        operationId,
+        elapsedMs: elapsedMs(),
+        ...detail,
+      });
+    };
+    const emitProgressWithTestLog = (
+      stage: string,
+      extras?: FriendAddLogExtras
+    ) => {
+      emitFriendAddWithMeta({
+        result: "progress",
+        stage,
+        ...extras,
+      });
+    };
+    const failWithTestLog = (
+      errorMessage: string,
+      stage: string,
+      extras?: FriendAddLogExtras,
+      errorCause?: unknown
+    ) => {
+      emitFriendAddWithMeta({
+        result: "not_added",
+        stage,
+        message: errorMessage,
+        errorDetail:
+          extras?.errorDetail ?? (errorCause !== undefined ? toInfoLogErrorDetail(errorCause) : undefined),
+        ...extras,
+      });
+      return { ok: false as const, error: errorMessage };
+    };
+
+    if (!userProfile) {
+      return failWithTestLog("User profile missing.", "guard:user-profile-missing");
+    }
 
     const rawInput = payload.code.trim();
     const normalized = normalizeInviteCode(rawInput);
     const prefixProbe = normalized.replace(/[^A-Z0-9]/g, "");
+    const inputKind = prefixProbe.startsWith("NKI1")
+      ? "invite"
+      : prefixProbe.startsWith("NKC1")
+      ? "friend-code-v1"
+      : "unknown";
+    emitProgressWithTestLog("progress:start", {
+      message: `Friend add requested. inputKind=${inputKind}`,
+      context: {
+        inputKind,
+        rawLength: rawInput.length,
+        normalizedLength: normalized.length,
+      },
+    });
     let attemptKey = normalized || "empty";
     let inviteFingerprint: string | null = null;
     let invitePsk: Uint8Array | null = null;
@@ -2283,30 +3309,56 @@ export default function App() {
 
     if (prefixProbe.startsWith("NCK") || (prefixProbe.startsWith("NKC") && !prefixProbe.startsWith("NKC1"))) {
       recordFail(attemptKey);
-      return {
-        ok: false as const,
-        error:
-          "레거시 친구 ID(NCK-/NKC-)는 더 이상 지원하지 않습니다. 상대에게 NKC1- 친구 코드를 요청하세요.",
-      };
+      return failWithTestLog(
+        "레거시 친구 ID(NCK-/NKC-)는 더 이상 지원하지 않습니다. 상대에게 NKC1- 친구 코드를 요청하세요.",
+        "guard:legacy-code",
+        {
+          context: {
+            inputKind,
+            prefixProbe: prefixProbe.slice(0, 8),
+          },
+        }
+      );
     }
 
     if (prefixProbe.startsWith("NKI1")) {
       try {
         inviteFingerprint = await computeInviteFingerprint(normalized);
         attemptKey = `invite:${inviteFingerprint}`;
-      } catch {
-        return { ok: false as const, error: "Invite code invalid." };
+      } catch (error) {
+        return failWithTestLog(
+          "Invite code invalid.",
+          "guard:invite-fingerprint-invalid",
+          {
+            context: {
+              inputKind,
+              normalizedLength: normalized.length,
+            },
+          },
+          error
+        );
       }
     }
 
     const firstGate = checkAllowed(attemptKey);
     if (!firstGate.ok) {
       const waitSeconds = Math.ceil((firstGate.waitMs ?? 0) / 1000);
-      return {
-        ok: false as const,
-        error: `Too many attempts. Try again in ${waitSeconds}s.`,
-      };
+      return failWithTestLog(
+        `Too many attempts. Try again in ${waitSeconds}s.`,
+        "guard:rate-limit-initial",
+        {
+          context: {
+            attemptKey,
+            waitSeconds,
+          },
+        }
+      );
     }
+    emitProgressWithTestLog("progress:rate-limit-initial-passed", {
+      context: {
+        attemptKey,
+      },
+    });
 
     let friendCode = rawInput;
     if (prefixProbe.startsWith("NKI1")) {
@@ -2314,48 +3366,88 @@ export default function App() {
       if ("error" in decodedInvite) {
         recordFail(attemptKey);
         if (decodedInvite.error.toLowerCase().includes("expired")) {
-          return { ok: false as const, error: "Invite expired." };
+          return failWithTestLog("Invite expired.", "decode:invite-expired");
         }
-        return { ok: false as const, error: decodedInvite.error };
+        return failWithTestLog(decodedInvite.error, "decode:invite-invalid");
       }
       oneTimeInvite = Boolean(decodedInvite.oneTime);
       try {
         invitePsk = decodeBase64Url(decodedInvite.psk);
       } catch {
         recordFail(attemptKey);
-        return { ok: false as const, error: "Invalid invite PSK." };
+        return failWithTestLog("Invalid invite PSK.", "decode:invite-psk-invalid");
       }
       friendCode = encodeFriendCodeV1(decodedInvite.friend);
+      emitProgressWithTestLog("progress:invite-decoded", {
+        message: oneTimeInvite
+          ? "Invite decoded (one-time)."
+          : "Invite decoded (reusable).",
+        context: {
+          oneTimeInvite,
+          inviteFingerprint: inviteFingerprint?.slice(0, 12),
+        },
+      });
     }
 
     const decoded = decodeFriendCodeV1(friendCode);
     if ("error" in decoded) {
       recordFail(attemptKey);
-      return { ok: false as const, error: decoded.error };
+      return failWithTestLog(decoded.error, "decode:friend-code-invalid", {
+        context: {
+          inputKind,
+          oneTimeInvite,
+        },
+      });
     }
 
     const identityPubBytes = decodeBase64Url(decoded.identityPub);
     const friendId = computeFriendId(identityPubBytes);
+    emitProgressWithTestLog("progress:friend-code-decoded", {
+      friendId,
+      context: {
+        hasDeviceId: Boolean(decoded.deviceId),
+        hasOnionAddr: Boolean(decoded.onionAddr),
+        hasLokinetAddr: Boolean(decoded.lokinetAddr),
+      },
+    });
     const finalKey = prefixProbe.startsWith("NKI1") ? attemptKey : `friend:${friendId}`;
     if (finalKey !== attemptKey) {
       const gate = checkAllowed(finalKey);
       if (!gate.ok) {
         const waitSeconds = Math.ceil((gate.waitMs ?? 0) / 1000);
-        return {
-          ok: false as const,
-          error: `Too many attempts. Try again in ${waitSeconds}s.`,
-        };
+        return failWithTestLog(
+            `Too many attempts. Try again in ${waitSeconds}s.`,
+            "guard:rate-limit-friend-id",
+            {
+              friendId,
+              context: {
+                finalKey,
+                waitSeconds,
+              },
+            }
+        );
       }
     }
+    emitProgressWithTestLog("progress:rate-limit-final-passed", {
+      friendId,
+      context: {
+        finalKey,
+      },
+    });
 
     try {
       const myIdentityPub = await getIdentityPublicKey();
       if (encodeBase64Url(myIdentityPub) === decoded.identityPub) {
         recordFail(finalKey);
-        return { ok: false as const, error: "You cannot add yourself." };
+        return failWithTestLog("You cannot add yourself.", "guard:self-add", { friendId });
       }
-    } catch {
-      // Best-effort self-check only; continue.
+      emitProgressWithTestLog("progress:self-check-passed", { friendId });
+    } catch (error) {
+      emitProgressWithTestLog("progress:self-check-skipped", {
+        friendId,
+        message: "Self-check skipped due to local identity read failure.",
+        errorDetail: toInfoLogErrorDetail(error),
+      });
     }
 
     const finalizeFriendAdd = async () => {
@@ -2363,6 +3455,15 @@ export default function App() {
         const existing = friends.find(
           (friend) => friend.friendId === friendId || friend.identityPub === decoded.identityPub
         );
+        emitProgressWithTestLog("progress:finalize-start", {
+          friendId,
+          profileId: existing?.id,
+          context: {
+            finalKey,
+            hasExistingProfile: Boolean(existing),
+            oneTimeInvite,
+          },
+        });
 
         const tofu = applyTOFU(
           existing?.identityPub && existing?.dhPub
@@ -2387,13 +3488,33 @@ export default function App() {
             await hydrateVault();
           }
           recordFail(finalKey);
-          return { ok: false as const, error: "Friend keys changed; blocked." };
+          return failWithTestLog("Friend keys changed; blocked.", "verify:tofu-blocked", {
+            profileId: existing?.id,
+            friendId,
+            context: {
+              tofuReason: tofu.reason,
+            },
+          });
         }
+        emitProgressWithTestLog("progress:tofu-passed", {
+          friendId,
+          profileId: existing?.id,
+          context: {
+            trustStatus: existing?.trust?.status ?? "new",
+          },
+        });
 
         const psk =
           invitePsk ?? (payload.psk?.trim() ? new TextEncoder().encode(payload.psk.trim()) : null);
         if (psk) {
           await setFriendPsk(friendId, psk);
+          emitProgressWithTestLog("progress:psk-stored", {
+            friendId,
+            profileId: existing?.id,
+            context: {
+              pskSource: invitePsk ? "invite" : "manual",
+            },
+          });
         }
 
         const routingHints = sanitizeRoutingHints(
@@ -2405,15 +3526,23 @@ export default function App() {
               }
             : undefined
         );
+        const hasDeviceId = Boolean(decoded.deviceId);
+        const hasRouteTarget = Boolean(decoded.onionAddr || decoded.lokinetAddr);
+        const netConfig = useNetConfigStore.getState().config;
+        const routeRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
         if (!decoded.deviceId) {
           console.warn("[friend] missing deviceId in friend code; marking unreachable", {
+            friendId,
+          });
+        } else if (routeRequired && !hasRouteTarget) {
+          console.warn("[friend] missing route target in friend code; request send deferred", {
             friendId,
           });
         }
 
         const short = friendId.slice(0, 6);
         const reachability = (() => {
-          if (decoded.deviceId) {
+          if (hasDeviceId && (!routeRequired || hasRouteTarget)) {
             return {
               status: "ok" as const,
               attempts: existing?.reachability?.attempts ?? 0,
@@ -2423,13 +3552,19 @@ export default function App() {
           }
           return {
             status: "unreachable" as const,
-            lastError: "Missing deviceId in friend code",
+            lastError: hasDeviceId
+              ? "Missing onion/lokinet route target in friend code"
+              : "Missing deviceId in friend code",
             attempts: existing?.reachability?.attempts ?? 0,
             lastAttemptAt: Date.now(),
             nextAttemptAt: existing?.reachability?.nextAttemptAt,
           };
         })();
 
+        const nextFriendStatus =
+          existing?.friendStatus === "request_in"
+            ? "normal"
+            : existing?.friendStatus ?? "request_out";
         const friend: UserProfile = {
           id: existing?.id ?? createId(),
           friendId,
@@ -2437,7 +3572,7 @@ export default function App() {
           status: existing?.status ?? "Friend",
           theme: existing?.theme ?? "dark",
           kind: "friend",
-          friendStatus: existing?.friendStatus ?? "request_out",
+          friendStatus: nextFriendStatus,
           isFavorite: existing?.isFavorite ?? false,
           identityPub: decoded.identityPub,
           dhPub: decoded.dhPub,
@@ -2452,22 +3587,123 @@ export default function App() {
         };
 
         await saveProfile(friend);
+        if (existing?.friendStatus === "request_in") {
+          const existingConv = convs.find(
+            (conv) =>
+              !(conv.type === "group" || conv.participants.length > 2) &&
+              conv.participants.includes(friend.id)
+          );
+          if (existingConv) {
+            await saveConversation({
+              ...existingConv,
+              pendingAcceptance: false,
+              pendingOutgoing: false,
+              pendingFriendResponse: undefined,
+              hidden: false,
+            });
+          }
+        }
+        emitProgressWithTestLog("progress:profile-saved", {
+          friendId,
+          profileId: friend.id,
+          context: {
+            friendStatus: friend.friendStatus,
+            hasDeviceId: Boolean(friend.routingHints?.deviceId || friend.primaryDeviceId || friend.deviceId),
+            hasRouteTarget: Boolean(friend.routingHints?.onionAddr || friend.routingHints?.lokinetAddr),
+          },
+        });
 
         let requestSent = false;
-        try {
-          requestSent = await sendFriendRequestForFriend(friend);
-        } catch (error) {
-          console.warn("[friend] failed to send friend request", error);
+        const canAttemptRequest = hasDeviceId && (!routeRequired || hasRouteTarget);
+        if (canAttemptRequest) {
+          emitProgressWithTestLog("progress:request-send-attempt", {
+            friendId,
+            profileId: friend.id,
+            requestSent: false,
+            context: {
+              convPendingOutgoing: friend.friendStatus === "request_out",
+            },
+          });
+          try {
+            requestSent = await sendFriendRequestForFriend(friend);
+          } catch (error) {
+            console.warn("[friend] failed to send friend request", error);
+            const message = error instanceof Error ? error.message : String(error);
+            emitProgressWithTestLog("progress:request-send-error", {
+              friendId,
+              profileId: friend.id,
+              message,
+              requestSent: false,
+              errorDetail: toInfoLogErrorDetail(error),
+              context: {
+                checkpoint: "sendFriendRequestForFriend",
+              },
+            });
+          }
+        } else {
+          emitProgressWithTestLog("progress:request-send-skipped", {
+            friendId,
+            profileId: friend.id,
+            requestSent: false,
+            context: {
+              missingDeviceId: !hasDeviceId,
+              missingRouteTarget: routeRequired && !hasRouteTarget,
+            },
+          });
         }
+        emitProgressWithTestLog(
+          requestSent ? "progress:request-send-success" : "progress:request-send-deferred",
+          {
+            friendId,
+            profileId: friend.id,
+            requestSent,
+            context: {
+              retryExpected: !requestSent,
+            },
+          }
+        );
         if (!requestSent) {
           await hydrateVault();
-          const hasDeviceId = Boolean(
-            friend.routingHints?.deviceId || friend.primaryDeviceId || friend.deviceId
-          );
           if (!hasDeviceId) {
             addToast({
               message:
                 "친구는 추가되었지만 코드에 기기 ID가 없어 요청을 보낼 수 없습니다. 상대가 최신 버전에서 코드를 다시 복사해 보내야 합니다.",
+            });
+            emitFriendAddWithMeta({
+              result: "added",
+              stage: "result:added-missing-device-id",
+              message: "Friend added without deviceId; friend request not sent.",
+              profileId: friend.id,
+              friendId,
+              requestSent: false,
+              context: {
+                finalKey,
+                hasDeviceId: false,
+                retryExpected: false,
+              },
+            });
+            return {
+              ok: true as const,
+            };
+          }
+          if (routeRequired && !hasRouteTarget) {
+            addToast({
+              message:
+                "친구는 추가되었지만 코드에 onion/lokinet 주소가 없어 요청을 보낼 수 없습니다. 상대에게 최신 친구 코드를 요청하거나, 내 코드를 보내 상대가 먼저 추가하도록 안내해 주세요.",
+            });
+            emitFriendAddWithMeta({
+              result: "added",
+              stage: "result:added-missing-route-target",
+              message: "Friend added without route target; friend request not sent.",
+              profileId: friend.id,
+              friendId,
+              requestSent: false,
+              context: {
+                finalKey,
+                hasDeviceId: true,
+                hasRouteTarget: false,
+                retryExpected: false,
+              },
             });
             return {
               ok: true as const,
@@ -2477,6 +3713,20 @@ export default function App() {
             message:
               "친구를 목록에 추가했습니다. 요청 전송이 지연되어 백그라운드에서 재시도됩니다.",
           });
+          emitFriendAddWithMeta({
+            result: "added",
+            stage: "result:added-request-delayed",
+            message: "Friend added; request send delayed and scheduled for retry.",
+            profileId: friend.id,
+            friendId,
+            requestSent: false,
+            context: {
+              finalKey,
+              hasDeviceId: true,
+              hasRouteTarget: true,
+              retryExpected: true,
+            },
+          });
           return {
             ok: true as const,
           };
@@ -2484,17 +3734,46 @@ export default function App() {
 
         await hydrateVault();
         devLog("friend:add:success", { id: friend.id, friendId });
+        emitFriendAddWithMeta({
+          result: "added",
+          stage: "result:added-request-sent",
+          message: "Friend added and request sent.",
+          profileId: friend.id,
+          friendId,
+          requestSent: true,
+          context: {
+            finalKey,
+            retryExpected: false,
+          },
+        });
 
         recordSuccess(finalKey);
         return { ok: true as const };
       } catch (error) {
         console.error("Friend:add failed", error);
         recordFail(finalKey);
-        return { ok: false as const, error: "Failed to add friend." };
+        return failWithTestLog(
+          "Failed to add friend.",
+          "exception:add-failed",
+          {
+            friendId,
+            context: {
+              finalKey,
+              checkpoint: "finalizeFriendAdd",
+            },
+          },
+          error
+        );
       }
     };
 
     if (oneTimeInvite && inviteFingerprint) {
+      emitProgressWithTestLog("progress:invite-guard-check", {
+        friendId,
+        context: {
+          inviteFingerprint: inviteFingerprint.slice(0, 12),
+        },
+      });
       const guarded = await runOneTimeInviteGuard(
         inviteFingerprint,
         finalizeFriendAdd,
@@ -2502,8 +3781,19 @@ export default function App() {
       );
       if (!guarded.ok) {
         recordFail(finalKey);
-        return { ok: false as const, error: "Invite already used." };
+        return failWithTestLog("Invite already used.", "guard:invite-already-used", {
+          friendId,
+          context: {
+            inviteFingerprint: inviteFingerprint.slice(0, 12),
+          },
+        });
       }
+      emitProgressWithTestLog("progress:invite-guard-passed", {
+        friendId,
+        context: {
+          inviteFingerprint: inviteFingerprint.slice(0, 12),
+        },
+      });
       return guarded.value;
     }
 
@@ -2604,46 +3894,97 @@ export default function App() {
     return resolveFriendDisplayName(partnerProfile ?? undefined, friendAliasesById);
   }, [currentConversation, friendAliasesById, partnerProfile]);
 
+  const sendFriendResponseControl = useCallback(
+    async (
+      conv: Conversation,
+      partner: UserProfile,
+      response: PendingFriendResponseType
+    ): Promise<{ ok: true } | { ok: false; reason: "missing-device" | "send-failed" }> => {
+      const routingMeta = buildRoutingMeta(partner);
+      if (!routingMeta.toDeviceId) {
+        return { ok: false, reason: "missing-device" };
+      }
+      const [identityPub, dhPub] = await Promise.all([getIdentityPublicKey(), getDhPublicKey()]);
+      const localFriendCodePayload = await buildLocalFriendCodePayload();
+      const localFriendCode = encodeFriendCodeV1({
+        v: 1,
+        ...localFriendCodePayload,
+      });
+      const payload =
+        response === "accept"
+          ? {
+              type: "friend_accept" as const,
+              convId: conv.id,
+              from: {
+                identityPub: encodeBase64Url(identityPub),
+                dhPub: encodeBase64Url(dhPub),
+                deviceId: getOrCreateDeviceId(),
+                friendCode: localFriendCode,
+              },
+              profile: {
+                displayName: userProfile?.displayName,
+                status: userProfile?.status,
+                avatarRef: userProfile?.avatarRef,
+              },
+              ts: Date.now(),
+            }
+          : {
+              type: "friend_decline" as const,
+              convId: conv.id,
+              from: {
+                identityPub: encodeBase64Url(identityPub),
+                dhPub: encodeBase64Url(dhPub),
+                deviceId: getOrCreateDeviceId(),
+                friendCode: localFriendCode,
+              },
+              ts: Date.now(),
+            };
+      const sent = await sendFriendControlPacket(conv, partner, payload);
+      return sent ? { ok: true } : { ok: false, reason: "send-failed" };
+    },
+    [buildLocalFriendCodePayload, buildRoutingMeta, sendFriendControlPacket, userProfile?.avatarRef, userProfile?.displayName, userProfile?.status]
+  );
+
+  const applyFriendResponseLocally = useCallback(
+    async (convId: string, friendId: string, response: PendingFriendResponseType) => {
+      if (response === "accept") {
+        await updateFriendOrThrow(friendId, { friendStatus: "normal" });
+        await updateConversationOrThrow(convId, {
+          hidden: false,
+          pendingAcceptance: false,
+          pendingOutgoing: false,
+          pendingFriendResponse: undefined,
+        });
+        return;
+      }
+      await updateFriendOrThrow(friendId, { friendStatus: "blocked" });
+      await updateConversationOrThrow(convId, {
+        hidden: true,
+        pendingAcceptance: false,
+        pendingOutgoing: false,
+        pendingFriendResponse: undefined,
+      });
+    },
+    [updateConversationOrThrow, updateFriendOrThrow]
+  );
+
   const handleAcceptRequest = async () => {
     if (!currentConversation || !partnerProfile) return;
     try {
-      await updateFriend(partnerProfile.id, { friendStatus: "normal" });
-      await updateConversation(currentConversation.id, {
-        hidden: false,
-        pendingAcceptance: false,
-        pendingOutgoing: false,
-      });
-      try {
-        if (
-          !partnerProfile.routingHints?.deviceId &&
-          !partnerProfile.primaryDeviceId &&
-          !partnerProfile.deviceId
-        ) {
-          console.warn("[friend] missing deviceId; cannot send accept");
-          return;
-        }
-        const [identityPub, dhPub] = await Promise.all([
-          getIdentityPublicKey(),
-          getDhPublicKey(),
-        ]);
-        await sendFriendControlPacket(currentConversation, partnerProfile, {
-          type: "friend_accept",
-          convId: currentConversation.id,
-          from: {
-            identityPub: encodeBase64Url(identityPub),
-            dhPub: encodeBase64Url(dhPub),
-            deviceId: getOrCreateDeviceId(),
-          },
-          profile: {
-            displayName: userProfile?.displayName,
-            status: userProfile?.status,
-            avatarRef: userProfile?.avatarRef,
-          },
-          ts: Date.now(),
+      const outcome = await sendFriendResponseControl(currentConversation, partnerProfile, "accept");
+      if (!outcome.ok) {
+        await updateConversationOrThrow(currentConversation.id, {
+          pendingFriendResponse: "accept",
         });
-      } catch (error) {
-        console.warn("[friend] failed to send friend accept", error);
+        addToast({
+          message:
+            outcome.reason === "missing-device"
+              ? "상대 기기 정보가 없어 수락 전송이 지연됩니다. 정보가 갱신되면 자동 재시도합니다."
+              : "수락 전송이 지연되었습니다. 백그라운드에서 자동 재시도합니다.",
+        });
+        return;
       }
+      await applyFriendResponseLocally(currentConversation.id, partnerProfile.id, "accept");
     } catch (error) {
       console.error("Failed to accept request", error);
       addToast({ message: "메시지 요청 수락에 실패했습니다." });
@@ -2653,7 +3994,24 @@ export default function App() {
   useEffect(() => {
     if (!userProfile) return;
     const scheduler = startFriendRequestScheduler({
-      getTargets: () => useAppStore.getState().friends,
+      getTargets: () => {
+        const state = useAppStore.getState();
+        const config = useNetConfigStore.getState().config;
+        const routeRequired = config.mode === "onionRouter" || config.onionEnabled;
+        if (!routeRequired) {
+          return state.friends;
+        }
+        return state.friends.filter((friend) => {
+          if (friend.routingHints?.onionAddr || friend.routingHints?.lokinetAddr) {
+            return true;
+          }
+          const code = friend.profileVcard?.friendCode?.trim();
+          if (!code) return false;
+          const decoded = decodeFriendCodeV1(code);
+          if ("error" in decoded) return false;
+          return Boolean(decoded.onionAddr || decoded.lokinetAddr);
+        });
+      },
       onAttempt: async (friend) => {
         try {
           return await sendFriendRequestForFriend(friend);
@@ -2675,6 +4033,46 @@ export default function App() {
     });
     return () => scheduler.stop();
   }, [hydrateVault, sendFriendRequestForFriend, userProfile]);
+
+  useEffect(() => {
+    if (!userProfile) return;
+    const scheduler = startFriendResponseScheduler({
+      getTargets: () => {
+        const state = useAppStore.getState();
+        const myId = state.userProfile?.id;
+        if (!myId) return [];
+        return state.convs.flatMap((conv) => {
+          const pending = conv.pendingFriendResponse;
+          if (pending !== "accept" && pending !== "decline") return [];
+          const isDirect =
+            !(conv.type === "group" || conv.participants.length > 2) &&
+            conv.participants.length === 2;
+          if (!isDirect) return [];
+          const friendId = conv.participants.find((id) => id && id !== myId);
+          if (!friendId) return [];
+          const partner = state.friends.find((friend) => friend.id === friendId);
+          if (!partner) return [];
+          return [{ convId: conv.id, friendId: partner.id, response: pending }];
+        });
+      },
+      onAttempt: async (target) => {
+        const state = useAppStore.getState();
+        const conv = state.convs.find((item) => item.id === target.convId);
+        const partner = state.friends.find((item) => item.id === target.friendId);
+        if (!conv || !partner) return false;
+        try {
+          const outcome = await sendFriendResponseControl(conv, partner, target.response);
+          if (!outcome.ok) return false;
+          await applyFriendResponseLocally(conv.id, partner.id, target.response);
+          return true;
+        } catch (error) {
+          console.warn("[friend] response retry failed", error);
+          return false;
+        }
+      },
+    });
+    return () => scheduler.stop();
+  }, [applyFriendResponseLocally, sendFriendResponseControl, userProfile]);
 
   const runBackgroundSync = useCallback(async () => {
     await syncContactsNow();
@@ -2715,38 +4113,20 @@ export default function App() {
   const handleDeclineRequest = async () => {
     if (!currentConversation || !partnerProfile) return;
     try {
-      await updateFriend(partnerProfile.id, { friendStatus: "blocked" });
-      await updateConversation(currentConversation.id, {
-        hidden: true,
-        pendingAcceptance: false,
-        pendingOutgoing: false,
-      });
-      try {
-        if (
-          !partnerProfile.routingHints?.deviceId &&
-          !partnerProfile.primaryDeviceId &&
-          !partnerProfile.deviceId
-        ) {
-          console.warn("[friend] missing deviceId; cannot send decline");
-          return;
-        }
-        const [identityPub, dhPub] = await Promise.all([
-          getIdentityPublicKey(),
-          getDhPublicKey(),
-        ]);
-        await sendFriendControlPacket(currentConversation, partnerProfile, {
-          type: "friend_decline",
-          convId: currentConversation.id,
-          from: {
-            identityPub: encodeBase64Url(identityPub),
-            dhPub: encodeBase64Url(dhPub),
-            deviceId: getOrCreateDeviceId(),
-          },
-          ts: Date.now(),
+      const outcome = await sendFriendResponseControl(currentConversation, partnerProfile, "decline");
+      if (!outcome.ok) {
+        await updateConversationOrThrow(currentConversation.id, {
+          pendingFriendResponse: "decline",
         });
-      } catch (error) {
-        console.warn("[friend] failed to send friend decline", error);
+        addToast({
+          message:
+            outcome.reason === "missing-device"
+              ? "상대 기기 정보가 없어 거절 전송이 지연됩니다. 정보가 갱신되면 자동 재시도합니다."
+              : "거절 전송이 지연되었습니다. 백그라운드에서 자동 재시도합니다.",
+        });
+        return;
       }
+      await applyFriendResponseLocally(currentConversation.id, partnerProfile.id, "decline");
     } catch (error) {
       console.error("Failed to decline request", error);
       addToast({ message: "메시지 요청 거절에 실패했습니다." });
@@ -2894,7 +4274,10 @@ export default function App() {
           open={friendAddOpen}
           onOpenChange={setFriendAddOpen}
           myCode={myFriendCode}
+          myCodeHint={friendAddHint}
+          routeResolveBusy={routeResolveBusy}
           onCopyCode={handleCopyFriendCode}
+          onResolveRoute={handleResolveFriendRoute}
           onAdd={handleAddFriend}
         />
       ) : null}
@@ -2986,20 +4369,3 @@ export default function App() {
     </>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

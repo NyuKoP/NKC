@@ -11,6 +11,7 @@ import {
 } from "electron";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import nodeNet from "node:net";
 import path from "node:path";
 import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
@@ -23,7 +24,14 @@ import { startOnionController, type OnionControllerHandle } from "./main/onionCo
 import { TorManager } from "./main/torManager";
 import { LokinetManager } from "./main/lokinetManager";
 import { readAppPrefs, setAppPrefs } from "./main/preferences";
+import {
+  appendTestLogRecord,
+  getFriendFlowTestLogPath,
+  getTestLogPath,
+  type TestLogAppendPayload,
+} from "./main/testLogStore";
 import { defaultAppPrefs, type AppPreferences, type AppPreferencesPatch } from "./preferences";
+import { fetchWithTimeout } from "./net/fetchWithTimeout";
 
 type ProxyApplyPayload = {
   proxyUrl: string;
@@ -65,6 +73,10 @@ type OnionControllerFetchResponse = {
   headers: Record<string, string>;
   bodyBase64: string;
   error?: string;
+};
+
+type StartTorPayload = {
+  profileScopedDataDir?: boolean;
 };
 
 type SyncStatusPayload = {
@@ -188,6 +200,23 @@ const collectHeaders = (headers: Headers | Record<string, string[] | string | un
 const decodeBase64 = (value: string) => Buffer.from(value, "base64");
 
 const encodeBase64 = (value: Uint8Array) => Buffer.from(value).toString("base64");
+const createAbortTraceId = () =>
+  `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+const emitAbortTrace = (
+  event: "abort:linked" | "abort:fired",
+  detail: Record<string, unknown>
+) => {
+  if (event === "abort:linked") {
+    const opId = typeof detail.opId === "string" ? detail.opId : "";
+    if (opId.includes("/onion/inbox")) {
+      return;
+    }
+  }
+  console.info(`[trace][${event}]`, {
+    ...detail,
+    ts: new Date().toISOString(),
+  });
+};
 
 const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchResponse> => {
   return new Promise((resolve) => {
@@ -203,12 +232,24 @@ const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchRes
         }
       }
       const timeoutMs = req.timeoutMs ?? 10000;
+      const abortId = `main-abort:${createAbortTraceId()}`;
+      emitAbortTrace("abort:linked", {
+        abortId,
+        opId: req.url,
+        source: "timeout",
+      });
       const timeout = setTimeout(() => {
         try {
           request.abort();
         } catch {
           // ignore abort errors
         }
+        emitAbortTrace("abort:fired", {
+          abortId,
+          opId: req.url,
+          source: "timeout",
+          reason: `net.request timeout ${timeoutMs}ms`,
+        });
         resolve({
           ok: false,
           status: 0,
@@ -261,9 +302,7 @@ const fetchViaNetRequest = async (req: OnionFetchRequest): Promise<OnionFetchRes
 };
 
 const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchResponse> => {
-  const controller = new AbortController();
   const timeoutMs = req.timeoutMs ?? 10000;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const fetchWithSession = net.fetch as unknown as (
       input: string,
@@ -280,13 +319,40 @@ const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchRespo
       headers: Headers;
       arrayBuffer: () => Promise<ArrayBuffer>;
     }>;
-    const response = await fetchWithSession(req.url, {
-      method: req.method,
-      headers: req.headers,
-      body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
-      signal: controller.signal,
-      session: getOnionSession(),
-    });
+    const response = await fetchWithTimeout<{
+      ok: boolean;
+      status: number;
+      headers: Headers;
+      arrayBuffer: () => Promise<ArrayBuffer>;
+    }>(
+      req.url,
+      {
+        method: req.method,
+        headers: req.headers,
+        body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
+      },
+      {
+        timeoutMs,
+        opId: req.url,
+        traceSource: "timeout",
+        onTrace: (trace) => {
+          emitAbortTrace(trace.event, {
+            abortId: trace.abortId,
+            opId: trace.opId,
+            source: trace.source,
+            reason: trace.reason,
+          });
+        },
+        fetchImpl: (url, init) =>
+          fetchWithSession(url, {
+            method: init?.method,
+            headers: init?.headers as Record<string, string> | undefined,
+            body: init?.body as Uint8Array | undefined,
+            signal: (init?.signal ?? undefined) as AbortSignal | undefined,
+            session: getOnionSession(),
+          }),
+      }
+    );
     const buffer = new Uint8Array(await response.arrayBuffer());
     return {
       ok: response.ok,
@@ -303,8 +369,6 @@ const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchRespo
       bodyBase64: "",
       error: message,
     };
-  } finally {
-    clearTimeout(timeout);
   }
 };
 
@@ -336,16 +400,29 @@ const fetchOnionController = async (
   if (!req?.url || !req.method) {
     return { status: 0, headers: {}, bodyBase64: "", error: "invalid-request" };
   }
-  const controller = new AbortController();
   const timeoutMs = req.timeoutMs ?? 10000;
-  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(req.url, {
-      method: req.method,
-      headers: req.headers,
-      body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
-      signal: controller.signal,
-    });
+    const response = await fetchWithTimeout<Response>(
+      req.url,
+      {
+        method: req.method,
+        headers: req.headers,
+        body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
+      },
+      {
+        timeoutMs,
+        opId: req.url,
+        traceSource: "timeout",
+        onTrace: (trace) => {
+          emitAbortTrace(trace.event, {
+            abortId: trace.abortId,
+            opId: trace.opId,
+            source: trace.source,
+            reason: trace.reason,
+          });
+        },
+      }
+    );
     const buffer = new Uint8Array(await response.arrayBuffer());
     return {
       status: response.status,
@@ -359,9 +436,38 @@ const fetchOnionController = async (
       bodyBase64: "",
       error: error instanceof Error ? error.message : String(error),
     };
-  } finally {
-    clearTimeout(timeout);
   }
+};
+
+const checkSocksProxyReachable = async (socksUrl: string, timeoutMs = 2000) => {
+  let parsed: URL;
+  try {
+    parsed = new URL(socksUrl);
+  } catch {
+    return false;
+  }
+  if (!parsed.hostname) return false;
+  const port = parsed.port ? Number.parseInt(parsed.port, 10) : 0;
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    return false;
+  }
+  return new Promise<boolean>((resolve) => {
+    const socket = nodeNet.connect({
+      host: parsed.hostname,
+      port,
+    });
+    let done = false;
+    const finish = (ok: boolean) => {
+      if (done) return;
+      done = true;
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(Math.max(1, timeoutMs));
+    socket.once("connect", () => finish(true));
+    socket.once("timeout", () => finish(false));
+    socket.once("error", () => finish(false));
+  });
 };
 
 const registerOnionControllerIpc = () => {
@@ -374,9 +480,9 @@ const registerOnionControllerIpc = () => {
     return fetchOnionController(req);
   });
   ipcMain.handle("nkc:getTorStatus", async () => torManager?.getStatus() ?? { state: "unavailable" });
-  ipcMain.handle("nkc:startTor", async () => {
+  ipcMain.handle("nkc:startTor", async (_event, payload?: StartTorPayload) => {
     if (!torManager) return { ok: false };
-    await torManager.start();
+    await torManager.start(payload);
     return { ok: true };
   });
   ipcMain.handle("nkc:stopTor", async () => {
@@ -384,6 +490,13 @@ const registerOnionControllerIpc = () => {
     await torManager.stop();
     return { ok: true };
   });
+  ipcMain.handle(
+    "nkc:checkSocksProxyReachable",
+    async (_event, payload: { socksUrl?: string; timeoutMs?: number }) => {
+      if (!payload?.socksUrl || typeof payload.socksUrl !== "string") return false;
+      return checkSocksProxyReachable(payload.socksUrl, payload.timeoutMs ?? 2000);
+    }
+  );
   ipcMain.handle("nkc:ensureHiddenService", async () => {
     if (!torManager || !onionController) {
       throw new Error("tor-or-controller-unavailable");
@@ -518,6 +631,28 @@ const registerAppIpc = () => {
   ipcMain.handle("app:quit", async () => {
     isQuitting = true;
     app.quit();
+  });
+};
+
+const registerTestLogIpc = () => {
+  ipcMain.handle("testLog:path", async () => getTestLogPath(app.getPath("userData")));
+  ipcMain.handle("testLog:friendFlowPath", async () =>
+    getFriendFlowTestLogPath(app.getPath("userData"))
+  );
+  ipcMain.handle("testLog:append", async (_event, payload: TestLogAppendPayload) => {
+    if (!payload || typeof payload !== "object") {
+      throw new Error("invalid-test-log-payload");
+    }
+    if (typeof payload.channel !== "string" || !payload.channel.trim()) {
+      throw new Error("invalid-test-log-channel");
+    }
+    const userDataPath = app.getPath("userData");
+    await appendTestLogRecord(userDataPath, {
+      channel: payload.channel.trim(),
+      event: payload.event,
+      at: payload.at,
+    });
+    return { ok: true, path: getTestLogPath(userDataPath) };
   });
 };
 
@@ -1452,6 +1587,7 @@ app.whenReady().then(async () => {
   registerOnionIpc();
   registerOnionControllerIpc();
   registerAppIpc();
+  registerTestLogIpc();
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
     lokinetManager = new LokinetManager({ appDataDir: app.getPath("userData") });

@@ -5,16 +5,22 @@ import { Copy, UserPlus } from "lucide-react";
 type FriendAddDialogProps = {
   open: boolean;
   myCode: string;
+  myCodeHint?: string | null;
+  routeResolveBusy?: boolean;
   onOpenChange: (open: boolean) => void;
   onCopyCode: () => Promise<void>;
+  onResolveRoute?: () => Promise<void>;
   onAdd: (payload: { code: string; psk?: string }) => Promise<{ ok: boolean; error?: string }>;
 };
 
 export default function FriendAddDialog({
   open,
   myCode,
+  myCodeHint,
+  routeResolveBusy = false,
   onOpenChange,
   onCopyCode,
+  onResolveRoute,
   onAdd,
 }: FriendAddDialogProps) {
   const [code, setCode] = useState("");
@@ -62,6 +68,7 @@ export default function FriendAddDialog({
               내 코드
               <input
                 value={myCode}
+                data-testid="friend-add-my-code"
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 font-mono text-sm text-nkc-text"
                 placeholder="코드를 생성하는 중..."
                 readOnly
@@ -76,11 +83,27 @@ export default function FriendAddDialog({
               <Copy size={14} />
               복사
             </button>
+            {myCodeHint ? (
+              <div className="space-y-2">
+                <div className="text-xs text-amber-300">{myCodeHint}</div>
+                {onResolveRoute ? (
+                  <button
+                    type="button"
+                    onClick={() => void onResolveRoute()}
+                    className="inline-flex items-center gap-1 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={routeResolveBusy}
+                  >
+                    {routeResolveBusy ? "경로 찾는 중..." : "경로 찾기"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
 
             <label className="text-sm text-nkc-muted">
               친구 코드
               <input
                 value={code}
+                data-testid="friend-add-code-input"
                 onChange={(event) => setCode(event.target.value)}
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
                 placeholder="NKC1-... (선택: NKI1-...)"
@@ -96,6 +119,7 @@ export default function FriendAddDialog({
               <button
                 type="button"
                 onClick={() => void handleAdd()}
+                data-testid="friend-add-submit"
                 className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
                 disabled={!code.trim() || busy}
               >
