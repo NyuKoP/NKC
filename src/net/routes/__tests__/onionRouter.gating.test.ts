@@ -91,6 +91,92 @@ describe("onionRouter transport gating", () => {
     expect(torRuntime.awaitReady).toHaveBeenCalledTimes(1);
   });
 
+  it("does not require Tor runtime for lokinet-only routes", async () => {
+    let sendCallCount = 0;
+    root.nkc = {
+      getOnionControllerUrl: async () => "http://127.0.0.1:3210",
+      onionControllerFetch: async (req: { url: string }) => {
+        const path = new URL(req.url).pathname;
+        if (path === "/onion/health") {
+          return {
+            status: 200,
+            headers: { "content-type": "application/json" },
+            bodyBase64: encodeJsonBody({ ok: true, network: "lokinet", details: "lokinet ready" }),
+          };
+        }
+        if (path === "/onion/send") {
+          sendCallCount += 1;
+          return {
+            status: 200,
+            headers: { "content-type": "application/json" },
+            bodyBase64: encodeJsonBody({ ok: true, msgId: "m-lokinet-ok" }),
+          };
+        }
+        if (path === "/onion/inbox") {
+          return {
+            status: 200,
+            headers: { "content-type": "application/json" },
+            bodyBase64: encodeJsonBody({ ok: true, items: [], nextAfter: null }),
+          };
+        }
+        return {
+          status: 404,
+          headers: { "content-type": "application/json" },
+          bodyBase64: encodeJsonBody({ ok: false, error: "not-found" }),
+        };
+      },
+    };
+    const torRuntime = {
+      start: vi.fn(async () => {
+        throw Object.assign(new Error("tor unavailable"), { code: "TOR_NOT_READY" });
+      }),
+      awaitReady: vi.fn(async () => {
+        throw Object.assign(new Error("tor unavailable"), { code: "TOR_NOT_READY" });
+      }),
+      markDegraded: vi.fn(),
+    };
+    const transport = createOnionRouterTransport({
+      httpClient: {
+        request: vi.fn(async () => new Response()),
+        healthCheck: vi.fn(async () => ({ ok: true, message: "ok" })),
+      },
+      config: {
+        mode: "onionRouter",
+        onionProxyEnabled: true,
+        onionProxyUrl: "socks5://127.0.0.1:9050",
+        webrtcRelayOnly: true,
+        disableLinkPreview: true,
+        selfOnionEnabled: true,
+        selfOnionMinRelays: 3,
+        allowRemoteProxy: false,
+        onionEnabled: true,
+        onionSelectedNetwork: "lokinet",
+        tor: { installed: false, status: "idle" },
+        lokinet: { installed: true, status: "ready", version: "1.0.0" },
+        lastUpdateCheckAtMs: undefined,
+      },
+      torRuntime,
+    });
+
+    try {
+      await transport.start();
+      await expect(
+        transport.send({
+          id: "m-lokinet",
+          payload: "ciphertext",
+          toDeviceId: "peer-device",
+          route: { lokinet: "peer.loki" },
+        } as unknown as Parameters<typeof transport.send>[0])
+      ).resolves.toBeUndefined();
+      expect(torRuntime.start).not.toHaveBeenCalled();
+      expect(torRuntime.awaitReady).not.toHaveBeenCalled();
+      expect(sendCallCount).toBe(1);
+    } finally {
+      await transport.stop();
+      root.nkc = prevNkc;
+    }
+  });
+
   it("resyncs Tor forward proxy and recovers from proxy_unreachable once", async () => {
     let sendCallCount = 0;
     const setOnionForwardProxy = vi.fn(async () => ({ ok: true }));
