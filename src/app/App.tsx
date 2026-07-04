@@ -1557,7 +1557,7 @@ export default function App() {
     [buildRoutingMeta]
   );
 
-  const buildFriendRequestPayload = useCallback(async (convId: string) => {
+  const buildFriendRequestPayload = useCallback(async (convId: string, traceId?: string) => {
     if (!userProfile) return null;
     const payload = await buildLocalFriendCodePayload();
     const friendCode = encodeFriendCodeV1({
@@ -1567,6 +1567,7 @@ export default function App() {
     return {
       type: "friend_req" as const,
       convId,
+      traceId,
       from: {
         identityPub: payload.identityPub,
         dhPub: payload.dhPub,
@@ -1648,6 +1649,7 @@ export default function App() {
         };
       }
       const frameType = signedPayload.type;
+      const traceId = signedPayload.traceId;
       const messageId = createId();
       const operationId = `friend-route:${newClientBatchId()}`;
       const startedAt = nowMonotonicMs();
@@ -1764,6 +1766,7 @@ export default function App() {
         payloadByteLength,
         payloadTimestamp: signedPayload.ts ?? null,
         payloadConvId: signedPayload.convId ?? null,
+        payloadTraceId: traceId ?? null,
         netMode: netConfig.mode,
         effectiveNetMode: routingConfig.mode,
         routeModeOverride: null,
@@ -1791,6 +1794,7 @@ export default function App() {
         frameType,
         source: "app:sendFriendControlPacket",
         operationId,
+        traceId,
         elapsedMs: 0,
         messageId,
         convId: conv.id,
@@ -1831,6 +1835,7 @@ export default function App() {
           convId: conv.id,
           source: "app:sendFriendControlPacket",
           operationId,
+          traceId,
           elapsedMs: elapsedMs(),
           senderDeviceId,
           toDeviceId: routingMeta.toDeviceId,
@@ -1861,6 +1866,7 @@ export default function App() {
           frameType,
           source: "app:sendFriendControlPacket",
           operationId,
+          traceId,
           elapsedMs: elapsedMs(),
           via: result.transport,
           messageId,
@@ -1894,6 +1900,7 @@ export default function App() {
         frameType,
         source: "app:sendFriendControlPacket",
         operationId,
+        traceId,
         elapsedMs: elapsedMs(),
         via: result.transport,
         messageId,
@@ -1921,7 +1928,8 @@ export default function App() {
   );
 
   const sendFriendRequestForFriend = useCallback(
-    async (friend: UserProfile) => {
+    async (friend: UserProfile, traceId?: string) => {
+      const effectiveTraceId = traceId ?? `friend-request:${friend.id}:${newClientBatchId()}`;
       let target = friend;
       try {
         target = await recoverAndPersistFriendRouting(friend);
@@ -1940,7 +1948,7 @@ export default function App() {
       }
       const conv = await ensureDirectConvForFriend(target);
       if (!conv) return false;
-      const payload = await buildFriendRequestPayload(conv.id);
+      const payload = await buildFriendRequestPayload(conv.id, effectiveTraceId);
       if (!payload) return false;
       return sendFriendControlPacket(conv, target, payload, "high");
     },
@@ -3388,6 +3396,7 @@ export default function App() {
       "result" | "stage" | "source" | "operationId" | "elapsedMs"
     >;
     const operationId = `friend-add:${newClientBatchId()}`;
+    const traceId = operationId;
     const startedAt = nowMonotonicMs();
     const elapsedMs = () => Math.max(0, Math.round(nowMonotonicMs() - startedAt));
     const emitFriendAddWithMeta = (
@@ -3396,6 +3405,7 @@ export default function App() {
       emitFriendAddTestLog({
         source: "app:handleAddFriend",
         operationId,
+        traceId,
         elapsedMs: elapsedMs(),
         ...detail,
       });
@@ -3766,11 +3776,12 @@ export default function App() {
             profileId: friend.id,
             requestSent: false,
             context: {
+              requestTraceId: traceId,
               convPendingOutgoing: friend.friendStatus === "request_out",
             },
           });
           try {
-            requestSent = await sendFriendRequestForFriend(friend);
+            requestSent = await sendFriendRequestForFriend(friend, traceId);
           } catch (error) {
             console.warn("[friend] failed to send friend request", error);
             const message = error instanceof Error ? error.message : String(error);
@@ -3782,6 +3793,7 @@ export default function App() {
               errorDetail: toInfoLogErrorDetail(error),
               context: {
                 checkpoint: "sendFriendRequestForFriend",
+                requestTraceId: traceId,
               },
             });
           }
@@ -3791,6 +3803,7 @@ export default function App() {
             profileId: friend.id,
             requestSent: false,
             context: {
+              requestTraceId: traceId,
               missingDeviceId: !hasDeviceId,
               missingRouteTarget: routeRequired && !hasRouteTarget,
             },
@@ -3803,6 +3816,7 @@ export default function App() {
             profileId: friend.id,
             requestSent,
             context: {
+              requestTraceId: traceId,
               retryExpected: !requestSent,
             },
           }
@@ -4045,6 +4059,7 @@ export default function App() {
       partner: UserProfile,
       response: PendingFriendResponseType
     ): Promise<{ ok: true } | { ok: false; reason: "missing-device" | "send-failed" }> => {
+      const traceId = `friend-response:${response}:${newClientBatchId()}`;
       const routingMeta = buildRoutingMeta(partner);
       if (!routingMeta.toDeviceId) {
         return { ok: false, reason: "missing-device" };
@@ -4060,6 +4075,7 @@ export default function App() {
           ? {
               type: "friend_accept" as const,
               convId: conv.id,
+              traceId,
               from: {
                 identityPub: encodeBase64Url(identityPub),
                 dhPub: encodeBase64Url(dhPub),
@@ -4076,6 +4092,7 @@ export default function App() {
           : {
               type: "friend_decline" as const,
               convId: conv.id,
+              traceId,
               from: {
                 identityPub: encodeBase64Url(identityPub),
                 dhPub: encodeBase64Url(dhPub),

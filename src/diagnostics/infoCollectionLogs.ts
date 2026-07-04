@@ -20,6 +20,7 @@ export type FriendAddInfoLogInput = {
   stage: string;
   source?: string;
   operationId?: string;
+  traceId?: string;
   elapsedMs?: number;
   message?: string;
   profileId?: string;
@@ -35,6 +36,7 @@ export type FriendRouteOutgoingInfoLogInput = {
   frameType: FriendControlFrameType;
   source?: string;
   operationId?: string;
+  traceId?: string;
   elapsedMs?: number;
   via?: "directP2P" | "selfOnion" | "onionRouter";
   messageId: string;
@@ -54,6 +56,7 @@ export type FriendRouteIncomingInfoLogInput = {
   frameType: FriendControlFrameType;
   source?: string;
   operationId?: string;
+  traceId?: string;
   elapsedMs?: number;
   via: "directP2P" | "selfOnion" | "onionRouter";
   packetId: string;
