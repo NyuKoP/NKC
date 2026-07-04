@@ -22,6 +22,10 @@ type SidebarProps = {
   groupAvatarRefsByConv: Record<string, AvatarRef | undefined>;
   friendAliasesById: Record<string, string | undefined>;
   selectedConvId: string | null;
+  networkStatus?: {
+    state: "connected" | "connecting" | "disconnected" | "error";
+    label: string;
+  };
   listMode: "chats" | "friends";
   listFilter: "all" | "unread" | "favorites";
   search: string;
@@ -55,6 +59,7 @@ export default function Sidebar({
   groupAvatarRefsByConv,
   friendAliasesById,
   selectedConvId,
+  networkStatus,
   listMode,
   listFilter,
   search,
@@ -82,7 +87,18 @@ export default function Sidebar({
   const language = useAppStore((state) => state.ui.language);
   const t = (ko: string, en: string) => (language === "en" ? en : ko);
   const locale = language === "en" ? "en-US" : "ko-KR";
-  const [now, setNow] = useState(() => Date.now());
+  const resolvedNetworkStatus = networkStatus ?? {
+    state: "disconnected" as const,
+    label: t("익명 라우팅 대기", "Anonymous routing idle"),
+  };
+  const networkStatusDotClass =
+    resolvedNetworkStatus.state === "connected"
+      ? "bg-emerald-500"
+      : resolvedNetworkStatus.state === "connecting"
+        ? "bg-amber-500"
+        : resolvedNetworkStatus.state === "error"
+          ? "bg-red-500"
+          : "bg-nkc-muted";
   const [favoritesOpen, setFavoritesOpen] = useState(true);
   const [friendsOpen, setFriendsOpen] = useState(true);
   const [pinnedChatsOpen, setPinnedChatsOpen] = useState(true);
@@ -92,11 +108,6 @@ export default function Sidebar({
   const friendClickTimerRef = useRef<number | null>(null);
   const searchLower = search.trim().toLowerCase();
   const friendMap = useMemo(() => new Map(friends.map((f) => [f.id, f])), [friends]);
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 30000);
-    return () => clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     return () => {
@@ -124,15 +135,6 @@ export default function Sidebar({
 
   const getFriendLastSeen = (friendId: string) => convLastByFriend.get(friendId) ?? 0;
 
-  const getActivityLabel = (friend: UserProfile) => {
-    const lastSeenAt = getFriendLastSeen(friend.id);
-    if (!lastSeenAt) return t("기록 없음", "No activity");
-    const ageMs = now - lastSeenAt;
-    const minutes = Math.max(0, Math.floor(ageMs / (60 * 1000)));
-    if (minutes === 0) return t("최근 대화 방금 전", "Last chat just now");
-    return t(`최근 대화 ${minutes}분 전`, `Last chat ${minutes} min ago`);
-  };
-
   const visibleConvs = convs
     .filter((conv) => !conv.hidden)
     .filter((conv) =>
@@ -151,31 +153,30 @@ export default function Sidebar({
   const pinned = filteredConvs.filter((conv) => conv.pinned);
   const regular = filteredConvs.filter((conv) => !conv.pinned);
 
-  const getFriendDisplayName = (friend: UserProfile) =>
-    resolveFriendDisplayName(friend, friendAliasesById);
-
-  const visibleFriends = friends
-    .filter((friend) => friend.friendStatus !== "hidden" && friend.friendStatus !== "blocked")
-    .filter((friend) => {
+  const filteredFriends = friends
+    .map((friend) => ({
+      friend,
+      displayName: resolveFriendDisplayName(friend, friendAliasesById),
+    }))
+    .filter(({ friend, displayName }) => {
+      if (friend.friendStatus === "hidden" || friend.friendStatus === "blocked") return false;
       if (!searchLower) return true;
-      return getFriendDisplayName(friend).toLowerCase().includes(searchLower);
+      return displayName.toLowerCase().includes(searchLower);
     })
     .sort((a, b) => {
-      if (a.isFavorite === b.isFavorite) {
-        const aSeen = getFriendLastSeen(a.id);
-        const bSeen = getFriendLastSeen(b.id);
+      if (a.friend.isFavorite === b.friend.isFavorite) {
+        const aSeen = getFriendLastSeen(a.friend.id);
+        const bSeen = getFriendLastSeen(b.friend.id);
         if (aSeen !== bSeen) {
           return bSeen - aSeen;
         }
-        return getFriendDisplayName(a).localeCompare(getFriendDisplayName(b));
+        return a.displayName.localeCompare(b.displayName);
       }
-      return a.isFavorite ? -1 : 1;
+      return a.friend.isFavorite ? -1 : 1;
     });
 
-  const filteredFriends = visibleFriends;
-
-  const favoriteFriends = filteredFriends.filter((friend) => friend.isFavorite);
-  const regularFriends = filteredFriends.filter((friend) => !friend.isFavorite);
+  const favoriteFriends = filteredFriends.filter(({ friend }) => friend.isFavorite);
+  const regularFriends = filteredFriends.filter(({ friend }) => !friend.isFavorite);
 
   const filterOptions: { value: SidebarProps["listFilter"]; label: string }[] =
     listMode === "chats"
@@ -214,8 +215,15 @@ export default function Sidebar({
     setAliasDraft(friendAliasesById[friend.id] ?? "");
   };
 
-  const renderFriendRow = (friend: UserProfile) => {
-    const displayName = getFriendDisplayName(friend);
+  const getFriendStatusBadge = (friend: UserProfile) => {
+    if (friend.friendStatus === "blocked") return t("차단됨", "Blocked");
+    if (friend.friendStatus === "request_in") return t("요청 받음", "Request received");
+    if (friend.friendStatus === "request_out") return t("요청 보냄", "Request sent");
+    return null;
+  };
+
+  const renderFriendRow = (friend: UserProfile, displayName: string) => {
+    const statusBadge = getFriendStatusBadge(friend);
     return (
       <div
         key={friend.id}
@@ -239,26 +247,36 @@ export default function Sidebar({
             onFriendViewProfile(friend.id);
           }
         }}
-        className="flex w-full items-start gap-3 rounded-nkc px-3 py-3 hover:bg-nkc-panelMuted"
+        className="group flex w-full cursor-pointer items-center gap-3 rounded-nkc px-4 py-3 text-nkc-text transition-colors duration-150 hover:bg-nkc-panelMuted"
       >
-        <Avatar name={displayName} avatarRef={friend.avatarRef} size={42} />
-        <div className="min-w-0 flex-1">
-          <div className="text-sm font-semibold text-nkc-text line-clamp-1">
-            {displayName}
-          </div>
-          <div className="text-xs text-nkc-muted line-clamp-1">{getActivityLabel(friend)}</div>
+        <div className="shrink-0">
+          <Avatar name={displayName} avatarRef={friend.avatarRef} size={40} />
         </div>
-        <FriendOverflowMenu
-          friendId={friend.id}
-          isFavorite={friend.isFavorite}
-          onChat={() => onFriendChat(friend.id)}
-          onViewProfile={() => onFriendViewProfile(friend.id)}
-          onToggleFavorite={() => onFriendToggleFavorite(friend.id)}
-          onHide={() => onFriendHide(friend.id)}
-          onDelete={() => onFriendDelete(friend.id)}
-          onBlock={() => onFriendBlock(friend.id)}
-          onRenameAlias={() => openAliasDialog(friend)}
-        />
+        <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="min-w-0 truncate text-sm font-semibold tracking-normal text-nkc-text">
+            {displayName}
+            </span>
+            {statusBadge ? (
+              <span className="shrink-0 rounded border border-nkc-border bg-nkc-panel px-1.5 py-0.5 text-[10px] font-medium text-nkc-muted">
+                {statusBadge}
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <div className="shrink-0 opacity-100 transition-opacity duration-150 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
+          <FriendOverflowMenu
+            friendId={friend.id}
+            isFavorite={friend.isFavorite}
+            onChat={() => onFriendChat(friend.id)}
+            onViewProfile={() => onFriendViewProfile(friend.id)}
+            onToggleFavorite={() => onFriendToggleFavorite(friend.id)}
+            onHide={() => onFriendHide(friend.id)}
+            onDelete={() => onFriendDelete(friend.id)}
+            onBlock={() => onFriendBlock(friend.id)}
+            onRenameAlias={() => openAliasDialog(friend)}
+          />
+        </div>
       </div>
     );
   };
@@ -472,7 +490,7 @@ export default function Sidebar({
         ) : (
           <div className="space-y-0">
             {favoriteFriends.length > 0 && (
-              <div className="border-t border-nkc-border -mx-4">
+              <div className="-mx-4">
                 <div className="px-6">
                   <button
                     onClick={() => setFavoritesOpen((prev) => !prev)}
@@ -485,10 +503,10 @@ export default function Sidebar({
                   </button>
                 </div>
                 {favoritesOpen && (
-                  <div className="divide-y border-t border-nkc-border">
-                    {favoriteFriends.map((friend) => (
+                  <div className="divide-y divide-nkc-border border-t border-nkc-border">
+                    {favoriteFriends.map(({ friend, displayName }) => (
                       <div key={friend.id} className="px-6">
-                        {renderFriendRow(friend)}
+                        {renderFriendRow(friend, displayName)}
                       </div>
                     ))}
                   </div>
@@ -509,10 +527,10 @@ export default function Sidebar({
               </div>
               {friendsOpen && (
                 regularFriends.length > 0 ? (
-                  <div className="divide-y border-t border-nkc-border">
-                    {regularFriends.map((friend) => (
+                  <div className="divide-y divide-nkc-border border-t border-nkc-border">
+                    {regularFriends.map(({ friend, displayName }) => (
                       <div key={friend.id} className="px-6">
-                        {renderFriendRow(friend)}
+                        {renderFriendRow(friend, displayName)}
                       </div>
                     ))}
                   </div>
@@ -527,6 +545,12 @@ export default function Sidebar({
             </div>
           </div>
         )}
+      </div>
+      <div className="border-t border-nkc-border px-6 py-3">
+        <div className="flex min-w-0 items-center gap-2 text-[11px] font-medium text-nkc-muted">
+          <span className={`h-2 w-2 shrink-0 rounded-full ${networkStatusDotClass}`} />
+          <span className="truncate">{resolvedNetworkStatus.label}</span>
+        </div>
       </div>
       <Dialog.Root
         open={aliasOpen}

@@ -135,7 +135,7 @@ import {
 } from "../diagnostics/friendRouteLogUtils";
 import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
-import { onSyncRun, reportSyncResult } from "../appControl";
+import { onBackgroundStatus, onSyncRun, reportSyncResult } from "../appControl";
 
 const buildNameMap = (
   profiles: UserProfile[],
@@ -260,6 +260,12 @@ export default function App() {
   const [friendCodeRuntimeSnapshot, setFriendCodeRuntimeSnapshot] = useState<RuntimeNetworkSnapshot>(
     EMPTY_RUNTIME_NETWORK_SNAPSHOT
   );
+  const [sidebarRuntimeSnapshot, setSidebarRuntimeSnapshot] = useState<RuntimeNetworkSnapshot>(
+    EMPTY_RUNTIME_NETWORK_SNAPSHOT
+  );
+  const [backgroundRouteState, setBackgroundRouteState] = useState<"connected" | "disconnected">(
+    "disconnected"
+  );
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
   >({});
@@ -340,6 +346,46 @@ export default function App() {
       alternateRouteDetail: toRuntimeDetail(alternateRouteRaw),
     };
   }, []);
+
+  const refreshSidebarRuntimeSnapshot = useCallback(async () => {
+    const snapshot = await resolveRuntimeNetworkSnapshot();
+    setSidebarRuntimeSnapshot((prev) =>
+      sameRuntimeNetworkSnapshot(prev, snapshot) ? prev : snapshot
+    );
+  }, [resolveRuntimeNetworkSnapshot]);
+
+  useEffect(() => {
+    void refreshSidebarRuntimeSnapshot();
+    const unsubscribe = onBackgroundStatus((payload) => {
+      setBackgroundRouteState(payload.state);
+      void refreshSidebarRuntimeSnapshot();
+    });
+    return () => {
+      unsubscribe();
+    };
+  }, [refreshSidebarRuntimeSnapshot]);
+
+  const sidebarNetworkStatus = useMemo(() => {
+    const torState = sidebarRuntimeSnapshot.torState ?? "";
+    const alternateRouteState = sidebarRuntimeSnapshot.alternateRouteState ?? "";
+    if (torState === "running") {
+      return { state: "connected" as const, label: "Tor 연결됨" };
+    }
+    if (alternateRouteState === "running") {
+      return { state: "connected" as const, label: "alternateRoute 연결됨" };
+    }
+    if (torState === "starting" || alternateRouteState === "starting") {
+      return { state: "connecting" as const, label: "익명 라우팅 연결 중" };
+    }
+    if (torState === "error" || alternateRouteState === "error") {
+      return { state: "error" as const, label: "익명 라우팅 오류" };
+    }
+    if (backgroundRouteState === "connected") {
+      return { state: "connecting" as const, label: "백그라운드 동기화 활성" };
+    }
+    return { state: "disconnected" as const, label: "익명 라우팅 대기" };
+  }, [backgroundRouteState, sidebarRuntimeSnapshot]);
+
   useEffect(() => {
     return attachInfoCollectionLogSink();
   }, []);
@@ -4256,6 +4302,7 @@ export default function App() {
         groupAvatarRefsByConv={groupAvatarRefsByConv}
         friendAliasesById={friendAliasesById}
         selectedConvId={ui.selectedConvId}
+        networkStatus={sidebarNetworkStatus}
         listMode={ui.listMode}
         listFilter={ui.listFilter}
         search={ui.search}
