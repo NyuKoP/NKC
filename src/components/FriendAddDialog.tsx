@@ -1,11 +1,12 @@
 ﻿import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Copy, UserPlus } from "lucide-react";
+import { Copy, Loader2, UserPlus } from "lucide-react";
 
 type FriendAddDialogProps = {
   open: boolean;
   myCode: string;
   myCodeHint?: string | null;
+  myCodeLoading?: boolean;
   routeResolveBusy?: boolean;
   onOpenChange: (open: boolean) => void;
   onCopyCode: () => Promise<void>;
@@ -17,6 +18,7 @@ export default function FriendAddDialog({
   open,
   myCode,
   myCodeHint,
+  myCodeLoading = false,
   routeResolveBusy = false,
   onOpenChange,
   onCopyCode,
@@ -70,7 +72,7 @@ export default function FriendAddDialog({
                 value={myCode}
                 data-testid="friend-add-my-code"
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 font-mono text-sm text-nkc-text"
-                placeholder="코드를 생성하는 중..."
+                placeholder={myCodeLoading ? "경로 주소를 기다리는 중..." : "코드를 생성하는 중..."}
                 readOnly
               />
             </label>
@@ -78,14 +80,25 @@ export default function FriendAddDialog({
               type="button"
               onClick={onCopyCode}
               className="inline-flex items-center gap-1 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!myCode}
+              disabled={!myCode || myCodeLoading}
             >
-              <Copy size={14} />
-              복사
+              {myCodeLoading ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Copy size={14} />
+              )}
+              {myCodeLoading ? "준비 중..." : "복사"}
             </button>
             {myCodeHint ? (
               <div className="space-y-2">
-                <div className="text-xs text-amber-300">{myCodeHint}</div>
+                <div className="rounded-nkc border border-nkc-border/40 bg-nkc-panel/30 p-2.5 text-xs leading-relaxed text-nkc-muted">
+                  <div className="flex gap-2">
+                    {myCodeLoading ? (
+                      <span className="mt-1 inline-flex h-2 w-2 shrink-0 rounded-full bg-amber-400 animate-pulse" />
+                    ) : null}
+                    <p>{myCodeHint}</p>
+                  </div>
+                </div>
                 {onResolveRoute ? (
                   <button
                     type="button"

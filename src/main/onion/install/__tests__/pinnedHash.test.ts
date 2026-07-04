@@ -9,11 +9,11 @@ describe("pinned hash checks", () => {
     const hash = getPinnedSha256("tor", {
       platform: "win32",
       arch: "x64",
-      version: "15.0.5",
-      assetName: "tor-expert-bundle-windows-x86_64-15.0.5.tar.gz",
+      version: "15.0.17",
+      assetName: "tor-expert-bundle-windows-x86_64-15.0.17.tar.gz",
     });
     expect(hash).toBe(
-      "49aabfe2958c8084e9fba1f78d85049e16a657e1f679b75102bbf9518497607f"
+      "5f91e9426bf641dfe539dc28029088c72bed0b1d8f1c79104a0f89273cb3ebe1"
     );
   });
 

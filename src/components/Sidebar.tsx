@@ -380,11 +380,11 @@ export default function Sidebar({
           </div>
         </div>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 pt-0 space-y-6 scrollbar-hidden">
+      <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 pt-2 space-y-6 scrollbar-hidden">
         {listMode === "chats" ? (
           <div className="space-y-0">
             {pinned.length > 0 && (
-              <div className="border-t border-nkc-border -mx-4">
+              <div className="-mx-4 pt-1">
                 <div className="px-6">
                   <button
                     onClick={() => setPinnedChatsOpen((prev) => !prev)}
@@ -422,7 +422,9 @@ export default function Sidebar({
               </div>
             )}
 
-            <div className="border-t border-nkc-border -mx-4">
+            <div
+              className={`${pinned.length > 0 ? "mt-2 border-t border-nkc-border pt-1" : "pt-1"} -mx-4`}
+            >
               <div className="px-6">
                 <button
                   onClick={() => setChatsOpen((prev) => !prev)}

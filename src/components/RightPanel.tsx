@@ -1,6 +1,6 @@
 ﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Settings, UserPlus, UserX } from "lucide-react";
+import { Image as ImageIcon, Settings, UserPlus, UserX } from "lucide-react";
 import {
   listMessagesByConv,
   loadMessageMedia,
@@ -403,7 +403,7 @@ export default function RightPanel({
   if (!open) return null;
 
   return (
-    <aside className="hidden h-full w-[320px] rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft lg:block">
+    <aside className="hidden h-full w-[320px] overflow-hidden rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft lg:block">
       <Tabs.Root
         value={tab}
         onValueChange={(value) => {
@@ -411,21 +411,24 @@ export default function RightPanel({
         }}
         className="flex h-full min-h-0 flex-col"
       >
-        <Tabs.List className="grid grid-cols-3 gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
-          {tabs.map((item) => (
-            <Tabs.Trigger
-              key={item.value}
-              value={item.value}
-              className="rounded-nkc px-2 py-2 font-semibold text-nkc-muted data-[state=active]:bg-nkc-panel data-[state=active]:text-nkc-text"
-            >
-              {item.label}
-            </Tabs.Trigger>
-          ))}
-        </Tabs.List>
+        <div className="p-4 pb-2">
+          <Tabs.List className="grid grid-cols-3 gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
+            {tabs.map((item) => (
+              <Tabs.Trigger
+                key={item.value}
+                value={item.value}
+                className="rounded-nkc border border-transparent px-2 py-2 font-semibold text-nkc-muted transition-colors hover:text-nkc-text data-[state=active]:border-nkc-border/40 data-[state=active]:bg-nkc-panel data-[state=active]:text-nkc-text data-[state=active]:shadow-sm"
+              >
+                {item.label}
+              </Tabs.Trigger>
+            ))}
+          </Tabs.List>
+        </div>
 
-        <Tabs.Content value="about" className="mt-4 flex-1 overflow-y-auto space-y-4 pr-1 scrollbar-hidden">
+        <div className="mt-4 flex w-full min-h-0 flex-1 flex-col items-stretch justify-start gap-4 px-4">
+        <Tabs.Content value="about" className="min-h-0 flex-1 overflow-y-auto scrollbar-hidden">
           {conversation ? (
-            <div className="space-y-4 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4">
+            <div className="w-full space-y-4 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4">
               <div className="flex items-center gap-3">
                 <Avatar name={aboutAvatarName} avatarRef={aboutAvatarRef} size={52} />
                 <div>
@@ -562,13 +565,13 @@ export default function RightPanel({
               ) : null}
             </div>
           ) : (
-            <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-sm text-nkc-muted">
+            <div className="w-full rounded-nkc border border-dashed border-nkc-border p-4 text-sm text-nkc-muted">
               대화를 선택하면 상세 정보가 표시됩니다.
             </div>
           )}
         </Tabs.Content>
-        <Tabs.Content value="media" className="mt-4 flex min-h-0 flex-1 flex-col">
-          <div className="space-y-3">
+        <Tabs.Content value="media" className="min-h-0 flex flex-1 flex-col overflow-hidden">
+          <div className="w-full flex flex-col gap-4">
             <div className="flex items-center gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
               {([
                 { value: "images", label: "Images" },
@@ -590,13 +593,13 @@ export default function RightPanel({
               ))}
             </div>
           </div>
-          <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hidden">
+          <div className="min-h-0 flex-1 overflow-y-auto scrollbar-hidden">
             {mediaLoading ? (
-              <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
+              <div className="w-full rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
                 미디어를 불러오는 중...
               </div>
             ) : mediaError ? (
-              <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
+              <div className="w-full rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
                 {mediaError}
               </div>
             ) : groupedMedia.length ? (
@@ -675,8 +678,9 @@ export default function RightPanel({
                 ))}
               </div>
             ) : (
-              <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
-                표시할 미디어가 없습니다.
+              <div className="flex min-h-[240px] w-full flex-col items-center justify-center rounded-nkc border border-dashed border-nkc-border/70 p-6 text-center text-xs text-nkc-muted">
+                <ImageIcon size={32} className="mb-3 opacity-40" />
+                <p>표시할 미디어가 없습니다.</p>
               </div>
             )}
           </div>
@@ -817,84 +821,93 @@ export default function RightPanel({
           ) : null}
         </Tabs.Content>
 
-        <Tabs.Content value="settings" className="mt-4 flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-hidden">
-          <div className="space-y-3 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-xs text-nkc-muted">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="font-semibold text-nkc-text">Notifications</div>
-                <div className="text-[11px]">{conversation?.muted ? "알림 꺼짐" : "알림 켜짐"}</div>
+        <Tabs.Content value="settings" className="m-0 w-full flex-none overflow-visible self-start">
+          {conversation ? (
+            <div className="w-full flex flex-col gap-4">
+              <div className="w-full divide-y divide-nkc-border/50 rounded-nkc border border-nkc-border bg-nkc-panelMuted px-4 py-1 text-xs text-nkc-muted">
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-xs font-semibold text-nkc-text">Notifications</div>
+                    <div className="mt-0.5 text-[11px]">
+                      {conversation.muted ? "알림 꺼짐" : "알림 켜짐"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onToggleMute(conversation.id)}
+                    className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-panelMuted"
+                  >
+                    {conversation.muted ? "알림 켜기" : "알림 끄기"}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-xs font-semibold text-nkc-text">Pin</div>
+                    <div className="mt-0.5 text-[11px]">
+                      {conversation.pinned ? "고정됨" : "고정 안 됨"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onTogglePin(conversation.id)}
+                    className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-panelMuted"
+                  >
+                    {conversation.pinned ? "고정 해제" : "고정"}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-xs font-semibold text-nkc-text">Conversation</div>
+                    <div className="mt-0.5 text-[11px]">채팅방 관리</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onHideConversation(conversation.id)}
+                    className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-panelMuted"
+                  >
+                    채팅 숨기기
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-xs font-semibold text-nkc-text">Block</div>
+                    <div className="mt-0.5 text-[11px]">
+                      {conversation.blocked ? "차단됨" : "차단 안 됨"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onToggleBlock(conversation.id)}
+                    className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-panelMuted"
+                  >
+                    {conversation.blocked ? "차단 해제" : "차단"}
+                  </button>
+                </div>
               </div>
+
               <button
                 type="button"
-                onClick={() => conversation && onToggleMute(conversation.id)}
-                disabled={!conversation}
-                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                onClick={onOpenSettings}
+                className="flex w-full items-center justify-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2.5 text-xs font-semibold text-nkc-text shadow-sm hover:bg-nkc-panelMuted"
               >
-                {conversation?.muted ? "알림 켜기" : "알림 끄기"}
+                <Settings size={14} />
+                전체 설정 열기
               </button>
             </div>
-            <div className="flex items-center justify-between border-t border-nkc-border pt-3">
-              <div>
-                <div className="font-semibold text-nkc-text">Pin</div>
-                <div className="text-[11px]">{conversation?.pinned ? "고정됨" : "고정 안 됨"}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => conversation && onTogglePin(conversation.id)}
-                disabled={!conversation}
-                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
-              >
-                {conversation?.pinned ? "고정 해제" : "고정"}
-              </button>
+          ) : (
+            <div className="w-full rounded-nkc border border-dashed border-nkc-border p-4 text-sm text-nkc-muted">
+              대화를 선택하면 설정을 볼 수 있습니다.
             </div>
-            <div className="flex items-center justify-between border-t border-nkc-border pt-3">
-              <div className="font-semibold text-nkc-text">Conversation</div>
-              <button
-                type="button"
-                onClick={() => conversation && onHideConversation(conversation.id)}
-                disabled={!conversation}
-                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
-              >
-                채팅 숨기기
-              </button>
-            </div>
-            <div className="flex items-center justify-between border-t border-nkc-border pt-3">
-              <div>
-                <div className="font-semibold text-nkc-text">Block</div>
-                <div className="text-[11px]">{conversation?.blocked ? "차단됨" : "차단 안 됨"}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => conversation && onToggleBlock(conversation.id)}
-                disabled={!conversation}
-                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
-              >
-                {conversation?.blocked ? "차단 해제" : "차단"}
-              </button>
-            </div>
-          </div>
-          <button
-            onClick={onOpenSettings}
-            className="flex w-full items-center justify-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
-          >
-            <Settings size={14} />
-            전체 설정 열기
-          </button>
+          )}
         </Tabs.Content>
+        </div>
       </Tabs.Root>
     </aside>
   );
 }
-
-
-
-
-
-
-
-
-
-
 
 
 
