@@ -92,6 +92,7 @@ export const startFriendInboxListener = (
       const frame = parsed as {
         type: FriendFrameType;
         convId?: string;
+        traceId?: string;
         from?: { deviceId?: string };
       };
       const commonContext = {
@@ -103,6 +104,7 @@ export const startFriendInboxListener = (
         status: "received",
         frameType: frame.type,
         source: "friends:startFriendInboxListener",
+        traceId: frame.traceId,
         via: meta.via,
         packetId: effectivePacket.id,
         convId: frame.convId,
@@ -121,6 +123,7 @@ export const startFriendInboxListener = (
           status: "failed",
           frameType: frame.type,
           source: "friends:startFriendInboxListener",
+          traceId: frame.traceId,
           via: meta.via,
           packetId: effectivePacket.id,
           convId: frame.convId,
@@ -137,6 +140,7 @@ export const startFriendInboxListener = (
         status: "handled",
         frameType: frame.type,
         source: "friends:startFriendInboxListener",
+        traceId: frame.traceId,
         via: meta.via,
         packetId: effectivePacket.id,
         convId: frame.convId,

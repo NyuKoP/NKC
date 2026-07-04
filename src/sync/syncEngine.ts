@@ -30,6 +30,7 @@ import { getOrCreateDeviceId } from "../security/deviceRole";
 import { applyTOFU } from "../security/trust";
 import { computeFriendId, decodeFriendCodeV1 } from "../security/friendCode";
 import { getPrivacyPrefs } from "../security/preferences";
+import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { updateFromRoleEvent, type RoleChangeEvent } from "../devices/deviceRegistry";
 import { getDeviceApproval } from "../devices/deviceApprovals";
 import { createId } from "../utils/ids";
@@ -355,6 +356,30 @@ const formatSafetyNumber = (encoded: string) => {
   return [a, b, c].filter(Boolean).join("-");
 };
 
+const emitFriendLifecycleTrace = (
+  event: string,
+  payload: {
+    traceId?: string;
+    frameType: "friend_req" | "friend_accept" | "friend_decline";
+    convId?: string;
+    friendId?: string;
+    profileId?: string;
+    stage?: string;
+    [key: string]: unknown;
+  }
+) => {
+  emitFlowTraceLog({
+    event,
+    source: "sync:friendLifecycle",
+    ...payload,
+    traceId: payload.traceId,
+    frameType: payload.frameType,
+    convId: payload.convId ?? null,
+    friendId: payload.friendId ?? null,
+    profileId: payload.profileId ?? null,
+  });
+};
+
 const computeSafetyNumber = async (identityA: string, identityB: string) => {
   const sodium = await getSodium();
   const a = decodeBase64Url(identityA);
@@ -383,6 +408,14 @@ const upsertFriendFromRequest = async (
   payload: FriendRequestFrame
 ) => {
   if (!payload.from?.identityPub || !payload.from?.dhPub) return;
+  emitFriendLifecycleTrace("friendLifecycle:incoming-request:start", {
+    traceId: payload.traceId,
+    frameType: payload.type,
+    convId,
+    stage: "upsertFriendFromRequest:start",
+    hasDeviceId: Boolean(payload.from.deviceId),
+    hasFriendCode: Boolean(payload.from.friendCode),
+  });
   const privacyPrefs = await getPrivacyPrefs();
   const profiles = await listProfiles();
   const existing = profiles.find(
@@ -394,6 +427,12 @@ const upsertFriendFromRequest = async (
   );
   if (!existing && privacyPrefs.autoRejectUnknownRequests) {
     console.info("[friend] auto-rejected unknown friend request");
+    emitFriendLifecycleTrace("friendLifecycle:incoming-request:auto-rejected", {
+      traceId: payload.traceId,
+      frameType: payload.type,
+      convId,
+      stage: "upsertFriendFromRequest:auto-reject-unknown",
+    });
     return;
   }
 
@@ -482,6 +521,19 @@ const upsertFriendFromRequest = async (
     updatedAt: now,
   };
   await saveProfile(profile);
+  emitFriendLifecycleTrace("friendLifecycle:incoming-request:profile-saved", {
+    traceId: payload.traceId,
+    frameType: payload.type,
+    convId,
+    friendId,
+    profileId: profile.id,
+    stage: "upsertFriendFromRequest:profile-saved",
+    nextFriendStatus,
+    shouldMarkPending,
+    primaryDeviceId: resolvedDeviceId ?? null,
+    hasOnionAddr: Boolean(routingHints?.onionAddr),
+    hasLokinetAddr: Boolean(routingHints?.lokinetAddr),
+  });
 
   const requestConvId = payload.convId ?? convId;
   const currentUserId = await resolveLocalUserId();
@@ -505,10 +557,30 @@ const upsertFriendFromRequest = async (
       hidden: forceHidden ? true : shouldMarkPending ? false : existingConv.hidden,
     };
     await saveConversation(updated);
+    emitFriendLifecycleTrace("friendLifecycle:incoming-request:conversation-updated", {
+      traceId: payload.traceId,
+      frameType: payload.type,
+      convId: requestConvId,
+      friendId,
+      profileId: profile.id,
+      stage: "upsertFriendFromRequest:conversation-updated",
+      pendingAcceptance: updated.pendingAcceptance,
+      pendingOutgoing: updated.pendingOutgoing,
+      hidden: updated.hidden,
+    });
     return;
   }
 
   if (!shouldMarkPending) {
+    emitFriendLifecycleTrace("friendLifecycle:incoming-request:no-conversation-created", {
+      traceId: payload.traceId,
+      frameType: payload.type,
+      convId: requestConvId,
+      friendId,
+      profileId: profile.id,
+      stage: "upsertFriendFromRequest:no-conversation-created",
+      reason: "no-pending-acceptance",
+    });
     return;
   }
 
@@ -529,12 +601,30 @@ const upsertFriendFromRequest = async (
     participants: [currentUserId, profile.id],
   };
   await saveConversation(newConv);
+  emitFriendLifecycleTrace("friendLifecycle:incoming-request:conversation-created", {
+    traceId: payload.traceId,
+    frameType: payload.type,
+    convId: newConv.id,
+    friendId,
+    profileId: profile.id,
+    stage: "upsertFriendFromRequest:conversation-created",
+    pendingAcceptance: newConv.pendingAcceptance,
+    pendingOutgoing: newConv.pendingOutgoing,
+  });
 };
 
 const applyFriendResponse = async (convId: string, payload: FriendResponseFrame) => {
   if (!payload.from?.identityPub || !payload.from?.dhPub) return;
   const existing = await resolveFriendByIdentity(payload.from.identityPub);
   if (!existing) return;
+  emitFriendLifecycleTrace("friendLifecycle:incoming-response:start", {
+    traceId: payload.traceId,
+    frameType: payload.type,
+    convId,
+    friendId: existing.friendId,
+    profileId: existing.id,
+    stage: "applyFriendResponse:start",
+  });
   const now = Date.now();
   const friendStatus = payload.type === "friend_accept" ? "normal" : "blocked";
   const decodedFriendCode =
@@ -573,6 +663,18 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
       : existing.profileVcard,
     updatedAt: now,
   });
+  emitFriendLifecycleTrace("friendLifecycle:incoming-response:profile-saved", {
+    traceId: payload.traceId,
+    frameType: payload.type,
+    convId,
+    friendId: existing.friendId,
+    profileId: existing.id,
+    stage: "applyFriendResponse:profile-saved",
+    friendStatus,
+    primaryDeviceId: resolvedDeviceId ?? null,
+    hasOnionAddr: Boolean(codeHints?.onionAddr ?? existing.routingHints?.onionAddr),
+    hasLokinetAddr: Boolean(codeHints?.lokinetAddr ?? existing.routingHints?.lokinetAddr),
+  });
 
   const convs = await listConversations();
   const conv =
@@ -591,6 +693,16 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
     pendingFriendResponse: undefined,
     hidden: friendStatus === "blocked" ? true : conv.hidden,
   });
+  emitFriendLifecycleTrace("friendLifecycle:incoming-response:conversation-updated", {
+    traceId: payload.traceId,
+    frameType: payload.type,
+    convId: conv.id,
+    friendId: existing.friendId,
+    profileId: existing.id,
+    stage: "applyFriendResponse:conversation-updated",
+    friendStatus,
+    hidden: friendStatus === "blocked" ? true : conv.hidden,
+  });
 };
 
 export const handleIncomingFriendFrame = async (
@@ -602,6 +714,12 @@ export const handleIncomingFriendFrame = async (
     const verified = await verifyFriendControlFrameSignature(payload);
     if (!verified) {
       console.warn("[friend] dropped control frame: invalid signature", { type: payload.type });
+      emitFriendLifecycleTrace("friendLifecycle:dropped", {
+        traceId: payload.traceId,
+        frameType: payload.type,
+        convId: payload.convId,
+        stage: "handleIncomingFriendFrame:invalid-signature",
+      });
       return;
     }
   }
@@ -612,6 +730,13 @@ export const handleIncomingFriendFrame = async (
     console.warn("[friend] dropped control frame: invalid protocol", {
       type: payload.type,
       reason: protocolCheck.reason,
+    });
+    emitFriendLifecycleTrace("friendLifecycle:dropped", {
+      traceId: payload.traceId,
+      frameType: payload.type,
+      convId: payload.convId,
+      stage: "handleIncomingFriendFrame:invalid-protocol",
+      reason: protocolCheck.reason ?? null,
     });
     return;
   }

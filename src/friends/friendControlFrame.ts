@@ -25,6 +25,7 @@ type FriendFrameProfile = {
 export type FriendRequestFrame = {
   type: "friend_req";
   convId?: string;
+  traceId?: string;
   from: FriendFrameFrom;
   profile?: FriendFrameProfile;
   protocol?: BriarFriendProtocol;
@@ -35,6 +36,7 @@ export type FriendRequestFrame = {
 export type FriendResponseFrame = {
   type: "friend_accept" | "friend_decline";
   convId?: string;
+  traceId?: string;
   from: FriendFrameFrom;
   profile?: FriendFrameProfile;
   protocol?: BriarFriendProtocol;
