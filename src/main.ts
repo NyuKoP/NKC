@@ -1671,11 +1671,12 @@ app.whenReady().then(async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
     alternateRouteManager = new alternateRouteManager({ appDataDir: app.getPath("userData") });
     try {
-      onionController = await startOnionController({
-        port: 3210,
-        getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
-        getalternateRouteStatus: () => alternateRouteManager?.getStatus() ?? { state: "unavailable" },
-      });
+        onionController = await startOnionController({
+          port: 3210,
+          getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
+          getalternateRouteStatus: () => alternateRouteManager?.getStatus() ?? { state: "unavailable" },
+          userDataPath: app.getPath("userData"),
+        });
     } catch (error) {
       const code =
         error && typeof error === "object" && "code" in error
@@ -1686,6 +1687,7 @@ app.whenReady().then(async () => {
           port: 0,
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
           getalternateRouteStatus: () => alternateRouteManager?.getStatus() ?? { state: "unavailable" },
+          userDataPath: app.getPath("userData"),
         });
       } else {
         throw error;

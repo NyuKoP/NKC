@@ -6,6 +6,7 @@ import type { alternateRouteStatus } from "./alternateRouteManager";
 import { socksFetch } from "./socksHttpClient";
 import { selectRoute, type RouteMode } from "./routePolicy";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
+import { appendTestLogRecord } from "./testLogStore";
 
 type InboxItem = {
   id: string;
@@ -96,6 +97,11 @@ type OnionSendDeps = {
   torProxyUrl: string | null;
   alternateRouteProxyUrl: string | null;
   storeLocal: (deviceId: string, item: Omit<InboxItem, "expiresAt"> & { ttlMs?: number }) => void;
+  emitTrace?: (detail: {
+    event: string;
+    level?: "debug" | "info" | "warn" | "error";
+    [key: string]: unknown;
+  }) => void;
 };
 
 const normalizeForwardError = (error: unknown) => {
@@ -166,6 +172,7 @@ const serializeForwardError = (error: unknown) => {
 };
 
 export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSendDeps) => {
+  const emitTrace = deps.emitTrace ?? ((detail) => emitFlowTraceLog(detail));
   if (!payload.envelope) {
     return { status: 400, body: { ok: false, error: "missing-fields" } };
   }
@@ -203,7 +210,7 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
       const targetUrl = `${candidate.target}/onion/ingest`;
       const proxySummary = summarizeProxy(proxyUrl);
       if (!proxyUrl) {
-        emitFlowTraceLog({
+        emitTrace({
           event: "onionController:forward:skip",
           level: "warn",
           opId: msgId,
@@ -219,7 +226,7 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
         return { status: 400, body: { ok: false, error: "forward_failed:no_proxy" } };
       }
       try {
-        emitFlowTraceLog({
+        emitTrace({
           event: "onionController:forward:start",
           opId: msgId,
           routeKind: candidate.kind,
@@ -250,7 +257,7 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
           socksProxyUrl: proxyUrl,
           retry: { attempts: FORWARD_RETRY_ATTEMPTS, delayMs: FORWARD_RETRY_DELAY_MS },
           onAttemptStart: ({ attempt, maxAttempts }) => {
-            emitFlowTraceLog({
+            emitTrace({
               event: "onionController:forward:attempt",
               opId: msgId,
               routeKind: candidate.kind,
@@ -265,7 +272,7 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
             });
           },
           onAttemptSuccess: ({ attempt, maxAttempts, status }) => {
-            emitFlowTraceLog({
+            emitTrace({
               event: "onionController:forward:attempt_ok",
               opId: msgId,
               routeKind: candidate.kind,
@@ -280,7 +287,7 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
             });
           },
           onAttemptFailure: ({ attempt, maxAttempts, error, retryDelayMs }) => {
-            emitFlowTraceLog({
+            emitTrace({
               event: "onionController:forward:attempt_fail",
               level: "warn",
               opId: msgId,
@@ -298,7 +305,7 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
           },
         });
         if (response.status >= 200 && response.status < 300) {
-          emitFlowTraceLog({
+          emitTrace({
             event: "onionController:forward:ok",
             opId: msgId,
             routeKind: candidate.kind,
@@ -313,7 +320,7 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
           });
           return { status: 200, body: { ok: true, msgId, forwarded: true, via: candidate.kind } };
         }
-        emitFlowTraceLog({
+        emitTrace({
           event: "onionController:forward:bad_status",
           level: "warn",
           opId: msgId,
@@ -337,7 +344,7 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
         };
       } catch (error) {
         const code = normalizeForwardError(error);
-        emitFlowTraceLog({
+        emitTrace({
           event: "onionController:forward:fail",
           level: "warn",
           opId: msgId,
@@ -380,6 +387,7 @@ export const startOnionController = async (options?: {
   port?: number;
   getTorStatus?: () => TorStatus;
   getalternateRouteStatus?: () => alternateRouteStatus;
+  userDataPath?: string;
 }): Promise<OnionControllerHandle> => {
   const host = "127.0.0.1";
   const port = options?.port ?? 3210;
@@ -391,6 +399,23 @@ export const startOnionController = async (options?: {
   const alternateRouteForwarding: ForwardingState = {
     proxyUrl: null,
     ready: false,
+  };
+  const emitControllerTrace = (detail: {
+    event: string;
+    level?: "debug" | "info" | "warn" | "error";
+    [key: string]: unknown;
+  }) => {
+    emitFlowTraceLog(detail);
+    if (!options?.userDataPath) return;
+    void appendTestLogRecord(options.userDataPath, {
+      channel: "router",
+      event: {
+        ...detail,
+        timestamp: new Date().toISOString(),
+      },
+    }).catch((error) => {
+      console.warn("[test-log] main trace append failed", error);
+    });
   };
   let myTorOnionHost: string | null = null;
   let myalternateRouteAddress: string | null = null;
@@ -532,6 +557,7 @@ export const startOnionController = async (options?: {
         torProxyUrl: torForwarding.proxyUrl,
         alternateRouteProxyUrl: alternateRouteForwarding.proxyUrl,
         storeLocal: (deviceId, item) => enqueue(deviceId, item),
+        emitTrace: emitControllerTrace,
       });
       sendJson(res, result.status, result.body);
       return;
