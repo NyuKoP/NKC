@@ -79,6 +79,52 @@ type StartTorPayload = {
   profileScopedDataDir?: boolean;
 };
 
+const SECRET_STORE_EXACT_KEYS = new Set([
+  "nkc_identity_priv_v1",
+  "nkc_dh_priv_v1",
+  "nkc_session_v1",
+  "nkc_pin_v1",
+  "nkc_pin_reset_v1",
+]);
+
+const SECRET_STORE_PREFIXES = [
+  "nkc_friend_psk_v1:",
+  "nkc_invite_used_v1:",
+  "nkc_ratchet_v1:",
+  "nkc_ratchet_v2:",
+];
+
+const isAllowedSecretStoreKey = (key: unknown): key is string =>
+  typeof key === "string" &&
+  key.length > 0 &&
+  key.length <= 256 &&
+  (SECRET_STORE_EXACT_KEYS.has(key) ||
+    SECRET_STORE_PREFIXES.some((prefix) => key.startsWith(prefix)));
+
+const isTrustedRendererUrl = (url: string) => {
+  if (!url) return false;
+  if (url.startsWith("file://")) return true;
+  if (!isDev) return false;
+  try {
+    const parsed = new URL(url);
+    return (
+      (parsed.protocol === "http:" || parsed.protocol === "https:") &&
+      (parsed.hostname === "localhost" ||
+        parsed.hostname === "127.0.0.1" ||
+        parsed.hostname === "[::1]")
+    );
+  } catch {
+    return false;
+  }
+};
+
+const assertTrustedIpcSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => {
+  const url = event.senderFrame?.url ?? event.sender.getURL();
+  if (!isTrustedRendererUrl(url)) {
+    throw new Error("Blocked IPC from untrusted renderer");
+  }
+};
+
 type SyncStatusPayload = {
   state: "running" | "ok" | "error";
   lastSyncAt: number | null;
@@ -137,6 +183,15 @@ const validateProxyUrl = (input: string) => {
   return { url, normalized: `${url.protocol}//${url.host}` };
 };
 
+const isProxyApplyPayload = (payload: unknown): payload is ProxyApplyPayload =>
+  Boolean(
+    payload &&
+      typeof payload === "object" &&
+      typeof (payload as ProxyApplyPayload).proxyUrl === "string" &&
+      typeof (payload as ProxyApplyPayload).enabled === "boolean" &&
+      typeof (payload as ProxyApplyPayload).allowRemote === "boolean"
+  );
+
 const applyProxy = async ({ proxyUrl, enabled, allowRemote }: ProxyApplyPayload) => {
   if (!enabled) {
     await session.defaultSession.setProxy({ mode: "direct" });
@@ -174,10 +229,15 @@ const checkProxy = async (): Promise<ProxyHealth> => {
 };
 
 export const registerProxyIpc = () => {
-  ipcMain.handle("proxy:apply", async (_event, payload: ProxyApplyPayload) => {
+  ipcMain.handle("proxy:apply", async (event, payload: ProxyApplyPayload) => {
+    assertTrustedIpcSender(event);
+    if (!isProxyApplyPayload(payload)) {
+      throw new Error("Invalid proxy payload");
+    }
     await applyProxy(payload);
   });
-  ipcMain.handle("proxy:check", async () => {
+  ipcMain.handle("proxy:check", async (event) => {
+    assertTrustedIpcSender(event);
     return checkProxy();
   });
 };
@@ -555,7 +615,11 @@ const writeSecretStore = async (payload: Record<string, string>) => {
 };
 
 const registerSecretStoreIpc = () => {
-  ipcMain.handle("secretStore:get", async (_event, key: string) => {
+  ipcMain.handle("secretStore:get", async (event, key: string) => {
+    assertTrustedIpcSender(event);
+    if (!isAllowedSecretStoreKey(key)) {
+      return null;
+    }
     if (!safeStorage.isEncryptionAvailable()) {
       return null;
     }
@@ -569,7 +633,11 @@ const registerSecretStoreIpc = () => {
     }
   });
 
-  ipcMain.handle("secretStore:set", async (_event, key: string, value: string) => {
+  ipcMain.handle("secretStore:set", async (event, key: string, value: string) => {
+    assertTrustedIpcSender(event);
+    if (!isAllowedSecretStoreKey(key) || typeof value !== "string") {
+      return false;
+    }
     if (!safeStorage.isEncryptionAvailable()) {
       return false;
     }
@@ -580,7 +648,11 @@ const registerSecretStoreIpc = () => {
     return true;
   });
 
-  ipcMain.handle("secretStore:remove", async (_event, key: string) => {
+  ipcMain.handle("secretStore:remove", async (event, key: string) => {
+    assertTrustedIpcSender(event);
+    if (!isAllowedSecretStoreKey(key)) {
+      return false;
+    }
     if (!safeStorage.isEncryptionAvailable()) {
       return false;
     }
@@ -592,7 +664,8 @@ const registerSecretStoreIpc = () => {
     return true;
   });
 
-  ipcMain.handle("secretStore:isAvailable", async () => {
+  ipcMain.handle("secretStore:isAvailable", async (event) => {
+    assertTrustedIpcSender(event);
     return safeStorage.isEncryptionAvailable();
   });
 };
@@ -1162,6 +1235,12 @@ const sendToAllWindows = (channel: string, payload: unknown) => {
   });
 };
 
+const emitRuntimeBackgroundStatus = (payload: BackgroundStatusPayload) => {
+  lastBackgroundStatus = payload;
+  sendToAllWindows("background:status", payload);
+  updateTrayMenu();
+};
+
 type PendingSyncRun = {
   resolve: () => void;
   reject: (error: Error) => void;
@@ -1617,8 +1696,13 @@ app.whenReady().then(async () => {
       if (!onionController) return;
       if (status.state === "running") {
         void onionController.setTorSocksProxy(status.socksProxyUrl);
+        emitRuntimeBackgroundStatus({ state: "connected", route: "Tor Network" });
       } else {
         void onionController.setTorSocksProxy(null);
+        emitRuntimeBackgroundStatus({
+          state: "disconnected",
+          route: status.state === "starting" ? "Tor starting" : "Tor offline",
+        });
       }
     });
     lokinetManager.onStatus((status) => {
@@ -1627,10 +1711,15 @@ app.whenReady().then(async () => {
         myLokinetAddress = status.serviceAddress ?? null;
         onionController.setLokinetAddress(status.serviceAddress ?? null);
         void onionController.setLokinetSocksProxy(status.proxyUrl);
+        emitRuntimeBackgroundStatus({ state: "connected", route: "Lokinet Network" });
       } else {
         myLokinetAddress = null;
         onionController.setLokinetAddress(null);
         void onionController.setLokinetSocksProxy(null);
+        emitRuntimeBackgroundStatus({
+          state: "disconnected",
+          route: status.state === "starting" ? "Lokinet starting" : "Lokinet offline",
+        });
       }
     });
   })().catch((error) => {
