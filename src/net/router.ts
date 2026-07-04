@@ -16,6 +16,7 @@ import { useAppStore } from "../app/store";
 import { useInternalOnionRouteStore } from "../stores/internalOnionRouteStore";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { createTransportError, getTransportErrorCode } from "./transportErrors";
+import { decodeFriendCodeV1 } from "../security/friendCode";
 
 export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
 export type IncomingPacketMeta = {
@@ -76,12 +77,24 @@ const deriveRoutingMetaFromStores = (
   if (!partnerId) return {};
   const partner = state.friends.find((friend) => friend.id === partnerId) ?? null;
   if (!partner) return {};
+  const friendCode = partner.profileVcard?.friendCode?.trim();
+  const decodedFriendCode =
+    friendCode && friendCode.length > 0 ? decodeFriendCodeV1(friendCode) : null;
+  const recovered =
+    decodedFriendCode && !("error" in decodedFriendCode)
+      ? {
+          toDeviceId: decodedFriendCode.deviceId,
+          torOnion: decodedFriendCode.onionAddr,
+          lokinet: decodedFriendCode.lokinetAddr,
+        }
+      : undefined;
   const toDeviceId =
     partner.routingHints?.deviceId ??
     partner.primaryDeviceId ??
-    partner.deviceId;
-  const torOnion = partner.routingHints?.onionAddr;
-  const lokinet = partner.routingHints?.lokinetAddr;
+    partner.deviceId ??
+    recovered?.toDeviceId;
+  const torOnion = partner.routingHints?.onionAddr ?? recovered?.torOnion;
+  const lokinet = partner.routingHints?.lokinetAddr ?? recovered?.lokinet;
   return {
     toDeviceId,
     route: torOnion || lokinet ? { torOnion, lokinet } : undefined,

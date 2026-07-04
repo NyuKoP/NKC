@@ -92,7 +92,7 @@ const safeError = (error: unknown) =>
   error instanceof Error ? error.message : String(error ?? "Unknown error");
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-const SEND_TIMEOUT_MS = 30_000;
+const SEND_TIMEOUT_MS = 60_000;
 const POLL_BASE_DELAY_MS = 1000;
 const POLL_MAX_DELAY_MS = 8000;
 
