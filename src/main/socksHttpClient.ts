@@ -12,6 +12,15 @@ type SocksFetchOptions = {
     delayMs?: number;
   };
   socketFactory?: SocketFactory;
+  onAttemptStart?: (detail: { attempt: number; maxAttempts: number; url: string }) => void;
+  onAttemptSuccess?: (detail: { attempt: number; maxAttempts: number; url: string; status: number }) => void;
+  onAttemptFailure?: (detail: {
+    attempt: number;
+    maxAttempts: number;
+    url: string;
+    error: Error;
+    retryDelayMs: number | null;
+  }) => void;
 };
 
 type SocksFetchResponse = {
@@ -455,11 +464,27 @@ export async function socksFetch(url: string, opts: SocksFetchOptions): Promise<
   try {
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       try {
-        return await socksFetchOnce(url, opts);
+        opts.onAttemptStart?.({ attempt: attempt + 1, maxAttempts: attempts, url });
+        const response = await socksFetchOnce(url, opts);
+        opts.onAttemptSuccess?.({
+          attempt: attempt + 1,
+          maxAttempts: attempts,
+          url,
+          status: response.status,
+        });
+        return response;
       } catch (error) {
         lastError = normalizeSocksError(error);
-        if (attempt < attempts - 1) {
-          await sleep(delayMs * (attempt + 1));
+        const retryDelayMs = attempt < attempts - 1 ? delayMs * (attempt + 1) : null;
+        opts.onAttemptFailure?.({
+          attempt: attempt + 1,
+          maxAttempts: attempts,
+          url,
+          error: lastError,
+          retryDelayMs,
+        });
+        if (retryDelayMs !== null) {
+          await sleep(retryDelayMs);
         }
       }
     }

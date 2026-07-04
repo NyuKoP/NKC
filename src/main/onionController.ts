@@ -5,6 +5,7 @@ import type { TorStatus } from "./torManager";
 import type { LokinetStatus } from "./lokinetManager";
 import { socksFetch } from "./socksHttpClient";
 import { selectRoute, type RouteMode } from "./routePolicy";
+import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 
 type InboxItem = {
   id: string;
@@ -129,6 +130,41 @@ const normalizeForwardError = (error: unknown) => {
   return "upstream_error";
 };
 
+const summarizeProxy = (proxyUrl: string | null) => {
+  if (!proxyUrl) return null;
+  try {
+    const parsed = new URL(proxyUrl);
+    return {
+      protocol: parsed.protocol.replace(/:$/, ""),
+      host: parsed.hostname || null,
+      port: parsed.port || null,
+    };
+  } catch {
+    return {
+      protocol: "invalid",
+      host: null,
+      port: null,
+    };
+  }
+};
+
+const serializeForwardError = (error: unknown) => {
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code ?? "")
+      : "";
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  const stackTop =
+    error instanceof Error && typeof error.stack === "string"
+      ? error.stack.split("\n").slice(0, 2).join("\n")
+      : undefined;
+  return {
+    code: code || undefined,
+    message,
+    stackTop,
+  };
+};
+
 export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSendDeps) => {
   if (!payload.envelope) {
     return { status: 400, body: { ok: false, error: "missing-fields" } };
@@ -164,12 +200,41 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
       const candidate = candidates[index];
       const isLast = index === candidates.length - 1;
       const proxyUrl = candidate.kind === "tor" ? deps.torProxyUrl : deps.lokinetProxyUrl;
+      const targetUrl = `${candidate.target}/onion/ingest`;
+      const proxySummary = summarizeProxy(proxyUrl);
       if (!proxyUrl) {
+        emitFlowTraceLog({
+          event: "onionController:forward:skip",
+          level: "warn",
+          opId: msgId,
+          routeKind: candidate.kind,
+          routeMode,
+          destination: candidate.target,
+          toDeviceId,
+          attempt: index + 1,
+          maxRouteAttempts: candidates.length,
+          reason: "missing-forward-proxy",
+        });
         if (routeMode === "auto") continue;
         return { status: 400, body: { ok: false, error: "forward_failed:no_proxy" } };
       }
       try {
-        const response = await deps.socksFetch(`${candidate.target}/onion/ingest`, {
+        emitFlowTraceLog({
+          event: "onionController:forward:start",
+          opId: msgId,
+          routeKind: candidate.kind,
+          routeMode,
+          destination: candidate.target,
+          destinationUrl: targetUrl,
+          toDeviceId,
+          attempt: index + 1,
+          maxRouteAttempts: candidates.length,
+          socksProxy: proxySummary,
+          timeoutMs: FORWARD_TIMEOUT_MS,
+          retryAttempts: FORWARD_RETRY_ATTEMPTS,
+          retryDelayMs: FORWARD_RETRY_DELAY_MS,
+        });
+        const response = await deps.socksFetch(targetUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: Buffer.from(
@@ -184,10 +249,84 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
           timeoutMs: FORWARD_TIMEOUT_MS,
           socksProxyUrl: proxyUrl,
           retry: { attempts: FORWARD_RETRY_ATTEMPTS, delayMs: FORWARD_RETRY_DELAY_MS },
+          onAttemptStart: ({ attempt, maxAttempts }) => {
+            emitFlowTraceLog({
+              event: "onionController:forward:attempt",
+              opId: msgId,
+              routeKind: candidate.kind,
+              routeMode,
+              destination: candidate.target,
+              destinationUrl: targetUrl,
+              toDeviceId,
+              attempt,
+              maxAttempts,
+              socksProxy: proxySummary,
+              timeoutMs: FORWARD_TIMEOUT_MS,
+            });
+          },
+          onAttemptSuccess: ({ attempt, maxAttempts, status }) => {
+            emitFlowTraceLog({
+              event: "onionController:forward:attempt_ok",
+              opId: msgId,
+              routeKind: candidate.kind,
+              routeMode,
+              destination: candidate.target,
+              destinationUrl: targetUrl,
+              toDeviceId,
+              attempt,
+              maxAttempts,
+              status,
+              socksProxy: proxySummary,
+            });
+          },
+          onAttemptFailure: ({ attempt, maxAttempts, error, retryDelayMs }) => {
+            emitFlowTraceLog({
+              event: "onionController:forward:attempt_fail",
+              level: "warn",
+              opId: msgId,
+              routeKind: candidate.kind,
+              routeMode,
+              destination: candidate.target,
+              destinationUrl: targetUrl,
+              toDeviceId,
+              attempt,
+              maxAttempts,
+              retryDelayMs,
+              socksProxy: proxySummary,
+              error: serializeForwardError(error),
+            });
+          },
         });
         if (response.status >= 200 && response.status < 300) {
+          emitFlowTraceLog({
+            event: "onionController:forward:ok",
+            opId: msgId,
+            routeKind: candidate.kind,
+            routeMode,
+            destination: candidate.target,
+            destinationUrl: targetUrl,
+            toDeviceId,
+            attempt: index + 1,
+            maxRouteAttempts: candidates.length,
+            status: response.status,
+            socksProxy: proxySummary,
+          });
           return { status: 200, body: { ok: true, msgId, forwarded: true, via: candidate.kind } };
         }
+        emitFlowTraceLog({
+          event: "onionController:forward:bad_status",
+          level: "warn",
+          opId: msgId,
+          routeKind: candidate.kind,
+          routeMode,
+          destination: candidate.target,
+          destinationUrl: targetUrl,
+          toDeviceId,
+          attempt: index + 1,
+          maxRouteAttempts: candidates.length,
+          status: response.status,
+          socksProxy: proxySummary,
+        });
         if (!isLast && routeMode === "auto") {
           continue;
         }
@@ -198,6 +337,21 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
         };
       } catch (error) {
         const code = normalizeForwardError(error);
+        emitFlowTraceLog({
+          event: "onionController:forward:fail",
+          level: "warn",
+          opId: msgId,
+          routeKind: candidate.kind,
+          routeMode,
+          destination: candidate.target,
+          destinationUrl: targetUrl,
+          toDeviceId,
+          attempt: index + 1,
+          maxRouteAttempts: candidates.length,
+          normalizedCode: code,
+          socksProxy: proxySummary,
+          error: serializeForwardError(error),
+        });
         if (!isLast && routeMode === "auto") {
           continue;
         }
