@@ -32,6 +32,9 @@ export type OnionControllerHandle = {
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 1000;
 const MAX_BODY_BYTES = 256 * 1024;
+const FORWARD_TIMEOUT_MS = 20_000;
+const FORWARD_RETRY_ATTEMPTS = 3;
+const FORWARD_RETRY_DELAY_MS = 350;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
@@ -178,9 +181,9 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
               id: msgId,
             })
           ),
-          timeoutMs: 10000,
+          timeoutMs: FORWARD_TIMEOUT_MS,
           socksProxyUrl: proxyUrl,
-          retry: { attempts: 2, delayMs: 200 },
+          retry: { attempts: FORWARD_RETRY_ATTEMPTS, delayMs: FORWARD_RETRY_DELAY_MS },
         });
         if (response.status >= 200 && response.status < 300) {
           return { status: 200, body: { ok: true, msgId, forwarded: true, via: candidate.kind } };
