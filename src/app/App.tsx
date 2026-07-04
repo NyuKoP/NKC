@@ -264,6 +264,8 @@ export default function App() {
     Record<string, ConversationTransportStatus>
   >({});
   const netConfig = useNetConfigStore((state) => state.config);
+  const friendRouteWakeSignatureRef = useRef<Record<string, string>>({});
+  const onionRouteRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
 
   const {
     groupAvatarOverrides,
@@ -509,12 +511,17 @@ export default function App() {
   const refreshMyFriendCode = useCallback(async () => {
     if (!friendAddOpen || !userProfile) return;
     const payload = await buildLocalFriendCodePayload();
+    const hasRouteTarget = Boolean(payload.onionAddr || payload.alternateRouteAddr);
+    if (onionRouteRequired && !hasRouteTarget) {
+      setMyFriendCode((prev) => (prev ? "" : prev));
+      return;
+    }
     const nextCode = encodeFriendCodeV1({
       v: 1,
       ...payload,
     });
     setMyFriendCode((prev) => (prev === nextCode ? prev : nextCode));
-  }, [buildLocalFriendCodePayload, friendAddOpen, userProfile]);
+  }, [buildLocalFriendCodePayload, friendAddOpen, onionRouteRequired, userProfile]);
 
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;
@@ -562,6 +569,17 @@ export default function App() {
   const friendAddHint = useMemo(() => {
     if (!friendAddOpen) return null;
     if (!myFriendCode) {
+      if (onionRouteRequired) {
+        const selectedNetwork = netConfig.onionSelectedNetwork;
+        const selectedLabel = selectedNetwork === "tor" ? "Tor" : "alternateRoute";
+        const selectedStatus = selectedNetwork === "tor"
+          ? friendCodeRuntimeSnapshot.torState
+          : friendCodeRuntimeSnapshot.alternateRouteState;
+        if (selectedStatus === "running") {
+          return `${selectedLabel} 경로 주소를 기다리는 중입니다. 주소가 확인되면 코드 복사가 활성화됩니다.`;
+        }
+        return `${selectedLabel} 연결 준비 중입니다. 준비가 끝나면 코드가 자동으로 생성됩니다.`;
+      }
       return "친구 코드를 준비 중입니다.";
     }
     const decoded = decodeFriendCodeV1(myFriendCode);
@@ -570,7 +588,6 @@ export default function App() {
     }
 
     const hasRouteTarget = Boolean(decoded.onionAddr || decoded.alternateRouteAddr);
-    const onionMode = netConfig.onionEnabled || netConfig.mode === "onionRouter";
     const selectedNetwork = netConfig.onionSelectedNetwork;
     const selectedLabel = selectedNetwork === "tor" ? "Tor" : "alternateRoute";
     const selectedStatus = selectedNetwork === "tor"
@@ -578,14 +595,14 @@ export default function App() {
       : friendCodeRuntimeSnapshot.alternateRouteState;
     const selectedReady = selectedStatus === "running";
 
-    if (onionMode && !hasRouteTarget) {
+    if (onionRouteRequired && !hasRouteTarget) {
       if (selectedReady) {
         return `${selectedLabel} 런타임은 동작 중이지만 코드의 라우팅 주소가 아직 준비되지 않았습니다. 잠시 후 코드를 다시 복사하세요.`;
       }
       return `${selectedLabel} 연결이 아직 준비되지 않아 코드에 라우팅 주소가 없을 수 있습니다. 대안: 내 코드를 먼저 상대에게 보내 상대가 먼저 친구 추가하게 하거나, 네트워크 설정에서 ${selectedLabel} 연결 후 코드를 다시 복사하세요.`;
     }
     return null;
-  }, [friendAddOpen, myFriendCode, netConfig, friendCodeRuntimeSnapshot]);
+  }, [friendAddOpen, friendCodeRuntimeSnapshot, myFriendCode, netConfig, onionRouteRequired]);
 
   useEffect(() => {
     const unsubscribe = onTransportStatusChange((convId, status) => {
@@ -1396,6 +1413,26 @@ export default function App() {
     return buildResolvedRoutingMeta(partner);
   }, [buildResolvedRoutingMeta]);
 
+  const markFriendRequestReachability = useCallback(
+    async (
+      friendId: string,
+      patch: Partial<NonNullable<UserProfile["reachability"]>>
+    ) => {
+      const latest = useAppStore.getState().friends.find((item) => item.id === friendId);
+      if (!latest) return;
+      await saveProfile({
+        ...latest,
+        reachability: {
+          ...(latest.reachability ?? { status: "unreachable" as const }),
+          ...patch,
+        },
+        updatedAt: Date.now(),
+      });
+      await hydrateVault();
+    },
+    [hydrateVault]
+  );
+
   const sendDirectEnvelope = useCallback(
     async (
       conv: Conversation,
@@ -1863,6 +1900,65 @@ export default function App() {
     },
     [buildFriendRequestPayload, buildRoutingMeta, ensureDirectConvForFriend, recoverAndPersistFriendRouting, sendFriendControlPacket]
   );
+
+  useEffect(() => {
+    const nextSeen: Record<string, string> = {};
+    for (const friend of friends) {
+      if (friend.friendStatus !== "request_out") continue;
+      const routingMeta = buildResolvedRoutingMeta(friend);
+      const hasDeviceId = Boolean(routingMeta.toDeviceId);
+      const hasRouteTarget = Boolean(routingMeta.route?.torOnion || routingMeta.route?.alternateRoute);
+      if (!hasDeviceId || (onionRouteRequired && !hasRouteTarget)) continue;
+      const signature = [
+        routingMeta.toDeviceId ?? "",
+        routingMeta.route?.torOnion ?? "",
+        routingMeta.route?.alternateRoute ?? "",
+        friend.profileVcard?.friendCode ?? "",
+      ].join("|");
+      nextSeen[friend.id] = signature;
+      if (friendRouteWakeSignatureRef.current[friend.id] === signature) continue;
+      friendRouteWakeSignatureRef.current[friend.id] = signature;
+      void (async () => {
+        const attemptedAt = Date.now();
+        try {
+          const sent = await sendFriendRequestForFriend(friend);
+          if (!sent) {
+            await markFriendRequestReachability(friend.id, {
+              status: "unreachable",
+              lastAttemptAt: attemptedAt,
+              lastError: "Send returned false (Routing or packet drop)",
+            });
+            return;
+          }
+          await markFriendRequestReachability(friend.id, {
+            status: "ok",
+            attempts: 0,
+            lastAttemptAt: attemptedAt,
+            nextAttemptAt: undefined,
+            lastError: undefined,
+          });
+        } catch (error) {
+          console.warn("[friend] immediate route-ready retry failed", error);
+          await markFriendRequestReachability(friend.id, {
+            status: "unreachable",
+            lastAttemptAt: attemptedAt,
+            lastError: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    }
+    Object.keys(friendRouteWakeSignatureRef.current).forEach((friendId) => {
+      if (!nextSeen[friendId]) {
+        delete friendRouteWakeSignatureRef.current[friendId];
+      }
+    });
+  }, [
+    buildResolvedRoutingMeta,
+    friends,
+    markFriendRequestReachability,
+    onionRouteRequired,
+    sendFriendRequestForFriend,
+  ]);
 
   const handleSendMessage = async (text: string, clientBatchId: string) => {
     if (!ui.selectedConvId || !userProfile) return;
@@ -2836,7 +2932,10 @@ export default function App() {
 
   const handleCopyFriendCode = async () => {
     try {
-      if (!myFriendCode) return;
+      if (!myFriendCode) {
+        addToast({ message: "친구 코드가 아직 준비되지 않았습니다." });
+        return;
+      }
       await navigator.clipboard.writeText(myFriendCode);
       const decoded = decodeFriendCodeV1(myFriendCode);
       const hasRouteTarget =
@@ -4275,6 +4374,7 @@ export default function App() {
           onOpenChange={setFriendAddOpen}
           myCode={myFriendCode}
           myCodeHint={friendAddHint}
+          myCodeLoading={onionRouteRequired && !myFriendCode}
           routeResolveBusy={routeResolveBusy}
           onCopyCode={handleCopyFriendCode}
           onResolveRoute={handleResolveFriendRoute}
