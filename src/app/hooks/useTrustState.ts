@@ -153,8 +153,8 @@ export const useTrustState = ({
         const existing = prev[partnerProfile.id];
         if (existing?.trustState === "KEY_CHANGED") return prev;
         const next: TrustRecord = {
-          peerIdentityKey: existing?.peerIdentityKey ?? partnerProfile.identityPub,
-          trustState: "VERIFIED",
+          peerIdentityKey: partnerProfile.identityPub,
+          trustState: existing?.trustState ?? "UNVERIFIED",
           mkc: {
             sessionEpoch,
             localNonce,

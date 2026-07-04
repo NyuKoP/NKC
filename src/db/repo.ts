@@ -150,6 +150,57 @@ const OUTBOX_BACKOFF = [1000, 5000, 30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+const startsWithBytes = (bytes: Uint8Array, signature: number[]) =>
+  bytes.length >= signature.length && signature.every((value, index) => bytes[index] === value);
+
+const readAsciiPrefix = (bytes: Uint8Array, length = 64) =>
+  new TextDecoder("utf-8", { fatal: false })
+    .decode(bytes.slice(0, length))
+    .replace(/\0/g, "")
+    .trimStart()
+    .toLowerCase();
+
+const hasExpectedMediaSignature = (mime: string, bytes: Uint8Array) => {
+  const normalizedMime = mime.toLowerCase();
+  if (normalizedMime === "image/png") return startsWithBytes(bytes, [0x89, 0x50, 0x4e, 0x47]);
+  if (normalizedMime === "image/jpeg") return startsWithBytes(bytes, [0xff, 0xd8, 0xff]);
+  if (normalizedMime === "image/gif") return startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38]);
+  if (normalizedMime === "image/webp")
+    return startsWithBytes(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+      bytes.length >= 12 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50;
+  if (normalizedMime === "video/mp4") return bytes.length >= 8 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70;
+  if (normalizedMime === "video/webm") return startsWithBytes(bytes, [0x1a, 0x45, 0xdf, 0xa3]);
+  if (normalizedMime === "video/ogg") return startsWithBytes(bytes, [0x4f, 0x67, 0x67, 0x53]);
+  return false;
+};
+
+const isSuspiciousMediaPayload = (mime: string, bytes: Uint8Array) => {
+  const normalizedMime = mime.toLowerCase();
+  if (!normalizedMime.startsWith("image/") && !normalizedMime.startsWith("video/")) return false;
+  if (hasExpectedMediaSignature(normalizedMime, bytes)) return false;
+
+  const asciiPrefix = readAsciiPrefix(bytes);
+  if (
+    startsWithBytes(bytes, [0x4d, 0x5a]) ||
+    startsWithBytes(bytes, [0x7f, 0x45, 0x4c, 0x46]) ||
+    startsWithBytes(bytes, [0x23, 0x21]) ||
+    startsWithBytes(bytes, [0x50, 0x4b, 0x03, 0x04]) ||
+    asciiPrefix.startsWith("<!doctype html") ||
+    asciiPrefix.startsWith("<html") ||
+    asciiPrefix.startsWith("<?xml") ||
+    asciiPrefix.startsWith("<svg") ||
+    asciiPrefix.startsWith("<script")
+  ) {
+    return true;
+  }
+
+  return normalizedMime === "image/svg+xml";
+};
+
 const shouldYieldMedia = (index: number, total: number) =>
   total >= MEDIA_YIELD_MIN_CHUNKS && (index + 1) % MEDIA_YIELD_EVERY === 0;
 
@@ -690,6 +741,8 @@ export const loadMessageMedia = async (mediaRef?: MediaRef) => {
     if (decrypted.length !== chunks.length) return null;
     const totalBytes = decrypted.reduce((sum, part) => sum + part.length, 0);
     if (totalBytes > MAX_MEDIA_BYTES) return null;
+    const firstChunk = decrypted[0];
+    if (!firstChunk || isSuspiciousMediaPayload(mediaRef.mime, firstChunk)) return null;
     const blob = new Blob(decrypted as unknown as BlobPart[], { type: mediaRef.mime });
     return blob;
   } catch {

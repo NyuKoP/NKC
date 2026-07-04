@@ -367,9 +367,9 @@ export default function RightPanel({
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = media.name || "media";
+    anchor.download = (media.name || "media").replace(/[^a-zA-Z0-9.\-_가-힣]/g, "_");
     anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 250);
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
   };
 
   const handleDownloadGroup = async (group: MediaGroup) => {
@@ -425,8 +425,11 @@ export default function RightPanel({
           </Tabs.List>
         </div>
 
-        <div className="mt-4 flex w-full min-h-0 flex-1 flex-col items-stretch justify-start gap-4 px-4">
-        <Tabs.Content value="about" className="min-h-0 flex-1 overflow-y-auto scrollbar-hidden">
+        <div className="mt-4 flex w-full min-h-0 flex-1 flex-col items-stretch justify-start px-4">
+        <Tabs.Content
+          value="about"
+          className="min-h-0 flex-1 overflow-y-auto scrollbar-hidden focus:outline-none data-[state=inactive]:hidden"
+        >
           {conversation ? (
             <div className="w-full space-y-4 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4">
               <div className="flex items-center gap-3">
@@ -450,7 +453,7 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => handleCopyValue(peerIdValue)}
-                      className="rounded-nkc border border-nkc-border px-2 py-0.5 text-[10px] text-nkc-muted hover:bg-nkc-panel"
+                      className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-panelMuted"
                     >
                       복사
                     </button>
@@ -463,7 +466,7 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => handleCopyValue(identityKeyValue)}
-                      className="rounded-nkc border border-nkc-border px-2 py-0.5 text-[10px] text-nkc-muted hover:bg-nkc-panel"
+                      className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-panelMuted"
                     >
                       복사
                     </button>
@@ -490,7 +493,7 @@ export default function RightPanel({
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
-                          className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel"
+                          className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-panelMuted"
                         >
                           변경
                         </button>
@@ -498,7 +501,7 @@ export default function RightPanel({
                           <button
                             type="button"
                             onClick={() => onSetGroupAvatarOverride(conversation.id, null)}
-                            className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-muted hover:bg-nkc-panel"
+                            className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-panelMuted"
                           >
                             해제
                           </button>
@@ -547,7 +550,7 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => onInviteToGroup(conversation.id)}
-                      className="flex flex-1 items-center justify-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                      className="flex h-9 flex-1 items-center justify-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 text-xs font-semibold text-nkc-text hover:bg-nkc-panelMuted"
                     >
                       <UserPlus size={14} />
                       Invite
@@ -555,7 +558,7 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => onLeaveGroup(conversation.id)}
-                      className="flex flex-1 items-center justify-center gap-2 rounded-nkc border border-red-500/40 px-3 py-2 text-xs text-red-200 hover:bg-red-500/10"
+                      className="flex h-9 flex-1 items-center justify-center gap-2 rounded-nkc border border-red-500/40 px-3 text-xs font-semibold text-red-200 hover:bg-red-500/10"
                     >
                       <UserX size={14} />
                       Leave
@@ -570,7 +573,10 @@ export default function RightPanel({
             </div>
           )}
         </Tabs.Content>
-        <Tabs.Content value="media" className="min-h-0 flex flex-1 flex-col overflow-hidden">
+        <Tabs.Content
+          value="media"
+          className="min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hidden focus:outline-none data-[state=active]:flex data-[state=inactive]:hidden"
+        >
           <div className="w-full flex flex-col gap-4">
             <div className="flex items-center gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
               {([
@@ -584,8 +590,8 @@ export default function RightPanel({
                   onClick={() => setMediaFilter(item.value)}
                   className={
                     mediaFilter === item.value
-                      ? "flex-1 rounded-nkc bg-nkc-panel px-2 py-1 font-semibold text-nkc-text"
-                      : "flex-1 rounded-nkc px-2 py-1 font-semibold text-nkc-muted hover:text-nkc-text"
+                      ? "flex h-8 flex-1 items-center justify-center rounded-nkc border border-nkc-border/40 bg-nkc-panel px-3 text-[11px] font-semibold text-nkc-text shadow-sm"
+                      : "flex h-8 flex-1 items-center justify-center rounded-nkc border border-transparent px-3 text-[11px] font-semibold text-nkc-muted hover:text-nkc-text"
                   }
                 >
                   {item.label}
@@ -593,7 +599,7 @@ export default function RightPanel({
               ))}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-y-auto scrollbar-hidden">
+          <div className="min-h-0 flex-1">
             {mediaLoading ? (
               <div className="w-full rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
                 미디어를 불러오는 중...
@@ -821,7 +827,10 @@ export default function RightPanel({
           ) : null}
         </Tabs.Content>
 
-        <Tabs.Content value="settings" className="m-0 w-full flex-none overflow-visible self-start">
+        <Tabs.Content
+          value="settings"
+          className="min-h-0 flex-1 overflow-y-auto scrollbar-hidden focus:outline-none data-[state=inactive]:hidden"
+        >
           {conversation ? (
             <div className="w-full flex flex-col gap-4">
               <div className="w-full divide-y divide-nkc-border/50 rounded-nkc border border-nkc-border bg-nkc-panelMuted px-4 py-1 text-xs text-nkc-muted">
@@ -908,9 +917,6 @@ export default function RightPanel({
     </aside>
   );
 }
-
-
-
 
 
 
