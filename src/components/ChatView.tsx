@@ -84,6 +84,7 @@ type ChatViewProps = {
   onSendReadReceipt?: (payload: { convId: string; msgId: string; msgTs: number }) => void;
   onAcceptRequest?: () => void;
   onDeclineRequest?: () => void;
+  onCancelOutgoingRequest?: () => void;
   onBack: () => void;
   onToggleRight: () => void;
   rightPanelOpen: boolean;
@@ -107,6 +108,7 @@ export default function ChatView({
   onSendReadReceipt,
   onAcceptRequest,
   onDeclineRequest,
+  onCancelOutgoingRequest,
   onBack,
   onToggleRight,
   rightPanelOpen,
@@ -853,6 +855,25 @@ export default function ChatView({
                     수락
                   </button>
                 </div>
+              </div>
+            ) : null}
+            {requestOutgoing ? (
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3 text-sm">
+                <div className="space-y-1">
+                  <div className="text-nkc-text">친구 요청을 보냈습니다.</div>
+                  <div className="text-xs text-nkc-muted">
+                    상대가 수락하면 바로 대화를 시작할 수 있습니다.
+                  </div>
+                </div>
+                {onCancelOutgoingRequest ? (
+                  <button
+                    type="button"
+                    onClick={onCancelOutgoingRequest}
+                    className="rounded-nkc border border-nkc-border px-3 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                  >
+                    친구추가요청 취소
+                  </button>
+                ) : null}
               </div>
             ) : null}
             {renderGroups.map(({ group, dateLabel, showSender }) => {

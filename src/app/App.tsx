@@ -271,6 +271,7 @@ export default function App() {
   >({});
   const netConfig = useNetConfigStore((state) => state.config);
   const friendRouteWakeSignatureRef = useRef<Record<string, string>>({});
+  const friendRequestInFlightRef = useRef(new Map<string, Promise<boolean>>());
   const onionRouteRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
 
   const {
@@ -1929,30 +1930,50 @@ export default function App() {
 
   const sendFriendRequestForFriend = useCallback(
     async (friend: UserProfile, traceId?: string) => {
-      const effectiveTraceId = traceId ?? `friend-request:${friend.id}:${newClientBatchId()}`;
-      let target = friend;
+      const existing = friendRequestInFlightRef.current.get(friend.id);
+      if (existing) {
+        return existing;
+      }
+      const pending = (async () => {
+        const effectiveTraceId = traceId ?? `friend-request:${friend.id}:${newClientBatchId()}`;
+        let target = friend;
+        try {
+          target = await recoverAndPersistFriendRouting(friend);
+        } catch (error) {
+          console.warn("[friend] failed to recover routing hints from friendCode", error);
+        }
+        const routingMeta = buildRoutingMeta(target);
+        if (!routingMeta.toDeviceId) {
+          return false;
+        }
+        const netConfig = useNetConfigStore.getState().config;
+        const routeRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
+        const hasRouteTarget = Boolean(routingMeta.route?.torOnion || routingMeta.route?.lokinet);
+        if (routeRequired && !hasRouteTarget) {
+          return false;
+        }
+        const conv = await ensureDirectConvForFriend(target);
+        if (!conv) return false;
+        const payload = await buildFriendRequestPayload(conv.id, effectiveTraceId);
+        if (!payload) return false;
+        return sendFriendControlPacket(conv, target, payload, "high");
+      })();
+      friendRequestInFlightRef.current.set(friend.id, pending);
       try {
-        target = await recoverAndPersistFriendRouting(friend);
-      } catch (error) {
-        console.warn("[friend] failed to recover routing hints from friendCode", error);
+        return await pending;
+      } finally {
+        if (friendRequestInFlightRef.current.get(friend.id) === pending) {
+          friendRequestInFlightRef.current.delete(friend.id);
+        }
       }
-      const routingMeta = buildRoutingMeta(target);
-      if (!routingMeta.toDeviceId) {
-        return false;
-      }
-      const netConfig = useNetConfigStore.getState().config;
-      const routeRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
-      const hasRouteTarget = Boolean(routingMeta.route?.torOnion || routingMeta.route?.lokinet);
-      if (routeRequired && !hasRouteTarget) {
-        return false;
-      }
-      const conv = await ensureDirectConvForFriend(target);
-      if (!conv) return false;
-      const payload = await buildFriendRequestPayload(conv.id, effectiveTraceId);
-      if (!payload) return false;
-      return sendFriendControlPacket(conv, target, payload, "high");
     },
-    [buildFriendRequestPayload, buildRoutingMeta, ensureDirectConvForFriend, recoverAndPersistFriendRouting, sendFriendControlPacket]
+    [
+      buildFriendRequestPayload,
+      buildRoutingMeta,
+      ensureDirectConvForFriend,
+      recoverAndPersistFriendRouting,
+      sendFriendControlPacket,
+    ]
   );
 
   useEffect(() => {
@@ -3619,6 +3640,26 @@ export default function App() {
             oneTimeInvite,
           },
         });
+        if (existing?.friendStatus === "request_out") {
+          return failWithTestLog("이미 친구 추가 요청을 보냈습니다.", "guard:duplicate-request-out", {
+            friendId,
+            profileId: existing.id,
+            context: {
+              finalKey,
+              existingStatus: existing.friendStatus,
+            },
+          });
+        }
+        if (existing?.friendStatus === "normal") {
+          return failWithTestLog("이미 추가된 친구입니다.", "guard:duplicate-friend-normal", {
+            friendId,
+            profileId: existing.id,
+            context: {
+              finalKey,
+              existingStatus: existing.friendStatus,
+            },
+          });
+        }
 
         const tofu = applyTOFU(
           existing?.identityPub && existing?.dhPub
@@ -4295,6 +4336,34 @@ export default function App() {
     }
   };
 
+  const handleCancelOutgoingFriendRequest = async () => {
+    if (!currentConversation || !partnerProfile) return;
+    try {
+      friendRequestInFlightRef.current.delete(partnerProfile.id);
+      delete friendRouteWakeSignatureRef.current[partnerProfile.id];
+      await updateFriendOrThrow(partnerProfile.id, {
+        friendStatus: "hidden",
+        reachability: {
+          ...(partnerProfile.reachability ?? { status: "unreachable" as const }),
+          nextAttemptAt: undefined,
+        },
+      });
+      await updateConversationOrThrow(currentConversation.id, {
+        hidden: true,
+        pendingOutgoing: false,
+        pendingAcceptance: false,
+        pendingFriendResponse: undefined,
+      });
+      addToast({ message: "친구 추가 요청을 취소했습니다." });
+      if (ui.selectedConvId === currentConversation.id) {
+        setSelectedConv(null);
+      }
+    } catch (error) {
+      console.error("Failed to cancel outgoing friend request", error);
+      addToast({ message: "친구 추가 요청 취소에 실패했습니다." });
+    }
+  };
+
   if (ui.mode === "onboarding") {
     return (
       <>
@@ -4360,6 +4429,7 @@ export default function App() {
         onSendReadReceipt={handleSendReadReceipt}
         onAcceptRequest={handleAcceptRequest}
         onDeclineRequest={handleDeclineRequest}
+        onCancelOutgoingRequest={handleCancelOutgoingFriendRequest}
         onDeleteMessages={handleDeleteMessages}
         onToast={(message) => addToast({ message })}
         onBack={() => {
