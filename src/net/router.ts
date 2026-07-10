@@ -54,7 +54,10 @@ let transportStarted = new WeakSet<Transport>();
 const inboundAttachedKinds = new Set<TransportKind>();
 const transportStateByKind: Partial<Record<TransportKind, TransportState>> = {};
 
-const debugLog = (_label: string, _payload: Record<string, unknown>) => {};
+const debugLog = (label: string, payload: Record<string, unknown>) => {
+  void label;
+  void payload;
+};
 
 type DerivedRoutingMeta = {
   toDeviceId?: string;

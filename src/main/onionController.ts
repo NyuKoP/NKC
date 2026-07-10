@@ -34,8 +34,8 @@ export type OnionControllerHandle = {
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 1000;
 const MAX_BODY_BYTES = 256 * 1024;
-const FORWARD_TIMEOUT_MS = 20_000;
-const FORWARD_RETRY_ATTEMPTS = 3;
+const FORWARD_TIMEOUT_MS = 45_000;
+const FORWARD_RETRY_ATTEMPTS = 1;
 const FORWARD_RETRY_DELAY_MS = 350;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",

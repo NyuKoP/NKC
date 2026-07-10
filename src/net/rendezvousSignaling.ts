@@ -68,7 +68,8 @@ const fetchRendezvous = async (
     }
   }
   const timeoutMs = init.timeoutMs ?? 10_000;
-  const { timeoutMs: _timeoutMs, signal: parentSignal, ...fetchInit } = init;
+  const { signal: parentSignal, ...fetchInit } = init;
+  delete fetchInit.timeoutMs;
   return fetchWithTimeout(url, fetchInit, {
     timeoutMs,
     parentSignal: parentSignal ?? undefined,
