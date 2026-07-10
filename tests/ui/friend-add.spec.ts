@@ -250,7 +250,10 @@ const seedNetworkConfig = async (
         ensureHiddenService: async () => ({ ok: true }),
         getMyOnionAddress: async () => (selectedNetwork === "tor" ? serviceAddress ?? "" : ""),
         getMyLokinetAddress: async () => (selectedNetwork === "lokinet" ? serviceAddress ?? "" : ""),
+        startTor: async () => ({ ok: true }),
+        stopTor: async () => ({ ok: true }),
         getTorStatus: async () => ({ state: "running", socksProxyUrl: "socks5://127.0.0.1:9050" }),
+        checkSocksProxyReachable: async () => true,
         setOnionForwardProxy: async () => ({ ok: true }),
       },
     });
@@ -393,18 +396,29 @@ test.describe("Friend add E2E", () => {
       .toBe(true);
   });
 
-  test("mutual endpoint exchange completes over onion controller", async ({ browser }) => {
+  const runMutualEndpointExchange = async (
+    browser: import("@playwright/test").Browser,
+    network: "tor" | "lokinet"
+  ) => {
     const aliceContext = await browser.newContext();
     const bobContext = await browser.newContext();
     const alice = await aliceContext.newPage();
     const bob = await bobContext.newPage();
+    const aliceServiceAddress =
+      network === "tor"
+        ? "alicefriendabcdefghijklmnop1234567890abcdefghijklmnop.onion"
+        : "alice.loki";
+    const bobServiceAddress =
+      network === "tor"
+        ? "bobfriendabcdefghijklmnop1234567890abcdefghijklmnop12.onion"
+        : "bob.loki";
     await seedNetworkConfig(alice, onionServer.baseUrl, {
-      selectedNetwork: "lokinet",
-      serviceAddress: "alice.loki",
+      selectedNetwork: network,
+      serviceAddress: aliceServiceAddress,
     });
     await seedNetworkConfig(bob, onionServer.baseUrl, {
-      selectedNetwork: "lokinet",
-      serviceAddress: "bob.loki",
+      selectedNetwork: network,
+      serviceAddress: bobServiceAddress,
     });
     await enableFriendFlowCapture(alice);
     await enableFriendFlowCapture(bob);
@@ -421,9 +435,18 @@ test.describe("Friend add E2E", () => {
 
       const aliceCode = await readOwnFriendCode(alice);
       const bobCode = await readOwnFriendCode(bob);
-      expect(decodeFriendCodePayload(aliceCode).lokinetAddr).toBe("alice.loki");
+      const alicePayload = decodeFriendCodePayload(aliceCode);
+      if (network === "tor") {
+        expect(alicePayload.onionAddr).toBe(aliceServiceAddress);
+      } else {
+        expect(alicePayload.lokinetAddr).toBe(aliceServiceAddress);
+      }
       const bobPayload = decodeFriendCodePayload(bobCode);
-      expect(bobPayload.lokinetAddr).toBe("bob.loki");
+      if (network === "tor") {
+        expect(bobPayload.onionAddr).toBe(bobServiceAddress);
+      } else {
+        expect(bobPayload.lokinetAddr).toBe(bobServiceAddress);
+      }
       expect(bobPayload.deviceId).toBeTruthy();
 
       await addFriendCode(alice, bobCode);
@@ -459,5 +482,17 @@ test.describe("Friend add E2E", () => {
       await aliceContext.close();
       await bobContext.close();
     }
+  };
+
+  test("mutual endpoint exchange completes over onion controller (lokinet mode)", async ({
+    browser,
+  }) => {
+    await runMutualEndpointExchange(browser, "lokinet");
+  });
+
+  test("mutual endpoint exchange completes over onion controller (tor mode)", async ({
+    browser,
+  }) => {
+    await runMutualEndpointExchange(browser, "tor");
   });
 });
