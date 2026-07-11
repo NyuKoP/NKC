@@ -1566,8 +1566,41 @@ const canReach = async (url: string, timeoutMs = 1200) =>
     }
   });
 
+const isIgnorablePipeError = (error: unknown) => {
+  const message = error instanceof Error ? error.message : String(error);
+  const code =
+    error && typeof error === "object" && "code" in error
+      ? String((error as { code?: unknown }).code)
+      : "";
+  return code === "EPIPE" || message.includes("EPIPE");
+};
+
+const ignorePipeError = (error: unknown) => {
+  if (isIgnorablePipeError(error)) return;
+  throw error;
+};
+
+let pipeErrorHandlersInstalled = false;
+const installPipeErrorHandlers = () => {
+  if (pipeErrorHandlersInstalled) return;
+  process.stdout?.on("error", ignorePipeError);
+  process.stderr?.on("error", ignorePipeError);
+  pipeErrorHandlersInstalled = true;
+};
+
+const safeLog = (...args: unknown[]) => {
+  if (!process.stdout || !process.stdout.writable) return;
+  try {
+    console.log(...args);
+  } catch (error) {
+    if (isIgnorablePipeError(error)) return;
+    throw error;
+  }
+};
+
 export const createMainWindow = () => {
   if (focusMainWindow()) return mainWindow;
+  installPipeErrorHandlers();
   const preloadPath = path.join(__dirname, "preload.js");
   const preloadExists = fsSync.existsSync(preloadPath);
   if (isDev && !preloadExists) {
@@ -1595,38 +1628,6 @@ export const createMainWindow = () => {
   win.webContents.on("unresponsive", () => {
     console.error("[main] renderer unresponsive");
   });
-  const safeLog = (...args: unknown[]) => {
-    if (!process.stdout || !process.stdout.writable) return;
-    try {
-      console.log(...args);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      const code =
-        error && typeof error === "object" && "code" in error
-          ? String((error as { code?: unknown }).code)
-          : "";
-      if (code === "EPIPE" || message.includes("EPIPE")) {
-        return;
-      }
-      throw error;
-    }
-  };
-
-  const ignorePipeError = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error);
-    const code =
-      error && typeof error === "object" && "code" in error
-        ? String((error as { code?: unknown }).code)
-        : "";
-    if (code === "EPIPE" || message.includes("EPIPE")) {
-      return;
-    }
-    throw error;
-  };
-
-  process.stdout?.on("error", ignorePipeError);
-  process.stderr?.on("error", ignorePipeError);
-
   if (isDev) {
     win.webContents.on("console-message", (_event, level, message, line, sourceId) => {
       if (win.webContents.isDestroyed()) return;

@@ -199,6 +199,8 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
   }
   const hasRouteTargets = Boolean(toOnion || lokinetAddress);
   if (payload.route || hasRouteTargets) {
+    let offlineQueueReason: string | null = null;
+    let terminalFailure: { status: number; body: { ok: false; error: string } } | null = null;
     const queueTorPending = async (error: string) => {
       if (!toOnion || !deps.enqueueOfflineMessage) return null;
       await deps.enqueueOfflineMessage({
@@ -259,11 +261,14 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
           reason: "missing-forward-proxy",
         });
         if (candidate.kind === "tor") {
-          const queued = await queueTorPending("forward_failed:no_proxy");
-          if (queued) return queued;
+          offlineQueueReason = "forward_failed:no_proxy";
         }
         if (routeMode === "auto") continue;
-        return { status: 400, body: { ok: false, error: "forward_failed:no_proxy" } };
+        terminalFailure = {
+          status: 400,
+          body: { ok: false, error: "forward_failed:no_proxy" },
+        };
+        continue;
       }
       try {
         emitTrace({
@@ -379,13 +384,13 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
         }
         const code = normalizeForwardError("upstream_error");
         if (candidate.kind === "tor") {
-          const queued = await queueTorPending(`forward_failed:${code}`);
-          if (queued) return queued;
+          offlineQueueReason = `forward_failed:${code}`;
         }
-        return {
+        terminalFailure = {
           status: 502,
           body: { ok: false, error: `forward_failed:${code}` },
         };
+        continue;
       } catch (error) {
         const code = normalizeForwardError(error);
         emitTrace({
@@ -407,12 +412,19 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
           continue;
         }
         if (candidate.kind === "tor") {
-          const queued = await queueTorPending(`forward_failed:${code}`);
-          if (queued) return queued;
+          offlineQueueReason = `forward_failed:${code}`;
         }
-        return { status: 502, body: { ok: false, error: `forward_failed:${code}` } };
+        terminalFailure = { status: 502, body: { ok: false, error: `forward_failed:${code}` } };
       }
     }
+    if (!offlineQueueReason && toOnion && deps.enqueueOfflineMessage && routeMode !== "preferLokinet") {
+      offlineQueueReason = terminalFailure?.body.error ?? "forward_failed:no_route";
+    }
+    if (offlineQueueReason) {
+      const queued = await queueTorPending(offlineQueueReason);
+      if (queued) return queued;
+    }
+    if (terminalFailure) return terminalFailure;
     return { status: 400, body: { ok: false, error: "forward_failed:no_route" } };
   }
 
