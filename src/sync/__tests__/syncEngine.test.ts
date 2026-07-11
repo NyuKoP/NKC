@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __testApplyEnvelopeEvents,
+  __testCreateSyncResponseFrames,
   __testResetSyncState,
   __testSetPeerContext,
   handleIncomingFriendFrame,
@@ -56,6 +57,7 @@ vi.mock("../../db/repo", () => {
     listProfiles: vi.fn(async () => profiles),
     getEvent: vi.fn(async () => null),
     getLastEventHash: vi.fn(async () => "prev-hash"),
+    listEventsByConv: vi.fn(async () => []),
     saveMessage: vi.fn(async () => {}),
     saveEvent: vi.fn(async () => {}),
     saveConversation: vi.fn(async () => {}),
@@ -130,6 +132,42 @@ describe("syncEngine signature verification", () => {
 
     const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
     expect(vi.mocked(repo.saveEvent)).not.toHaveBeenCalled();
+  });
+
+  it("splits large sync responses into flow-controlled chunks", () => {
+    const events = Array.from({ length: 35 }, (_, idx) => ({
+      eventId: `e${idx}`,
+      convId: "c1",
+      authorDeviceId: "peer",
+      lamport: idx + 1,
+      ts: idx + 1,
+      envelopeJson: JSON.stringify({ idx }),
+    }));
+
+    const frames = __testCreateSyncResponseFrames({
+      scope: "conv",
+      convId: "c1",
+      events,
+      next: { peer: 35 },
+      flowControl: true,
+    });
+
+    expect(frames.length).toBeGreaterThan(1);
+    expect(frames[0].flow).toMatchObject({
+      chunkIndex: 0,
+      totalChunks: frames.length,
+      final: false,
+    });
+    expect(frames.at(-1)?.flow).toMatchObject({
+      chunkIndex: frames.length - 1,
+      totalChunks: frames.length,
+      final: true,
+    });
+    expect(frames.slice(0, -1).every((frame) => Object.keys(frame.next).length === 0)).toBe(true);
+    expect(frames.at(-1)?.next).toEqual({ peer: 35 });
+    expect(frames.flatMap((frame) => frame.events).map((event) => event.eventId)).toEqual(
+      events.map((event) => event.eventId)
+    );
   });
 
   it("marks conflict when prev hash mismatches", async () => {
