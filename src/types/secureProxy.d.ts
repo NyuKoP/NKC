@@ -7,6 +7,29 @@ type P2PConnectionStatusPayload = {
   changedAt?: number;
 };
 
+type P2PChatMessagePayload = {
+  id: string;
+  convId: string;
+  ts: number;
+  createdAt?: number;
+  senderId: string;
+  text: string;
+  status?: "PENDING" | "SENT" | "FAILED";
+  clientBatchId?: string;
+  kind?: string;
+};
+
+type P2PChatMessageEventPayload =
+  | {
+      type: "MESSAGE_RECEIVED" | "MESSAGE_ACK";
+      message: P2PChatMessagePayload;
+    }
+  | {
+      type: "MESSAGE_FAILED";
+      messageId: string;
+      error?: string;
+    };
+
 declare global {
   interface Window {
     electron?: {
@@ -15,6 +38,17 @@ declare global {
         get: (key: string) => Promise<string | null>;
         set: (key: string, value: string) => Promise<boolean>;
         remove: (key: string) => Promise<boolean>;
+      };
+      p2p?: {
+        getMessages?: (conversationId: string) => Promise<P2PChatMessagePayload[]>;
+        sendMessage?: (payload: {
+          conversationId: string;
+          message: P2PChatMessagePayload;
+        }) => Promise<P2PChatMessagePayload | void>;
+        onMessageEvent?: (
+          conversationId: string,
+          cb: (payload: P2PChatMessageEventPayload) => void
+        ) => () => void;
       };
     };
     secureProxy?: {
@@ -57,6 +91,15 @@ declare global {
     p2p?: {
       onConnectionStatus: (
         cb: (payload: P2PConnectionStatusPayload) => void
+      ) => () => void;
+      getMessages?: (conversationId: string) => Promise<P2PChatMessagePayload[]>;
+      sendMessage?: (payload: {
+        conversationId: string;
+        message: P2PChatMessagePayload;
+      }) => Promise<P2PChatMessagePayload | void>;
+      onMessageEvent?: (
+        conversationId: string,
+        cb: (payload: P2PChatMessageEventPayload) => void
       ) => () => void;
     };
     testLog?: {
