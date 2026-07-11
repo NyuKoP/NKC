@@ -8,9 +8,11 @@ import { P2POfflineQueueManager } from "../p2pOfflineQueueManager";
 
 class FakeSocket extends EventEmitter {
   writes: string[] = [];
+  private readonly coalescedAckIds: string[] | null;
 
-  constructor(private readonly coalescedAckIds: string[] | null = null) {
+  constructor(coalescedAckIds: string[] | null = null) {
     super();
+    this.coalescedAckIds = coalescedAckIds;
   }
 
   write(data: string | Buffer) {

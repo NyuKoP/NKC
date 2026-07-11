@@ -37,6 +37,12 @@ const electronPreloadBuild = {
   },
 } satisfies import("vite").BuildOptions;
 
+const clientManualChunks = (id: string) => {
+  if (!id.includes("node_modules")) return undefined;
+  if (id.includes("libsodium")) return "vendor-crypto";
+  return "vendor";
+};
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [
@@ -90,5 +96,15 @@ export default defineConfig({
 
   optimizeDeps: {
     include: ["libsodium-wrappers-sumo", "libsodium-sumo"],
+  },
+
+  build: {
+    target: "chrome150",
+    chunkSizeWarningLimit: 1200,
+    rollupOptions: {
+      output: {
+        manualChunks: clientManualChunks,
+      },
+    },
   },
 });

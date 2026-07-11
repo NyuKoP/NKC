@@ -148,6 +148,7 @@ const writeFrame = (socket: SocketLike, payload: unknown) => {
 };
 
 class JsonFrameReader {
+  private readonly socket: SocketLike;
   private buffered = "";
   private closedError: Error | null = null;
   private pending:
@@ -158,7 +159,8 @@ class JsonFrameReader {
       }
     | null = null;
 
-  constructor(private readonly socket: SocketLike) {
+  constructor(socket: SocketLike) {
+    this.socket = socket;
     this.socket.on("data", this.onData);
     this.socket.once("error", this.onError);
     this.socket.once("end", this.onEnd);

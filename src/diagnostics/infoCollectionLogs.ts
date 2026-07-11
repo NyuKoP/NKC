@@ -89,10 +89,40 @@ export type FlowTraceLogInput = {
   [key: string]: unknown;
 };
 
+type BrowserEventLike = {
+  detail?: unknown;
+};
+
+type BrowserEventHandler = (event: BrowserEventLike) => void;
+
+type BrowserWindowLike = {
+  dispatchEvent: (event: unknown) => boolean;
+  addEventListener: (eventName: string, handler: BrowserEventHandler) => void;
+  removeEventListener: (eventName: string, handler: BrowserEventHandler) => void;
+};
+
+type CustomEventConstructorLike = new (
+  eventName: string,
+  init?: { detail?: unknown }
+) => unknown;
+
+const getBrowserWindow = () => {
+  const candidate = globalThis as { window?: BrowserWindowLike };
+  return candidate.window ?? null;
+};
+
+const createBrowserCustomEvent = (eventName: string, detail: unknown) => {
+  const candidate = globalThis as { CustomEvent?: CustomEventConstructorLike };
+  const CustomEventCtor = candidate.CustomEvent;
+  return CustomEventCtor ? new CustomEventCtor(eventName, { detail }) : null;
+};
+
 const dispatchInfoEvent = (eventName: string, payload: unknown) => {
   if (!isInfoCollectionEnabled()) return;
-  if (typeof window === "undefined") return;
-  window.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
+  const browserWindow = getBrowserWindow();
+  const event = createBrowserCustomEvent(eventName, payload);
+  if (!browserWindow || !event) return;
+  browserWindow.dispatchEvent(event);
 };
 
 let infoSequence = 0;
@@ -167,31 +197,32 @@ let infoSinkAttached = false;
 
 export const attachInfoCollectionLogSink = () => {
   if (!isInfoCollectionEnabled()) return () => {};
-  if (typeof window === "undefined") return () => {};
+  const browserWindow = getBrowserWindow();
+  if (!browserWindow) return () => {};
   if (infoSinkAttached) return () => {};
   infoSinkAttached = true;
 
-  const handleFriendAdd = (event: Event) => {
-    const detail = (event as CustomEvent<unknown>).detail;
+  const handleFriendAdd = (event: BrowserEventLike) => {
+    const detail = event.detail;
     void appendTestLog("friend-add", detail);
   };
-  const handleFriendRoute = (event: Event) => {
-    const detail = (event as CustomEvent<unknown>).detail;
+  const handleFriendRoute = (event: BrowserEventLike) => {
+    const detail = event.detail;
     void appendTestLog("friend-route", detail);
   };
-  const handleRouter = (event: Event) => {
-    const detail = (event as CustomEvent<unknown>).detail;
+  const handleRouter = (event: BrowserEventLike) => {
+    const detail = event.detail;
     void appendTestLog("router", detail);
   };
 
-  window.addEventListener(INFO_EVENT_FRIEND_ADD, handleFriendAdd as EventListener);
-  window.addEventListener(INFO_EVENT_FRIEND_ROUTE, handleFriendRoute as EventListener);
-  window.addEventListener(INFO_EVENT_ROUTER, handleRouter as EventListener);
+  browserWindow.addEventListener(INFO_EVENT_FRIEND_ADD, handleFriendAdd);
+  browserWindow.addEventListener(INFO_EVENT_FRIEND_ROUTE, handleFriendRoute);
+  browserWindow.addEventListener(INFO_EVENT_ROUTER, handleRouter);
 
   return () => {
     infoSinkAttached = false;
-    window.removeEventListener(INFO_EVENT_FRIEND_ADD, handleFriendAdd as EventListener);
-    window.removeEventListener(INFO_EVENT_FRIEND_ROUTE, handleFriendRoute as EventListener);
-    window.removeEventListener(INFO_EVENT_ROUTER, handleRouter as EventListener);
+    browserWindow.removeEventListener(INFO_EVENT_FRIEND_ADD, handleFriendAdd);
+    browserWindow.removeEventListener(INFO_EVENT_FRIEND_ROUTE, handleFriendRoute);
+    browserWindow.removeEventListener(INFO_EVENT_ROUTER, handleRouter);
   };
 };
