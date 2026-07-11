@@ -5,6 +5,8 @@ type ProxyHealth = {
   message: string;
 };
 
+const P2P_CONNECTION_STATUS_CHANNEL = "p2p:connection-status";
+
 contextBridge.exposeInMainWorld("electron", {
   secureStorage: {
     isAvailable: () => ipcRenderer.invoke("secretStore:isAvailable") as Promise<boolean>,
@@ -103,6 +105,14 @@ contextBridge.exposeInMainWorld("appControls", {
     const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
     ipcRenderer.on("background:status", handler);
     return () => ipcRenderer.removeListener("background:status", handler);
+  },
+});
+
+contextBridge.exposeInMainWorld("p2p", {
+  onConnectionStatus: (cb: (payload: unknown) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
+    ipcRenderer.on(P2P_CONNECTION_STATUS_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(P2P_CONNECTION_STATUS_CHANNEL, handler);
   },
 });
 
