@@ -21,6 +21,10 @@ import { OnionRuntime } from "./main/onion/runtime/onionRuntime";
 import { checkUpdates } from "./main/onion/update/checkUpdates";
 import { PinnedHashMissingError } from "./main/onion/errors";
 import { startOnionController, type OnionControllerHandle } from "./main/onionController";
+import {
+  P2POfflineQueueManager,
+  type P2PFriendRoute,
+} from "./main/p2pOfflineQueueManager";
 import { TorManager } from "./main/torManager";
 import { alternateRouteManager } from "./main/alternateRouteManager";
 import { readAppPrefs, setAppPrefs } from "./main/preferences";
@@ -593,6 +597,67 @@ const registerOnionControllerIpc = () => {
   });
 };
 
+const isP2PFriendRouteArray = (payload: unknown): payload is P2PFriendRoute[] =>
+  Array.isArray(payload) &&
+  payload.every(
+    (item) =>
+      item &&
+      typeof item === "object" &&
+      typeof (item as P2PFriendRoute).friendId === "string" &&
+      typeof (item as P2PFriendRoute).onionAddress === "string"
+  );
+
+const registerP2PQueueIpc = () => {
+  ipcMain.handle("p2pQueue:setFriends", async (event, payload: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!p2pQueueManager) return { ok: false, error: "p2p-queue-unavailable" };
+    if (!isP2PFriendRouteArray(payload)) {
+      return { ok: false, error: "invalid-friends" };
+    }
+    await p2pQueueManager.setFriends(payload);
+    return { ok: true };
+  });
+
+  ipcMain.handle(
+    "p2pQueue:enqueue",
+    async (
+      event,
+      payload: {
+        friendId?: string;
+        onionAddress?: string;
+        messageId?: string;
+        payload?: string;
+      }
+    ) => {
+      assertTrustedIpcSender(event);
+      if (!p2pQueueManager) return { ok: false, error: "p2p-queue-unavailable" };
+      if (!payload?.friendId || !payload.onionAddress || typeof payload.payload !== "string") {
+        return { ok: false, error: "invalid-message" };
+      }
+      const message = await p2pQueueManager.enqueueMessage({
+        id: payload.messageId,
+        friendId: payload.friendId,
+        onionAddress: payload.onionAddress,
+        payload: payload.payload,
+      });
+      return { ok: true, message };
+    }
+  );
+
+  ipcMain.handle("p2pQueue:list", async (event) => {
+    assertTrustedIpcSender(event);
+    if (!p2pQueueManager) return { ok: false, error: "p2p-queue-unavailable", messages: [] };
+    return { ok: true, messages: await p2pQueueManager.listMessages() };
+  });
+
+  ipcMain.handle("p2pQueue:flushNow", async (event) => {
+    assertTrustedIpcSender(event);
+    if (!p2pQueueManager) return { ok: false, error: "p2p-queue-unavailable" };
+    await p2pQueueManager.flushNow();
+    return { ok: true };
+  });
+};
+
 const readSecretStore = async () => {
   const filePath = path.join(app.getPath("userData"), SECRET_STORE_FILENAME);
   try {
@@ -748,6 +813,8 @@ let torManager: TorManager | null = null;
 let myOnionAddress: string | null = null;
 let alternateRouteManager: alternateRouteManager | null = null;
 let myalternateRouteAddress: string | null = null;
+let p2pQueueManager: P2POfflineQueueManager | null = null;
+let currentTorSocksProxy: string | null = null;
 
 const pruneComponentVersions = async (
   userDataDir: string,
@@ -1665,17 +1732,27 @@ app.whenReady().then(async () => {
   registerSecretStoreIpc();
   registerOnionIpc();
   registerOnionControllerIpc();
+  registerP2PQueueIpc();
   registerAppIpc();
   registerTestLogIpc();
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
     alternateRouteManager = new alternateRouteManager({ appDataDir: app.getPath("userData") });
+    p2pQueueManager = new P2POfflineQueueManager({
+      dbPath: path.join(app.getPath("userData"), "p2p-offline-queue.json"),
+      getTorSocksProxy: () => currentTorSocksProxy,
+      log: (message, detail) => console.info(message, detail ?? {}),
+    });
+    p2pQueueManager.start();
     try {
         onionController = await startOnionController({
           port: 3210,
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
           getalternateRouteStatus: () => alternateRouteManager?.getStatus() ?? { state: "unavailable" },
           userDataPath: app.getPath("userData"),
+          enqueueOfflineMessage: async (item) => {
+            await p2pQueueManager?.enqueueMessage(item);
+          },
         });
     } catch (error) {
       const code =
@@ -1688,6 +1765,9 @@ app.whenReady().then(async () => {
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
           getalternateRouteStatus: () => alternateRouteManager?.getStatus() ?? { state: "unavailable" },
           userDataPath: app.getPath("userData"),
+          enqueueOfflineMessage: async (item) => {
+            await p2pQueueManager?.enqueueMessage(item);
+          },
         });
       } else {
         throw error;
@@ -1697,9 +1777,11 @@ app.whenReady().then(async () => {
     torManager.onStatus((status) => {
       if (!onionController) return;
       if (status.state === "running") {
+        currentTorSocksProxy = status.socksProxyUrl;
         void onionController.setTorSocksProxy(status.socksProxyUrl);
         emitRuntimeBackgroundStatus({ state: "connected", route: "Tor Network" });
       } else {
+        currentTorSocksProxy = null;
         void onionController.setTorSocksProxy(null);
         emitRuntimeBackgroundStatus({
           state: "disconnected",
@@ -1740,6 +1822,7 @@ app.whenReady().then(async () => {
 
 app.on("before-quit", () => {
   isQuitting = true;
+  p2pQueueManager?.stop();
   console.log("[main] before-quit");
 });
 app.on("will-quit", () => console.log("[main] will-quit"));
