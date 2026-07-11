@@ -97,6 +97,13 @@ type OnionSendDeps = {
   torProxyUrl: string | null;
   lokinetProxyUrl: string | null;
   storeLocal: (deviceId: string, item: Omit<InboxItem, "expiresAt"> & { ttlMs?: number }) => void;
+  enqueueOfflineMessage?: (item: {
+    id: string;
+    friendId: string;
+    onionAddress: string;
+    payload: string;
+    createdAt: number;
+  }) => Promise<void>;
   emitTrace?: (detail: {
     event: string;
     level?: "debug" | "info" | "warn" | "error";
@@ -192,6 +199,35 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
   }
   const hasRouteTargets = Boolean(toOnion || lokinetAddress);
   if (payload.route || hasRouteTargets) {
+    const queueTorPending = async (error: string) => {
+      if (!toOnion || !deps.enqueueOfflineMessage) return null;
+      await deps.enqueueOfflineMessage({
+        id: msgId,
+        friendId: toDeviceId,
+        onionAddress: toOnion,
+        payload: payload.envelope ?? "",
+        createdAt: ts,
+      });
+      emitTrace({
+        event: "onionController:offlineQueue:pending",
+        level: "warn",
+        opId: msgId,
+        toDeviceId,
+        destination: toOnion,
+        reason: error,
+      });
+      return {
+        status: 202,
+        body: {
+          ok: true,
+          msgId,
+          forwarded: false,
+          queued: true,
+          status: "PENDING",
+          error,
+        },
+      };
+    };
     const candidates = deps.selectRoute(
       routeMode,
       {
@@ -222,6 +258,10 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
           maxRouteAttempts: candidates.length,
           reason: "missing-forward-proxy",
         });
+        if (candidate.kind === "tor") {
+          const queued = await queueTorPending("forward_failed:no_proxy");
+          if (queued) return queued;
+        }
         if (routeMode === "auto") continue;
         return { status: 400, body: { ok: false, error: "forward_failed:no_proxy" } };
       }
@@ -338,6 +378,10 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
           continue;
         }
         const code = normalizeForwardError("upstream_error");
+        if (candidate.kind === "tor") {
+          const queued = await queueTorPending(`forward_failed:${code}`);
+          if (queued) return queued;
+        }
         return {
           status: 502,
           body: { ok: false, error: `forward_failed:${code}` },
@@ -361,6 +405,10 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
         });
         if (!isLast && routeMode === "auto") {
           continue;
+        }
+        if (candidate.kind === "tor") {
+          const queued = await queueTorPending(`forward_failed:${code}`);
+          if (queued) return queued;
         }
         return { status: 502, body: { ok: false, error: `forward_failed:${code}` } };
       }
@@ -388,6 +436,7 @@ export const startOnionController = async (options?: {
   getTorStatus?: () => TorStatus;
   getLokinetStatus?: () => LokinetStatus;
   userDataPath?: string;
+  enqueueOfflineMessage?: OnionSendDeps["enqueueOfflineMessage"];
 }): Promise<OnionControllerHandle> => {
   const host = "127.0.0.1";
   const port = options?.port ?? 3210;
@@ -557,6 +606,7 @@ export const startOnionController = async (options?: {
         torProxyUrl: torForwarding.proxyUrl,
         lokinetProxyUrl: lokinetForwarding.proxyUrl,
         storeLocal: (deviceId, item) => enqueue(deviceId, item),
+        enqueueOfflineMessage: options?.enqueueOfflineMessage,
         emitTrace: emitControllerTrace,
       });
       sendJson(res, result.status, result.body);
