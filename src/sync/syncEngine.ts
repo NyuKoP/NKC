@@ -89,7 +89,7 @@ const LEGACY_PEER_CAPS: NormalizedPeerCaps = {
 
 const LOCAL_CAPS: PeerCaps = {
   proto: 1,
-  sync: { v: 1 },
+  sync: { v: 2 },
   ratchet: { v: 2 },
   media: { chunks: true, v: 1 },
   devices: { roles: true, v: 1 },
@@ -127,9 +127,22 @@ type SyncResFrame = {
   convId?: string;
   events: EnvelopeEvent[];
   next: Record<string, number>;
+  flow?: {
+    sessionId: string;
+    chunkIndex: number;
+    totalChunks: number;
+    final: boolean;
+  };
 };
 
-type Frame = HelloFrame | AckFrame | SyncReqFrame | SyncResFrame;
+type SyncFlowAckFrame = {
+  type: "SYNC_FLOW_ACK";
+  sessionId: string;
+  chunkIndex: number;
+  receivedEvents: number;
+};
+
+type Frame = HelloFrame | AckFrame | SyncReqFrame | SyncResFrame | SyncFlowAckFrame;
 
 export type PeerContext = PeerHint & {
   friendKeyId?: string;
@@ -145,6 +158,11 @@ const conversationsLogId = (convId: string) => `convs:${convId}`;
 const globalLogId = (convId: string) => `global:${convId}`;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const MAX_SYNC_CHUNK_EVENTS = 16;
+const MAX_SYNC_CHUNK_BYTES = 96 * 1024;
+const SYNC_FLOW_WINDOW = 2;
+const SYNC_FLOW_ACK_TIMEOUT_MS = 5_000;
+const SYNC_FLOW_MAX_RETRIES = 3;
 
 const normalizeCapVersion = (value: unknown, fallback: number) =>
   typeof value === "number" && Number.isFinite(value) && value >= 0
@@ -261,6 +279,13 @@ const perConvLamportSeen = new Map<string, Map<string, number>>();
 const peerContexts = new Map<string, PeerContext>();
 const deferredRoleEvents = new Map<string, Map<string, RoleChangeEvent>>();
 const convSubscriptions = new Map<string, () => void>();
+type OutgoingFlowSession = {
+  convId: string;
+  frames: SyncResFrame[];
+  nextToSend: number;
+  inFlight: Map<number, { attempts: number; timer: ReturnType<typeof setTimeout> }>;
+};
+const outgoingFlowSessions = new Map<string, OutgoingFlowSession>();
 let localUserIdCache: string | null | undefined;
 
 const deferRoleChangeEvent = (convId: string, eventId: string, event: RoleChangeEvent) => {
@@ -1414,6 +1439,140 @@ const sendFrame = async (convId: string, frame: Frame) => {
   }
 };
 
+const canUseFlowControl = (convId: string) => getPeerCaps(convId).sync.v >= 2;
+
+const createSyncResponseFrames = (
+  base: Omit<SyncResFrame, "events" | "next" | "flow">,
+  events: EnvelopeEvent[],
+  next: Record<string, number>,
+  flowControl: boolean
+): SyncResFrame[] => {
+  if (!flowControl || events.length <= MAX_SYNC_CHUNK_EVENTS) {
+    return [{ ...base, events, next }];
+  }
+
+  const sessionId = createId();
+  const chunks: EnvelopeEvent[][] = [];
+  let current: EnvelopeEvent[] = [];
+
+  for (const event of events) {
+    const candidate = [...current, event];
+    const candidateFrame: SyncResFrame = {
+      ...base,
+      events: candidate,
+      next: {},
+      flow: { sessionId, chunkIndex: chunks.length, totalChunks: 1, final: false },
+    };
+    const candidateTooLarge =
+      current.length > 0 &&
+      (candidate.length > MAX_SYNC_CHUNK_EVENTS ||
+        toBytes(candidateFrame).byteLength > MAX_SYNC_CHUNK_BYTES);
+    if (candidateTooLarge) {
+      chunks.push(current);
+      current = [event];
+    } else {
+      current = candidate;
+    }
+  }
+  if (current.length > 0) chunks.push(current);
+
+  const totalChunks = chunks.length;
+  return chunks.map((chunk, chunkIndex) => {
+    const final = chunkIndex === totalChunks - 1;
+    return {
+      ...base,
+      events: chunk,
+      next: final ? next : {},
+      flow: { sessionId, chunkIndex, totalChunks, final },
+    };
+  });
+};
+
+const clearFlowSession = (sessionId: string) => {
+  const session = outgoingFlowSessions.get(sessionId);
+  if (!session) return;
+  session.inFlight.forEach((entry) => clearTimeout(entry.timer));
+  outgoingFlowSessions.delete(sessionId);
+};
+
+const scheduleFlowRetry = (sessionId: string, chunkIndex: number) => {
+  const session = outgoingFlowSessions.get(sessionId);
+  if (!session) return;
+  const entry = session.inFlight.get(chunkIndex);
+  if (!entry) return;
+  entry.timer = setTimeout(() => {
+    const current = outgoingFlowSessions.get(sessionId);
+    const currentEntry = current?.inFlight.get(chunkIndex);
+    if (!current || !currentEntry) return;
+    if (currentEntry.attempts >= SYNC_FLOW_MAX_RETRIES) {
+      clearFlowSession(sessionId);
+      return;
+    }
+    const frame = current.frames[chunkIndex];
+    if (!frame) {
+      current.inFlight.delete(chunkIndex);
+      pumpFlowSession(sessionId);
+      return;
+    }
+    currentEntry.attempts += 1;
+    void sendFrame(current.convId, frame).then(() => {
+      scheduleFlowRetry(sessionId, chunkIndex);
+    });
+  }, SYNC_FLOW_ACK_TIMEOUT_MS);
+};
+
+const pumpFlowSession = (sessionId: string) => {
+  const session = outgoingFlowSessions.get(sessionId);
+  if (!session) return;
+  while (
+    session.nextToSend < session.frames.length &&
+    session.inFlight.size < SYNC_FLOW_WINDOW
+  ) {
+    const chunkIndex = session.nextToSend;
+    session.nextToSend += 1;
+    const timer = setTimeout(() => undefined, 0);
+    clearTimeout(timer);
+    session.inFlight.set(chunkIndex, { attempts: 1, timer });
+    const frame = session.frames[chunkIndex];
+    if (!frame) {
+      session.inFlight.delete(chunkIndex);
+      continue;
+    }
+    void sendFrame(session.convId, frame).then(() => {
+      scheduleFlowRetry(sessionId, chunkIndex);
+    });
+  }
+  if (session.nextToSend >= session.frames.length && session.inFlight.size === 0) {
+    outgoingFlowSessions.delete(sessionId);
+  }
+};
+
+const sendSyncResponseFrames = async (convId: string, frames: SyncResFrame[]) => {
+  if (frames.length === 0) return;
+  if (frames.length === 1 || !frames[0].flow) {
+    await sendFrame(convId, frames[0]);
+    return;
+  }
+  const sessionId = frames[0].flow.sessionId;
+  clearFlowSession(sessionId);
+  outgoingFlowSessions.set(sessionId, {
+    convId,
+    frames,
+    nextToSend: 0,
+    inFlight: new Map(),
+  });
+  pumpFlowSession(sessionId);
+};
+
+const handleSyncFlowAck = (frame: SyncFlowAckFrame) => {
+  const session = outgoingFlowSessions.get(frame.sessionId);
+  if (!session) return;
+  const entry = session.inFlight.get(frame.chunkIndex);
+  if (entry) clearTimeout(entry.timer);
+  session.inFlight.delete(frame.chunkIndex);
+  pumpFlowSession(frame.sessionId);
+};
+
 const handleSyncReq = async (convId: string, frame: SyncReqFrame) => {
   const allowed = await isDeviceSyncAllowed(convId, "sync_req");
   if (!allowed) return;
@@ -1433,14 +1592,17 @@ const handleSyncReq = async (convId: string, frame: SyncReqFrame) => {
     return event.lamport > lastSeen;
   });
   const next = buildNextMap(all as EnvelopeEvent[]);
-  const response: SyncResFrame = {
-    type: "SYNC_RES",
-    scope: frame.scope,
-    convId: frame.convId,
-    events: events.map((event) => toEnvelopeEvent(event as EnvelopeEvent)),
+  const responseFrames = createSyncResponseFrames(
+    {
+      type: "SYNC_RES",
+      scope: frame.scope,
+      convId: frame.convId,
+    },
+    sortEventsDeterministic(events.map((event) => toEnvelopeEvent(event as EnvelopeEvent))),
     next,
-  };
-  await sendFrame(convId, response);
+    canUseFlowControl(convId)
+  );
+  await sendSyncResponseFrames(convId, responseFrames);
 };
 
 const handleSyncRes = async (convId: string, frame: SyncResFrame) => {
@@ -1457,6 +1619,15 @@ const handleSyncRes = async (convId: string, frame: SyncResFrame) => {
           : frame.convId ?? convId;
   const events = Array.isArray(frame.events) ? frame.events : [];
   await applyEnvelopeEvents(convId, events);
+  if (frame.flow) {
+    await sendFrame(convId, {
+      type: "SYNC_FLOW_ACK",
+      sessionId: frame.flow.sessionId,
+      chunkIndex: frame.flow.chunkIndex,
+      receivedEvents: events.length,
+    });
+  }
+  if (frame.flow && !frame.flow.final) return;
   Object.entries(frame.next ?? {}).forEach(([deviceId, lamport]) => {
     if (!Number.isFinite(lamport)) return;
     updateLamportSeen(targetConvId, deviceId, lamport);
@@ -1613,6 +1784,10 @@ const handleIncoming = async (convId: string, bytes: Uint8Array) => {
   }
   if (frame.type === "SYNC_RES") {
     await handleSyncRes(convId, frame);
+    return;
+  }
+  if (frame.type === "SYNC_FLOW_ACK") {
+    handleSyncFlowAck(frame);
   }
 };
 
@@ -1979,9 +2154,27 @@ export const __testApplyEnvelopeEvents = applyEnvelopeEvents;
 export const __testSetPeerContext = (convId: string, peer: PeerContext) => {
   peerContexts.set(convId, peer);
 };
+export const __testCreateSyncResponseFrames = (input: {
+  scope: SyncReqFrame["scope"];
+  convId?: string;
+  events: EnvelopeEvent[];
+  next: Record<string, number>;
+  flowControl: boolean;
+}) =>
+  createSyncResponseFrames(
+    {
+      type: "SYNC_RES",
+      scope: input.scope,
+      convId: input.convId,
+    },
+    input.events,
+    input.next,
+    input.flowControl
+  );
 export const __testResetSyncState = () => {
   perAuthorLamportSeen.clear();
   perConvLamportSeen.clear();
   peerContexts.clear();
   deferredRoleEvents.clear();
+  Array.from(outgoingFlowSessions.keys()).forEach(clearFlowSession);
 };

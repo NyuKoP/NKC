@@ -97,6 +97,19 @@ const SECRET_STORE_PREFIXES = [
   "nkc_ratchet_v1:",
   "nkc_ratchet_v2:",
 ];
+const ONION_CONTROLLER_NOT_READY_MESSAGE = "Onion Controller가 초기화되지 않았습니다.";
+
+type IpcErrorResponse = {
+  ok: false;
+  success: false;
+  error: string;
+};
+
+const createIpcError = (error: string): IpcErrorResponse => ({
+  ok: false,
+  success: false,
+  error,
+});
 
 const isAllowedSecretStoreKey = (key: unknown): key is string =>
   typeof key === "string" &&
@@ -537,10 +550,23 @@ const checkSocksProxyReachable = async (socksUrl: string, timeoutMs = 2000) => {
 const registerOnionControllerIpc = () => {
   ipcMain.handle("nkc:getOnionControllerUrl", async () => onionControllerUrl);
   ipcMain.handle("nkc:setOnionForwardProxy", async (_event, proxyUrl: string | null) => {
-    await onionController?.setTorSocksProxy(proxyUrl);
-    return { ok: true };
+    if (!onionController) {
+      return createIpcError(ONION_CONTROLLER_NOT_READY_MESSAGE);
+    }
+    await onionController.setTorSocksProxy(proxyUrl);
+    currentTorSocksProxy = proxyUrl?.trim() ? proxyUrl : null;
+    p2pQueueManager?.updateProxyUrl(currentTorSocksProxy);
+    return { ok: true, success: true };
   });
   ipcMain.handle("nkc:onionControllerFetch", async (_event, req: OnionControllerFetchRequest) => {
+    if (!onionController) {
+      return {
+        status: 0,
+        headers: {},
+        bodyBase64: "",
+        error: ONION_CONTROLLER_NOT_READY_MESSAGE,
+      } satisfies OnionControllerFetchResponse;
+    }
     return fetchOnionController(req);
   });
   ipcMain.handle("nkc:getTorStatus", async () => torManager?.getStatus() ?? { state: "unavailable" });
@@ -563,7 +589,7 @@ const registerOnionControllerIpc = () => {
   );
   ipcMain.handle("nkc:ensureHiddenService", async () => {
     if (!torManager || !onionController) {
-      throw new Error("tor-or-controller-unavailable");
+      return createIpcError(ONION_CONTROLLER_NOT_READY_MESSAGE);
     }
     const result = await torManager.ensureHiddenService({
       localPort: onionController.port,
@@ -571,7 +597,7 @@ const registerOnionControllerIpc = () => {
     });
     myOnionAddress = result.onionHost;
     onionController.setTorOnionHost(result.onionHost);
-    return { ok: true, onionHost: result.onionHost };
+    return { ok: true, success: true, onionHost: result.onionHost };
   });
   ipcMain.handle("nkc:getMyOnionAddress", async () => {
     return myOnionAddress ?? "";
@@ -679,38 +705,45 @@ const writeSecretStore = async (payload: Record<string, string>) => {
   await fs.writeFile(filePath, JSON.stringify(payload), "utf8");
 };
 
+export const saveKeyPair = async (key: string, value: string) => {
+  if (!isAllowedSecretStoreKey(key) || typeof value !== "string") {
+    return false;
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    return false;
+  }
+  const data = await readSecretStore();
+  data[key] = safeStorage.encryptString(value).toString("base64");
+  await writeSecretStore(data);
+  return true;
+};
+
+export const loadKeyPair = async (key: string) => {
+  if (!isAllowedSecretStoreKey(key)) {
+    return null;
+  }
+  if (!safeStorage.isEncryptionAvailable()) {
+    return null;
+  }
+  const data = await readSecretStore();
+  const entry = data[key];
+  if (!entry) return null;
+  try {
+    return safeStorage.decryptString(Buffer.from(entry, "base64"));
+  } catch {
+    return null;
+  }
+};
+
 const registerSecretStoreIpc = () => {
   ipcMain.handle("secretStore:get", async (event, key: string) => {
     assertTrustedIpcSender(event);
-    if (!isAllowedSecretStoreKey(key)) {
-      return null;
-    }
-    if (!safeStorage.isEncryptionAvailable()) {
-      return null;
-    }
-    const data = await readSecretStore();
-    const entry = data[key];
-    if (!entry) return null;
-    try {
-      return safeStorage.decryptString(Buffer.from(entry, "base64"));
-    } catch {
-      return null;
-    }
+    return loadKeyPair(key);
   });
 
   ipcMain.handle("secretStore:set", async (event, key: string, value: string) => {
     assertTrustedIpcSender(event);
-    if (!isAllowedSecretStoreKey(key) || typeof value !== "string") {
-      return false;
-    }
-    if (!safeStorage.isEncryptionAvailable()) {
-      return false;
-    }
-    const data = await readSecretStore();
-    const encrypted = safeStorage.encryptString(value);
-    data[key] = encrypted.toString("base64");
-    await writeSecretStore(data);
-    return true;
+    return saveKeyPair(key, value);
   });
 
   ipcMain.handle("secretStore:remove", async (event, key: string) => {
@@ -815,6 +848,24 @@ let lokinetManager: LokinetManager | null = null;
 let myLokinetAddress: string | null = null;
 let p2pQueueManager: P2POfflineQueueManager | null = null;
 let currentTorSocksProxy: string | null = null;
+let shutdownInProgress: Promise<void> | null = null;
+let runtimeShutdownComplete = false;
+
+const shutdownBackgroundRuntimes = async () => {
+  if (shutdownInProgress) return shutdownInProgress;
+  shutdownInProgress = (async () => {
+    p2pQueueManager?.stop();
+    await Promise.allSettled([
+      onionController?.close(),
+      torManager?.stop(),
+      lokinetManager?.stop(),
+    ]);
+    currentTorSocksProxy = null;
+    p2pQueueManager?.updateProxyUrl(null);
+    runtimeShutdownComplete = true;
+  })();
+  return shutdownInProgress;
+};
 
 const pruneComponentVersions = async (
   userDataDir: string,
@@ -1776,14 +1827,15 @@ app.whenReady().then(async () => {
     }
     onionControllerUrl = onionController.baseUrl;
     torManager.onStatus((status) => {
-      if (!onionController) return;
       if (status.state === "running") {
         currentTorSocksProxy = status.socksProxyUrl;
-        void onionController.setTorSocksProxy(status.socksProxyUrl);
+        p2pQueueManager?.updateProxyUrl(status.socksProxyUrl);
+        void onionController?.setTorSocksProxy(status.socksProxyUrl);
         emitRuntimeBackgroundStatus({ state: "connected", route: "Tor Network" });
       } else {
         currentTorSocksProxy = null;
-        void onionController.setTorSocksProxy(null);
+        p2pQueueManager?.updateProxyUrl(null);
+        void onionController?.setTorSocksProxy(null);
         emitRuntimeBackgroundStatus({
           state: "disconnected",
           route: status.state === "starting" ? "Tor starting" : "Tor offline",
@@ -1791,16 +1843,15 @@ app.whenReady().then(async () => {
       }
     });
     lokinetManager.onStatus((status) => {
-      if (!onionController) return;
       if (status.state === "running") {
         myLokinetAddress = status.serviceAddress ?? null;
-        onionController.setLokinetAddress(status.serviceAddress ?? null);
-        void onionController.setLokinetSocksProxy(status.proxyUrl);
+        onionController?.setLokinetAddress(status.serviceAddress ?? null);
+        void onionController?.setLokinetSocksProxy(status.proxyUrl);
         emitRuntimeBackgroundStatus({ state: "connected", route: "Lokinet Network" });
       } else {
         myLokinetAddress = null;
-        onionController.setLokinetAddress(null);
-        void onionController.setLokinetSocksProxy(null);
+        onionController?.setLokinetAddress(null);
+        void onionController?.setLokinetSocksProxy(null);
         emitRuntimeBackgroundStatus({
           state: "disconnected",
           route: status.state === "starting" ? "Lokinet starting" : "Lokinet offline",
@@ -1821,12 +1872,27 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on("before-quit", () => {
+app.on("before-quit", (event) => {
   isQuitting = true;
-  p2pQueueManager?.stop();
+  if (!runtimeShutdownComplete) {
+    event.preventDefault();
+    void shutdownBackgroundRuntimes()
+      .catch((error) => {
+        console.error("[main] runtime shutdown failed", error);
+      })
+      .finally(() => {
+        app.quit();
+      });
+    return;
+  }
   console.log("[main] before-quit");
 });
-app.on("will-quit", () => console.log("[main] will-quit"));
+app.on("will-quit", () => {
+  void shutdownBackgroundRuntimes().catch((error) => {
+    console.error("[main] runtime shutdown failed during will-quit", error);
+  });
+  console.log("[main] will-quit");
+});
 app.on("quit", (_event, code) => console.log("[main] quit", code));
 
 app.on("window-all-closed", () => {

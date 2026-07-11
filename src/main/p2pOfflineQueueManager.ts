@@ -236,7 +236,6 @@ class JsonFrameReader {
 
 export class P2POfflineQueueManager {
   private readonly dbPath: string;
-  private readonly getTorSocksProxy: () => string | null;
   private readonly intervalMs: number;
   private readonly connectTimeoutMs: number;
   private readonly ackTimeoutMs: number;
@@ -248,10 +247,11 @@ export class P2POfflineQueueManager {
   private running = false;
   private inFlight = new Set<string>();
   private writeLock: Promise<void> = Promise.resolve();
+  private proxyUrl: string | null;
 
   constructor(options: P2POfflineQueueManagerOptions) {
     this.dbPath = options.dbPath;
-    this.getTorSocksProxy = options.getTorSocksProxy;
+    this.proxyUrl = options.getTorSocksProxy();
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
     this.ackTimeoutMs = options.ackTimeoutMs ?? DEFAULT_ACK_TIMEOUT_MS;
@@ -270,6 +270,11 @@ export class P2POfflineQueueManager {
     if (!this.timer) return;
     clearTimeout(this.timer);
     this.timer = null;
+  }
+
+  updateProxyUrl(newProxyUrl: string | null) {
+    const trimmed = newProxyUrl?.trim() ?? "";
+    this.proxyUrl = trimmed ? trimmed : null;
   }
 
   async setFriends(friends: P2PFriendRoute[]) {
@@ -332,7 +337,7 @@ export class P2POfflineQueueManager {
     if (this.running) return;
     this.running = true;
     try {
-      const socksProxy = this.getTorSocksProxy();
+      const socksProxy = this.proxyUrl;
       if (!socksProxy) return;
       const queue = await this.readQueue();
       const friends = queue.friends.filter((friend) =>

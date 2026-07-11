@@ -139,4 +139,33 @@ describe("P2POfflineQueueManager", () => {
 
     expect((await manager.listMessages())[0].status).toBe("DELIVERED");
   });
+
+  it("uses the latest proxy URL supplied through updateProxyUrl", async () => {
+    const socket = new FakeSocket();
+    const seenProxyUrls: string[] = [];
+    const manager = new P2POfflineQueueManager({
+      dbPath: await makeDbPath(),
+      getTorSocksProxy: () => null,
+      connect: async (proxyUrl) => {
+        seenProxyUrls.push(proxyUrl);
+        return socket as unknown as net.Socket;
+      },
+      uuid: () => "unused",
+      now: () => 100,
+    });
+    await manager.enqueueMessage({
+      id: "first",
+      friendId: "friend-1",
+      onionAddress: "peerabc.onion",
+      payload: "payload-1",
+      createdAt: 10,
+    });
+
+    await manager.flushNow();
+    manager.updateProxyUrl("socks5h://127.0.0.1:19050");
+    await manager.flushNow();
+
+    expect(seenProxyUrls).toEqual(["socks5h://127.0.0.1:19050"]);
+    expect((await manager.listMessages())[0].status).toBe("DELIVERED");
+  });
 });
