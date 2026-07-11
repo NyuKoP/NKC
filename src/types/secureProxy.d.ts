@@ -1,5 +1,12 @@
 export {};
 
+type P2PConnectionStatusPayload = {
+  convId: string;
+  state: "idle" | "connecting" | "connected" | "reconnecting" | "closed";
+  detail?: string;
+  changedAt?: number;
+};
+
 declare global {
   interface Window {
     electron?: {
@@ -46,6 +53,11 @@ declare global {
       ) => () => void;
       onSyncStatus: (cb: (payload: unknown) => void) => () => void;
       onBackgroundStatus: (cb: (payload: unknown) => void) => () => void;
+    };
+    p2p?: {
+      onConnectionStatus: (
+        cb: (payload: P2PConnectionStatusPayload) => void
+      ) => () => void;
     };
     testLog?: {
       append: (payload: { channel: string; event: unknown; at?: string }) => Promise<{

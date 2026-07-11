@@ -158,6 +158,10 @@ const conversationsLogId = (convId: string) => `convs:${convId}`;
 const globalLogId = (convId: string) => `global:${convId}`;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+type SyncTransportOverride = {
+  send: (convId: string, bytes: Uint8Array) => Promise<void> | void;
+};
+let syncTransportOverride: SyncTransportOverride | null = null;
 const MAX_SYNC_CHUNK_EVENTS = 16;
 const MAX_SYNC_CHUNK_BYTES = 96 * 1024;
 const SYNC_FLOW_WINDOW = 2;
@@ -1433,7 +1437,12 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
 
 const sendFrame = async (convId: string, frame: Frame) => {
   try {
-    await sendToConversation(convId, toBytes(frame));
+    const bytes = toBytes(frame);
+    if (syncTransportOverride) {
+      await syncTransportOverride.send(convId, bytes);
+      return;
+    }
+    await sendToConversation(convId, bytes);
   } catch (error) {
     console.warn("[sync] send failed", error);
   }
@@ -1789,6 +1798,17 @@ const handleIncoming = async (convId: string, bytes: Uint8Array) => {
   if (frame.type === "SYNC_FLOW_ACK") {
     handleSyncFlowAck(frame);
   }
+};
+
+export const handleIncomingSyncFrame = handleIncoming;
+
+export const setSyncTransportOverride = (transport: SyncTransportOverride | null) => {
+  syncTransportOverride = transport;
+  return () => {
+    if (syncTransportOverride === transport) {
+      syncTransportOverride = null;
+    }
+  };
 };
 
 export const connectConversation = async (convId: string, peerHint: PeerContext) => {
@@ -2177,4 +2197,5 @@ export const __testResetSyncState = () => {
   peerContexts.clear();
   deferredRoleEvents.clear();
   Array.from(outgoingFlowSessions.keys()).forEach(clearFlowSession);
+  syncTransportOverride = null;
 };

@@ -2,6 +2,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, HashRouter } from "react-router-dom";
 import "./index.css";
 import App from "./app/App";
+import { bindP2PConnectionStatusBridge } from "./store/useP2PStore";
 
 const isE2E = Boolean((import.meta as { env?: { VITE_E2E?: string } }).env?.VITE_E2E);
 if (isE2E) {
@@ -16,6 +17,8 @@ const Router =
   typeof window !== "undefined" && window.location.protocol === "file:"
     ? HashRouter
     : BrowserRouter;
+
+bindP2PConnectionStatusBridge();
 
 if (root) {
   createRoot(root).render(
