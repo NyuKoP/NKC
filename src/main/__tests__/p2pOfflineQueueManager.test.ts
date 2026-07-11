@@ -9,16 +9,24 @@ import { P2POfflineQueueManager } from "../p2pOfflineQueueManager";
 class FakeSocket extends EventEmitter {
   writes: string[] = [];
 
+  constructor(private readonly coalescedAckIds: string[] | null = null) {
+    super();
+  }
+
   write(data: string | Buffer) {
     const text = Buffer.isBuffer(data) ? data.toString("utf8") : data;
     this.writes.push(text);
     const frame = JSON.parse(text.trim()) as { type?: string; messages?: Array<{ id: string }> };
     if (frame.type === "NKC_P2P_HELLO") {
       queueMicrotask(() => {
-        this.emit("data", Buffer.from(JSON.stringify({ type: "NKC_P2P_HELLO_ACK" }) + "\n"));
+        const helloAck = JSON.stringify({ type: "NKC_P2P_HELLO_ACK" }) + "\n";
+        const pushAck = this.coalescedAckIds
+          ? JSON.stringify({ type: "NKC_P2P_ACK", messageIds: this.coalescedAckIds }) + "\n"
+          : "";
+        this.emit("data", Buffer.from(helloAck + pushAck));
       });
     }
-    if (frame.type === "NKC_P2P_PUSH") {
+    if (frame.type === "NKC_P2P_PUSH" && !this.coalescedAckIds) {
       const messageIds = frame.messages?.map((message) => message.id) ?? [];
       queueMicrotask(() => {
         this.emit("data", Buffer.from(JSON.stringify({ type: "NKC_P2P_ACK", messageIds }) + "\n"));
@@ -107,5 +115,28 @@ describe("P2POfflineQueueManager", () => {
       "DELIVERED",
       "DELIVERED",
     ]);
+  });
+
+  it("keeps the leftover bytes when multiple frames arrive in one data event", async () => {
+    const socket = new FakeSocket(["first"]);
+    const manager = new P2POfflineQueueManager({
+      dbPath: await makeDbPath(),
+      getTorSocksProxy: () => "socks5h://127.0.0.1:9050",
+      connect: async () => socket as unknown as net.Socket,
+      uuid: () => "unused",
+      now: () => 100,
+    });
+
+    await manager.enqueueMessage({
+      id: "first",
+      friendId: "friend-1",
+      onionAddress: "peerabc.onion",
+      payload: "payload-1",
+      createdAt: 10,
+    });
+
+    await manager.flushNow();
+
+    expect((await manager.listMessages())[0].status).toBe("DELIVERED");
   });
 });

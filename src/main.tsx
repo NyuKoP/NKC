@@ -5,8 +5,10 @@ import App from "./app/App";
 
 const isE2E = Boolean((import.meta as { env?: { VITE_E2E?: string } }).env?.VITE_E2E);
 if (isE2E) {
-  const fixedNow = new Date("2026-01-01T00:00:00Z").getTime();
-  Date.now = () => fixedNow;
+  const e2eEpochMs = new Date("2026-01-01T00:00:00Z").getTime();
+  const realDateNow = Date.now.bind(Date);
+  const realStartMs = realDateNow();
+  Date.now = () => e2eEpochMs + (realDateNow() - realStartMs);
 }
 
 const root = document.getElementById("root");

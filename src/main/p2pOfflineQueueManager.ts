@@ -147,49 +147,92 @@ const writeFrame = (socket: SocketLike, payload: unknown) => {
   socket.write(`${JSON.stringify(payload)}\n`);
 };
 
-const readJsonFrame = (socket: SocketLike, timeoutMs: number) =>
-  new Promise<Record<string, unknown>>((resolve, reject) => {
-    let buffered = "";
-    const cleanup = () => {
-      clearTimeout(timeout);
-      socket.off("data", onData);
-      socket.off("error", onError);
-      socket.off("end", onEnd);
-    };
-    const timeout = setTimeout(() => {
-      cleanup();
-      reject(new Error("ack_timeout"));
-    }, timeoutMs);
-    const onData = (chunk: Buffer) => {
-      buffered += chunk.toString("utf8");
-      if (Buffer.byteLength(buffered, "utf8") > MAX_FRAME_BYTES) {
-        cleanup();
-        reject(new Error("frame_too_large"));
+class JsonFrameReader {
+  private buffered = "";
+  private closedError: Error | null = null;
+  private pending:
+    | {
+        resolve: (value: Record<string, unknown>) => void;
+        reject: (reason?: unknown) => void;
+        timeout: NodeJS.Timeout;
+      }
+    | null = null;
+
+  constructor(private readonly socket: SocketLike) {
+    this.socket.on("data", this.onData);
+    this.socket.once("error", this.onError);
+    this.socket.once("end", this.onEnd);
+  }
+
+  read(timeoutMs: number) {
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
+      if (this.pending) {
+        reject(new Error("concurrent_frame_read_not_supported"));
         return;
       }
-      const newline = buffered.indexOf("\n");
-      if (newline === -1) return;
-      const raw = buffered.slice(0, newline).trim();
-      cleanup();
+      const timeout = setTimeout(() => {
+        this.rejectPending(new Error("ack_timeout"));
+      }, timeoutMs);
+      this.pending = { resolve, reject, timeout };
+      this.resolvePending();
+    });
+  }
+
+  dispose() {
+    this.socket.off("data", this.onData);
+    this.socket.off("error", this.onError);
+    this.socket.off("end", this.onEnd);
+    this.rejectPending(new Error("reader_disposed"));
+  }
+
+  private readonly onData = (chunk: Buffer) => {
+    this.buffered += chunk.toString("utf8");
+    this.resolvePending();
+  };
+
+  private readonly onError = (error: Error) => {
+    this.closedError = error;
+    this.rejectPending(error);
+  };
+
+  private readonly onEnd = () => {
+    this.closedError = new Error("socket_closed");
+    this.rejectPending(this.closedError);
+  };
+
+  private resolvePending() {
+    if (!this.pending) return;
+    if (Buffer.byteLength(this.buffered, "utf8") > MAX_FRAME_BYTES) {
+      this.rejectPending(new Error("frame_too_large"));
+      return;
+    }
+    const newline = this.buffered.indexOf("\n");
+    if (newline !== -1) {
+      const raw = this.buffered.slice(0, newline).trim();
+      this.buffered = this.buffered.slice(newline + 1);
+      const pending = this.pending;
+      this.pending = null;
+      clearTimeout(pending.timeout);
       try {
-        const parsed = JSON.parse(raw) as Record<string, unknown>;
-        resolve(parsed);
+        pending.resolve(JSON.parse(raw) as Record<string, unknown>);
       } catch {
-        reject(new Error("invalid_frame"));
+        pending.reject(new Error("invalid_frame"));
       }
-    };
-    const onError = (error: Error) => {
-      cleanup();
-      reject(error);
-    };
-    const onEnd = () => {
-      cleanup();
-      reject(new Error("socket_closed"));
-    };
-    socket.on("data", onData);
-    socket.once("error", onError);
-    socket.once("end", onEnd);
-  });
+      return;
+    }
+    if (this.closedError) {
+      this.rejectPending(this.closedError);
+    }
+  }
+
+  private rejectPending(error: Error) {
+    if (!this.pending) return;
+    const pending = this.pending;
+    this.pending = null;
+    clearTimeout(pending.timeout);
+    pending.reject(error);
+  }
+}
 
 export class P2POfflineQueueManager {
   private readonly dbPath: string;
@@ -323,6 +366,7 @@ export class P2POfflineQueueManager {
     if (this.inFlight.has(friend.friendId)) return;
     this.inFlight.add(friend.friendId);
     let socket: SocketLike | null = null;
+    let reader: JsonFrameReader | null = null;
     try {
       socket = await this.connect(
         socksProxy,
@@ -330,13 +374,14 @@ export class P2POfflineQueueManager {
         ONION_VIRTUAL_PORT,
         this.connectTimeoutMs
       );
+      reader = new JsonFrameReader(socket);
       writeFrame(socket, {
         type: "NKC_P2P_HELLO",
         version: 1,
         friendId: friend.friendId,
         ts: this.now(),
       });
-      const helloAck = await readJsonFrame(socket, this.ackTimeoutMs);
+      const helloAck = await reader.read(this.ackTimeoutMs);
       if (helloAck.type !== "NKC_P2P_HELLO_ACK") {
         throw new Error("handshake_failed");
       }
@@ -355,7 +400,7 @@ export class P2POfflineQueueManager {
           payload: message.payload,
         })),
       });
-      const ack = await readJsonFrame(socket, this.ackTimeoutMs);
+      const ack = await reader.read(this.ackTimeoutMs);
       const ackIds = Array.isArray(ack.messageIds)
         ? ack.messageIds.filter((id): id is string => typeof id === "string")
         : [];
@@ -369,6 +414,7 @@ export class P2POfflineQueueManager {
         error instanceof Error ? error.message : String(error)
       );
     } finally {
+      reader?.dispose();
       socket?.destroy();
       this.inFlight.delete(friend.friendId);
     }

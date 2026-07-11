@@ -31,11 +31,66 @@ describe("handleOnionSend routing", () => {
     );
     expect(result.body.ok).toBe(true);
     expect(result.body.forwarded).toBe(true);
-    expect(result.body.via).toBe("tor");
+    expect("via" in result.body ? result.body.via : undefined).toBe("tor");
     expect(deps.socksFetch.mock.calls.map((call) => call[0])).toEqual([
       "http://alternateRoute.test/onion/ingest",
       "http://abc.onion/onion/ingest",
     ]);
+  });
+
+  it("auto: alternateRoute success is not preempted by missing tor proxy offline queue", async () => {
+    const deps = {
+      ...baseDeps(),
+      torProxyUrl: null,
+      enqueueOfflineMessage: vi.fn(),
+    };
+    deps.socksFetch.mockResolvedValue({ status: 200, headers: {}, body: Buffer.alloc(0) });
+
+    const result = await handleOnionSend(
+      {
+        toDeviceId: "peer-1",
+        envelope: "env",
+        route: { mode: "auto", alternateRoute: "alternateRoute.test", torOnion: "abc.onion" },
+      },
+      deps
+    );
+
+    expect(result.body.ok).toBe(true);
+    expect(result.body.forwarded).toBe(true);
+    expect("via" in result.body ? result.body.via : undefined).toBe("alternateRoute");
+    expect(deps.enqueueOfflineMessage).not.toHaveBeenCalled();
+    expect(deps.socksFetch).toHaveBeenCalledTimes(1);
+    expect(deps.socksFetch.mock.calls[0][0]).toBe("http://alternateRoute.test/onion/ingest");
+  });
+
+  it("auto: queues tor onion only after all live route candidates fail", async () => {
+    const deps = {
+      ...baseDeps(),
+      torProxyUrl: null,
+      enqueueOfflineMessage: vi.fn(async () => undefined),
+    };
+    deps.socksFetch.mockRejectedValue(new Error("alternateRoute down"));
+
+    const result = await handleOnionSend(
+      {
+        toDeviceId: "peer-1",
+        envelope: "env",
+        route: { mode: "auto", alternateRoute: "alternateRoute.test", torOnion: "abc.onion" },
+      },
+      deps
+    );
+
+    expect(result.status).toBe(202);
+    expect(result.body.ok).toBe(true);
+    expect("queued" in result.body ? result.body.queued : undefined).toBe(true);
+    expect(deps.socksFetch).toHaveBeenCalledTimes(1);
+    expect(deps.enqueueOfflineMessage).toHaveBeenCalledWith({
+      id: "msg-1",
+      friendId: "peer-1",
+      onionAddress: "abc.onion",
+      payload: "env",
+      createdAt: 123456789,
+    });
   });
 
   it("preferalternateRoute: fail does not try tor", async () => {
