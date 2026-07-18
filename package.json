@@ -19,6 +19,8 @@
     "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb --publish never",
     "test": "vitest",
+    "bench:transfer": "vitest bench --run src/perf/transferEncoding.bench.ts",
+    "bench:transfer:500mb": "cross-env NKC_LARGE_TRANSFER_BENCH=1 vitest run src/perf/largeTransferPipeline.test.ts --reporter=verbose",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
     "lint": "eslint .",
@@ -63,7 +65,7 @@
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
     "vite-plugin-electron": "^0.29.0",
-    "vitest": "^3.2.4"
+    "vitest": "3.2.6"
   },
   "build": {
     "appId": "com.nyukop.nkc",

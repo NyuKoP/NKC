@@ -27,6 +27,24 @@ type QueueFile = {
   messages: P2PQueuedMessage[];
 };
 
+type QueueJournalEntry =
+  | { v: 1; op: "base"; queue: QueueFile }
+  | { v: 1; op: "replaceFriends"; friends: P2PFriendRoute[] }
+  | { v: 1; op: "upsertMessage"; message: P2PQueuedMessage; friend?: P2PFriendRoute }
+  | {
+      v: 1;
+      op: "patchMessages";
+      ids: string[];
+      patch: Partial<Pick<P2PQueuedMessage, "status" | "updatedAt" | "deliveredAt" | "lastError">>;
+    }
+  | {
+      v: 1;
+      op: "resetFriend";
+      friendId: string;
+      updatedAt: number;
+      lastError: string;
+    };
+
 export type P2POfflineQueueManagerOptions = {
   dbPath: string;
   getTorSocksProxy: () => string | null;
@@ -46,8 +64,57 @@ const DEFAULT_CONNECT_TIMEOUT_MS = 8_000;
 const DEFAULT_ACK_TIMEOUT_MS = 10_000;
 const ONION_VIRTUAL_PORT = 80;
 const MAX_FRAME_BYTES = 256 * 1024;
+const JOURNAL_COMPACT_AFTER_ENTRIES = 512;
 
 const emptyQueue = (): QueueFile => ({ friends: [], messages: [] });
+
+const isQueueFile = (value: unknown): value is QueueFile => {
+  if (!value || typeof value !== "object") return false;
+  const candidate = value as Partial<QueueFile>;
+  return Array.isArray(candidate.friends) && Array.isArray(candidate.messages);
+};
+
+const applyJournalEntry = (queue: QueueFile, entry: QueueJournalEntry) => {
+  if (entry.op === "base") {
+    queue.friends = entry.queue.friends;
+    queue.messages = entry.queue.messages;
+    return;
+  }
+  if (entry.op === "replaceFriends") {
+    queue.friends = entry.friends;
+    return;
+  }
+  if (entry.op === "upsertMessage") {
+    if (entry.friend) {
+      const friendIndex = queue.friends.findIndex(
+        (friend) => friend.friendId === entry.friend?.friendId
+      );
+      if (friendIndex === -1) queue.friends.push(entry.friend);
+      else queue.friends[friendIndex] = entry.friend;
+    }
+    const messageIndex = queue.messages.findIndex((message) => message.id === entry.message.id);
+    if (messageIndex === -1) queue.messages.push(entry.message);
+    else queue.messages[messageIndex] = entry.message;
+    return;
+  }
+  if (entry.op === "patchMessages") {
+    const ids = new Set(entry.ids);
+    queue.messages.forEach((message) => {
+      if (!ids.has(message.id)) return;
+      Object.assign(message, entry.patch);
+      if (entry.patch.lastError === undefined) delete message.lastError;
+    });
+    return;
+  }
+  if (entry.op === "resetFriend") {
+    queue.messages.forEach((message) => {
+      if (message.friendId !== entry.friendId || message.status !== "IN_FLIGHT") return;
+      message.status = "PENDING";
+      message.updatedAt = entry.updatedAt;
+      message.lastError = entry.lastError;
+    });
+  }
+};
 
 const normalizeOnionAddress = (value: string) =>
   value.trim().replace(/^https?:\/\//, "").replace(/\/.*$/, "").toLowerCase();
@@ -238,6 +305,7 @@ class JsonFrameReader {
 
 export class P2POfflineQueueManager {
   private readonly dbPath: string;
+  private readonly journalPath: string;
   private readonly intervalMs: number;
   private readonly connectTimeoutMs: number;
   private readonly ackTimeoutMs: number;
@@ -249,10 +317,14 @@ export class P2POfflineQueueManager {
   private running = false;
   private inFlight = new Set<string>();
   private writeLock: Promise<void> = Promise.resolve();
+  private queuePromise: Promise<QueueFile> | null = null;
+  private journalEntryCount = 0;
+  private journalHasBase = false;
   private proxyUrl: string | null;
 
   constructor(options: P2POfflineQueueManagerOptions) {
     this.dbPath = options.dbPath;
+    this.journalPath = `${options.dbPath}.journal`;
     this.proxyUrl = options.getTorSocksProxy();
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.connectTimeoutMs = options.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
@@ -287,7 +359,7 @@ export class P2POfflineQueueManager {
         if (!friend.friendId || !onionAddress.endsWith(".onion")) continue;
         byFriendId.set(friend.friendId, { friendId: friend.friendId, onionAddress });
       }
-      queue.friends = [...byFriendId.values()];
+      return { v: 1, op: "replaceFriends", friends: [...byFriendId.values()] };
     });
   }
 
@@ -313,19 +385,25 @@ export class P2POfflineQueueManager {
       updatedAt: now,
     };
     await this.withQueue(async (queue) => {
-      if (!queue.friends.some((friend) => friend.friendId === input.friendId)) {
-        queue.friends.push({ friendId: input.friendId, onionAddress });
-      }
+      const friend = queue.friends.some((item) => item.friendId === input.friendId)
+        ? undefined
+        : { friendId: input.friendId, onionAddress };
       const existing = queue.messages.find((item) => item.id === message.id);
       if (existing) {
         if (existing.status !== "DELIVERED") {
-          existing.status = "PENDING";
-          existing.updatedAt = now;
-          existing.lastError = undefined;
+          return {
+            v: 1,
+            op: "upsertMessage",
+            friend,
+            message: { ...existing, status: "PENDING", updatedAt: now, lastError: undefined },
+          };
         }
-        return;
+        if (friend) {
+          return { v: 1, op: "upsertMessage", friend, message: existing };
+        }
+        return null;
       }
-      queue.messages.push(message);
+      return { v: 1, op: "upsertMessage", friend, message };
     });
     return message;
   }
@@ -430,69 +508,157 @@ export class P2POfflineQueueManager {
   private async markInFlight(ids: string[]) {
     const now = this.now();
     await this.withQueue(async (queue) => {
-      queue.messages.forEach((message) => {
-        if (!ids.includes(message.id) || message.status !== "PENDING") return;
-        message.status = "IN_FLIGHT";
-        message.updatedAt = now;
-        message.lastError = undefined;
-      });
+      const targetIds = new Set(ids);
+      const eligibleIds = queue.messages
+        .filter((message) => targetIds.has(message.id) && message.status === "PENDING")
+        .map((message) => message.id);
+      if (!eligibleIds.length) return null;
+      return {
+        v: 1,
+        op: "patchMessages",
+        ids: eligibleIds,
+        patch: { status: "IN_FLIGHT", updatedAt: now, lastError: undefined },
+      };
     });
   }
 
   private async markDelivered(ids: string[]) {
     const now = this.now();
     await this.withQueue(async (queue) => {
-      queue.messages.forEach((message) => {
-        if (!ids.includes(message.id)) return;
-        message.status = "DELIVERED";
-        message.updatedAt = now;
-        message.deliveredAt = now;
-        message.lastError = undefined;
-      });
+      const targetIds = new Set(ids);
+      const eligibleIds = queue.messages
+        .filter((message) => targetIds.has(message.id))
+        .map((message) => message.id);
+      if (!eligibleIds.length) return null;
+      return {
+        v: 1,
+        op: "patchMessages",
+        ids: eligibleIds,
+        patch: {
+          status: "DELIVERED",
+          updatedAt: now,
+          deliveredAt: now,
+          lastError: undefined,
+        },
+      };
     });
   }
 
   private async resetInFlightForFriend(friendId: string, error: string) {
     const now = this.now();
     await this.withQueue(async (queue) => {
-      queue.messages.forEach((message) => {
-        if (message.friendId !== friendId || message.status !== "IN_FLIGHT") return;
-        message.status = "PENDING";
-        message.updatedAt = now;
-        message.lastError = error;
-      });
+      const hasInFlight = queue.messages.some(
+        (message) => message.friendId === friendId && message.status === "IN_FLIGHT"
+      );
+      if (!hasInFlight) return null;
+      return { v: 1, op: "resetFriend", friendId, updatedAt: now, lastError: error };
     });
   }
 
-  private async withQueue(mutator: (queue: QueueFile) => Promise<void> | void) {
+  private async withQueue(
+    createEntry: (
+      queue: QueueFile
+    ) => Promise<QueueJournalEntry | null> | QueueJournalEntry | null
+  ) {
     const nextWrite = this.writeLock.catch(() => undefined).then(async () => {
       const queue = await this.readQueue();
-      await mutator(queue);
-      await fs.mkdir(path.dirname(this.dbPath), { recursive: true });
-      await fs.writeFile(this.dbPath, JSON.stringify(queue, null, 2), "utf8");
+      const entry = await createEntry(queue);
+      if (!entry) return;
+      await this.appendJournalEntry(queue, entry);
+      applyJournalEntry(queue, entry);
+      if (this.journalEntryCount >= JOURNAL_COMPACT_AFTER_ENTRIES) {
+        await this.compactJournal(queue);
+      }
     });
     this.writeLock = nextWrite;
     await nextWrite;
   }
 
   private async readQueue(): Promise<QueueFile> {
+    if (!this.queuePromise) {
+      this.queuePromise = this.loadQueue();
+    }
+    return this.queuePromise;
+  }
+
+  private async loadQueue(): Promise<QueueFile> {
+    let queue = emptyQueue();
     try {
       const raw = await fs.readFile(this.dbPath, "utf8");
-      const parsed = JSON.parse(raw) as QueueFile;
-      if (!Array.isArray(parsed.friends) || !Array.isArray(parsed.messages)) {
-        return emptyQueue();
-      }
-      return parsed;
+      const parsed = JSON.parse(raw) as unknown;
+      if (isQueueFile(parsed)) queue = parsed;
     } catch (error) {
-      if (
-        error &&
+      if (!this.isMissingFileError(error) && !(error instanceof SyntaxError)) throw error;
+    }
+
+    try {
+      const journal = await fs.readFile(this.journalPath, "utf8");
+      const lines = journal.split("\n");
+      const validLines: string[] = [];
+      let repairIncompleteTail = false;
+      for (let index = 0; index < lines.length; index += 1) {
+        const line = lines[index].trim();
+        if (!line) continue;
+        try {
+          const entry = JSON.parse(line) as QueueJournalEntry;
+          if (entry?.v !== 1 || typeof entry.op !== "string") continue;
+          if (entry.op === "base" && isQueueFile(entry.queue)) this.journalHasBase = true;
+          applyJournalEntry(queue, entry);
+          this.journalEntryCount += 1;
+          validLines.push(line);
+        } catch {
+          // A process termination can leave only the final append incomplete.
+          if (index !== lines.length - 1) throw new Error("invalid_queue_journal");
+          repairIncompleteTail = true;
+        }
+      }
+      if (repairIncompleteTail) {
+        await fs.writeFile(
+          this.journalPath,
+          validLines.length ? `${validLines.join("\n")}\n` : "",
+          "utf8"
+        );
+      }
+    } catch (error) {
+      if (!this.isMissingFileError(error)) throw error;
+    }
+    return queue;
+  }
+
+  private async appendJournalEntry(queue: QueueFile, entry: QueueJournalEntry) {
+    await fs.mkdir(path.dirname(this.dbPath), { recursive: true });
+    if (!this.journalHasBase) {
+      const base: QueueJournalEntry = { v: 1, op: "base", queue };
+      await fs.appendFile(this.journalPath, `${JSON.stringify(base)}\n`, "utf8");
+      this.journalHasBase = true;
+      this.journalEntryCount += 1;
+    }
+    await fs.appendFile(this.journalPath, `${JSON.stringify(entry)}\n`, "utf8");
+    this.journalEntryCount += 1;
+  }
+
+  private async compactJournal(queue: QueueFile) {
+    const tempSnapshot = `${this.dbPath}.${process.pid}.tmp`;
+    const tempJournal = `${this.journalPath}.${process.pid}.tmp`;
+    const base: QueueJournalEntry = { v: 1, op: "base", queue };
+    await fs.writeFile(tempSnapshot, JSON.stringify(queue), "utf8");
+    await fs.copyFile(tempSnapshot, this.dbPath);
+    await fs.writeFile(tempJournal, `${JSON.stringify(base)}\n`, "utf8");
+    await fs.copyFile(tempJournal, this.journalPath);
+    await Promise.all([
+      fs.rm(tempSnapshot, { force: true }),
+      fs.rm(tempJournal, { force: true }),
+    ]);
+    this.journalHasBase = true;
+    this.journalEntryCount = 1;
+  }
+
+  private isMissingFileError(error: unknown) {
+    return Boolean(
+      error &&
         typeof error === "object" &&
         "code" in error &&
         String((error as { code?: unknown }).code) === "ENOENT"
-      ) {
-        return emptyQueue();
-      }
-      throw error;
-    }
+    );
   }
 }

@@ -233,6 +233,42 @@ const decryptMediaChunks = async (vk: Uint8Array, chunks: MediaChunkRecord[]) =>
   return decrypted;
 };
 
+const decryptMediaToBlob = async (
+  vk: Uint8Array,
+  chunks: MediaChunkRecord[],
+  mime: string,
+  maxBytes: number
+) => {
+  const total = chunks.length;
+  const concurrency = resolveMediaDecryptConcurrency(total);
+  const batchSize = Math.max(concurrency * MEDIA_DECRYPT_BATCH_MULTIPLIER, concurrency);
+  const blobParts: Blob[] = [];
+  let totalBytes = 0;
+
+  for (let start = 0; start < total; start += batchSize) {
+    const batch = chunks.slice(start, start + batchSize);
+    const batchResult = await mapLimit(batch, concurrency, (chunk) =>
+      decodeBinaryEnvelope(vk, chunk.id, "mediaChunk", chunk.enc_b64)
+    );
+    if (start === 0) {
+      const firstChunk = batchResult[0];
+      if (!firstChunk || isSuspiciousMediaPayload(mime, firstChunk)) return null;
+    }
+    for (const bytes of batchResult) {
+      totalBytes += bytes.byteLength;
+      if (totalBytes > maxBytes) return null;
+    }
+    // Move decrypted batches into immutable Blob storage so the JS heap only retains
+    // one decryption batch instead of every chunk of a large attachment.
+    blobParts.push(new Blob(batchResult as unknown as BlobPart[]));
+    if (total >= MEDIA_YIELD_MIN_CHUNKS && start + batchSize < total) {
+      await yieldToEventLoop();
+    }
+  }
+
+  return { blob: new Blob(blobParts, { type: mime }), totalBytes };
+};
+
 const requireVaultKey = () => {
   const vk = getVaultKey();
   if (!vk) throw new Error("Vault is locked");
@@ -798,14 +834,9 @@ export const loadMessageMedia = async (mediaRef?: MediaRef) => {
     if (mediaRef.total * mediaRef.chunkSize > MAX_MEDIA_BYTES) return null;
     if (mediaRef.size > MAX_MEDIA_BYTES) return null;
 
-    const decrypted = await decryptMediaChunks(vk, chunks);
-    if (decrypted.length !== chunks.length) return null;
-    const totalBytes = decrypted.reduce((sum, part) => sum + part.length, 0);
-    if (totalBytes > MAX_MEDIA_BYTES) return null;
-    const firstChunk = decrypted[0];
-    if (!firstChunk || isSuspiciousMediaPayload(mediaRef.mime, firstChunk)) return null;
-    const blob = new Blob(decrypted as unknown as BlobPart[], { type: mediaRef.mime });
-    return blob;
+    const decrypted = await decryptMediaToBlob(vk, chunks, mediaRef.mime, MAX_MEDIA_BYTES);
+    if (!decrypted) return null;
+    return decrypted.blob;
   } catch {
     return null;
   }
