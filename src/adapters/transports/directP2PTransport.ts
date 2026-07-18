@@ -1,4 +1,10 @@
 import type { Transport, TransportPacket, TransportState } from "./types";
+import {
+  decodeBinaryTransportPacket,
+  encodeBinaryTransportPacket,
+  isBinaryTransportPacket,
+} from "./packetCodec";
+import { encodeBase64Url } from "../../security/base64url";
 
 type Handler<T> = (payload: T) => void;
 
@@ -15,6 +21,8 @@ type SignalMessage =
 
 const SIGNAL_PREFIX = "NKC-RTC1.";
 const DATA_CHANNEL_LABEL = "nkc-direct-v1";
+const CAPABILITIES_PACKET_ID = "__nkc_capabilities__";
+const BINARY_PACKET_CAPABILITY = "binary-packet-v1";
 const DEFAULT_STUN_URL = "stun:stun.l.google.com:19302";
 
 const toBase64Url = (value: string) => {
@@ -66,6 +74,20 @@ export const createDirectP2PTransport = (): Transport => {
   let dataChannel: RTCDataChannel | null = null;
   let started = false;
   let pendingIce: RTCIceCandidateInit[] = [];
+  let binaryPacketSupported = false;
+  let capabilitiesSent = false;
+
+  const sendCapabilities = () => {
+    if (!dataChannel || dataChannel.readyState !== "open" || capabilitiesSent) return;
+    dataChannel.send(
+      JSON.stringify({
+        id: CAPABILITIES_PACKET_ID,
+        payload: "",
+        capabilities: [BINARY_PACKET_CAPABILITY],
+      })
+    );
+    capabilitiesSent = true;
+  };
 
   const emitState = (next: TransportState) => {
     state = next;
@@ -78,6 +100,13 @@ export const createDirectP2PTransport = (): Transport => {
   };
 
   const handleDataMessage = (data: unknown) => {
+    if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+      if (isBinaryTransportPacket(data)) {
+        const packet = decodeBinaryTransportPacket(data);
+        if (packet) messageHandlers.forEach((handler) => handler(packet));
+        return;
+      }
+    }
     let raw = "";
     if (typeof data === "string") {
       raw = data;
@@ -91,6 +120,14 @@ export const createDirectP2PTransport = (): Transport => {
     try {
       const parsed = JSON.parse(raw) as TransportPacket;
       if (!parsed || typeof parsed.id !== "string") return;
+      if (parsed.id === CAPABILITIES_PACKET_ID) {
+        const capabilities = (parsed as { capabilities?: unknown }).capabilities;
+        if (Array.isArray(capabilities) && capabilities.includes(BINARY_PACKET_CAPABILITY)) {
+          binaryPacketSupported = true;
+          sendCapabilities();
+        }
+        return;
+      }
       messageHandlers.forEach((handler) => handler(parsed));
     } catch {
       // ignore invalid packets
@@ -99,7 +136,12 @@ export const createDirectP2PTransport = (): Transport => {
 
   const setupDataChannel = (channel: RTCDataChannel) => {
     dataChannel = channel;
-    dataChannel.onopen = () => emitState("connected");
+    binaryPacketSupported = false;
+    capabilitiesSent = false;
+    dataChannel.onopen = () => {
+      emitState("connected");
+      sendCapabilities();
+    };
     dataChannel.onmessage = (event) => handleDataMessage(event.data);
     dataChannel.onclose = () => emitState("idle");
     dataChannel.onerror = () => emitState("failed");
@@ -157,6 +199,8 @@ export const createDirectP2PTransport = (): Transport => {
     async stop() {
       started = false;
       pendingIce = [];
+      binaryPacketSupported = false;
+      capabilitiesSent = false;
       if (dataChannel) {
         try {
           dataChannel.close();
@@ -183,7 +227,16 @@ export const createDirectP2PTransport = (): Transport => {
         error.code = "DIRECT_NOT_OPEN";
         throw error;
       }
-      dataChannel.send(JSON.stringify(packet));
+      const binary = binaryPacketSupported ? encodeBinaryTransportPacket(packet) : null;
+      if (binary) {
+        dataChannel.send(binary.slice().buffer as ArrayBuffer);
+      } else {
+        const legacyPacket =
+          packet.payload instanceof Uint8Array
+            ? { ...packet, payload: { b64: encodeBase64Url(packet.payload) } }
+            : packet;
+        dataChannel.send(JSON.stringify(legacyPacket));
+      }
       ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
     },
     async createOfferCode() {

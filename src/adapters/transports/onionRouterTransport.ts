@@ -2,7 +2,12 @@ import type { HttpClient } from "../../net/httpClient";
 import type { NetConfig } from "../../net/netConfig";
 import { useNetConfigStore } from "../../net/netConfigStore";
 import { OnionInboxClient } from "../../net/onionInboxClient";
-import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
+import {
+  decodeBase64,
+  decodeBase64Url,
+  encodeBase64,
+  encodeBase64Url,
+} from "../../security/base64url";
 import { getOrCreateDeviceId } from "../../security/deviceRole";
 import { getOnionControllerUrlOverride, getRoutePolicy } from "../../security/preferences";
 import type { RouteMode } from "../../main/routePolicy";
@@ -37,23 +42,6 @@ type OnionFetchResponse = {
 type TorStatusResponse = {
   state?: unknown;
   socksProxyUrl?: unknown;
-};
-
-const toBase64 = (bytes: Uint8Array) => {
-  let binary = "";
-  bytes.forEach((value) => {
-    binary += String.fromCharCode(value);
-  });
-  return btoa(binary);
-};
-
-const fromBase64 = (value: string) => {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 };
 
 const isForwardProxyNotReadyError = (message: string) => {
@@ -183,11 +171,11 @@ export async function onionFetch(
   let bodyBase64: string | undefined;
   if (init.body !== undefined && init.body !== null) {
     if (typeof init.body === "string") {
-      bodyBase64 = toBase64(new TextEncoder().encode(init.body));
+      bodyBase64 = encodeBase64(new TextEncoder().encode(init.body));
     } else if (init.body instanceof Uint8Array) {
-      bodyBase64 = toBase64(init.body);
+      bodyBase64 = encodeBase64(init.body);
     } else if (init.body instanceof ArrayBuffer) {
-      bodyBase64 = toBase64(new Uint8Array(init.body));
+      bodyBase64 = encodeBase64(new Uint8Array(init.body));
     } else {
       throw new Error("Unsupported onion fetch body");
     }
@@ -199,7 +187,7 @@ export async function onionFetch(
     bodyBase64,
     timeoutMs: init.timeoutMs,
   });
-  const body = response.bodyBase64 ? fromBase64(response.bodyBase64) : new Uint8Array();
+  const body = response.bodyBase64 ? decodeBase64(response.bodyBase64) : new Uint8Array();
   const respHeaders = new Headers(response.headers ?? {});
   return new Response(body, { status: response.status, headers: respHeaders });
 }
@@ -273,7 +261,8 @@ export const createOnionRouterTransport = ({
 
   const decodeEnvelope = (envelope: string): TransportPacket | null => {
     try {
-      const json = new TextDecoder().decode(decodeBase64Url(envelope));
+      const bytes = decodeBase64Url(envelope);
+      const json = new TextDecoder().decode(bytes);
       const parsed = JSON.parse(json) as TransportPacket;
       if (!parsed || typeof parsed !== "object") return null;
       return parsed;

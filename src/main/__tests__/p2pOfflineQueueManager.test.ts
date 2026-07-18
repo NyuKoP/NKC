@@ -82,6 +82,79 @@ describe("P2POfflineQueueManager", () => {
     ]);
   });
 
+  it("replays its append-only journal without rewriting the full snapshot per message", async () => {
+    const dbPath = await makeDbPath();
+    const manager = new P2POfflineQueueManager({
+      dbPath,
+      getTorSocksProxy: () => null,
+      now: () => 100,
+    });
+
+    await manager.enqueueMessage({
+      id: "first",
+      friendId: "friend-1",
+      onionAddress: "peerabc.onion",
+      payload: "payload-1",
+      createdAt: 10,
+    });
+    await manager.enqueueMessage({
+      id: "second",
+      friendId: "friend-1",
+      onionAddress: "peerabc.onion",
+      payload: "payload-2",
+      createdAt: 20,
+    });
+
+    await expect(fs.stat(dbPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const journal = await fs.readFile(`${dbPath}.journal`, "utf8");
+    expect(journal.trim().split("\n")).toHaveLength(3);
+
+    const restarted = new P2POfflineQueueManager({
+      dbPath,
+      getTorSocksProxy: () => null,
+    });
+    expect((await restarted.listMessages()).map((message) => message.id)).toEqual([
+      "first",
+      "second",
+    ]);
+  });
+
+  it("ignores an incomplete final journal append after process termination", async () => {
+    const dbPath = await makeDbPath();
+    const manager = new P2POfflineQueueManager({
+      dbPath,
+      getTorSocksProxy: () => null,
+    });
+    await manager.enqueueMessage({
+      id: "safe",
+      friendId: "friend-1",
+      onionAddress: "peerabc.onion",
+      payload: "payload",
+    });
+    await fs.appendFile(`${dbPath}.journal`, "{\"v\":1,\"op\":", "utf8");
+
+    const restarted = new P2POfflineQueueManager({
+      dbPath,
+      getTorSocksProxy: () => null,
+    });
+    expect((await restarted.listMessages()).map((message) => message.id)).toEqual(["safe"]);
+
+    await restarted.enqueueMessage({
+      id: "after-recovery",
+      friendId: "friend-1",
+      onionAddress: "peerabc.onion",
+      payload: "payload-2",
+    });
+    const restartedAgain = new P2POfflineQueueManager({
+      dbPath,
+      getTorSocksProxy: () => null,
+    });
+    expect((await restartedAgain.listMessages()).map((message) => message.id)).toEqual([
+      "safe",
+      "after-recovery",
+    ]);
+  });
+
   it("pushes pending messages in creation order and marks ACKed messages DELIVERED", async () => {
     const socket = new FakeSocket();
     const manager = new P2POfflineQueueManager({

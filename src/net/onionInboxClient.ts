@@ -2,6 +2,7 @@ import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { fetchWithTimeout } from "./fetchWithTimeout";
 import { createTransportError, getTransportErrorCode } from "./transportErrors";
 import { createId } from "../utils/ids";
+import { decodeBase64, encodeBase64 } from "../security/base64url";
 
 export type OnionInboxConfig = {
   baseUrl: string;
@@ -69,23 +70,6 @@ type ControllerFetchResponse = {
   headers: Record<string, string>;
   bodyBase64: string;
   error?: string;
-};
-
-const toBase64 = (bytes: Uint8Array) => {
-  let binary = "";
-  bytes.forEach((value) => {
-    binary += String.fromCharCode(value);
-  });
-  return btoa(binary);
-};
-
-const fromBase64 = (value: string) => {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i += 1) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
 };
 
 const safeError = (error: unknown) =>
@@ -234,7 +218,7 @@ export class OnionInboxClient {
           url,
           method: init.method,
           headers,
-          bodyBase64: body ? toBase64(new TextEncoder().encode(body)) : undefined,
+          bodyBase64: body ? encodeBase64(new TextEncoder().encode(body)) : undefined,
           timeoutMs,
         });
         const guards: Array<Promise<never>> = [];
@@ -271,7 +255,7 @@ export class OnionInboxClient {
         }
         const response = await Promise.race([fetchPromise, ...guards]);
         const decoded = response.bodyBase64
-          ? new TextDecoder().decode(fromBase64(response.bodyBase64))
+          ? new TextDecoder().decode(decodeBase64(response.bodyBase64))
           : "";
         const parsed = decoded ? (JSON.parse(decoded) as T) : undefined;
         return {
