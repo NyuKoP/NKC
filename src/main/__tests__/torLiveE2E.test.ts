@@ -16,17 +16,50 @@ import {
 import { decodeFriendCodeV1, encodeFriendCodeV1, type FriendCodeV1 } from "../../security/friendCode";
 import { encodeBase64Url } from "../../security/base64url";
 import { getSodium } from "../../security/sodium";
+import { decodeBase64Url } from "../../security/base64url";
+import {
+  decryptEnvelope,
+  deriveConversationKey,
+  encryptEnvelope,
+  type Envelope,
+  type EnvelopeHeader,
+} from "../../crypto/box";
 
 const LIVE_TOR_ENABLED = process.env.NKC_LIVE_TOR_E2E === "1";
+const LIVE_TOR_LARGE_ENABLED = process.env.NKC_LIVE_TOR_LARGE_E2E === "1";
+const LIVE_TOR_ONLY_LARGE = process.env.NKC_LIVE_TOR_ONLY_LARGE === "1";
+const LIVE_TOR_FILE_MB = Math.min(
+  500,
+  Math.max(1, Number.parseInt(process.env.NKC_LIVE_TOR_FILE_MB ?? "10", 10) || 10)
+);
+const LIVE_FILE_CHUNK_BYTES = 128 * 1024;
 const DEVICE_A = randomUUID();
 const DEVICE_B = randomUUID();
 
 type InboxResponse = {
   ok: boolean;
   items: Array<{ id: string; from: string; envelope: string }>;
+  nextAfter: string | null;
 };
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const waitForTorRoute = async (
+  controller: OnionControllerHandle,
+  onionAddress: string,
+  timeoutMs = 240_000
+) => {
+  const startedAt = Date.now();
+  let lastResult: Awaited<ReturnType<OnionControllerHandle["prewarmTorRoute"]>> | null = null;
+  while (Date.now() - startedAt < timeoutMs) {
+    lastResult = await controller.prewarmTorRoute(onionAddress);
+    if (lastResult.ok) {
+      return { ...lastResult, totalElapsedMs: Date.now() - startedAt };
+    }
+    await wait(5_000);
+  }
+  throw new Error(`Tor route did not become reachable: ${JSON.stringify(lastResult)}`);
+};
 
 const postJson = async (url: string, payload: unknown, authToken?: string) => {
   const response = await fetch(url, {
@@ -79,9 +112,15 @@ const sendOverTor = async (
   throw new Error(`Tor forwarding failed: ${JSON.stringify(lastResult)}`);
 };
 
-const readInbox = async (controller: OnionControllerHandle, deviceId: string) => {
+const readInbox = async (
+  controller: OnionControllerHandle,
+  deviceId: string,
+  after: string | null = null
+) => {
+  const params = new URLSearchParams({ deviceId });
+  if (after) params.set("after", after);
   const response = await fetch(
-    `${controller.baseUrl}/onion/inbox?deviceId=${encodeURIComponent(deviceId)}`,
+    `${controller.baseUrl}/onion/inbox?${params}`,
     { headers: { "X-NKC-Controller-Token": controller.authToken } }
   );
   expect(response.status).toBe(200);
@@ -112,6 +151,7 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
   let identityPrivB: Uint8Array;
   let dhPrivA: Uint8Array;
   let dhPrivB: Uint8Array;
+  let torProxyA: string;
 
   beforeAll(async () => {
     rootA = await fs.mkdtemp(path.join(os.tmpdir(), "nkc-live-tor-a-"));
@@ -136,6 +176,12 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
     await controllerB.setTorSocksProxy(statusB.socksProxyUrl);
     controllerA.setTorOnionHost(onionA);
     controllerB.setTorOnionHost(onionB);
+    torProxyA = statusA.socksProxyUrl;
+    const [routeAtoB, routeBtoA] = await Promise.all([
+      waitForTorRoute(controllerA, onionB),
+      waitForTorRoute(controllerB, onionA),
+    ]);
+    console.info("Tor hidden services reachable", { routeAtoB, routeBtoA });
 
     const sodium = await getSodium();
     const identityA = sodium.crypto_sign_keypair();
@@ -160,7 +206,7 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       deviceId: DEVICE_B,
       onionAddr: onionB,
     });
-  }, 120_000);
+  }, 360_000);
 
   afterAll(async () => {
     await Promise.allSettled([
@@ -175,7 +221,7 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
     ]);
   }, 30_000);
 
-  it(
+  it.skipIf(LIVE_TOR_ONLY_LARGE)(
     "uses friend codes to establish trust and exchange a file and chat through real onion services",
     async () => {
       expect(onionA).toMatch(/^[a-z2-7]{56}\.onion$/);
@@ -359,5 +405,161 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       );
     },
     300_000
+  );
+
+  it.runIf(LIVE_TOR_LARGE_ENABLED)(
+    `streams ${LIVE_TOR_FILE_MB}MB in app-sized chunks, carries chat, and resumes after interruption`,
+    async () => {
+      const alice = requireFriendCode(friendCodeA);
+      const bob = requireFriendCode(friendCodeB);
+      const totalBytes = LIVE_TOR_FILE_MB * 1024 * 1024;
+      const totalChunks = Math.ceil(totalBytes / LIVE_FILE_CHUNK_BYTES);
+      const conversationKeyA = await deriveConversationKey(
+        dhPrivA,
+        decodeBase64Url(bob.dhPub)
+      );
+      const conversationKeyB = await deriveConversationKey(
+        dhPrivB,
+        decodeBase64Url(alice.dhPub)
+      );
+      expect(Buffer.from(conversationKeyB)).toEqual(Buffer.from(conversationKeyA));
+      const senderHash = createHash("sha256");
+      const receiverHash = createHash("sha256");
+      const chunkDurations: number[] = [];
+      let receivedBytes = 0;
+      let inboxBCursor = (await readInbox(controllerB, bob.deviceId)).nextAfter;
+      let inboxACursor = (await readInbox(controllerA, alice.deviceId)).nextAfter;
+      let interruptionVerified = false;
+      let chatTransferMs = 0;
+
+      const prewarm = await controllerA.prewarmTorRoute(bob.onionAddr);
+      expect(prewarm.ok).toBe(true);
+      const transferStartedAt = Date.now();
+
+      for (let index = 0; index < totalChunks; index += 1) {
+          const offset = index * LIVE_FILE_CHUNK_BYTES;
+          const length = Math.min(LIVE_FILE_CHUNK_BYTES, totalBytes - offset);
+          const bytes = Buffer.allocUnsafe(length);
+          for (let byteIndex = 0; byteIndex < length; byteIndex += 1) {
+            bytes[byteIndex] = ((offset + byteIndex) * 31 + 17) & 0xff;
+          }
+          senderHash.update(bytes);
+          const header: EnvelopeHeader = {
+            v: 1,
+            convId: "tor-live-large-file",
+            eventId: randomUUID(),
+            authorDeviceId: alice.deviceId,
+            ts: Date.now(),
+            lamport: index + 1,
+          };
+          const encrypted = await encryptEnvelope(
+            conversationKeyA,
+            header,
+            {
+              type: "media",
+              phase: "chunk",
+              ownerId: "tor-live-large-file",
+              idx: index,
+              total: totalChunks,
+              chunkSize: LIVE_FILE_CHUNK_BYTES,
+              mime: "application/octet-stream",
+              name: "tor-live-large-file.bin",
+              size: totalBytes,
+              b64: encodeBase64Url(bytes),
+            },
+            identityPrivA
+          );
+          const envelope = JSON.stringify(encrypted);
+
+        if (!interruptionVerified && index >= Math.floor(totalChunks / 2)) {
+          const chatEnvelope = JSON.stringify({
+            type: "chat",
+            text: `chat-during-file-${Date.now()}`,
+          });
+          const chatStartedAt = Date.now();
+          await sendOverTor(
+            controllerB,
+            alice.onionAddr,
+            bob.deviceId,
+            alice.deviceId,
+            chatEnvelope
+          );
+          chatTransferMs = Date.now() - chatStartedAt;
+          const chatInbox = await readInbox(controllerA, alice.deviceId, inboxACursor);
+          inboxACursor = chatInbox.nextAfter;
+          expect(chatInbox.items.at(-1)?.envelope).toBe(chatEnvelope);
+
+          await controllerA.setTorSocksProxy(null);
+          const pausedResult = await postJson(
+            `${controllerA.baseUrl}/onion/send`,
+            {
+              toDeviceId: bob.deviceId,
+              fromDeviceId: alice.deviceId,
+              toOnion: bob.onionAddr,
+              envelope,
+              route: { mode: "manual", torOnion: bob.onionAddr },
+            },
+            controllerA.authToken
+          );
+          expect(pausedResult.body.forwarded).not.toBe(true);
+          await controllerA.setTorSocksProxy(torProxyA);
+          const resumedPrewarm = await controllerA.prewarmTorRoute(bob.onionAddr);
+          expect(resumedPrewarm.ok).toBe(true);
+          interruptionVerified = true;
+        }
+
+        const chunkStartedAt = Date.now();
+        await sendOverTor(
+          controllerA,
+          bob.onionAddr,
+          alice.deviceId,
+          bob.deviceId,
+          envelope
+        );
+        chunkDurations.push(Date.now() - chunkStartedAt);
+
+        const inbox = await readInbox(controllerB, bob.deviceId, inboxBCursor);
+        inboxBCursor = inbox.nextAfter;
+        expect(inbox.items).toHaveLength(1);
+        const receivedEnvelope = JSON.parse(inbox.items[0].envelope) as Envelope;
+        const received = await decryptEnvelope<{
+          idx: number;
+          b64: string;
+        }>(conversationKeyB, receivedEnvelope, decodeBase64Url(alice.identityPub));
+        expect(received.idx).toBe(index);
+        const receivedChunk = Buffer.from(decodeBase64Url(received.b64));
+        receiverHash.update(receivedChunk);
+        receivedBytes += receivedChunk.length;
+      }
+
+      const transferMs = Date.now() - transferStartedAt;
+      const sortedDurations = [...chunkDurations].sort((left, right) => left - right);
+      const percentile = (value: number) =>
+        sortedDurations[Math.min(sortedDurations.length - 1, Math.floor(sortedDurations.length * value))];
+      const senderSha256 = senderHash.digest("hex");
+      const receiverSha256 = receiverHash.digest("hex");
+
+      expect(receivedBytes).toBe(totalBytes);
+      expect(receiverSha256).toBe(senderSha256);
+      expect(interruptionVerified).toBe(true);
+      console.info(
+        JSON.stringify({
+          torLargeTransfer: true,
+          fileMiB: LIVE_TOR_FILE_MB,
+          chunks: totalChunks,
+          chunkBytes: LIVE_FILE_CHUNK_BYTES,
+          sendWindow: 1,
+          transferMs,
+          throughputMiBps: Number((LIVE_TOR_FILE_MB / (transferMs / 1000)).toFixed(3)),
+          chunkP50Ms: percentile(0.5),
+          chunkP95Ms: percentile(0.95),
+          chatDuringTransferMs: chatTransferMs,
+          interruptionVerified,
+          senderSha256,
+          receiverSha256,
+        })
+      );
+    },
+    Math.max(10 * 60_000, LIVE_TOR_FILE_MB * 60_000)
   );
 });

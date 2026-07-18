@@ -19,6 +19,8 @@
     "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb --publish never",
     "test": "vitest",
+    "test:tor:live": "node scripts/run-live-tor-e2e.mjs",
+    "test:tor:large": "node scripts/run-live-tor-e2e.mjs --large --size-mb=10",
     "bench:transfer": "vitest bench --run src/perf/transferEncoding.bench.ts",
     "bench:transfer:500mb": "cross-env NKC_LARGE_TRANSFER_BENCH=1 vitest run src/perf/largeTransferPipeline.test.ts --reporter=verbose",
     "test:ui": "playwright test",
