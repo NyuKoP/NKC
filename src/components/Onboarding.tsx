@@ -3,7 +3,7 @@ import { Upload } from "lucide-react";
 
 type OnboardingProps = {
   onCreate: (displayName: string) => Promise<void>;
-  onUnlockWithStartKey: (startKey: string, displayName: string) => Promise<void>;
+  onUnlockWithStartKey: (startKey: string) => Promise<void>;
   defaultTab?: "create" | "startKey";
   errorMessage?: string;
 };
@@ -37,7 +37,10 @@ export default function Onboarding({
   };
 
   return (
-    <div className="flex h-full items-center justify-center bg-nkc-bg px-6 py-10">
+    <div
+      className="flex h-full items-center justify-center bg-nkc-bg px-6 py-10"
+      data-testid="onboarding-screen"
+    >
       <div className="w-full max-w-2xl rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
         <div className="flex items-center justify-between">
           <div>
@@ -57,6 +60,7 @@ export default function Onboarding({
               tab === "create" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
             }`}
             onClick={() => setTab("create")}
+            data-testid="onboarding-create-tab"
           >
             새 계정
           </button>
@@ -65,6 +69,7 @@ export default function Onboarding({
               tab === "startKey" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
             }`}
             onClick={() => setTab("startKey")}
+            data-testid="onboarding-start-key-tab"
           >
             시작 키로 잠금 해제
           </button>
@@ -145,6 +150,7 @@ export default function Onboarding({
                 }}
                 className="mt-2 h-24 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
                 placeholder="NKC-..."
+                data-testid="onboarding-start-key-input"
               />
             </label>
 
@@ -161,16 +167,6 @@ export default function Onboarding({
               />
             </label>
 
-            <label className="text-sm">
-              표시 이름
-              <input
-                value={displayName}
-                onChange={(event) => setDisplayName(event.target.value)}
-                className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
-                placeholder="NKC 사용자"
-              />
-            </label>
-
             <button
               onClick={async () => {
                 const disabled = !startKey.trim() || busy === "startKey";
@@ -182,7 +178,7 @@ export default function Onboarding({
                 setLocalError("");
                 setBusy("startKey");
                 try {
-                  await onUnlockWithStartKey(startKey.trim(), displayName.trim() || "NKC 사용자");
+                  await onUnlockWithStartKey(startKey.trim());
                 } catch (error) {
                   console.error("Onboarding start key unlock failed", error);
                   setLocalError("시작 키로 잠금 해제에 실패했습니다.");
@@ -192,6 +188,7 @@ export default function Onboarding({
               }}
               className="w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
               disabled={busy === "startKey"}
+              data-testid="onboarding-start-key-button"
             >
               {busy === "startKey" ? "처리 중..." : "시작 키로 잠금 해제"}
             </button>
@@ -199,6 +196,7 @@ export default function Onboarding({
               <div className="text-xs text-nkc-muted">시작 키를 입력해 주세요.</div>
             ) : null}
             {localError ? <div className="text-xs text-red-300">{localError}</div> : null}
+            {errorMessage ? <div className="text-xs text-red-300">{errorMessage}</div> : null}
           </div>
         )}
       </div>

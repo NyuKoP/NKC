@@ -6,6 +6,7 @@ import type { OnionNetwork } from "../../../net/netConfig";
 import { downloadFile } from "./downloader";
 import { verifySha256 } from "./verify";
 import { unpackArchive } from "./unpack";
+import { removeWithRetry } from "./removeWithRetry";
 import { getBinaryPath, getPinnedSha256 } from "../componentRegistry";
 import { swapWithRollback } from "./swapperRollback";
 import { PinnedHashMissingError } from "../errors";
@@ -233,7 +234,7 @@ export const installalternateRoute = async (
       return { version, installPath: found.baseDir, rollback };
     }
 
-    await fs.rm(installPath, { recursive: true, force: true });
+    await removeWithRetry(installPath);
     await fs.mkdir(installPath, { recursive: true });
     onProgress?.({ step: "unpack", message: "Unpacking alternateRoute" });
     await unpackArchive(archivePath, installPath);
@@ -267,6 +268,6 @@ export const installalternateRoute = async (
     (wrapped as { details?: Record<string, unknown> }).details = details;
     throw wrapped;
   } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
+    await removeWithRetry(tempDir);
   }
 };

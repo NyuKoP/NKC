@@ -16,6 +16,7 @@ import {
   listEventsByConv,
   listProfiles,
   saveMessage,
+  saveReceivedMessageMediaChunk,
   saveConversation,
   saveEvent,
   saveProfile,
@@ -922,6 +923,14 @@ const applyDecryptedBody = async (
 
   const typed = body as {
     type?: string;
+    phase?: string;
+    ownerId?: string;
+    idx?: number;
+    total?: number;
+    chunkSize?: number;
+    size?: number;
+    mime?: string;
+    b64?: string;
     kind?: string;
     convId?: string;
     cursorTs?: number;
@@ -930,6 +939,36 @@ const applyDecryptedBody = async (
     ts?: number;
     clientBatchId?: string;
   };
+
+  if (typed.type === "media" && typed.phase === "chunk") {
+    if (
+      typeof typed.ownerId !== "string" ||
+      typeof typed.b64 !== "string" ||
+      typeof typed.mime !== "string" ||
+      !Number.isInteger(typed.idx) ||
+      !Number.isInteger(typed.total) ||
+      !Number.isInteger(typed.chunkSize) ||
+      !Number.isFinite(typed.size)
+    ) {
+      console.warn("[sync] invalid media chunk metadata");
+      return;
+    }
+    try {
+      const bytes = decodeBase64Url(typed.b64);
+      await saveReceivedMessageMediaChunk({
+        ownerId: typed.ownerId,
+        idx: typed.idx as number,
+        total: typed.total as number,
+        chunkSize: typed.chunkSize as number,
+        size: typed.size as number,
+        mime: typed.mime,
+        bytes,
+      });
+    } catch (error) {
+      console.warn("[sync] media chunk rejected", error);
+    }
+    return;
+  }
 
   if (typed.type === "rcpt" && typed.kind === "read_cursor") {
     if (!senderId || typeof typed.convId !== "string") return;
@@ -1118,6 +1157,31 @@ const isEnvelopeLike = (value: unknown): value is Envelope => {
     typeof envelope.nonce === "string" &&
     typeof envelope.sig === "string"
   );
+};
+
+const isEphemeralMediaChunk = (body: unknown) => {
+  if (!body || typeof body !== "object") return false;
+  const value = body as { type?: unknown; phase?: unknown };
+  return value.type === "media" && value.phase === "chunk";
+};
+
+const persistAppliedEnvelope = async (envelope: Envelope, body: unknown) => {
+  if (isEphemeralMediaChunk(body)) return;
+  const eventHash = await computeEnvelopeHash(envelope);
+  const expectedPrev = await getLastEventHash(envelope.header.convId);
+  const mismatch = envelope.header.prev !== expectedPrev;
+  if (mismatch) console.warn("[sync] event chain mismatch");
+  await saveEvent({
+    eventId: envelope.header.eventId,
+    convId: envelope.header.convId,
+    authorDeviceId: envelope.header.authorDeviceId,
+    lamport: envelope.header.lamport,
+    ts: envelope.header.ts,
+    envelopeJson: JSON.stringify(envelope),
+    prevHash: envelope.header.prev,
+    eventHash,
+    conflict: mismatch || undefined,
+  });
 };
 
 const ensurePeerContextFromConversation = async (convId: string) => {
@@ -1328,23 +1392,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
 
         logDecrypt("commit", { convId: event.convId, eventId: event.eventId, mode: "v2" });
         await recv.commit();
-        const eventHash = await computeEnvelopeHash(envelope);
-        const expectedPrev = await getLastEventHash(envelope.header.convId);
-        const mismatch = envelope.header.prev !== expectedPrev;
-        if (mismatch) {
-          console.warn("[sync] event chain mismatch");
-        }
-        await saveEvent({
-          eventId: envelope.header.eventId,
-          convId: envelope.header.convId,
-          authorDeviceId: envelope.header.authorDeviceId,
-          lamport: envelope.header.lamport,
-          ts: envelope.header.ts,
-          envelopeJson: JSON.stringify(envelope),
-          prevHash: envelope.header.prev,
-          eventHash,
-          conflict: mismatch || undefined,
-        });
+        await persistAppliedEnvelope(envelope, body);
         updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
         await applyDecryptedBody(convKeyId, conv, envelope, body);
         continue;
@@ -1375,23 +1423,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
         );
 
         logDecrypt("ok", { convId: event.convId, eventId: event.eventId, mode: "v1" });
-        const eventHash = await computeEnvelopeHash(envelope);
-        const expectedPrev = await getLastEventHash(envelope.header.convId);
-        const mismatch = envelope.header.prev !== expectedPrev;
-        if (mismatch) {
-          console.warn("[sync] event chain mismatch");
-        }
-        await saveEvent({
-          eventId: envelope.header.eventId,
-          convId: envelope.header.convId,
-          authorDeviceId: envelope.header.authorDeviceId,
-          lamport: envelope.header.lamport,
-          ts: envelope.header.ts,
-          envelopeJson: JSON.stringify(envelope),
-          prevHash: envelope.header.prev,
-          eventHash,
-          conflict: mismatch || undefined,
-        });
+        await persistAppliedEnvelope(envelope, body);
         updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
         await applyDecryptedBody(convKeyId, conv, envelope, body);
         continue;
@@ -1410,23 +1442,7 @@ const applyEnvelopeEvents = async (convKeyId: string, events: EnvelopeEvent[]) =
       );
 
       logDecrypt("ok", { convId: event.convId, eventId: event.eventId, mode: "legacy" });
-      const eventHash = await computeEnvelopeHash(envelope);
-      const expectedPrev = await getLastEventHash(envelope.header.convId);
-      const mismatch = envelope.header.prev !== expectedPrev;
-      if (mismatch) {
-        console.warn("[sync] event chain mismatch");
-      }
-      await saveEvent({
-        eventId: envelope.header.eventId,
-        convId: envelope.header.convId,
-        authorDeviceId: envelope.header.authorDeviceId,
-        lamport: envelope.header.lamport,
-        ts: envelope.header.ts,
-        envelopeJson: JSON.stringify(envelope),
-        prevHash: envelope.header.prev,
-        eventHash,
-        conflict: mismatch || undefined,
-      });
+      await persistAppliedEnvelope(envelope, body);
       updateLamportSeen(event.convId, event.authorDeviceId, event.lamport);
       await applyDecryptedBody(convKeyId, conv, envelope, body);
     } catch (error) {

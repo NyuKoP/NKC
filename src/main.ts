@@ -16,6 +16,7 @@ import path from "node:path";
 import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
 import { installalternateRoute } from "./main/onion/install/installalternateRoute";
+import { removeWithRetry } from "./main/onion/install/removeWithRetry";
 import { readCurrentPointer } from "./main/onion/install/swapperRollback";
 import { OnionRuntime } from "./main/onion/runtime/onionRuntime";
 import { checkUpdates } from "./main/onion/update/checkUpdates";
@@ -569,6 +570,12 @@ const registerOnionControllerIpc = () => {
     }
     return fetchOnionController(req);
   });
+  ipcMain.handle("nkc:prewarmOnionRoute", async (_event, payload: { onionAddress?: string }) => {
+    if (!onionController || typeof payload?.onionAddress !== "string") {
+      return { ok: false, elapsedMs: 0, error: ONION_CONTROLLER_NOT_READY_MESSAGE };
+    }
+    return onionController.prewarmTorRoute(payload.onionAddress);
+  });
   ipcMain.handle("nkc:getTorStatus", async () => torManager?.getStatus() ?? { state: "unavailable" });
   ipcMain.handle("nkc:startTor", async (_event, payload?: StartTorPayload) => {
     if (!torManager) return { ok: false };
@@ -884,7 +891,7 @@ const pruneComponentVersions = async (
         .filter((entry) => entry.isDirectory())
         .map(async (entry) => {
           if (entry.name === keep.version) return;
-          await fs.rm(path.join(componentsRoot, entry.name), { recursive: true, force: true });
+          await removeWithRetry(path.join(componentsRoot, entry.name));
         })
     );
   } catch {
@@ -966,6 +973,22 @@ const emitOnionProgress = (
   status: OnionComponentState
 ) => {
   event.sender.send("onion:progress", { network, status });
+};
+
+const stopNetworkRuntimeForMutation = async (network: OnionNetwork) => {
+  await onionRuntime.stop();
+  if (network === "tor") {
+    await torManager?.stop();
+    currentTorSocksProxy = null;
+    p2pQueueManager?.updateProxyUrl(null);
+    await onionController?.setTorSocksProxy(null);
+  } else {
+    await alternateRouteManager?.stop();
+    myalternateRouteAddress = null;
+    onionController?.setalternateRouteAddress(null);
+    await onionController?.setalternateRouteSocksProxy(null);
+  }
+  emitOnionRuntimeBackgroundStatus();
 };
 
 const registerOnionIpc = () => {
@@ -1087,6 +1110,7 @@ const registerOnionIpc = () => {
         progress: undefined,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
+      await stopNetworkRuntimeForMutation(network);
       const install =
         network === "tor"
           ? installTor(
@@ -1218,6 +1242,7 @@ const registerOnionIpc = () => {
     }
     const userDataDir = app.getPath("userData");
     try {
+      await stopNetworkRuntimeForMutation(network);
       const install =
         network === "tor"
           ? installTor(
@@ -1326,10 +1351,10 @@ const registerOnionIpc = () => {
 
   ipcMain.handle("onion:uninstall", async (_event, payload: { network: OnionNetwork }) => {
     const network = payload.network;
-    await onionRuntime.stop();
+    await stopNetworkRuntimeForMutation(network);
     const userDataDir = app.getPath("userData");
     const componentRoot = path.join(userDataDir, "onion", "components", network);
-    await fs.rm(componentRoot, { recursive: true, force: true });
+    await removeWithRetry(componentRoot);
     onionComponentCache[network] = { installed: false, status: "idle" };
   });
 
@@ -1339,9 +1364,11 @@ const registerOnionIpc = () => {
       const userDataDir = app.getPath("userData");
       if (!payload.enabled) {
         await onionRuntime.stop();
+        emitOnionRuntimeBackgroundStatus();
         return;
       }
       await onionRuntime.start(userDataDir, payload.network);
+      emitOnionRuntimeBackgroundStatus();
     }
   );
 };
@@ -1357,6 +1384,26 @@ const emitRuntimeBackgroundStatus = (payload: BackgroundStatusPayload) => {
   lastBackgroundStatus = payload;
   sendToAllWindows("background:status", payload);
   updateTrayMenu();
+};
+
+const emitOnionRuntimeBackgroundStatus = () => {
+  const runtime = onionRuntime.getStatus();
+  if (runtime.status === "running") {
+    emitRuntimeBackgroundStatus({
+      state: "connected",
+      route: runtime.network === "alternateRoute" ? "alternateRoute Network" : "Tor Network",
+    });
+    return;
+  }
+  emitRuntimeBackgroundStatus({
+    state: "disconnected",
+    route:
+      runtime.status === "starting"
+        ? "Onion starting"
+        : runtime.status === "failed"
+          ? "Onion failed"
+          : "Onion offline",
+  });
 };
 
 type PendingSyncRun = {

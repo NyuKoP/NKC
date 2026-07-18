@@ -102,6 +102,9 @@ export class ConnectionManager {
   private reconnectAttempt = 0;
   private lastActivityAt = 0;
   private closed = false;
+  private openInFlight: Promise<void> | null = null;
+  private reconnectScheduling: Promise<void> | null = null;
+  private stateDetail: string | undefined;
   private unsubs: Array<() => void> = [];
 
   constructor(options: ConnectionManagerOptions) {
@@ -124,6 +127,7 @@ export class ConnectionManager {
 
   async start() {
     this.closed = false;
+    if (this.connection && this.state === "connected") return;
     await this.openConnection("connecting");
   }
 
@@ -137,7 +141,10 @@ export class ConnectionManager {
       await connection.send(bytes);
       this.markActivity();
     } catch (error) {
-      await this.handleConnectionLost(error instanceof Error ? error : new Error(String(error)));
+      await this.handleConnectionLost(
+        connection,
+        error instanceof Error ? error : new Error(String(error))
+      );
       throw error;
     }
   }
@@ -152,6 +159,18 @@ export class ConnectionManager {
 
   private async openConnection(state: ConnectionManagerState) {
     if (this.closed) return;
+    if (this.openInFlight) return this.openInFlight;
+    const task = this.openConnectionOnce(state);
+    this.openInFlight = task;
+    try {
+      await task;
+    } finally {
+      if (this.openInFlight === task) this.openInFlight = null;
+    }
+  }
+
+  private async openConnectionOnce(state: ConnectionManagerState) {
+    if (this.closed) return;
     this.setState(state);
     try {
       const connection = await this.connectFn();
@@ -165,6 +184,8 @@ export class ConnectionManager {
       this.startHeartbeat();
       await this.flushOutbox?.(this.convId);
     } catch (error) {
+      this.stopHeartbeat();
+      await this.detachConnection();
       await this.scheduleReconnectIfNeeded(
         error instanceof Error ? error.message : String(error)
       );
@@ -180,7 +201,10 @@ export class ConnectionManager {
         void this.handleIncoming(bytes);
       }),
       connection.onClose((error) => {
-        void this.handleConnectionLost(error ?? new Error("connection_closed"));
+        void this.handleConnectionLost(
+          connection,
+          error ?? new Error("connection_closed")
+        );
       }),
     ];
   }
@@ -216,8 +240,8 @@ export class ConnectionManager {
     await this.onData?.(bytes);
   }
 
-  private async handleConnectionLost(error: Error) {
-    if (this.closed) return;
+  private async handleConnectionLost(connection: ManagedConnection, error: Error) {
+    if (this.closed || this.connection !== connection) return;
     this.stopHeartbeat();
     await this.detachConnection();
     await this.scheduleReconnectIfNeeded(error.message);
@@ -225,18 +249,31 @@ export class ConnectionManager {
 
   private async scheduleReconnectIfNeeded(reason: string) {
     if (this.closed || this.reconnectTimer) return;
-    const pending = await this.hasPendingOutbox(this.convId);
-    if (!pending) {
-      this.setState("idle", reason);
+    if (this.reconnectScheduling) {
+      await this.reconnectScheduling;
       return;
     }
-    const delay = backoffDelayMs(this.reconnectAttempt, this.maxBackoffMs);
-    this.reconnectAttempt += 1;
-    this.setState("reconnecting", `${reason}; retry_in=${delay}`);
-    this.reconnectTimer = setTimeout(() => {
-      this.reconnectTimer = null;
-      void this.openConnection("connecting");
-    }, delay);
+    const task = (async () => {
+      const pending = await this.hasPendingOutbox(this.convId);
+      if (this.closed || this.reconnectTimer) return;
+      if (!pending) {
+        this.setState("idle", reason);
+        return;
+      }
+      const delay = backoffDelayMs(this.reconnectAttempt, this.maxBackoffMs);
+      this.reconnectAttempt += 1;
+      this.setState("reconnecting", `${reason}; retry_in=${delay}`);
+      this.reconnectTimer = setTimeout(() => {
+        this.reconnectTimer = null;
+        void this.openConnection("connecting");
+      }, delay);
+    })();
+    this.reconnectScheduling = task;
+    try {
+      await task;
+    } finally {
+      if (this.reconnectScheduling === task) this.reconnectScheduling = null;
+    }
   }
 
   private startHeartbeat() {
@@ -259,14 +296,18 @@ export class ConnectionManager {
     if (!this.connection || this.state !== "connected" || this.pendingPingId) return;
     if (this.now() - this.lastActivityAt < this.heartbeatIntervalMs) return;
     const pingId = this.createId();
+    const connection = this.connection;
     this.pendingPingId = pingId;
     try {
-      await this.connection.send(toBytes({ type: "SYNC_PING", id: pingId, ts: this.now() }));
+      await connection.send(toBytes({ type: "SYNC_PING", id: pingId, ts: this.now() }));
       this.pongTimer = setTimeout(() => {
-        void this.handleConnectionLost(new Error("heartbeat_timeout"));
+        void this.handleConnectionLost(connection, new Error("heartbeat_timeout"));
       }, this.pongTimeoutMs);
     } catch (error) {
-      await this.handleConnectionLost(error instanceof Error ? error : new Error(String(error)));
+      await this.handleConnectionLost(
+        connection,
+        error instanceof Error ? error : new Error(String(error))
+      );
     }
   }
 
@@ -287,7 +328,9 @@ export class ConnectionManager {
   }
 
   private setState(state: ConnectionManagerState, detail?: string) {
+    if (this.state === state && this.stateDetail === detail) return;
     this.state = state;
+    this.stateDetail = detail;
     this.onStateChange?.(state, detail);
   }
 }

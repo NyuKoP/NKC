@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import type { TorStatus } from "./torManager";
 import type { alternateRouteStatus } from "./alternateRouteManager";
-import { socksFetch } from "./socksHttpClient";
+import { clearSocksAgentPool, socksFetch } from "./socksHttpClient";
 import { selectRoute, type RouteMode } from "./routePolicy";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { appendTestLogRecord } from "./testLogStore";
@@ -28,6 +28,7 @@ export type OnionControllerHandle = {
   setalternateRouteSocksProxy: (proxyUrl: string | null) => Promise<void>;
   setTorOnionHost: (host: string | null) => void;
   setalternateRouteAddress: (address: string | null) => void;
+  prewarmTorRoute: (onionAddress: string) => Promise<{ ok: boolean; elapsedMs: number; error?: string }>;
   close: () => Promise<void>;
 };
 
@@ -37,6 +38,7 @@ const MAX_BODY_BYTES = 256 * 1024;
 const FORWARD_TIMEOUT_MS = 45_000;
 const FORWARD_RETRY_ATTEMPTS = 1;
 const FORWARD_RETRY_DELAY_MS = 350;
+const KEEP_ALIVE_TIMEOUT_MS = 65_000;
 const CORS_HEADERS = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
@@ -482,6 +484,8 @@ export const startOnionController = async (options?: {
   let myalternateRouteAddress: string | null = null;
   const setTorSocksProxy = async (proxyUrl: string | null) => {
     const trimmed = proxyUrl?.trim() ?? "";
+    const previousProxy = torForwarding.proxyUrl;
+    if (previousProxy && previousProxy !== trimmed) clearSocksAgentPool(previousProxy);
     if (!trimmed) {
       torForwarding.proxyUrl = null;
       torForwarding.ready = false;
@@ -489,6 +493,34 @@ export const startOnionController = async (options?: {
     }
     torForwarding.proxyUrl = trimmed;
     torForwarding.ready = true;
+  };
+
+  const prewarmTorRoute = async (onionAddress: string) => {
+    const startedAt = Date.now();
+    const normalized = onionAddress.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
+    if (!/^[a-z2-7]{56}\.onion$/.test(normalized)) {
+      return { ok: false, elapsedMs: Date.now() - startedAt, error: "invalid-onion-address" };
+    }
+    if (!torForwarding.ready || !torForwarding.proxyUrl) {
+      return { ok: false, elapsedMs: Date.now() - startedAt, error: "tor-proxy-unavailable" };
+    }
+    try {
+      const response = await socksFetch(`http://${normalized}/onion/health`, {
+        method: "GET",
+        socksProxyUrl: torForwarding.proxyUrl,
+        timeoutMs: FORWARD_TIMEOUT_MS,
+      });
+      const elapsedMs = Date.now() - startedAt;
+      return response.status === 200
+        ? { ok: true, elapsedMs }
+        : { ok: false, elapsedMs, error: `prewarm-http-${response.status}` };
+    } catch (error) {
+      return {
+        ok: false,
+        elapsedMs: Date.now() - startedAt,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
   };
 
   const setalternateRouteSocksProxy = async (proxyUrl: string | null) => {
@@ -696,6 +728,8 @@ export const startOnionController = async (options?: {
 
     sendJson(res, 404, { ok: false, error: "not-found" });
   });
+  server.keepAliveTimeout = KEEP_ALIVE_TIMEOUT_MS;
+  server.headersTimeout = KEEP_ALIVE_TIMEOUT_MS + 5_000;
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -714,8 +748,10 @@ export const startOnionController = async (options?: {
     setalternateRouteSocksProxy,
     setTorOnionHost,
     setalternateRouteAddress,
+    prewarmTorRoute,
     close: async () => {
       clearInterval(cleanupTimer);
+      clearSocksAgentPool(torForwarding.proxyUrl);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

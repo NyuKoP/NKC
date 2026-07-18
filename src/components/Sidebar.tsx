@@ -89,7 +89,7 @@ export default function Sidebar({
   const locale = language === "en" ? "en-US" : "ko-KR";
   const resolvedNetworkStatus = networkStatus ?? {
     state: "disconnected" as const,
-    label: t("익명 라우팅 대기", "Anonymous routing idle"),
+    label: t("연결 안됨", "Disconnected"),
   };
   const networkStatusDotClass =
     resolvedNetworkStatus.state === "connected"
