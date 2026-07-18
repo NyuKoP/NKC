@@ -177,4 +177,65 @@ describe("ConnectionManager", () => {
     expect(connect).toHaveBeenCalledTimes(1);
     expect(manager.getState()).toBe("closed");
   });
+
+  it("coalesces concurrent start calls into one registered connection", async () => {
+    let resolveConnection!: (connection: ManagedConnection) => void;
+    const connection = new FakeConnection();
+    const connect = vi.fn(
+      () =>
+        new Promise<ManagedConnection>((resolve) => {
+          resolveConnection = resolve;
+        })
+    );
+    const manager = new ConnectionManager({
+      convId: "c1",
+      connect,
+      hasPendingOutbox: () => false,
+    });
+
+    const first = manager.start();
+    const second = manager.start();
+    resolveConnection(connection);
+    await Promise.all([first, second]);
+
+    expect(connect).toHaveBeenCalledTimes(1);
+    expect(manager.getState()).toBe("connected");
+    expect(connection.closed).toBe(false);
+  });
+
+  it("handles repeated close signals once and schedules one reconnect", async () => {
+    const connection = new FakeConnection();
+    const hasPendingOutbox = vi.fn(async () => true);
+    const connect = vi.fn(async () => connection);
+    const manager = new ConnectionManager({
+      convId: "c1",
+      connect,
+      hasPendingOutbox,
+    });
+
+    await manager.start();
+    connection.emitClose(new Error("socket_ended"));
+    connection.emitClose(new Error("socket_closed"));
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    expect(hasPendingOutbox).toHaveBeenCalledTimes(1);
+    expect(connect).toHaveBeenCalledTimes(2);
+  });
+
+  it("unregisters a connection when flushing the outbox fails", async () => {
+    const connection = new FakeConnection();
+    const manager = new ConnectionManager({
+      convId: "c1",
+      connect: vi.fn(async () => connection),
+      hasPendingOutbox: () => false,
+      flushOutbox: vi.fn(async () => {
+        throw new Error("flush_failed");
+      }),
+    });
+
+    await manager.start();
+
+    expect(connection.closed).toBe(true);
+    expect(manager.getState()).toBe("idle");
+  });
 });

@@ -14,6 +14,15 @@ test.describe("Visual snapshots", () => {
     await expect(page).toHaveScreenshot("onboarding.png");
   });
 
+  test("start key login does not ask for a display name", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("onboarding-start-key-tab").click();
+
+    await expect(page.getByTestId("onboarding-start-key-input")).toBeVisible();
+    await expect(page.getByTestId("onboarding-display-name")).toBeHidden();
+    await expect(page.getByTestId("onboarding-start-key-button")).toBeVisible();
+  });
+
   test("settings network", async ({ page }) => {
     await page.goto("/");
     await disableAnimations(page);

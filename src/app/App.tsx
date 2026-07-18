@@ -80,6 +80,7 @@ import { prewarmRouter, sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
 import { useNetConfigStore } from "../net/netConfigStore";
+import { getOnionStatus } from "../net/onionControl";
 import { TorRuntime } from "../net/tor/TorRuntime";
 import { sanitizeRoutingHints } from "../net/privacy";
 import {
@@ -152,7 +153,7 @@ const buildNameMap = (
   }, {});
 
 const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
-const INLINE_MEDIA_CHUNK_SIZE = 48 * 1024;
+const INLINE_MEDIA_CHUNK_SIZE = 96 * 1024;
 const READ_CURSOR_THROTTLE_MS = 1500;
 const ROUTE_PENDING_TOAST_COOLDOWN_MS = 10_000;
 const FRIEND_ROUTE_SEND_DEADLINE_MS = 70_000;
@@ -263,9 +264,6 @@ export default function App() {
   const [sidebarRuntimeSnapshot, setSidebarRuntimeSnapshot] = useState<RuntimeNetworkSnapshot>(
     EMPTY_RUNTIME_NETWORK_SNAPSHOT
   );
-  const [backgroundRouteState, setBackgroundRouteState] = useState<"connected" | "disconnected">(
-    "disconnected"
-  );
   const [transportStatusByConv, setTransportStatusByConv] = useState<
     Record<string, ConversationTransportStatus>
   >({});
@@ -288,6 +286,9 @@ export default function App() {
   const outboxSchedulerStarted = useRef(false);
   const friendInboxStarted = useRef(false);
   const activeSyncConvRef = useRef<string | null>(null);
+  const prewarmedOnionRoutesRef = useRef<Map<string, number>>(new Map());
+  const directEnvelopeSendChainsRef = useRef<Map<string, Promise<void>>>(new Map());
+  const mediaTransferChainsRef = useRef<Map<string, Promise<void>>>(new Map());
   const lastReadCursorSentAtRef = useRef<Record<string, number>>({});
   const lastReadCursorSentTsRef = useRef<Record<string, number>>({});
   const pendingReadCursorRef = useRef<
@@ -320,6 +321,19 @@ export default function App() {
     emitRouterInfoLog(detail);
   }, []);
   const resolveRuntimeNetworkSnapshot = useCallback(async (): Promise<RuntimeNetworkSnapshot> => {
+    try {
+      const onionStatus = await getOnionStatus();
+      const runtime = onionStatus.runtime;
+      return {
+        torState: runtime.network === "tor" ? runtime.status : null,
+        torDetail: runtime.network === "tor" ? runtime.error ?? null : null,
+        lokinetState: runtime.network === "lokinet" ? runtime.status : null,
+        lokinetDetail: runtime.network === "lokinet" ? runtime.error ?? null : null,
+      };
+    } catch {
+      // Browser-only tests and older preload surfaces may not expose the built-in Onion bridge.
+    }
+
     const nkc = (
       globalThis as {
         nkc?: {
@@ -357,8 +371,7 @@ export default function App() {
 
   useEffect(() => {
     void refreshSidebarRuntimeSnapshot();
-    const unsubscribe = onBackgroundStatus((payload) => {
-      setBackgroundRouteState(payload.state);
+    const unsubscribe = onBackgroundStatus(() => {
       void refreshSidebarRuntimeSnapshot();
     });
     return () => {
@@ -369,23 +382,17 @@ export default function App() {
   const sidebarNetworkStatus = useMemo(() => {
     const torState = sidebarRuntimeSnapshot.torState ?? "";
     const lokinetState = sidebarRuntimeSnapshot.lokinetState ?? "";
-    if (torState === "running") {
-      return { state: "connected" as const, label: "Tor 연결됨" };
-    }
-    if (lokinetState === "running") {
-      return { state: "connected" as const, label: "Lokinet 연결됨" };
+    if (torState === "running" || lokinetState === "running") {
+      return { state: "connected" as const, label: "연결됨" };
     }
     if (torState === "starting" || lokinetState === "starting") {
-      return { state: "connecting" as const, label: "익명 라우팅 연결 중" };
+      return { state: "connecting" as const, label: "연결 중" };
     }
     if (torState === "error" || lokinetState === "error") {
-      return { state: "error" as const, label: "익명 라우팅 오류" };
+      return { state: "error" as const, label: "오류" };
     }
-    if (backgroundRouteState === "connected") {
-      return { state: "connecting" as const, label: "백그라운드 동기화 활성" };
-    }
-    return { state: "disconnected" as const, label: "익명 라우팅 대기" };
-  }, [backgroundRouteState, sidebarRuntimeSnapshot]);
+    return { state: "disconnected" as const, label: "연결 안됨" };
+  }, [sidebarRuntimeSnapshot]);
 
   useEffect(() => {
     return attachInfoCollectionLogSink();
@@ -715,14 +722,22 @@ export default function App() {
       const user = profiles.find((profile) => profile.kind === "user") || null;
       const friendProfiles = profiles.filter((profile) => profile.kind === "friend");
 
+      if (!user) {
+        await clearStoredSession();
+        lockVault();
+        resetAppState();
+        setPinEnabled(false);
+        setPinNeedsReset(false);
+        setDefaultTab("create");
+        setMode("onboarding");
+        navigate("/", { replace: true });
+        return;
+      }
+
       const conversations = await withTimeout(listConversations(), "listConversations");
       const messagesBy: Record<string, Message[]> = {};
 
       for (const conv of conversations) {
-        if (!user) {
-          messagesBy[conv.id] = [];
-          continue;
-        }
         const isDirect =
           !(conv.type === "group" || conv.participants.length > 2) && conv.participants.length === 2;
         const partnerId = isDirect
@@ -784,6 +799,7 @@ export default function App() {
   }, [
     addToast,
     devLog,
+    navigate,
     resetAppState,
     setData,
     setDefaultTab,
@@ -1108,7 +1124,7 @@ export default function App() {
     }
   };
 
-  const handleStartKeyUnlock = async (startKey: string, displayName: string) => {
+  const handleStartKeyUnlock = async (startKey: string) => {
     if (onboardingLockRef.current) return;
     onboardingLockRef.current = true;
 
@@ -1119,6 +1135,7 @@ export default function App() {
     }
 
     try {
+      setOnboardingError("");
       devLog("onboarding:start-key:start");
 
       await withTimeout(unlockVault(startKey), "unlockVault");
@@ -1134,23 +1151,16 @@ export default function App() {
 
       const profiles = await withTimeout(listProfiles(), "listProfiles");
       if (!profiles.length) {
-        const now = Date.now();
-        const user: UserProfile = {
-          id: createId(),
-          displayName: displayName || "NKC User",
-          status: "Hello from NKC",
-          theme: "dark",
-          kind: "user",
-          createdAt: now,
-          updatedAt: now,
-        };
-        await withTimeout(seedVaultData(user), "seedVaultData");
+        throw new Error("기존 계정 프로필을 찾을 수 없습니다.");
       }
 
       await withTimeout(setStoredSession(vk, undefined, { remember: true }), "setStoredSession");
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Start key unlock failed", error);
+      setOnboardingError(
+        error instanceof Error ? error.message : "시작 키로 잠금 해제에 실패했습니다."
+      );
       lockVault();
       addToast({ message: "시작 키로 잠금 해제에 실패했습니다." });
     } finally {
@@ -1485,17 +1495,27 @@ export default function App() {
       conv: Conversation,
       partner: UserProfile,
       body: unknown,
-      priority: "high" | "normal" = "high"
+      priority: "high" | "normal" = "high",
+      options?: { eventId?: string; persistEvent?: boolean }
     ) => {
       if (!partner.dhPub || !partner.identityPub) {
         throw new Error("Missing peer keys");
       }
+      const previous = directEnvelopeSendChainsRef.current.get(conv.id) ?? Promise.resolve();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const tail = previous.catch(() => {}).then(() => gate);
+      directEnvelopeSendChainsRef.current.set(conv.id, tail);
+      await previous.catch(() => {});
+      try {
       const now = Date.now();
       const friendKeyId = partner.friendId ?? partner.id;
       const lamport = await nextLamportForConv(conv.id);
       const header: EnvelopeHeader = {
         v: 1 as const,
-        eventId: createId(),
+        eventId: options?.eventId ?? createId(),
         convId: conv.id,
         ts: now,
         lamport,
@@ -1529,18 +1549,20 @@ export default function App() {
 
       const envelope = await encryptEnvelope(keyForEnvelope, header, body, myIdentityPriv);
       const envelopeJson = JSON.stringify(envelope);
-      const eventHash = await computeEnvelopeHash(envelope);
 
-      await saveEvent({
-        eventId: header.eventId,
-        convId: header.convId,
-        authorDeviceId: header.authorDeviceId,
-        lamport: header.lamport,
-        ts: header.ts,
-        envelopeJson,
-        prevHash: header.prev,
-        eventHash,
-      });
+      if (options?.persistEvent !== false) {
+        const eventHash = await computeEnvelopeHash(envelope);
+        await saveEvent({
+          eventId: header.eventId,
+          convId: header.convId,
+          authorDeviceId: header.authorDeviceId,
+          lamport: header.lamport,
+          ts: header.ts,
+          envelopeJson,
+          prevHash: header.prev,
+          eventHash,
+        });
+      }
 
       const routed = await sendCiphertext({
         convId: conv.id,
@@ -1554,6 +1576,12 @@ export default function App() {
       }
 
       return { header, envelopeJson };
+      } finally {
+        release();
+        if (directEnvelopeSendChainsRef.current.get(conv.id) === tail) {
+          directEnvelopeSendChainsRef.current.delete(conv.id);
+        }
+      }
     },
     [buildRoutingMeta]
   );
@@ -2052,91 +2080,16 @@ export default function App() {
 
       if (partner?.dhPub && partner.identityPub) {
         const now = Date.now();
-        const friendKeyId = partner.friendId ?? partner.id;
-        const lamport = await nextLamportForConv(conv.id);
-        const header: EnvelopeHeader = {
-          v: 1 as const,
-          eventId: createId(),
-          convId: conv.id,
-          ts: now,
-          lamport,
-          authorDeviceId: getOrCreateDeviceId(),
-        };
-        header.prev = await getLastEventHash(conv.id);
-
-        const dhPriv = await getDhPrivateKey();
-        const theirDhPub = decodeBase64Url(partner.dhPub);
-        const pskBytes = await getFriendPsk(friendKeyId);
-        const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
-        const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
-        const conversationKey = await deriveConversationKey(
-          dhPriv,
-          theirDhPub,
-          pskBytes,
-          legacyContextBytes
-        );
-        const ratchetBaseKey = await deriveConversationKey(
-          dhPriv,
-          theirDhPub,
-          pskBytes,
-          ratchetContextBytes
-        );
-
-        const myIdentityPriv = await getIdentityPrivateKey();
-        let keyForEnvelope = conversationKey;
-        try {
-          const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
-          header.rk = ratchet.headerRk;
-          keyForEnvelope = ratchet.msgKey;
-        } catch {
-          try {
-            const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
-            header.rk = ratchet.headerRk;
-            keyForEnvelope = ratchet.msgKey;
-          } catch (error) {
-            console.warn("[ratchet] send fallback to legacy", error);
-          }
-        }
-        const envelope = await encryptEnvelope(
-          keyForEnvelope,
-          header,
-          { type: "msg", text, clientBatchId },
-          myIdentityPriv
-        );
-        const envelopeJson = JSON.stringify(envelope);
-        const eventHash = await computeEnvelopeHash(envelope);
-
-        await saveEvent({
-          eventId: header.eventId,
-          convId: header.convId,
-          authorDeviceId: header.authorDeviceId,
-          lamport: header.lamport,
-          ts: header.ts,
-          envelopeJson,
-          prevHash: header.prev,
-          eventHash,
-        });
+        const messageId = createId();
 
         await saveMessage({
-          id: header.eventId,
+          id: messageId,
           convId: conv.id,
           senderId: userProfile.id,
           text,
           ts: now,
           clientBatchId,
         });
-
-        const routed = await sendCiphertext({
-          convId: conv.id,
-          messageId: header.eventId,
-          ciphertext: envelopeJson,
-          priority: "high",
-          ...buildRoutingMeta(partner),
-        });
-        if (!routed.ok) {
-          console.error("Failed to route message", routed.error);
-          notifyRoutePendingToast(conv.id, routed.error);
-        }
 
         const updatedConv: Conversation = {
           ...conv,
@@ -2147,6 +2100,19 @@ export default function App() {
 
         await saveConversation(updatedConv);
         await hydrateVault();
+        void sendDirectEnvelope(
+          conv,
+          partner,
+          { type: "msg", text, clientBatchId },
+          "high",
+          { eventId: messageId }
+        ).catch((error) => {
+          console.error("Failed to route message", error);
+          notifyRoutePendingToast(
+            conv.id,
+            error instanceof Error ? error.message : String(error)
+          );
+        });
         return;
       }
     }
@@ -2164,17 +2130,6 @@ export default function App() {
 
     await saveMessage(message);
 
-    const routed = await sendCiphertext({
-      convId: conv.id,
-      messageId: message.id,
-      ciphertext,
-      priority: "high",
-    });
-    if (!routed.ok) {
-      console.error("Failed to route message", routed.error);
-      notifyRoutePendingToast(conv.id, routed.error);
-    }
-
     const updatedConv: Conversation = {
       ...conv,
       lastMessage: text,
@@ -2184,6 +2139,20 @@ export default function App() {
 
     await saveConversation(updatedConv);
     await hydrateVault();
+    void sendCiphertext({
+      convId: conv.id,
+      messageId: message.id,
+      ciphertext,
+      priority: "high",
+    }).then((routed) => {
+      if (!routed.ok) {
+        console.error("Failed to route message", routed.error);
+        notifyRoutePendingToast(conv.id, routed.error);
+      }
+    }).catch((error) => {
+      console.error("Failed to route message", error);
+      notifyRoutePendingToast(conv.id, error instanceof Error ? error.message : String(error));
+    });
   };
 
   const handleSendMedia = async (files: File[], clientBatchId: string) => {
@@ -2210,95 +2179,18 @@ export default function App() {
 
         if (partner?.dhPub && partner.identityPub) {
           const now = Date.now();
-          const friendKeyId = partner.friendId ?? partner.id;
-          const lamport = await nextLamportForConv(conv.id);
-          const header: EnvelopeHeader = {
-            v: 1 as const,
-            eventId: createId(),
-            convId: conv.id,
-            ts: now,
-            lamport,
-            authorDeviceId: getOrCreateDeviceId(),
-          };
-
-          const media = await saveMessageMedia(
-            header.eventId,
-            file,
-            INLINE_MEDIA_CHUNK_SIZE
-          );
+          const messageId = createId();
+          const media = await saveMessageMedia(messageId, file, INLINE_MEDIA_CHUNK_SIZE);
           const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
 
-          const dhPriv = await getDhPrivateKey();
-          const theirDhPub = decodeBase64Url(partner.dhPub);
-          const pskBytes = await getFriendPsk(friendKeyId);
-          const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
-          const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
-          const conversationKey = await deriveConversationKey(
-            dhPriv,
-            theirDhPub,
-            pskBytes,
-            legacyContextBytes
-          );
-          const ratchetBaseKey = await deriveConversationKey(
-            dhPriv,
-            theirDhPub,
-            pskBytes,
-            ratchetContextBytes
-          );
-
-          const myIdentityPriv = await getIdentityPrivateKey();
-          let keyForEnvelope = conversationKey;
-          try {
-            const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
-            header.rk = ratchet.headerRk;
-            keyForEnvelope = ratchet.msgKey;
-          } catch {
-            try {
-              const ratchet = await nextSendKey(conv.id, ratchetBaseKey);
-              header.rk = ratchet.headerRk;
-              keyForEnvelope = ratchet.msgKey;
-            } catch (error) {
-              console.warn("[ratchet] send fallback to legacy", error);
-            }
-          }
-          const envelope = await encryptEnvelope(
-            keyForEnvelope,
-            header,
-            { type: "msg", text: label, media, clientBatchId },
-            myIdentityPriv
-          );
-          const envelopeJson = JSON.stringify(envelope);
-          const eventHash = await computeEnvelopeHash(envelope);
-
-          await saveEvent({
-            eventId: header.eventId,
-            convId: header.convId,
-            authorDeviceId: header.authorDeviceId,
-            lamport: header.lamport,
-            ts: header.ts,
-            envelopeJson,
-            prevHash: header.prev,
-            eventHash,
-          });
-
           await saveMessage({
-            id: header.eventId,
+            id: messageId,
             convId: conv.id,
             senderId: userProfile.id,
             text: label,
             ts: now,
             media,
             clientBatchId,
-          });
-
-          void sendCiphertext({
-            convId: conv.id,
-            messageId: header.eventId,
-            ciphertext: envelopeJson,
-            priority: "high",
-            ...buildRoutingMeta(partner),
-          }).catch((error) => {
-            console.error("Failed to route message", error);
           });
 
           const updatedConv: Conversation = {
@@ -2311,30 +2203,50 @@ export default function App() {
           await saveConversation(updatedConv);
           await hydrateVault();
 
-          const sendChunks = async () => {
-            const buffer = await file.arrayBuffer();
-            const chunks = chunkBuffer(buffer, INLINE_MEDIA_CHUNK_SIZE);
-            const total = chunks.length;
-            for (let idx = 0; idx < chunks.length; idx += 1) {
+          const sendTransfer = async () => {
+            await sendDirectEnvelope(
+              conv,
+              partner,
+              { type: "msg", text: label, media, clientBatchId },
+              "high",
+              { eventId: messageId }
+            );
+            for (let idx = 0; idx < media.total; idx += 1) {
+              const start = idx * INLINE_MEDIA_CHUNK_SIZE;
+              const bytes = new Uint8Array(
+                await file
+                  .slice(start, Math.min(file.size, start + INLINE_MEDIA_CHUNK_SIZE))
+                  .arrayBuffer()
+              );
               const chunkBody = {
                 type: "media",
                 phase: "chunk",
-                ownerId: header.eventId,
+                ownerId: messageId,
                 idx,
-                total,
+                total: media.total,
+                chunkSize: INLINE_MEDIA_CHUNK_SIZE,
                 mime: media.mime,
                 name: media.name,
                 size: media.size,
-                b64: encodeBase64Url(chunks[idx]),
+                b64: encodeBase64Url(bytes),
                 clientBatchId,
               };
-              await sendDirectEnvelope(conv, partner, chunkBody, "normal");
-              if (idx > 0 && idx % 32 === 0) {
+              await sendDirectEnvelope(conv, partner, chunkBody, "normal", {
+                persistEvent: false,
+              });
+              if (idx > 0 && idx % 8 === 0) {
                 await new Promise<void>((resolve) => setTimeout(resolve, 0));
               }
             }
           };
-          void sendChunks().catch((error) => {
+          const previousTransfer = mediaTransferChainsRef.current.get(conv.id) ?? Promise.resolve();
+          const transfer = previousTransfer.catch(() => {}).then(sendTransfer);
+          mediaTransferChainsRef.current.set(conv.id, transfer);
+          void transfer.finally(() => {
+            if (mediaTransferChainsRef.current.get(conv.id) === transfer) {
+              mediaTransferChainsRef.current.delete(conv.id);
+            }
+          }).catch((error) => {
             console.error("Failed to send media chunks", error);
           });
           return;
@@ -4067,6 +3979,28 @@ export default function App() {
       onionAddr: partner.routingHints?.onionAddr,
       lokinetAddr: partner.routingHints?.lokinetAddr,
     });
+    const onionAddress = partner.routingHints?.onionAddr?.trim().toLowerCase();
+    const lastPrewarmedAt = onionAddress
+      ? prewarmedOnionRoutesRef.current.get(onionAddress) ?? 0
+      : 0;
+    if (onionAddress && Date.now() - lastPrewarmedAt >= 45_000) {
+      const nkc = (
+        globalThis as typeof globalThis & {
+          nkc?: {
+            prewarmOnionRoute?: (payload: { onionAddress: string }) => Promise<{ ok?: boolean }>;
+          };
+        }
+      ).nkc;
+      if (nkc?.prewarmOnionRoute) {
+        prewarmedOnionRoutesRef.current.set(onionAddress, Date.now());
+        void nkc
+          .prewarmOnionRoute({ onionAddress })
+          .then((result) => {
+            if (!result?.ok) prewarmedOnionRoutesRef.current.delete(onionAddress);
+          })
+          .catch(() => prewarmedOnionRoutesRef.current.delete(onionAddress));
+      }
+    }
     activeSyncConvRef.current = conv.id;
   }, [ui.selectedConvId, convs, friends, userProfile]);
 

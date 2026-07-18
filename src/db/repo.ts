@@ -146,6 +146,7 @@ const MEDIA_YIELD_EVERY = 6;
 const MEDIA_DECRYPT_LARGE_CHUNKS = 32;
 const MEDIA_DECRYPT_LARGE_CONCURRENCY = 3;
 const MEDIA_DECRYPT_BATCH_MULTIPLIER = 4;
+const MEDIA_WRITE_BATCH_SIZE = 8;
 const OUTBOX_BACKOFF = [1000, 5000, 30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000] as const;
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
@@ -675,19 +676,27 @@ export const saveMessageMedia = async (
     .and((chunk) => chunk.ownerType === "message")
     .delete();
 
-  const buffer = await file.arrayBuffer();
-  const chunks = chunkBuffer(buffer, chunkSize);
-  const total = chunks.length;
+  if (!Number.isFinite(chunkSize) || chunkSize <= 0 || chunkSize > MEDIA_CHUNK_SIZE) {
+    throw new Error("Invalid media chunk size");
+  }
+  if (file.size <= 0 || file.size > MAX_MEDIA_BYTES) {
+    throw new Error("Invalid media size");
+  }
+  const total = Math.ceil(file.size / chunkSize);
   const now = Date.now();
   const records: MediaChunkRecord[] = [];
 
-  for (let idx = 0; idx < chunks.length; idx += 1) {
+  for (let idx = 0; idx < total; idx += 1) {
+    const start = idx * chunkSize;
+    const bytes = new Uint8Array(
+      await file.slice(start, Math.min(file.size, start + chunkSize)).arrayBuffer()
+    );
     const chunkId = `${messageId}:${idx}`;
     const enc_b64 = await encodeBinaryEnvelope(
       vk,
       chunkId,
       "mediaChunk",
-      chunks[idx]
+      bytes
     );
     records.push({
       id: chunkId,
@@ -699,12 +708,15 @@ export const saveMessageMedia = async (
       total,
       updatedAt: now,
     });
+    if (records.length >= MEDIA_WRITE_BATCH_SIZE) {
+      await db.mediaChunks.bulkPut(records.splice(0));
+    }
     if (shouldYieldMedia(idx, total)) {
       await yieldToEventLoop();
     }
   }
 
-  await db.mediaChunks.bulkPut(records);
+  if (records.length) await db.mediaChunks.bulkPut(records);
 
   const mediaRef: MediaRef = {
     ownerType: "message",
@@ -717,6 +729,55 @@ export const saveMessageMedia = async (
   };
 
   return mediaRef;
+};
+
+export const saveReceivedMessageMediaChunk = async (input: {
+  ownerId: string;
+  idx: number;
+  total: number;
+  chunkSize: number;
+  size: number;
+  mime: string;
+  bytes: Uint8Array;
+}) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const ownerId = input.ownerId.trim();
+  if (!ownerId || ownerId.length > 256) throw new Error("Invalid media owner");
+  if (!Number.isInteger(input.idx) || input.idx < 0) throw new Error("Invalid media chunk index");
+  if (!Number.isInteger(input.total) || input.total <= 0) throw new Error("Invalid media chunk total");
+  if (input.idx >= input.total) throw new Error("Invalid media chunk index");
+  if (!Number.isInteger(input.chunkSize) || input.chunkSize <= 0 || input.chunkSize > MEDIA_CHUNK_SIZE) {
+    throw new Error("Invalid media chunk size");
+  }
+  if (!Number.isFinite(input.size) || input.size <= 0 || input.size > MAX_MEDIA_BYTES) {
+    throw new Error("Invalid media size");
+  }
+  if (input.total * input.chunkSize > MAX_MEDIA_BYTES + input.chunkSize) {
+    throw new Error("Media exceeds size limit");
+  }
+  if (input.bytes.byteLength <= 0 || input.bytes.byteLength > input.chunkSize) {
+    throw new Error("Invalid media chunk payload");
+  }
+
+  const chunkId = `${ownerId}:${input.idx}`;
+  const enc_b64 = await encodeBinaryEnvelope(vk, chunkId, "mediaChunk", input.bytes);
+  await db.mediaChunks.put({
+    id: chunkId,
+    ownerType: "message",
+    ownerId,
+    idx: input.idx,
+    enc_b64,
+    mime: input.mime || "application/octet-stream",
+    total: input.total,
+    updatedAt: Date.now(),
+  });
+  const received = await db.mediaChunks
+    .where("ownerId")
+    .equals(ownerId)
+    .and((chunk) => chunk.ownerType === "message")
+    .count();
+  return { received, total: input.total, complete: received === input.total };
 };
 
 export const loadMessageMedia = async (mediaRef?: MediaRef) => {

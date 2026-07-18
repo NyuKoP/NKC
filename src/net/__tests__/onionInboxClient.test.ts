@@ -99,7 +99,7 @@ describe("OnionInboxClient.send", () => {
     expect(result.ok).toBe(true);
     expect(onionControllerFetch).toHaveBeenCalledWith(
       expect.objectContaining({
-        timeoutMs: 30_000,
+        timeoutMs: 60_000,
       })
     );
   });

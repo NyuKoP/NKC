@@ -6,6 +6,7 @@ import type { OnionNetwork } from "../../../net/netConfig";
 import { downloadFile } from "./downloader";
 import { verifySha256 } from "./verify";
 import { unpackArchive } from "./unpack";
+import { removeWithRetry } from "./removeWithRetry";
 import { getBinaryPath, getPinnedSha256 } from "../componentRegistry";
 import { swapWithRollback } from "./swapperRollback";
 import { PinnedHashMissingError } from "../errors";
@@ -95,7 +96,7 @@ export const installTor = async (
     await verifySha256(archivePath, hash);
     details.expectedSha256 = hash;
 
-    await fs.rm(installPath, { recursive: true, force: true });
+    await removeWithRetry(installPath);
     await fs.mkdir(installPath, { recursive: true });
     onProgress?.({ step: "unpack", message: "Unpacking Tor" });
     await unpackArchive(archivePath, installPath);
@@ -122,6 +123,6 @@ export const installTor = async (
     (wrapped as { details?: Record<string, unknown> }).details = details;
     throw wrapped;
   } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
+    await removeWithRetry(tempDir);
   }
 };

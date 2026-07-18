@@ -28,7 +28,7 @@ const TOR_ENV_PATH = "NKC_TOR_PATH";
 const TOR_BRIDGES_ENV = "NKC_TOR_BRIDGES";
 const TOR_COUNTRY_ENV = "NKC_TOR_COUNTRY";
 const DEFAULT_SOCKS_PORT = 9050;
-const START_TIMEOUT_MS = 30000;
+const START_TIMEOUT_MS = 60_000;
 const HOSTNAME_TIMEOUT_MS = 15000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -82,6 +82,29 @@ const waitForPort = async (port: number, timeoutMs: number, shouldAbort?: () => 
   return false;
 };
 
+export const parseTorBootstrapProgress = (value: string) => {
+  let progress = 0;
+  for (const match of value.matchAll(/Bootstrapped\s+(\d{1,3})%/gi)) {
+    const parsed = Number.parseInt(match[1] ?? "0", 10);
+    if (Number.isFinite(parsed)) progress = Math.max(progress, Math.min(100, parsed));
+  }
+  return progress;
+};
+
+const waitForBootstrap = async (
+  getProgress: () => number,
+  timeoutMs: number,
+  shouldAbort?: () => boolean
+) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (shouldAbort?.()) return false;
+    if (getProgress() >= 100) return true;
+    await sleep(100);
+  }
+  return getProgress() >= 100;
+};
+
 const waitForHostname = async (filePath: string, timeoutMs: number) => {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
@@ -106,11 +129,13 @@ export class TorManager {
   private dataDir: string;
   private hsConfig: HiddenServiceConfig | null = null;
   private logTail = "";
+  private bootstrapProgress = 0;
   private startPromise: Promise<void> | null = null;
   private stopPromise: Promise<void> | null = null;
   private ensureHiddenServicePromise: Promise<{ onionHost: string }> | null = null;
   private expectProcessExit = false;
   private bridgeDetail: string | null = null;
+  private bridgeModeOverride: "force" | null = null;
 
   constructor(opts: { appDataDir: string }) {
     this.baseDataDir = path.join(opts.appDataDir, "nkc-tor");
@@ -152,6 +177,10 @@ export class TorManager {
     const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
     const next = `${this.logTail}${text}`.slice(-4096);
     this.logTail = next.trim();
+    this.bootstrapProgress = Math.max(
+      this.bootstrapProgress,
+      parseTorBootstrapProgress(next)
+    );
   }
 
   private resolveBundleRoot(torPath: string) {
@@ -198,8 +227,13 @@ export class TorManager {
 
   private resolveLyrebirdPath(torPath: string) {
     const basename = process.platform === "win32" ? "lyrebird.exe" : "lyrebird";
-    const candidate = path.join(path.dirname(torPath), basename);
-    return fs.existsSync(candidate) ? candidate : null;
+    const torDir = path.dirname(torPath);
+    const candidates = [
+      path.join(torDir, basename),
+      path.join(torDir, "pluggable_transports", basename),
+      path.join(path.dirname(torDir), "pluggable_transports", basename),
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
   }
 
   private buildTorrc(
@@ -215,7 +249,7 @@ export class TorManager {
 
     const bridgeSelection = resolveBridgeSelection({
       countryCode: this.resolveCountryCode(),
-      mode: process.env[TOR_BRIDGES_ENV],
+      mode: this.bridgeModeOverride ?? process.env[TOR_BRIDGES_ENV],
     });
     this.bridgeDetail = null;
     if (bridgeSelection.enabled) {
@@ -228,9 +262,13 @@ export class TorManager {
       if (bridgeLines.length > 0) {
         lines.push("UseBridges 1");
         if (bridgeLines.some((line) => needsLyrebird(line)) && lyrebirdPath) {
-          lines.push(`ClientTransportPlugin obfs4 exec "${lyrebirdPath}"`);
-          lines.push(`ClientTransportPlugin meek_lite exec "${lyrebirdPath}"`);
-          lines.push(`ClientTransportPlugin snowflake exec "${lyrebirdPath}"`);
+          const bundleRoot = this.resolveBundleRoot(torPath);
+          const transportPath = bundleRoot
+            ? `./${path.relative(bundleRoot, lyrebirdPath).split(path.sep).join("/")}`
+            : lyrebirdPath;
+          lines.push(`ClientTransportPlugin obfs4 exec ${transportPath}`);
+          lines.push(`ClientTransportPlugin meek_lite exec ${transportPath}`);
+          lines.push(`ClientTransportPlugin snowflake exec ${transportPath}`);
         }
         lines.push(...bridgeLines);
         if (!this.bridgeDetail) {
@@ -293,6 +331,7 @@ export class TorManager {
     }
     this.dataDir = this.resolveDataDir(opts);
     this.logTail = "";
+    this.bootstrapProgress = 0;
     this.emit({ state: "starting", details: "starting-tor" });
     await fsPromises.mkdir(this.dataDir, { recursive: true });
     const socksPort = await getAvailablePort();
@@ -325,8 +364,15 @@ export class TorManager {
         details: `tor-exited(code=${code ?? "null"},signal=${signal ?? "none"})${tail}`,
       });
     });
-    const ready = await waitForPort(socksPort, START_TIMEOUT_MS, () => !this.isStartingStatus());
-    if (!ready) {
+    const [portReady, bootstrapReady] = await Promise.all([
+      waitForPort(socksPort, START_TIMEOUT_MS, () => !this.isStartingStatus()),
+      waitForBootstrap(
+        () => this.bootstrapProgress,
+        START_TIMEOUT_MS,
+        () => !this.isStartingStatus()
+      ),
+    ]);
+    if (!portReady || !bootstrapReady) {
       if (this.status.state === "failed" && this.isDataDirConflict(this.status.details)) {
         return;
       }
@@ -336,8 +382,26 @@ export class TorManager {
       if (!this.isStartingStatus()) {
         return;
       }
-      this.emit({ state: "failed", details: "socks-not-ready" });
+      const failedProgress = this.bootstrapProgress;
+      const failedLogTail = this.logTail;
+      const shouldRetryWithBridges =
+        portReady &&
+        !bootstrapReady &&
+        !process.env[TOR_BRIDGES_ENV] &&
+        this.bridgeModeOverride === null;
       await this.stop();
+      if (shouldRetryWithBridges) {
+        this.bridgeModeOverride = "force";
+        await this.startInternal(opts);
+        return;
+      }
+      const diagnosticTail = failedLogTail ? ` | ${failedLogTail}` : "";
+      this.emit({
+        state: "failed",
+        details: portReady
+          ? `bootstrap-not-ready:${failedProgress}%${diagnosticTail}`
+          : `socks-not-ready${diagnosticTail}`,
+      });
       return;
     }
     this.emit({

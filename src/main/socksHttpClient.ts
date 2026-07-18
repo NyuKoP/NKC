@@ -1,4 +1,6 @@
 import net from "node:net";
+import http from "node:http";
+import type { Duplex } from "node:stream";
 import tls from "node:tls";
 
 type SocksFetchOptions = {
@@ -31,6 +33,8 @@ type SocksFetchResponse = {
 
 const MAX_BODY_BYTES = 256 * 1024;
 const MAX_INFLIGHT = 8;
+const AGENT_CONNECT_TIMEOUT_MS = 45_000;
+const AGENT_IDLE_TIMEOUT_MS = 60_000;
 
 type SocksErrorCode = "timeout" | "proxy_unreachable" | "handshake_failed" | "upstream_error";
 
@@ -83,9 +87,9 @@ const parseSocksUrl = (value: string) => {
 
 export type SocketLike = {
   on: (event: "data", listener: (chunk: Buffer) => void) => void;
-  once: (event: "end" | "error", listener: (...args: unknown[]) => void) => void;
+  once: (event: "end" | "error" | "close", listener: (...args: unknown[]) => void) => void;
   off: (
-    event: "data" | "end" | "error",
+    event: "data" | "end" | "error" | "close",
     listener: ((chunk: Buffer) => void) | ((...args: unknown[]) => void)
   ) => void;
   write: (data: Buffer) => boolean;
@@ -139,6 +143,11 @@ const createBufferedSocketReader = (socket: SocketLike): BufferedSocketReader =>
     tryResolvePending();
   };
 
+  const onClose = () => {
+    closedError = new Error("socket_closed");
+    tryResolvePending();
+  };
+
   const onError = (error: unknown) => {
     closedError = error instanceof Error ? error : new Error(String(error));
     tryResolvePending();
@@ -146,6 +155,7 @@ const createBufferedSocketReader = (socket: SocketLike): BufferedSocketReader =>
 
   socket.on("data", onData);
   socket.once("end", onEnd);
+  socket.once("close", onClose);
   socket.once("error", onError);
 
   return {
@@ -165,6 +175,7 @@ const createBufferedSocketReader = (socket: SocketLike): BufferedSocketReader =>
     dispose: () => {
       socket.off("data", onData);
       socket.off("end", onEnd);
+      socket.off("close", onClose);
       socket.off("error", onError);
       buffered = Buffer.alloc(0);
       if (pending) {
@@ -257,6 +268,9 @@ const connectSocks = async (
     await reader.readExactly(2);
   } catch (error) {
     socket.destroy();
+    if (timeoutState?.timedOut) {
+      throw new Error("timeout");
+    }
     throw error;
   } finally {
     reader.dispose();
@@ -269,6 +283,137 @@ const connectSocks = async (
 
   return socket;
 };
+
+class SocksHttpAgent extends http.Agent {
+  private readonly proxyUrl: string;
+  private readonly connectTimeoutMs: number;
+
+  constructor(
+    proxyUrl: string,
+    connectTimeoutMs = AGENT_CONNECT_TIMEOUT_MS
+  ) {
+    super({
+      keepAlive: true,
+      keepAliveMsecs: 10_000,
+      maxSockets: MAX_INFLIGHT,
+      maxFreeSockets: 4,
+      timeout: AGENT_IDLE_TIMEOUT_MS,
+    });
+    this.proxyUrl = proxyUrl;
+    this.connectTimeoutMs = connectTimeoutMs;
+  }
+
+  override createConnection(
+    options: http.ClientRequestArgs,
+    callback?: (error: Error | null, stream: Duplex) => void
+  ): Duplex | null | undefined {
+    const host = String(options.hostname ?? options.host ?? "");
+    const rawPort = options.port ?? 80;
+    const port = typeof rawPort === "number" ? rawPort : Number(rawPort);
+    let socket: SocketLike | null = null;
+    const timeoutState = { timedOut: false };
+    const timer = setTimeout(() => {
+      timeoutState.timedOut = true;
+      socket?.destroy();
+    }, this.connectTimeoutMs);
+
+    void connectSocks(
+      host,
+      port,
+      this.proxyUrl,
+      undefined,
+      (created) => {
+        socket = created;
+        if (timeoutState.timedOut) created.destroy();
+      },
+      timeoutState
+    )
+      .then((connected) => callback?.(null, connected as net.Socket))
+      .catch((error: unknown) => {
+        callback?.(
+          error instanceof Error ? error : new Error(String(error)),
+          undefined as never
+        );
+      })
+      .finally(() => clearTimeout(timer));
+
+    return undefined;
+  }
+}
+
+const socksAgentPool = new Map<string, SocksHttpAgent>();
+
+const getSocksAgent = (proxyUrl: string) => {
+  const key = proxyUrl.trim();
+  const existing = socksAgentPool.get(key);
+  if (existing) return existing;
+  const agent = new SocksHttpAgent(key);
+  socksAgentPool.set(key, agent);
+  return agent;
+};
+
+export const clearSocksAgentPool = (proxyUrl?: string | null) => {
+  if (proxyUrl?.trim()) {
+    const key = proxyUrl.trim();
+    socksAgentPool.get(key)?.destroy();
+    socksAgentPool.delete(key);
+    return;
+  }
+  socksAgentPool.forEach((agent) => agent.destroy());
+  socksAgentPool.clear();
+};
+
+const socksHttpFetchOnce = (
+  parsed: URL,
+  opts: SocksFetchOptions,
+  timeoutMs: number
+): Promise<SocksFetchResponse> =>
+  new Promise((resolve, reject) => {
+    const body = opts.body ?? Buffer.alloc(0);
+    const headers: Record<string, string> = { ...opts.headers };
+    if (body.length && headers["Content-Length"] === undefined && headers["content-length"] === undefined) {
+      headers["Content-Length"] = String(body.length);
+    }
+
+    const request = http.request(
+      parsed,
+      {
+        method: opts.method,
+        headers,
+        agent: getSocksAgent(opts.socksProxyUrl),
+      },
+      (response) => {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        response.on("data", (chunk: Buffer | string) => {
+          const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+          total += buffer.length;
+          if (total > MAX_BODY_BYTES) {
+            response.destroy(new Error("response_too_large"));
+            return;
+          }
+          chunks.push(buffer);
+        });
+        response.once("end", () => {
+          const responseHeaders: Record<string, string> = {};
+          Object.entries(response.headers).forEach(([key, value]) => {
+            if (value !== undefined) responseHeaders[key] = Array.isArray(value) ? value.join(", ") : value;
+          });
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: responseHeaders,
+            body: Buffer.concat(chunks),
+          });
+        });
+        response.once("error", reject);
+      }
+    );
+    const timeout = setTimeout(() => request.destroy(new Error("timeout")), timeoutMs);
+    request.once("close", () => clearTimeout(timeout));
+    request.once("error", reject);
+    if (body.length) request.write(body);
+    request.end();
+  });
 
 const parseHeaders = (raw: string) => {
   const lines = raw.split("\r\n");
@@ -318,12 +463,14 @@ const readHttpResponse = async (socket: SocketLike, timeoutMs: number) => {
       chunks.push(chunk);
     };
     const onEnd = () => resolve();
+    const onClose = () => resolve();
     const onError = (error: unknown) => {
       const err = error instanceof Error ? error : new Error(String(error));
       reject(err);
     };
     socket.on("data", onData);
     socket.once("end", onEnd);
+    socket.once("close", onClose);
     socket.once("error", onError);
   });
   const timeout = setTimeout(() => {
@@ -367,6 +514,10 @@ const socksFetchOnce = async (url: string, opts: SocksFetchOptions): Promise<Soc
   const host = parsed.hostname;
   const path = `${parsed.pathname}${parsed.search}`;
   const timeoutMs = opts.timeoutMs ?? 10000;
+
+  if (!isHttps && !opts.socketFactory) {
+    return socksHttpFetchOnce(parsed, opts, timeoutMs);
+  }
 
   let socket: SocketLike | null = null;
   const timeoutState = { timedOut: false };
@@ -415,13 +566,12 @@ const socksFetchOnce = async (url: string, opts: SocksFetchOptions): Promise<Soc
   const request = Buffer.from(
     `${opts.method} ${path} HTTP/1.1\r\n${headerLines.join("\r\n")}\r\n\r\n`
   );
+  const responsePromise = readHttpResponse(transport, timeoutMs);
   transport.write(request);
   if (body.length) {
     transport.write(body);
   }
-  transport.end();
-  await sleep(0);
-  return readHttpResponse(transport, timeoutMs);
+  return responsePromise;
 };
 
 const normalizeSocksError = (error: unknown): Error => {

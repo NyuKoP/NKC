@@ -29,11 +29,43 @@ const createLargePngBuffer = (sizeBytes: number) => {
   return Buffer.concat([header, padding]);
 };
 
+const clearProfileStore = async (page: Page) =>
+  page.evaluate(async () => {
+    const openRequest = indexedDB.open("nkc_vault");
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      openRequest.onsuccess = () => resolve(openRequest.result);
+      openRequest.onerror = () => reject(openRequest.error);
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("profiles", "readwrite");
+        tx.objectStore("profiles").clear();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally {
+      db.close();
+    }
+  });
+
 test.describe("Settings and media E2E", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await disableAnimations(page);
     await ensureOnboarded(page);
+  });
+
+  test("missing account profile returns to onboarding instead of a dead settings route", async ({
+    page,
+  }) => {
+    await clearProfileStore(page);
+
+    await page.reload();
+    await expect(page.getByTestId("onboarding-screen")).toBeVisible();
+    await page.goto("/settings");
+    await expect(page.getByTestId("onboarding-screen")).toBeVisible();
   });
 
   test("proxy URL without port shows inline error and is not applied", async ({ page }) => {

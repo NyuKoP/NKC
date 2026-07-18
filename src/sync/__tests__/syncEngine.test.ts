@@ -59,6 +59,7 @@ vi.mock("../../db/repo", () => {
     getLastEventHash: vi.fn(async () => "prev-hash"),
     listEventsByConv: vi.fn(async () => []),
     saveMessage: vi.fn(async () => {}),
+    saveReceivedMessageMediaChunk: vi.fn(async () => ({ received: 1, total: 1, complete: true })),
     saveEvent: vi.fn(async () => {}),
     saveConversation: vi.fn(async () => {}),
     saveProfile: vi.fn(async () => {}),
@@ -207,6 +208,58 @@ describe("syncEngine signature verification", () => {
     expect(vi.mocked(repo.saveEvent)).toHaveBeenCalledWith(
       expect.objectContaining({ conflict: true })
     );
+  });
+
+  it("stores decrypted media chunks without adding them to the sync event log", async () => {
+    const identityPub = encodeBase64Url(new Uint8Array(32).fill(1));
+    const dhPub = encodeBase64Url(new Uint8Array(32).fill(2));
+    __testSetPeerContext("c1", { identityPub, dhPub, friendKeyId: "peer" });
+    const bytes = new Uint8Array([1, 2, 3, 4]);
+    mocks.verifyEnvelopeSignatureMock.mockResolvedValueOnce(true);
+    mocks.decryptEnvelopeMock.mockResolvedValueOnce(
+      {
+        type: "media",
+        phase: "chunk",
+        ownerId: "message-1",
+        idx: 0,
+        total: 1,
+        chunkSize: 96 * 1024,
+        size: bytes.length,
+        mime: "application/octet-stream",
+        b64: encodeBase64Url(bytes),
+      } as unknown as { type: string; text: string }
+    );
+    const envelope = {
+      header: {
+        v: 1 as const,
+        convId: "c1",
+        eventId: "media-chunk-1",
+        authorDeviceId: "peer",
+        ts: 3,
+        lamport: 3,
+        prev: "prev-hash",
+      },
+      ciphertext: "invalid",
+      nonce: "invalid",
+      sig: "invalid",
+    };
+
+    await __testApplyEnvelopeEvents("c1", [
+      {
+        eventId: "media-chunk-1",
+        convId: "c1",
+        authorDeviceId: "peer",
+        lamport: 3,
+        ts: 3,
+        envelopeJson: JSON.stringify(envelope),
+      },
+    ]);
+
+    const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    expect(vi.mocked(repo.saveReceivedMessageMediaChunk)).toHaveBeenCalledWith(
+      expect.objectContaining({ ownerId: "message-1", idx: 0, bytes })
+    );
+    expect(vi.mocked(repo.saveEvent)).not.toHaveBeenCalled();
   });
 
   it("drops untrusted friend frames without valid signature", async () => {

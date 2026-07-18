@@ -62,6 +62,12 @@ contextBridge.exposeInMainWorld("nkc", {
     bodyBase64?: string;
     timeoutMs?: number;
   }) => ipcRenderer.invoke("nkc:onionControllerFetch", req) as Promise<unknown>,
+  prewarmOnionRoute: (payload: { onionAddress: string }) =>
+    ipcRenderer.invoke("nkc:prewarmOnionRoute", payload) as Promise<{
+      ok: boolean;
+      elapsedMs: number;
+      error?: string;
+    }>,
   getTorStatus: () => ipcRenderer.invoke("nkc:getTorStatus") as Promise<unknown>,
   startTor: (payload?: { profileScopedDataDir?: boolean }) =>
     ipcRenderer.invoke("nkc:startTor", payload) as Promise<unknown>,
