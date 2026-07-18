@@ -1,14 +1,25 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startOnionController, type OnionControllerHandle } from "../onionController";
 import { TorManager } from "../torManager";
+import {
+  enrichFriendControlFrameWithProtocol,
+  signFriendControlFrame,
+  verifyFriendControlFrameProtocol,
+  verifyFriendControlFrameSignature,
+  type FriendControlFrame,
+  type UnsignedFriendControlFrame,
+} from "../../friends/friendControlFrame";
+import { decodeFriendCodeV1, encodeFriendCodeV1, type FriendCodeV1 } from "../../security/friendCode";
+import { encodeBase64Url } from "../../security/base64url";
+import { getSodium } from "../../security/sodium";
 
 const LIVE_TOR_ENABLED = process.env.NKC_LIVE_TOR_E2E === "1";
-const DEVICE_A = "live-tor-device-a";
-const DEVICE_B = "live-tor-device-b";
+const DEVICE_A = randomUUID();
+const DEVICE_B = randomUUID();
 
 type InboxResponse = {
   ok: boolean;
@@ -69,6 +80,15 @@ const readInbox = async (controller: OnionControllerHandle, deviceId: string) =>
   return (await response.json()) as InboxResponse;
 };
 
+const requireFriendCode = (code: string) => {
+  const decoded = decodeFriendCodeV1(code);
+  if ("error" in decoded) throw new Error(decoded.error);
+  if (!decoded.deviceId || !decoded.onionAddr) {
+    throw new Error("Friend code is missing Tor routing metadata");
+  }
+  return decoded as FriendCodeV1 & { deviceId: string; onionAddr: string };
+};
+
 describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
   let rootA: string;
   let rootB: string;
@@ -78,6 +98,12 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
   let controllerB: OnionControllerHandle;
   let onionA: string;
   let onionB: string;
+  let friendCodeA: string;
+  let friendCodeB: string;
+  let identityPrivA: Uint8Array;
+  let identityPrivB: Uint8Array;
+  let dhPrivA: Uint8Array;
+  let dhPrivB: Uint8Array;
 
   beforeAll(async () => {
     rootA = await fs.mkdtemp(path.join(os.tmpdir(), "nkc-live-tor-a-"));
@@ -102,6 +128,30 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
     await controllerB.setTorSocksProxy(statusB.socksProxyUrl);
     controllerA.setTorOnionHost(onionA);
     controllerB.setTorOnionHost(onionB);
+
+    const sodium = await getSodium();
+    const identityA = sodium.crypto_sign_keypair();
+    const identityB = sodium.crypto_sign_keypair();
+    const dhA = sodium.crypto_kx_keypair();
+    const dhB = sodium.crypto_kx_keypair();
+    identityPrivA = identityA.privateKey;
+    identityPrivB = identityB.privateKey;
+    dhPrivA = dhA.privateKey;
+    dhPrivB = dhB.privateKey;
+    friendCodeA = encodeFriendCodeV1({
+      v: 1,
+      identityPub: encodeBase64Url(identityA.publicKey),
+      dhPub: encodeBase64Url(dhA.publicKey),
+      deviceId: DEVICE_A,
+      onionAddr: onionA,
+    });
+    friendCodeB = encodeFriendCodeV1({
+      v: 1,
+      identityPub: encodeBase64Url(identityB.publicKey),
+      dhPub: encodeBase64Url(dhB.publicKey),
+      deviceId: DEVICE_B,
+      onionAddr: onionB,
+    });
   }, 120_000);
 
   afterAll(async () => {
@@ -118,10 +168,113 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
   }, 30_000);
 
   it(
-    "exchanges a file A to B and a chat message B to A through real onion services",
+    "uses friend codes to establish trust and exchange a file and chat through real onion services",
     async () => {
       expect(onionA).toMatch(/^[a-z2-7]{56}\.onion$/);
       expect(onionB).toMatch(/^[a-z2-7]{56}\.onion$/);
+      expect(friendCodeA).toMatch(/^NKC1-/);
+      expect(friendCodeB).toMatch(/^NKC1-/);
+
+      const alice = requireFriendCode(friendCodeA);
+      const bob = requireFriendCode(friendCodeB);
+      expect(alice).toMatchObject({ deviceId: DEVICE_A, onionAddr: onionA });
+      expect(bob).toMatchObject({ deviceId: DEVICE_B, onionAddr: onionB });
+
+      const unsignedRequest: UnsignedFriendControlFrame = {
+        type: "friend_req",
+        traceId: randomUUID(),
+        from: {
+          identityPub: alice.identityPub,
+          dhPub: alice.dhPub,
+          deviceId: alice.deviceId,
+          friendCode: friendCodeA,
+        },
+        profile: { displayName: "Alice", status: "Tor live friend request" },
+        ts: Date.now(),
+      };
+      const enrichedRequest = await enrichFriendControlFrameWithProtocol(
+        unsignedRequest,
+        identityPrivA,
+        {
+          localFriendCode: friendCodeA,
+          localDhPriv: dhPrivA,
+          remoteFriendCode: friendCodeB,
+          remoteIdentityPub: bob.identityPub,
+          remoteDhPub: bob.dhPub,
+          remoteDeviceId: bob.deviceId,
+          remoteOnionAddr: bob.onionAddr,
+        }
+      );
+      const friendRequest: FriendControlFrame = {
+        ...enrichedRequest,
+        sig: await signFriendControlFrame(enrichedRequest, identityPrivA),
+      } as FriendControlFrame;
+      await sendOverTor(
+        controllerA,
+        bob.onionAddr,
+        alice.deviceId,
+        bob.deviceId,
+        JSON.stringify(friendRequest)
+      );
+      const requestInbox = await readInbox(controllerB, bob.deviceId);
+      const receivedRequest = JSON.parse(
+        requestInbox.items.at(-1)?.envelope ?? "null"
+      ) as FriendControlFrame;
+      expect(receivedRequest).toMatchObject({ type: "friend_req", profile: { displayName: "Alice" } });
+      expect(await verifyFriendControlFrameSignature(receivedRequest)).toBe(true);
+      expect(await verifyFriendControlFrameProtocol(receivedRequest, {
+        localFriendCode: friendCodeB,
+        localDhPriv: dhPrivB,
+      }))
+        .toMatchObject({ ok: true, verified: true });
+
+      const unsignedAccept: UnsignedFriendControlFrame = {
+        type: "friend_accept",
+        traceId: randomUUID(),
+        from: {
+          identityPub: bob.identityPub,
+          dhPub: bob.dhPub,
+          deviceId: bob.deviceId,
+          friendCode: friendCodeB,
+        },
+        profile: { displayName: "Bob", status: "Tor live friend accepted" },
+        ts: Date.now(),
+      };
+      const enrichedAccept = await enrichFriendControlFrameWithProtocol(
+        unsignedAccept,
+        identityPrivB,
+        {
+          localFriendCode: friendCodeB,
+          localDhPriv: dhPrivB,
+          remoteFriendCode: friendCodeA,
+          remoteIdentityPub: alice.identityPub,
+          remoteDhPub: alice.dhPub,
+          remoteDeviceId: alice.deviceId,
+          remoteOnionAddr: alice.onionAddr,
+        }
+      );
+      const friendAccept: FriendControlFrame = {
+        ...enrichedAccept,
+        sig: await signFriendControlFrame(enrichedAccept, identityPrivB),
+      } as FriendControlFrame;
+      await sendOverTor(
+        controllerB,
+        alice.onionAddr,
+        bob.deviceId,
+        alice.deviceId,
+        JSON.stringify(friendAccept)
+      );
+      const acceptInbox = await readInbox(controllerA, alice.deviceId);
+      const receivedAccept = JSON.parse(
+        acceptInbox.items.at(-1)?.envelope ?? "null"
+      ) as FriendControlFrame;
+      expect(receivedAccept).toMatchObject({ type: "friend_accept", profile: { displayName: "Bob" } });
+      expect(await verifyFriendControlFrameSignature(receivedAccept)).toBe(true);
+      expect(await verifyFriendControlFrameProtocol(receivedAccept, {
+        localFriendCode: friendCodeA,
+        localDhPriv: dhPrivA,
+      }))
+        .toMatchObject({ ok: true, verified: true });
 
       const fileBytes = Buffer.from(
         Array.from({ length: 32 * 1024 }, (_, index) => (index * 31 + 17) % 256)
@@ -134,13 +287,19 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
         bytesBase64: fileBytes.toString("base64"),
         sha256: fileSha256,
       });
-      const prewarmAtoB = await controllerA.prewarmTorRoute(onionB);
+      const prewarmAtoB = await controllerA.prewarmTorRoute(bob.onionAddr);
       console.info("Tor prewarm A->B", prewarmAtoB);
       const fileStartedAt = Date.now();
-      await sendOverTor(controllerA, onionB, DEVICE_A, DEVICE_B, fileEnvelope);
+      await sendOverTor(
+        controllerA,
+        bob.onionAddr,
+        alice.deviceId,
+        bob.deviceId,
+        fileEnvelope
+      );
       const fileTransferMs = Date.now() - fileStartedAt;
 
-      const inboxB = await readInbox(controllerB, DEVICE_B);
+      const inboxB = await readInbox(controllerB, bob.deviceId);
       const receivedFile = JSON.parse(inboxB.items.at(-1)?.envelope ?? "null") as {
         type?: string;
         bytesBase64?: string;
@@ -158,18 +317,26 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
         type: "chat",
         text: `Tor live reply ${Date.now()}`,
       });
-      const prewarmBtoA = await controllerB.prewarmTorRoute(onionA);
+      const prewarmBtoA = await controllerB.prewarmTorRoute(alice.onionAddr);
       console.info("Tor prewarm B->A", prewarmBtoA);
       const chatStartedAt = Date.now();
-      await sendOverTor(controllerB, onionA, DEVICE_B, DEVICE_A, chatEnvelope);
+      await sendOverTor(
+        controllerB,
+        alice.onionAddr,
+        bob.deviceId,
+        alice.deviceId,
+        chatEnvelope
+      );
       const chatTransferMs = Date.now() - chatStartedAt;
 
-      const inboxA = await readInbox(controllerA, DEVICE_A);
-      expect(inboxA.items.at(-1)).toMatchObject({ from: DEVICE_B, envelope: chatEnvelope });
+      const inboxA = await readInbox(controllerA, alice.deviceId);
+      expect(inboxA.items.at(-1)).toMatchObject({ from: bob.deviceId, envelope: chatEnvelope });
 
       console.info(
         JSON.stringify({
           torConnected: true,
+          friendRequestVerified: true,
+          friendAcceptVerified: true,
           fileAtoB: true,
           fileBytes: fileBytes.length,
           fileSha256,

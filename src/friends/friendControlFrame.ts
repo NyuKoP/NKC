@@ -88,6 +88,7 @@ export const enrichFriendControlFrameWithProtocol = async (
   identityPriv: Uint8Array,
   options?: {
     pskHint?: string;
+    localDhPriv?: Uint8Array;
     localFriendCode?: string;
     remoteFriendCode?: string;
     remoteIdentityPub?: string;
@@ -102,6 +103,7 @@ export const enrichFriendControlFrameWithProtocol = async (
   const contactExchange = await buildContactExchangeRecord(frame, handshake, identityPriv);
   const keyAgreement = await buildKeyAgreementRecord(handshake, contactExchange, {
     pskHint: options?.pskHint,
+    localDhPriv: options?.localDhPriv,
     localFriendCode: options?.localFriendCode,
     remoteFriendCode: options?.remoteFriendCode,
     remoteIdentityPub: options?.remoteIdentityPub,
@@ -123,7 +125,7 @@ export const enrichFriendControlFrameWithProtocol = async (
 
 export const verifyFriendControlFrameProtocol = async (
   frame: FriendControlFrame,
-  options?: { localFriendCode?: string }
+  options?: { localFriendCode?: string; localDhPriv?: Uint8Array }
 ) => {
   const protocol = frame.protocol;
   if (!protocol) return { ok: true, verified: false as const };
