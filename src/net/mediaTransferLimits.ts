@@ -1,0 +1,2 @@
+export const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
+export const INLINE_MEDIA_CHUNK_SIZE = 128 * 1024;

@@ -14,9 +14,9 @@ import {
   type UnsignedFriendControlFrame,
 } from "../../friends/friendControlFrame";
 import { decodeFriendCodeV1, encodeFriendCodeV1, type FriendCodeV1 } from "../../security/friendCode";
-import { encodeBase64Url } from "../../security/base64url";
+import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
 import { getSodium } from "../../security/sodium";
-import { decodeBase64Url } from "../../security/base64url";
+import { INLINE_MEDIA_CHUNK_SIZE } from "../../net/mediaTransferLimits";
 import {
   decryptEnvelope,
   deriveConversationKey,
@@ -32,7 +32,7 @@ const LIVE_TOR_FILE_MB = Math.min(
   500,
   Math.max(1, Number.parseInt(process.env.NKC_LIVE_TOR_FILE_MB ?? "10", 10) || 10)
 );
-const LIVE_FILE_CHUNK_BYTES = 128 * 1024;
+const LIVE_FILE_CHUNK_BYTES = INLINE_MEDIA_CHUNK_SIZE;
 const DEVICE_A = randomUUID();
 const DEVICE_B = randomUUID();
 

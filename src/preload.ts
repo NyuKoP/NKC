@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
 type ProxyHealth = {
   ok: boolean;
@@ -120,6 +120,20 @@ contextBridge.exposeInMainWorld("p2p", {
     ipcRenderer.on(P2P_CONNECTION_STATUS_CHANNEL, handler);
     return () => ipcRenderer.removeListener(P2P_CONNECTION_STATUS_CHANNEL, handler);
   },
+});
+
+contextBridge.exposeInMainWorld("nativeWorker", {
+  inspectFile: (file: File, chunkSize: number) => {
+    const filePath = webUtils.getPathForFile(file);
+    if (!filePath) return Promise.resolve({ ok: false, error: "file-path-unavailable" });
+    return ipcRenderer.invoke("nativeWorker:fileInspect", { path: filePath, chunkSize });
+  },
+  readFileChunk: (file: File, index: number, chunkSize: number) => {
+    const filePath = webUtils.getPathForFile(file);
+    if (!filePath) return Promise.resolve({ ok: false, error: "file-path-unavailable" });
+    return ipcRenderer.invoke("nativeWorker:fileChunk", { path: filePath, index, chunkSize });
+  },
+  planDelivery: (payload: unknown) => ipcRenderer.invoke("nativeWorker:schedule", payload),
 });
 
 contextBridge.exposeInMainWorld("testLog", {

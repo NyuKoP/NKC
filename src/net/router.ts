@@ -459,6 +459,7 @@ export const sendCiphertext = async (
     id: payload.messageId,
     convId: payload.convId,
     ciphertext: payload.ciphertext,
+    priority: payload.priority ?? "normal",
     toDeviceId,
     torOnion: route?.torOnion,
     lokinet: route?.lokinet,

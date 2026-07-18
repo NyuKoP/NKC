@@ -1,7 +1,7 @@
 {
   "name": "test",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.2.0",
   "description": "NKC serverless secure chat desktop app",
   "author": {
     "name": "NyuKoP",
@@ -13,14 +13,16 @@
     "dev": "cross-env VITE_DEV_SERVER_URL=http://localhost:5173 vite dev",
     "generate:onion-pins": "node scripts/generateOnionPins.mjs",
     "lint:encoding": "node scripts/check-utf8.mjs",
-    "build": "cross-env BROWSERSLIST_IGNORE_OLD_DATA=1 tsc -b && cross-env BROWSERSLIST_IGNORE_OLD_DATA=1 vite build",
+    "build:native": "node scripts/build-go-worker.mjs",
+    "test:native": "node scripts/test-go-worker.mjs",
+    "build": "npm run build:native && cross-env BROWSERSLIST_IGNORE_OLD_DATA=1 tsc -b && cross-env BROWSERSLIST_IGNORE_OLD_DATA=1 vite build",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish never",
     "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis --publish never",
     "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb --publish never",
     "test": "vitest",
     "test:tor:live": "node scripts/run-live-tor-e2e.mjs",
-    "test:tor:large": "node scripts/run-live-tor-e2e.mjs --large --size-mb=10",
+    "test:tor:large": "node scripts/run-live-tor-e2e.mjs --large --size-mb=1",
     "bench:transfer": "vitest bench --run src/perf/transferEncoding.bench.ts",
     "bench:transfer:500mb": "cross-env NKC_LARGE_TRANSFER_BENCH=1 vitest run src/perf/largeTransferPipeline.test.ts --reporter=verbose",
     "test:ui": "playwright test",
@@ -81,6 +83,13 @@
       "dist/**",
       "dist-electron/**",
       "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "native/bin",
+        "to": "native",
+        "filter": ["**/*"]
+      }
     ],
     "extraMetadata": {
       "main": "dist-electron/main.js"
