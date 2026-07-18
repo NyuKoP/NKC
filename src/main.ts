@@ -13,6 +13,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import nodeNet from "node:net";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
 import { installalternateRoute } from "./main/onion/install/installalternateRoute";
@@ -112,6 +113,11 @@ const createIpcError = (error: string): IpcErrorResponse => ({
   error,
 });
 
+const requireOnionNetwork = (value: unknown): OnionNetwork => {
+  if (value === "tor" || value === "alternateRoute") return value;
+  throw new Error("invalid-onion-network");
+};
+
 const isAllowedSecretStoreKey = (key: unknown): key is string =>
   typeof key === "string" &&
   key.length > 0 &&
@@ -121,24 +127,67 @@ const isAllowedSecretStoreKey = (key: unknown): key is string =>
 
 const isTrustedRendererUrl = (url: string) => {
   if (!url) return false;
-  if (url.startsWith("file://")) return true;
-  if (!isDev) return false;
   try {
     const parsed = new URL(url);
+    if (parsed.protocol === "file:") {
+      const expectedPath = path.resolve(__dirname, "../dist/index.html");
+      return path.resolve(fileURLToPath(parsed)) === expectedPath;
+    }
+    if (!isDev || !rendererUrl) return false;
+    return parsed.origin === new URL(rendererUrl).origin;
+  } catch {
+    return false;
+  }
+};
+
+const isBlockedNetworkHost = (hostname: string) => {
+  const normalized = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+  if (normalized === "localhost" || normalized === "::1" || normalized === "0.0.0.0") return true;
+  if (/^127\./.test(normalized) || /^10\./.test(normalized) || /^192\.168\./.test(normalized)) return true;
+  const match = normalized.match(/^172\.(\d{1,3})\./);
+  if (match && Number(match[1]) >= 16 && Number(match[1]) <= 31) return true;
+  if (/^169\.254\./.test(normalized) || /^fc/i.test(normalized) || /^fd/i.test(normalized)) return true;
+  return false;
+};
+
+const isSafeRemoteHttpUrl = (value: string) => {
+  try {
+    const parsed = new URL(value);
     return (
       (parsed.protocol === "http:" || parsed.protocol === "https:") &&
-      (parsed.hostname === "localhost" ||
-        parsed.hostname === "127.0.0.1" ||
-        parsed.hostname === "[::1]")
+      !parsed.username &&
+      !parsed.password &&
+      !isBlockedNetworkHost(parsed.hostname)
     );
   } catch {
     return false;
   }
 };
 
-const assertTrustedIpcSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => {
+const isAllowedLocalSocksUrl = (value: string) => {
+  try {
+    const parsed = new URL(value);
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, "");
+    const port = Number.parseInt(parsed.port, 10);
+    return (
+      (parsed.protocol === "socks5:" || parsed.protocol === "socks5h:") &&
+      (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") &&
+      Number.isInteger(port) &&
+      port >= 1 &&
+      port <= 65535
+    );
+  } catch {
+    return false;
+  }
+};
+
+const isTrustedIpcSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => {
   const url = event.senderFrame?.url ?? event.sender.getURL();
-  if (!isTrustedRendererUrl(url)) {
+  return isTrustedRendererUrl(url);
+};
+
+const assertTrustedIpcSender = (event: Electron.IpcMainInvokeEvent | Electron.IpcMainEvent) => {
+  if (!isTrustedIpcSender(event)) {
     throw new Error("Blocked IPC from untrusted renderer");
   }
 };
@@ -451,18 +500,35 @@ const fetchViaNetFetch = async (req: OnionFetchRequest): Promise<OnionFetchRespo
 };
 
 const registerOnionFetchIpc = () => {
-  ipcMain.handle("nkc:setOnionProxy", async (_event, proxyUrl: string | null) => {
+  ipcMain.handle("nkc:setOnionProxy", async (event, proxyUrl: string | null) => {
+    assertTrustedIpcSender(event);
     await setOnionProxy(proxyUrl);
     return { ok: true };
   });
-  ipcMain.handle("nkc:onionFetch", async (_event, req: OnionFetchRequest) => {
-    if (!req?.url || !req.method) {
+  ipcMain.handle("nkc:onionFetch", async (event, req: OnionFetchRequest) => {
+    assertTrustedIpcSender(event);
+    if (
+      !req ||
+      typeof req.url !== "string" ||
+      !req.url ||
+      typeof req.method !== "string" ||
+      !req.method
+    ) {
       return {
         ok: false,
         status: 0,
         headers: {},
         bodyBase64: "",
         error: "invalid-request",
+      } satisfies OnionFetchResponse;
+    }
+    if (!isSafeRemoteHttpUrl(req.url)) {
+      return {
+        ok: false,
+        status: 0,
+        headers: {},
+        bodyBase64: "",
+        error: "blocked-url",
       } satisfies OnionFetchResponse;
     }
     if (typeof net.fetch === "function") {
@@ -475,17 +541,52 @@ const registerOnionFetchIpc = () => {
 const fetchOnionController = async (
   req: OnionControllerFetchRequest
 ): Promise<OnionControllerFetchResponse> => {
-  if (!req?.url || !req.method) {
+  if (
+    !req ||
+    typeof req.url !== "string" ||
+    !req.url ||
+    typeof req.method !== "string" ||
+    !req.method
+  ) {
     return { status: 0, headers: {}, bodyBase64: "", error: "invalid-request" };
   }
-  const timeoutMs = req.timeoutMs ?? 10000;
+  let requestUrl: URL;
+  let controllerOrigin: string;
+  try {
+    requestUrl = new URL(req.url);
+    controllerOrigin = new URL(onionControllerUrl).origin;
+  } catch {
+    return { status: 0, headers: {}, bodyBase64: "", error: "blocked-controller-url" };
+  }
+  const allowedRoutes = new Map([
+    ["/onion/health", "GET"],
+    ["/onion/address", "GET"],
+    ["/onion/send", "POST"],
+    ["/onion/inbox", "GET"],
+  ]);
+  const requestMethod = req.method.toUpperCase();
+  if (
+    requestUrl.origin !== controllerOrigin ||
+    allowedRoutes.get(requestUrl.pathname) !== requestMethod ||
+    (req.bodyBase64?.length ?? 0) > 350_000
+  ) {
+    return { status: 0, headers: {}, bodyBase64: "", error: "blocked-controller-url" };
+  }
+  if (!onionController?.authToken) {
+    return { status: 0, headers: {}, bodyBase64: "", error: ONION_CONTROLLER_NOT_READY_MESSAGE };
+  }
+  const timeoutMs = Math.min(70_000, Math.max(1, req.timeoutMs ?? 10000));
   try {
     const response = await fetchWithTimeout<Response>(
       req.url,
       {
-        method: req.method,
-        headers: req.headers,
+        method: requestMethod,
+        headers: {
+          ...req.headers,
+          "X-NKC-Controller-Token": onionController.authToken,
+        },
         body: req.bodyBase64 ? decodeBase64(req.bodyBase64) : undefined,
+        redirect: "error",
       },
       {
         timeoutMs,
@@ -549,8 +650,12 @@ const checkSocksProxyReachable = async (socksUrl: string, timeoutMs = 2000) => {
 };
 
 const registerOnionControllerIpc = () => {
-  ipcMain.handle("nkc:getOnionControllerUrl", async () => onionControllerUrl);
-  ipcMain.handle("nkc:setOnionForwardProxy", async (_event, proxyUrl: string | null) => {
+  ipcMain.handle("nkc:getOnionControllerUrl", async (event) => {
+    assertTrustedIpcSender(event);
+    return onionControllerUrl;
+  });
+  ipcMain.handle("nkc:setOnionForwardProxy", async (event, proxyUrl: string | null) => {
+    assertTrustedIpcSender(event);
     if (!onionController) {
       return createIpcError(ONION_CONTROLLER_NOT_READY_MESSAGE);
     }
@@ -559,7 +664,8 @@ const registerOnionControllerIpc = () => {
     p2pQueueManager?.updateProxyUrl(currentTorSocksProxy);
     return { ok: true, success: true };
   });
-  ipcMain.handle("nkc:onionControllerFetch", async (_event, req: OnionControllerFetchRequest) => {
+  ipcMain.handle("nkc:onionControllerFetch", async (event, req: OnionControllerFetchRequest) => {
+    assertTrustedIpcSender(event);
     if (!onionController) {
       return {
         status: 0,
@@ -570,31 +676,41 @@ const registerOnionControllerIpc = () => {
     }
     return fetchOnionController(req);
   });
-  ipcMain.handle("nkc:prewarmOnionRoute", async (_event, payload: { onionAddress?: string }) => {
+  ipcMain.handle("nkc:prewarmOnionRoute", async (event, payload: { onionAddress?: string }) => {
+    assertTrustedIpcSender(event);
     if (!onionController || typeof payload?.onionAddress !== "string") {
       return { ok: false, elapsedMs: 0, error: ONION_CONTROLLER_NOT_READY_MESSAGE };
     }
     return onionController.prewarmTorRoute(payload.onionAddress);
   });
-  ipcMain.handle("nkc:getTorStatus", async () => torManager?.getStatus() ?? { state: "unavailable" });
-  ipcMain.handle("nkc:startTor", async (_event, payload?: StartTorPayload) => {
+  ipcMain.handle("nkc:getTorStatus", async (event) => {
+    assertTrustedIpcSender(event);
+    return torManager?.getStatus() ?? { state: "unavailable" };
+  });
+  ipcMain.handle("nkc:startTor", async (event, payload?: StartTorPayload) => {
+    assertTrustedIpcSender(event);
     if (!torManager) return { ok: false };
     await torManager.start(payload);
     return { ok: true };
   });
-  ipcMain.handle("nkc:stopTor", async () => {
+  ipcMain.handle("nkc:stopTor", async (event) => {
+    assertTrustedIpcSender(event);
     if (!torManager) return { ok: false };
     await torManager.stop();
     return { ok: true };
   });
   ipcMain.handle(
     "nkc:checkSocksProxyReachable",
-    async (_event, payload: { socksUrl?: string; timeoutMs?: number }) => {
+    async (event, payload: { socksUrl?: string; timeoutMs?: number }) => {
+      assertTrustedIpcSender(event);
       if (!payload?.socksUrl || typeof payload.socksUrl !== "string") return false;
-      return checkSocksProxyReachable(payload.socksUrl, payload.timeoutMs ?? 2000);
+      if (!isAllowedLocalSocksUrl(payload.socksUrl)) return false;
+      const timeoutMs = Math.min(10_000, Math.max(1, payload.timeoutMs ?? 2000));
+      return checkSocksProxyReachable(payload.socksUrl, timeoutMs);
     }
   );
-  ipcMain.handle("nkc:ensureHiddenService", async () => {
+  ipcMain.handle("nkc:ensureHiddenService", async (event) => {
+    assertTrustedIpcSender(event);
     if (!torManager || !onionController) {
       return createIpcError(ONION_CONTROLLER_NOT_READY_MESSAGE);
     }
@@ -606,26 +722,34 @@ const registerOnionControllerIpc = () => {
     onionController.setTorOnionHost(result.onionHost);
     return { ok: true, success: true, onionHost: result.onionHost };
   });
-  ipcMain.handle("nkc:getMyOnionAddress", async () => {
+  ipcMain.handle("nkc:getMyOnionAddress", async (event) => {
+    assertTrustedIpcSender(event);
     return myOnionAddress ?? "";
   });
-  ipcMain.handle("nkc:getalternateRouteStatus", async () => alternateRouteManager?.getStatus() ?? { state: "unavailable" });
-  ipcMain.handle("nkc:configurealternateRouteExternal", async (_event, payload: { proxyUrl: string; serviceAddress?: string }) => {
+  ipcMain.handle("nkc:getalternateRouteStatus", async (event) => {
+    assertTrustedIpcSender(event);
+    return alternateRouteManager?.getStatus() ?? { state: "unavailable" };
+  });
+  ipcMain.handle("nkc:configurealternateRouteExternal", async (event, payload: { proxyUrl: string; serviceAddress?: string }) => {
+    assertTrustedIpcSender(event);
     if (!alternateRouteManager) return { ok: false };
     await alternateRouteManager.configureExternal(payload);
     return { ok: true };
   });
-  ipcMain.handle("nkc:startalternateRoute", async () => {
+  ipcMain.handle("nkc:startalternateRoute", async (event) => {
+    assertTrustedIpcSender(event);
     if (!alternateRouteManager) return { ok: false };
     await alternateRouteManager.start();
     return { ok: true };
   });
-  ipcMain.handle("nkc:stopalternateRoute", async () => {
+  ipcMain.handle("nkc:stopalternateRoute", async (event) => {
+    assertTrustedIpcSender(event);
     if (!alternateRouteManager) return { ok: false };
     await alternateRouteManager.stop();
     return { ok: true };
   });
-  ipcMain.handle("nkc:getMyalternateRouteAddress", async () => {
+  ipcMain.handle("nkc:getMyalternateRouteAddress", async (event) => {
+    assertTrustedIpcSender(event);
     return myalternateRouteAddress ?? "";
   });
 };
@@ -776,18 +900,22 @@ const registerSecretStoreIpc = () => {
 };
 
 const registerAppIpc = () => {
-  ipcMain.handle("prefs:get", async () => {
+  ipcMain.handle("prefs:get", async (event) => {
+    assertTrustedIpcSender(event);
     return readAppPrefs();
   });
-  ipcMain.handle("prefs:set", async (_event, patch: AppPreferencesPatch) => {
+  ipcMain.handle("prefs:set", async (event, patch: AppPreferencesPatch) => {
+    assertTrustedIpcSender(event);
     const next = await setAppPrefs(patch ?? {});
     await applyPrefs(next);
     return next;
   });
-  ipcMain.handle("sync:manual", async () => {
+  ipcMain.handle("sync:manual", async (event) => {
+    assertTrustedIpcSender(event);
     await backgroundService?.manualSync();
   });
-  ipcMain.on("sync:result", (_event, payload: SyncResultPayload) => {
+  ipcMain.on("sync:result", (event, payload: SyncResultPayload) => {
+    if (!isTrustedIpcSender(event)) return;
     if (!payload || typeof payload !== "object") return;
     if (!payload.requestId || typeof payload.requestId !== "string") return;
     const pending = pendingSyncRuns.get(payload.requestId);
@@ -800,24 +928,32 @@ const registerAppIpc = () => {
     }
     pending.reject(new Error(payload.error || "sync-failed"));
   });
-  ipcMain.handle("app:show", async () => {
+  ipcMain.handle("app:show", async (event) => {
+    assertTrustedIpcSender(event);
     if (!focusMainWindow()) createMainWindow();
   });
-  ipcMain.handle("app:hide", async () => {
+  ipcMain.handle("app:hide", async (event) => {
+    assertTrustedIpcSender(event);
     mainWindow?.hide();
   });
-  ipcMain.handle("app:quit", async () => {
+  ipcMain.handle("app:quit", async (event) => {
+    assertTrustedIpcSender(event);
     isQuitting = true;
     app.quit();
   });
 };
 
 const registerTestLogIpc = () => {
-  ipcMain.handle("testLog:path", async () => getTestLogPath(app.getPath("userData")));
-  ipcMain.handle("testLog:friendFlowPath", async () =>
-    getFriendFlowTestLogPath(app.getPath("userData"))
-  );
-  ipcMain.handle("testLog:append", async (_event, payload: TestLogAppendPayload) => {
+  ipcMain.handle("testLog:path", async (event) => {
+    assertTrustedIpcSender(event);
+    return getTestLogPath(app.getPath("userData"));
+  });
+  ipcMain.handle("testLog:friendFlowPath", async (event) => {
+    assertTrustedIpcSender(event);
+    return getFriendFlowTestLogPath(app.getPath("userData"));
+  });
+  ipcMain.handle("testLog:append", async (event, payload: TestLogAppendPayload) => {
+    assertTrustedIpcSender(event);
     if (!payload || typeof payload !== "object") {
       throw new Error("invalid-test-log-payload");
     }
@@ -992,7 +1128,8 @@ const stopNetworkRuntimeForMutation = async (network: OnionNetwork) => {
 };
 
 const registerOnionIpc = () => {
-  ipcMain.handle("onion:status", async () => {
+  ipcMain.handle("onion:status", async (event) => {
+    assertTrustedIpcSender(event);
     const userDataDir = app.getPath("userData");
     return {
       components: {
@@ -1003,7 +1140,8 @@ const registerOnionIpc = () => {
     } satisfies OnionStatusPayload;
   });
 
-  ipcMain.handle("onion:checkUpdates", async () => {
+  ipcMain.handle("onion:checkUpdates", async (event) => {
+    assertTrustedIpcSender(event);
     const userDataDir = app.getPath("userData");
     const torUpdate = await checkUpdates("tor");
     const alternateRouteUpdate = await checkUpdates("alternateRoute");
@@ -1071,8 +1209,9 @@ const registerOnionIpc = () => {
   });
 
   ipcMain.handle("onion:install", async (event, payload: { network: OnionNetwork }) => {
+    assertTrustedIpcSender(event);
     const userDataDir = app.getPath("userData");
-    const network = payload.network;
+    const network = requireOnionNetwork(payload?.network);
     let updates: Awaited<ReturnType<typeof checkUpdates>> | null = null;
     try {
       updates = await checkUpdates(network);
@@ -1211,7 +1350,8 @@ const registerOnionIpc = () => {
   });
 
   ipcMain.handle("onion:applyUpdate", async (event, payload: { network: OnionNetwork }) => {
-    const network = payload.network;
+    assertTrustedIpcSender(event);
+    const network = requireOnionNetwork(payload?.network);
     const state = onionComponentCache[network];
     if (!state.latest) {
       throw new Error("No update available");
@@ -1349,8 +1489,9 @@ const registerOnionIpc = () => {
     }
   });
 
-  ipcMain.handle("onion:uninstall", async (_event, payload: { network: OnionNetwork }) => {
-    const network = payload.network;
+  ipcMain.handle("onion:uninstall", async (event, payload: { network: OnionNetwork }) => {
+    assertTrustedIpcSender(event);
+    const network = requireOnionNetwork(payload?.network);
     await stopNetworkRuntimeForMutation(network);
     const userDataDir = app.getPath("userData");
     const componentRoot = path.join(userDataDir, "onion", "components", network);
@@ -1360,14 +1501,16 @@ const registerOnionIpc = () => {
 
   ipcMain.handle(
     "onion:setMode",
-    async (_event, payload: { enabled: boolean; network: OnionNetwork }) => {
+    async (event, payload: { enabled: boolean; network: OnionNetwork }) => {
+      assertTrustedIpcSender(event);
+      const network = requireOnionNetwork(payload?.network);
       const userDataDir = app.getPath("userData");
       if (!payload.enabled) {
         await onionRuntime.stop();
         emitOnionRuntimeBackgroundStatus();
         return;
       }
-      await onionRuntime.start(userDataDir, payload.network);
+      await onionRuntime.start(userDataDir, network);
       emitOnionRuntimeBackgroundStatus();
     }
   );
@@ -1717,6 +1860,11 @@ export const createMainWindow = () => {
       allowRunningInsecureContent: false,
     },
   });
+  win.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  win.webContents.on("will-navigate", (event, navigationUrl) => {
+    if (!isTrustedRendererUrl(navigationUrl)) event.preventDefault();
+  });
+  win.webContents.on("will-attach-webview", (event) => event.preventDefault());
   win.webContents.on("did-fail-load", (_event, errorCode, errorDesc, validatedURL) => {
     console.error("[main] did-fail-load", errorCode, errorDesc, validatedURL);
   });

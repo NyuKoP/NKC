@@ -28,10 +28,13 @@ type InboxResponse = {
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const postJson = async (url: string, payload: unknown) => {
+const postJson = async (url: string, payload: unknown, authToken?: string) => {
   const response = await fetch(url, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      ...(authToken ? { "X-NKC-Controller-Token": authToken } : {}),
+    },
     body: JSON.stringify(payload),
   });
   const body = (await response.json()) as {
@@ -52,13 +55,17 @@ const sendOverTor = async (
 ) => {
   let lastResult: Awaited<ReturnType<typeof postJson>> | null = null;
   for (let attempt = 1; attempt <= 3; attempt += 1) {
-    lastResult = await postJson(`${sender.baseUrl}/onion/send`, {
-      toDeviceId,
-      fromDeviceId,
-      toOnion: recipientOnion,
-      envelope,
-      route: { mode: "manual", torOnion: recipientOnion },
-    });
+    lastResult = await postJson(
+      `${sender.baseUrl}/onion/send`,
+      {
+        toDeviceId,
+        fromDeviceId,
+        toOnion: recipientOnion,
+        envelope,
+        route: { mode: "manual", torOnion: recipientOnion },
+      },
+      sender.authToken
+    );
     if (
       lastResult.status === 200 &&
       lastResult.body.ok === true &&
@@ -74,7 +81,8 @@ const sendOverTor = async (
 
 const readInbox = async (controller: OnionControllerHandle, deviceId: string) => {
   const response = await fetch(
-    `${controller.baseUrl}/onion/inbox?deviceId=${encodeURIComponent(deviceId)}`
+    `${controller.baseUrl}/onion/inbox?deviceId=${encodeURIComponent(deviceId)}`,
+    { headers: { "X-NKC-Controller-Token": controller.authToken } }
   );
   expect(response.status).toBe(200);
   return (await response.json()) as InboxResponse;
