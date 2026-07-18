@@ -1,98 +1,160 @@
-# Serverless Secure Chat (Electron + React + TS)
+# NKC
 
-This repo contains a serverless, end-to-end encrypted P2P chat app built with Electron, React, and TypeScript.
-It is designed to keep messages encrypted at rest and in transit, with onion-first transport and optional direct fallback.
+NKC is a serverless, end-to-end encrypted desktop chat application built with Electron, React, TypeScript, and a native Go worker. It stores encrypted event envelopes locally and routes peer-to-peer traffic through privacy-preserving transports, with onion routing preferred by policy.
 
-## Security and Crypto
-- Envelope encryption: XChaCha20-Poly1305 with AAD = canonicalized header JSON.
-- Signatures: Ed25519 detached signatures; verify-first before decrypt.
-- Keying: ECDH base key + optional PSK; friend codes for key exchange and TOFU.
-- Ratchet: v2 DH ratchet (X25519) + symmetric chains, backward compatible with v1/legacy.
-- Storage: encrypted event envelopes only; no plaintext message bodies in the database.
+> **Project status:** active development. The current package version is `0.2.0`; interfaces, storage formats, and network behavior may still change.
 
-## Sync and Transport
-- Event-log based sync (append-only `events` table).
-- Deterministic apply ordering; dedup by eventId; replay protection.
-- Transport manager: onion-first policy with optional direct fallback and UI warnings.
-- Manual-only contacts sync; messages auto-sync when connected.
+## Features
 
-## Sync Conflict Rules
-- Events are append-only; merges follow deterministic order (ts asc, authorDeviceId, lamport).
-- Duplicates are ignored by eventId; replays (lamport <= seen) are dropped.
-- Signatures are verified before storing or applying any event.
-- Contacts sync runs only on explicit user action; messages can auto-sync when connected.
-- Transport metadata is privacy-preserving (no IP/ICE strings stored).
+- End-to-end encrypted direct and group conversations
+- Ed25519 signatures and X25519-based key agreement
+- XChaCha20-Poly1305 envelope encryption with authenticated headers
+- Versioned ratchet support and replay protection
+- Encrypted local storage backed by IndexedDB
+- Friend codes, device pairing, and primary/secondary device roles
+- Onion-first routing, Tor hidden-service support, and optional direct fallback
+- Lokinet integration and configurable route policy
+- Electron main/preload isolation with a narrow IPC bridge
+- Native Go worker for offline queue and file operations
 
-## Devices and Roles
-- Primary/Secondary device roles with guards for restricted actions.
-- ROLE_CHANGE events are encrypted + signed in the global scope.
-- Local device registry updates from events and warns on primary conflicts.
+For the security rules that implementations must preserve, see [Transport Security Invariants](docs/SECURITY-transport-invariants.md).
 
-## Debugging and Verification
-- Non-sensitive logs indicate decrypt path and commit timing (`[msg]`/`[sync]` with mode: legacy/v1/v2).
-- Manual two-device checklist: `docs/manual-two-device-checklist.md`.
+## Requirements
 
-## Development
+- Node.js and npm compatible with the versions used by the lockfile
+- Go `1.26` or newer for the native worker
+- A supported Electron desktop platform: Windows, macOS, or Linux
+- Tor or Lokinet only when exercising their corresponding live transport paths
+
+## Getting Started
+
+Install dependencies:
+
 ```bash
 npm install
+```
+
+Start the Vite development server and Electron application:
+
+```bash
 npm run dev
 ```
 
-## Build
+To build first and then launch Electron:
+
 ```bash
+npm start
+```
+
+Set `NKC_SKIP_BUILD=1` when using `npm start` with an existing build.
+
+## Validation
+
+```bash
+# TypeScript, renderer, Electron, and native worker build
 npm run build
+
+# ESLint
+npm run lint
+
+# UTF-8 validation
+npm run lint:encoding
+
+# Unit and integration tests in watch mode
+npm test
+
+# Run Vitest once
+npm test -- --run
+
+# Native Go worker tests
+npm run test:native
+
+# Playwright UI tests
+npm run test:ui
 ```
 
-## Installer Packaging
-This project supports installer packaging with `electron-builder`.
+Install the Playwright Chromium browser before the first UI test run:
 
-### Prerequisites
-- Windows installer (`.exe`): run on Windows
-- macOS installer (`.dmg`/`.zip`): run on macOS
-- Linux installer (`.AppImage`/`.deb`): run on Linux
-
-### Commands
 ```bash
-# All targets for current host OS
-npm run dist
-
-# Windows NSIS installer
-npm run dist:win
-
-# macOS DMG + ZIP
-npm run dist:mac
-
-# Linux AppImage + DEB
-npm run dist:linux
+npx playwright install chromium
 ```
 
-Generated artifacts are placed in `release/`.
+Failure artifacts are written to `test-results/` and `playwright-report/`.
 
-### Notes
-- Code signing/notarization is not configured yet. Unsigned installers may show OS warnings.
-- Optional app icons can be added later under `build/` (for example `build/icon.ico`, `build/icon.icns`, `build/icon.png`).
+## Live Tor Tests
 
-## Release Info
-### Latest Release
-- Version: `v0.1.0-alpha`
-- Release date (UTC): `2026-02-06T11:34:39.3384613Z`
-- Channel: `alpha`
-- Installer/update outputs: `release/`
-- Auto-update manifest: `release/latest.yml`
+The live test requires an installed Tor binary. Install Tor through NKC first or set `NKC_TOR_PATH` to the executable.
 
-### Release Notes (`v0.1.0-alpha`)
-- Applied network-mode changes only after explicit `Save`.
-- Added background sync control wiring (`appControls.syncNow` and status events).
-- Updated CI/package workflow matrix for Windows + macOS + Linux.
-- Added Playwright E2E coverage for friend add flow and friend-list visibility.
+```bash
+npm run test:tor:live
+npm run test:tor:large
+```
 
-## UI E2E Tests (Playwright)
-- Install browsers: `npx playwright install chromium`
-- Run headless: `npm run test:ui`
-- Run headed: `npm run test:ui:headed`
-- Update snapshots: `npm run test:ui -- --update-snapshots`
+The large-transfer command uses a 1 MiB payload by default. The underlying runner accepts `--size-mb=<number>`.
 
-Artifacts (screenshots, videos, traces) are saved in `test-results/` and `playwright-report/` on failures.
+## Packaging
 
-## Repo Notes
-- `dist-electron/` build outputs are ignored and not tracked in git.
+Installer packages are generated by `electron-builder`:
+
+```bash
+npm run dist        # Targets for the current host OS
+npm run dist:win    # Windows NSIS installer
+npm run dist:mac    # macOS DMG and ZIP
+npm run dist:linux  # Linux AppImage and DEB
+```
+
+Artifacts are written to `release/`. Build each platform's installer on that platform. Code signing and notarization are not currently configured, so unsigned packages may trigger operating-system warnings.
+
+## Configuration
+
+Common development and runtime environment variables include:
+
+| Variable | Purpose |
+| --- | --- |
+| `NKC_TOR_PATH` | Path to a Tor executable used by the managed Tor runtime and live tests |
+| `NKC_TOR_BRIDGES` | Tor bridge/circumvention mode override |
+| `NKC_TOR_COUNTRY` | Tor country setting used by the runtime |
+| `NKC_LOKINET_PATH` | Path to a Lokinet executable |
+| `NKC_GO_WORKER_PATH` | Path to a prebuilt native worker |
+| `NKC_SYSTEM_TOR_BIN` | System Tor binary considered by the onion runtime |
+| `VITE_RENDEZVOUS_BASE_URL` | Rendezvous signaling endpoint override |
+| `VITE_RENDEZVOUS_USE_ONION` | Enables onion-proxied rendezvous signaling |
+| `VITE_INFO_COLLECTION_LOGS` | Enables diagnostic information-collection logs |
+| `ELECTRON_DEV_NO_SANDBOX` | Disables the Electron sandbox in development only |
+| `OPEN_DEV_TOOLS` | Opens Electron developer tools at startup |
+
+Do not commit secrets, private keys, start keys, friend codes, bridge credentials, or local runtime data.
+
+## Repository Layout
+
+| Path | Purpose |
+| --- | --- |
+| `src/app/`, `src/components/` | React application shell and UI |
+| `src/main.ts` | Electron main process and IPC registration |
+| `src/preload.ts` | Renderer-facing Electron bridge |
+| `src/crypto/`, `src/security/` | Cryptography, identity, ratchet, and trust logic |
+| `src/net/`, `src/adapters/transports/` | Routing and transport implementations |
+| `src/sync/`, `src/storage/`, `src/db/` | Synchronization and persistent data |
+| `src/main/onion/`, `src/main/tor/` | Managed onion components and Tor runtime |
+| `native/nkc-worker/` | Native Go worker |
+| `tests/ui/` | Playwright end-to-end and visual tests |
+| `docs/` | Architecture, operations, migration, and manual test documentation |
+| `scripts/` | Build, test, diagnostics, and pin-generation utilities |
+
+## Documentation
+
+Start with the [documentation index](docs/README.md). Important references include:
+
+- [Transport and Routing Architecture](docs/ARCH-transport-and-routing.md)
+- [Transport Security Invariants](docs/SECURITY-transport-invariants.md)
+- [Two-Device Manual Checklist](docs/manual-two-device-checklist.md)
+- [Phase 4.6 Operations](docs/phase46-operations.md)
+- [Contributing Guide](CONTRIBUTING.md)
+
+## Security Notice
+
+NKC handles cryptographic keys and private communications. Treat changes to cryptography, storage, transport selection, IPC, device trust, and logging as security-sensitive. Never weaken signature-before-decryption, encrypted-at-rest storage, replay protection, or routing-metadata privacy without an explicit design review.
+
+## License
+
+No license file is currently included. Unless a license is added, normal copyright restrictions apply.
