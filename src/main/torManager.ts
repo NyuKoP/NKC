@@ -29,6 +29,7 @@ const TOR_BRIDGES_ENV = "NKC_TOR_BRIDGES";
 const TOR_COUNTRY_ENV = "NKC_TOR_COUNTRY";
 const DEFAULT_SOCKS_PORT = 9050;
 const START_TIMEOUT_MS = 60_000;
+const BRIDGE_START_TIMEOUT_MS = 180_000;
 const HOSTNAME_TIMEOUT_MS = 15000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -364,11 +365,14 @@ export class TorManager {
         details: `tor-exited(code=${code ?? "null"},signal=${signal ?? "none"})${tail}`,
       });
     });
+    const bootstrapTimeoutMs = this.bridgeDetail?.startsWith("bridges-enabled")
+      ? BRIDGE_START_TIMEOUT_MS
+      : START_TIMEOUT_MS;
     const [portReady, bootstrapReady] = await Promise.all([
       waitForPort(socksPort, START_TIMEOUT_MS, () => !this.isStartingStatus()),
       waitForBootstrap(
         () => this.bootstrapProgress,
-        START_TIMEOUT_MS,
+        bootstrapTimeoutMs,
         () => !this.isStartingStatus()
       ),
     ]);

@@ -23,6 +23,7 @@ const textEncoder = new TextEncoder();
 
 type KeyAgreementBuildOptions = {
   pskHint?: string;
+  localDhPriv?: Uint8Array;
   localFriendCode?: string;
   remoteFriendCode?: string;
   remoteIdentityPub?: string;
@@ -34,6 +35,7 @@ type KeyAgreementBuildOptions = {
 
 type KeyAgreementVerifyOptions = {
   localFriendCode?: string;
+  localDhPriv?: Uint8Array;
 };
 
 type ResolvedPeer = {
@@ -285,7 +287,7 @@ export const buildKeyAgreementRecord = async (
   const context = canonicalBytes(
     toConfirmationPayload(handshake, contact, nonce, pskHint)
   );
-  const localDhPriv = await getDhPrivateKey();
+  const localDhPriv = options?.localDhPriv ?? await getDhPrivateKey();
   const localDhPubBytes = decodeBase64Url(localPeer.dhPub);
   const remoteDhPubBytes = decodeBase64Url(remotePeer.dhPub);
   const sharedSecret = await deriveSharedSecret(
@@ -362,7 +364,7 @@ export const verifyKeyAgreementRecord = async (
   const context = canonicalBytes(
     toConfirmationPayload(handshake, contact, nonce, record.pskHint)
   );
-  const localDhPriv = await getDhPrivateKey();
+  const localDhPriv = options?.localDhPriv ?? await getDhPrivateKey();
   const localDhPubBytes = decodeBase64Url(localPeer.dhPub);
   const remoteDhPubBytes = decodeBase64Url(frame.from.dhPub);
   const sharedSecret = await deriveSharedSecret(
