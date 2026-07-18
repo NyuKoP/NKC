@@ -24,9 +24,11 @@ import { checkUpdates } from "./main/onion/update/checkUpdates";
 import { PinnedHashMissingError } from "./main/onion/errors";
 import { startOnionController, type OnionControllerHandle } from "./main/onionController";
 import {
-  P2POfflineQueueManager,
+  NativeOfflineQueueManager,
+  type OfflineQueueManager,
   type P2PFriendRoute,
-} from "./main/p2pOfflineQueueManager";
+} from "./main/nativeOfflineQueueManager";
+import { NativeWorkerClient } from "./main/nativeWorkerClient";
 import { TorManager } from "./main/torManager";
 import { alternateRouteManager } from "./main/alternateRouteManager";
 import { readAppPrefs, setAppPrefs } from "./main/preferences";
@@ -815,6 +817,44 @@ const registerP2PQueueIpc = () => {
   });
 };
 
+const registerNativeWorkerIpc = () => {
+  ipcMain.handle(
+    "nativeWorker:fileInspect",
+    async (event, payload: { path?: string; chunkSize?: number }) => {
+      assertTrustedIpcSender(event);
+      if (!nativeWorkerClient) return { ok: false, error: "native-worker-unavailable" };
+      if (!payload?.path || !path.isAbsolute(payload.path) || !Number.isInteger(payload.chunkSize)) {
+        return { ok: false, error: "invalid-file-request" };
+      }
+      const result = await nativeWorkerClient.request("file.inspect", payload, 120_000);
+      return { ok: true, result };
+    }
+  );
+  ipcMain.handle(
+    "nativeWorker:fileChunk",
+    async (event, payload: { path?: string; index?: number; chunkSize?: number }) => {
+      assertTrustedIpcSender(event);
+      if (!nativeWorkerClient) return { ok: false, error: "native-worker-unavailable" };
+      if (
+        !payload?.path ||
+        !path.isAbsolute(payload.path) ||
+        !Number.isInteger(payload.index) ||
+        !Number.isInteger(payload.chunkSize)
+      ) {
+        return { ok: false, error: "invalid-file-request" };
+      }
+      const result = await nativeWorkerClient.request("file.chunk", payload, 30_000);
+      return { ok: true, result };
+    }
+  );
+  ipcMain.handle("nativeWorker:schedule", async (event, payload: unknown) => {
+    assertTrustedIpcSender(event);
+    if (!nativeWorkerClient) return { ok: false, error: "native-worker-unavailable" };
+    const result = await nativeWorkerClient.request("scheduler.plan", payload, 5_000);
+    return { ok: true, result };
+  });
+};
+
 const readSecretStore = async () => {
   const filePath = path.join(app.getPath("userData"), SECRET_STORE_FILENAME);
   try {
@@ -989,7 +1029,8 @@ let torManager: TorManager | null = null;
 let myOnionAddress: string | null = null;
 let alternateRouteManager: alternateRouteManager | null = null;
 let myalternateRouteAddress: string | null = null;
-let p2pQueueManager: P2POfflineQueueManager | null = null;
+let p2pQueueManager: OfflineQueueManager | null = null;
+let nativeWorkerClient: NativeWorkerClient | null = null;
 let currentTorSocksProxy: string | null = null;
 let shutdownInProgress: Promise<void> | null = null;
 let runtimeShutdownComplete = false;
@@ -1003,6 +1044,8 @@ const shutdownBackgroundRuntimes = async () => {
       torManager?.stop(),
       alternateRouteManager?.stop(),
     ]);
+    await nativeWorkerClient?.stop();
+    nativeWorkerClient = null;
     currentTorSocksProxy = null;
     p2pQueueManager?.updateProxyUrl(null);
     runtimeShutdownComplete = true;
@@ -1980,17 +2023,37 @@ app.whenReady().then(async () => {
   registerOnionIpc();
   registerOnionControllerIpc();
   registerP2PQueueIpc();
+  registerNativeWorkerIpc();
   registerAppIpc();
   registerTestLogIpc();
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
     alternateRouteManager = new alternateRouteManager({ appDataDir: app.getPath("userData") });
-    p2pQueueManager = new P2POfflineQueueManager({
-      dbPath: path.join(app.getPath("userData"), "p2p-offline-queue.json"),
-      getTorSocksProxy: () => currentTorSocksProxy,
-      log: (message, detail) => console.info(message, detail ?? {}),
-    });
-    p2pQueueManager.start();
+    const legacyQueuePath = path.join(app.getPath("userData"), "p2p-offline-queue.json");
+    try {
+      const executableName = process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker";
+      const executablePath =
+        process.env.NKC_GO_WORKER_PATH ||
+        (app.isPackaged
+          ? path.join(process.resourcesPath, "native", executableName)
+          : path.join(process.cwd(), "native", "bin", executableName));
+      const client = new NativeWorkerClient(executablePath);
+      await client.start();
+      const nativeQueue = await NativeOfflineQueueManager.create(
+        client,
+        path.join(app.getPath("userData"), "p2p-offline-queue-go.json"),
+        legacyQueuePath
+      );
+      nativeWorkerClient = client;
+      p2pQueueManager = nativeQueue;
+      console.info("[native-worker] Go file, queue, and scheduler engines ready");
+    } catch (error) {
+      console.error("[native-worker] startup failed; native queue unavailable", error);
+      await nativeWorkerClient?.stop();
+      nativeWorkerClient = null;
+      p2pQueueManager = null;
+    }
+    p2pQueueManager?.start();
     try {
         onionController = await startOnionController({
           port: 3210,

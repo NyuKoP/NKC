@@ -102,6 +102,32 @@ declare global {
         cb: (payload: P2PChatMessageEventPayload) => void
       ) => () => void;
     };
+    nativeWorker?: {
+      inspectFile: (
+        file: File,
+        chunkSize: number
+      ) => Promise<{
+        ok: boolean;
+        error?: string;
+        result?: { size: number; chunkSize: number; total: number; sha256: string };
+      }>;
+      readFileChunk: (
+        file: File,
+        index: number,
+        chunkSize: number
+      ) => Promise<{
+        ok: boolean;
+        error?: string;
+        result?: { index: number; bytes: number; data: string; sha256: string };
+      }>;
+      planDelivery: (payload: unknown) => Promise<{
+        ok: boolean;
+        error?: string;
+        result?: {
+          selected: Array<{ id: string; attempts: number; nextAttemptAtMs: number }>;
+        };
+      }>;
+    };
     testLog?: {
       append: (payload: { channel: string; event: unknown; at?: string }) => Promise<{
         ok: boolean;

@@ -137,6 +137,10 @@ import {
 import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
 import { onBackgroundStatus, onSyncRun, reportSyncResult } from "../appControl";
+import {
+  INLINE_MEDIA_CHUNK_SIZE,
+  INLINE_MEDIA_MAX_BYTES,
+} from "../net/mediaTransferLimits";
 
 const buildNameMap = (
   profiles: UserProfile[],
@@ -152,8 +156,6 @@ const buildNameMap = (
     return acc;
   }, {});
 
-const INLINE_MEDIA_MAX_BYTES = 500 * 1024 * 1024;
-const INLINE_MEDIA_CHUNK_SIZE = 128 * 1024;
 const READ_CURSOR_THROTTLE_MS = 1500;
 const ROUTE_PENDING_TOAST_COOLDOWN_MS = 10_000;
 const FRIEND_ROUTE_SEND_DEADLINE_MS = 70_000;
@@ -2204,6 +2206,17 @@ export default function App() {
           await hydrateVault();
 
           const sendTransfer = async () => {
+            const nativeInspection = await window.nativeWorker
+              ?.inspectFile(file, INLINE_MEDIA_CHUNK_SIZE)
+              .catch(() => null);
+            if (nativeInspection?.ok && nativeInspection.result) {
+              if (
+                nativeInspection.result.size !== file.size ||
+                nativeInspection.result.total !== media.total
+              ) {
+                throw new Error("Native file inspection mismatch");
+              }
+            }
             await sendDirectEnvelope(
               conv,
               partner,
@@ -2212,12 +2225,19 @@ export default function App() {
               { eventId: messageId }
             );
             for (let idx = 0; idx < media.total; idx += 1) {
-              const start = idx * INLINE_MEDIA_CHUNK_SIZE;
-              const bytes = new Uint8Array(
-                await file
-                  .slice(start, Math.min(file.size, start + INLINE_MEDIA_CHUNK_SIZE))
-                  .arrayBuffer()
-              );
+              const nativeChunk = await window.nativeWorker
+                ?.readFileChunk(file, idx, INLINE_MEDIA_CHUNK_SIZE)
+                .catch(() => null);
+              let chunkBase64 = nativeChunk?.ok ? nativeChunk.result?.data : undefined;
+              if (!chunkBase64) {
+                const start = idx * INLINE_MEDIA_CHUNK_SIZE;
+                const bytes = new Uint8Array(
+                  await file
+                    .slice(start, Math.min(file.size, start + INLINE_MEDIA_CHUNK_SIZE))
+                    .arrayBuffer()
+                );
+                chunkBase64 = encodeBase64Url(bytes);
+              }
               const chunkBody = {
                 type: "media",
                 phase: "chunk",
@@ -2228,7 +2248,7 @@ export default function App() {
                 mime: media.mime,
                 name: media.name,
                 size: media.size,
-                b64: encodeBase64Url(bytes),
+                b64: chunkBase64,
                 clientBatchId,
               };
               await sendDirectEnvelope(conv, partner, chunkBody, "normal", {

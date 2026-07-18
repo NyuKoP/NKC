@@ -1,7 +1,6 @@
 import { sweepExpired } from "../policies/deliveryPolicy";
 import type { OutboxRecord } from "../db/schema";
-import type { NetMode, RetryPolicy } from "./retryPolicy";
-import { retryByMode, canRetry, computeNextAttemptAtMs } from "./retryPolicy";
+export type NetMode = "direct" | "tor" | "alternateRoute" | "onion";
 import {
   listRetryableOutbox,
   listInFlightTimedOut,
@@ -24,6 +23,21 @@ export type DeliverySchedulerOptions = {
   getNetMode?: () => NetMode;
   isOnline?: () => boolean;
   logger?: Pick<Console, "debug" | "info" | "warn" | "error">;
+  planDelivery?: (payload: {
+    now: number;
+    mode: NetMode;
+    batchSize: number;
+    items: Array<{
+      id: string;
+      priority: "high" | "normal";
+      attempts: number;
+      nextAttemptAtMs: number;
+      expiresAtMs: number;
+      createdAtMs: number;
+    }>;
+  }) => Promise<{
+    selected: Array<{ id: string; attempts: number; nextAttemptAtMs: number }>;
+  } | null>;
 };
 
 export const createDeliveryScheduler = (
@@ -36,13 +50,12 @@ export const createDeliveryScheduler = (
   const getNetMode = opts.getNetMode ?? (() => "direct" as NetMode);
   const isOnline = opts.isOnline ?? (() => true);
   const log = opts.logger ?? console;
+  const planDelivery = opts.planDelivery;
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let running = false;
   const inFlight = new Set<string>();
   const workerId = `delivery-worker:${createId()}`;
-
-  const policyForNow = (): RetryPolicy => retryByMode[getNetMode()];
 
   const tick = async () => {
     if (running) return;
@@ -50,8 +63,6 @@ export const createDeliveryScheduler = (
 
     running = true;
     const now = Date.now();
-    const policy = policyForNow();
-
     try {
       const pending = await listPendingOutbox();
       const dueNow = pending.filter((record) => (record.nextAttemptAtMs ?? now) <= now).length;
@@ -85,23 +96,41 @@ export const createDeliveryScheduler = (
         log.debug?.(`[delivery] ack timeout -> pending id=${rec.id}`);
       }
 
-      const items = await listRetryableOutbox(now, batchSize);
+      const candidates = await listRetryableOutbox(now, planDelivery ? batchSize * 4 : batchSize);
+      const nativePlan = planDelivery
+        ? await planDelivery({
+            now,
+            mode: getNetMode(),
+            batchSize,
+            items: candidates.map((record) => ({
+              id: record.id,
+              priority: record.priority ?? "normal",
+              attempts: record.attempts ?? 0,
+              nextAttemptAtMs: record.nextAttemptAtMs,
+              expiresAtMs: record.expiresAtMs,
+              createdAtMs: record.createdAtMs,
+            })),
+          }).catch((error) => {
+            log.warn?.("[delivery] native scheduler unavailable", error);
+            return null;
+          })
+        : null;
+      if (candidates.length > 0 && !nativePlan) {
+        log.warn?.("[delivery] native scheduler unavailable; deferring queued records");
+      }
+      const plannedById = new Map(nativePlan?.selected.map((item) => [item.id, item]) ?? []);
+      const items = nativePlan
+        ? nativePlan.selected
+            .map((item) => candidates.find((record) => record.id === item.id))
+            .filter((record): record is OutboxRecord => Boolean(record))
+        : [];
       for (const rec of items) {
         if (inFlight.has(rec.id)) continue;
         if (now >= rec.expiresAtMs) continue;
 
         const attempts = rec.attempts ?? 0;
-        if (!canRetry(attempts, policy)) {
-          emitFlowTraceLog({
-            event: "retry:exhausted",
-            opId: rec.id,
-            attemptMax: attempts,
-            finalErrCode: "MAX_ATTEMPTS_REACHED",
-          });
-          log.warn?.(`[delivery] maxAttempts reached id=${rec.id} attempts=${attempts}`);
-          continue;
-        }
-
+        const planned = plannedById.get(rec.id);
+        if (!planned) continue;
         inFlight.add(rec.id);
         emitFlowTraceLog({
           event: "deliveryWorker:pickup",
@@ -112,9 +141,10 @@ export const createDeliveryScheduler = (
           retryAtPrev: rec.nextAttemptAtMs ?? null,
         });
 
-        const nextAttemptAtMs = computeNextAttemptAtMs(now, attempts, policy);
+        const nextAttempts = planned.attempts;
+        const nextAttemptAtMs = planned.nextAttemptAtMs;
         await updateOutbox(rec.id, {
-          attempts: attempts + 1,
+          attempts: nextAttempts,
           lastAttemptAtMs: now,
           nextAttemptAtMs,
         });
@@ -122,7 +152,7 @@ export const createDeliveryScheduler = (
         try {
           const result = await send({
             ...rec,
-            attempts: attempts + 1,
+            attempts: nextAttempts,
             lastAttemptAtMs: now,
             nextAttemptAtMs,
           });
@@ -165,7 +195,7 @@ export const createDeliveryScheduler = (
                 attempt: attempts + 1,
                 backoffMs: Math.max(0, nextAttemptAtMs - now),
                 nextRetryAt: nextAttemptAtMs,
-                capHit: !canRetry(attempts + 1, policy),
+                capHit: false,
               });
               emitFlowTraceLog({
                 event: "friendRequest:stateChange",

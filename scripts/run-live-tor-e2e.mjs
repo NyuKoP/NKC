@@ -5,7 +5,7 @@ import { spawnSync } from "node:child_process";
 const args = new Set(process.argv.slice(2));
 const large = args.has("--large");
 const sizeArg = [...args].find((value) => value.startsWith("--size-mb="));
-const sizeMb = sizeArg?.slice("--size-mb=".length) ?? "10";
+const sizeMb = sizeArg?.slice("--size-mb=".length) ?? "1";
 
 const findBundledTor = () => {
   if (process.env.NKC_TOR_PATH && fs.existsSync(process.env.NKC_TOR_PATH)) {

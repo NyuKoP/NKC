@@ -24,6 +24,17 @@ vi.mock("../../policies/deliveryPolicy", () => {
 import { createDeliveryScheduler } from "../deliveryScheduler";
 import type { OutboxRecord } from "../../db/schema";
 
+const nativePlanner = async (payload: {
+  now: number;
+  items: Array<{ id: string; attempts: number }>;
+}) => ({
+  selected: payload.items.map((item) => ({
+    id: item.id,
+    attempts: item.attempts + 1,
+    nextAttemptAtMs: payload.now + 2_000,
+  })),
+});
+
 describe("deliveryScheduler", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -80,7 +91,10 @@ describe("deliveryScheduler", () => {
     listRetryableOutbox.mockResolvedValue([record]);
     const send = vi.fn(async () => ({ ok: true as const }));
 
-    const scheduler = createDeliveryScheduler(send, { ackTimeoutMs: 1000 });
+    const scheduler = createDeliveryScheduler(send, {
+      ackTimeoutMs: 1000,
+      planDelivery: nativePlanner,
+    });
     await scheduler._tick();
 
     expect(updateOutbox).toHaveBeenCalledWith("m2", expect.objectContaining({

@@ -29,6 +29,7 @@ export type OutboxRecord = {
   nextAttemptAt?: number;
   lastError?: string;
   ciphertext: string;
+  priority?: "high" | "normal";
   // Legacy metadata kept for compatibility with existing delivery modules.
   toDeviceId?: string;
   torOnion?: string;
