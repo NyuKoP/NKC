@@ -263,7 +263,7 @@ describe("syncEngine signature verification", () => {
   });
 
   it("drops untrusted friend frames without valid signature", async () => {
-    await handleIncomingFriendFrame({
+    const handled = await handleIncomingFriendFrame({
       type: "friend_accept",
       convId: "c1",
       from: {
@@ -274,6 +274,7 @@ describe("syncEngine signature verification", () => {
     });
 
     const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    expect(handled).toBe(false);
     expect(vi.mocked(repo.saveProfile)).not.toHaveBeenCalled();
     expect(vi.mocked(repo.saveConversation)).not.toHaveBeenCalled();
   });
@@ -281,7 +282,7 @@ describe("syncEngine signature verification", () => {
   it("drops friend frames when external protocol verification fails", async () => {
     const identityPub = encodeBase64Url(new Uint8Array(32).fill(1));
     const dhPub = encodeBase64Url(new Uint8Array(32).fill(2));
-    await handleIncomingFriendFrame(
+    const handled = await handleIncomingFriendFrame(
       {
         type: "friend_req",
         convId: "c1",
@@ -316,6 +317,7 @@ describe("syncEngine signature verification", () => {
     );
 
     const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    expect(handled).toBe(false);
     expect(vi.mocked(repo.saveProfile)).not.toHaveBeenCalled();
     expect(vi.mocked(repo.saveConversation)).not.toHaveBeenCalled();
   });
@@ -358,7 +360,8 @@ describe("syncEngine signature verification", () => {
           deviceId: "peer-device",
         },
         profile: {
-          displayName: "Peer",
+          displayName: "Peer Accepted",
+          status: "online",
         },
         ts: Date.now(),
       },
@@ -524,7 +527,8 @@ describe("syncEngine signature verification", () => {
           friendCode,
         },
         profile: {
-          displayName: "Peer",
+          displayName: "Peer Accepted",
+          status: "online",
         },
         ts: Date.now(),
       },
@@ -533,6 +537,8 @@ describe("syncEngine signature verification", () => {
 
     expect(vi.mocked(repo.saveProfile)).toHaveBeenCalledWith(
       expect.objectContaining({
+        displayName: "Peer Accepted",
+        status: "online",
         friendStatus: "normal",
         primaryDeviceId: "33333333-3333-4333-8333-333333333333",
         routingHints: {

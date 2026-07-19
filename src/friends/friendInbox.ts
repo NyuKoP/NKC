@@ -113,10 +113,26 @@ export const startFriendInboxListener = (
         context: commonContext,
       });
       try {
-        await handleIncomingFriendFrame(
+        const handled = await handleIncomingFriendFrame(
           parsed as Parameters<typeof handleIncomingFriendFrame>[0],
           { localFriendCode: await getLocalFriendCodeCallback?.() }
         );
+        if (!handled) {
+          emitFriendRouteIncomingInfoLog({
+            direction: "incoming",
+            status: "dropped",
+            frameType: frame.type,
+            source: "friends:startFriendInboxListener",
+            traceId: frame.traceId,
+            via: meta.via,
+            packetId: effectivePacket.id,
+            convId: frame.convId,
+            fromDeviceId: frame.from?.deviceId,
+            toDeviceId: resolveToDeviceId(effectivePacket),
+            context: commonContext,
+          });
+          return;
+        }
       } catch (error) {
         emitFriendRouteIncomingInfoLog({
           direction: "incoming",

@@ -1,3 +1,5 @@
+import { createId } from "../utils/ids";
+
 export type SyncPingFrame = {
   type: "SYNC_PING";
   id: string;
@@ -75,10 +77,7 @@ const parseControlFrame = (bytes: Uint8Array): ConnectionManagerFrame | null => 
 const backoffDelayMs = (attempt: number, maxBackoffMs: number) =>
   Math.min(2 ** Math.max(0, attempt) * 1000, maxBackoffMs);
 
-const defaultCreateId = () => {
-  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
-  return `sync-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-};
+const defaultCreateId = createId;
 
 export class ConnectionManager {
   private readonly convId: string;

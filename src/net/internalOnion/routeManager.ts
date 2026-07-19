@@ -64,13 +64,10 @@ const toHex = (bytes: Uint8Array) =>
 
 const defaultRandomBytes = (size: number) => {
   const bytes = new Uint8Array(size);
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-    return bytes;
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error("Secure random generator is unavailable");
   }
-  for (let i = 0; i < size; i += 1) {
-    bytes[i] = Math.floor(Math.random() * 256);
-  }
+  globalThis.crypto.getRandomValues(bytes);
   return bytes;
 };
 

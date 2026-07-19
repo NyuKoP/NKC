@@ -468,7 +468,31 @@ test.describe("Friend add E2E", () => {
         }, { timeout: 30_000 })
         .toBeGreaterThan(0);
 
-      await addFriendCode(bob, aliceCode);
+      await bob.getByTestId("sidebar").getByText("Alice", { exact: true }).first().click();
+      await expect(bob.getByRole("button", { name: "수락", exact: true })).toBeVisible();
+      await bob.getByRole("button", { name: "수락", exact: true }).click();
+      await expect
+        .poll(() => onionServer.getInboxCount(alicePayload.deviceId ?? ""), { timeout: 10_000 })
+        .toBeGreaterThan(0);
+      await expect
+        .poll(async () => {
+          const logs = await readFriendFlowLogs(alice);
+          return logs.some((record) => {
+            if (record.channel !== "friend-route") return false;
+            const event = record.event as {
+              direction?: unknown;
+              status?: unknown;
+              frameType?: unknown;
+            };
+            return (
+              event.direction === "incoming" &&
+              event.status === "handled" &&
+              event.frameType === "friend_accept"
+            );
+          });
+        }, { timeout: 30_000 })
+        .toBe(true);
+
       await expect
         .poll(async () => {
           await alice.getByTestId("list-mode-friends").click();
@@ -482,7 +506,10 @@ test.describe("Friend add E2E", () => {
           return [...aliceLogs, ...bobLogs].some((record) => {
             if (record.channel !== "friend-route") return false;
             const event = record.event as { status?: unknown; frameType?: unknown };
-            return event.status === "sent" && event.frameType === "friend_req";
+            return (
+              event.status === "sent" &&
+              (event.frameType === "friend_req" || event.frameType === "friend_accept")
+            );
           });
         })
         .toBe(true);

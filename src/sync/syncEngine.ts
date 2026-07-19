@@ -433,7 +433,14 @@ const computeSafetyNumber = async (identityA: string, identityB: string) => {
 const resolveFriendByIdentity = async (identityPub?: string) => {
   if (!identityPub) return null;
   const profiles = await listProfiles();
-  return profiles.find((profile) => profile.identityPub === identityPub) ?? null;
+  const exact = profiles.find((profile) => profile.identityPub === identityPub);
+  if (exact) return exact;
+  try {
+    const friendId = computeFriendId(decodeBase64Url(identityPub));
+    return profiles.find((profile) => profile.friendId === friendId) ?? null;
+  } catch {
+    return null;
+  }
 };
 
 const upsertFriendFromRequest = async (
@@ -647,9 +654,17 @@ const upsertFriendFromRequest = async (
 };
 
 const applyFriendResponse = async (convId: string, payload: FriendResponseFrame) => {
-  if (!payload.from?.identityPub || !payload.from?.dhPub) return;
+  if (!payload.from?.identityPub || !payload.from?.dhPub) return false;
   const existing = await resolveFriendByIdentity(payload.from.identityPub);
-  if (!existing) return;
+  if (!existing) {
+    emitFriendLifecycleTrace("friendLifecycle:incoming-response:friend-not-found", {
+      traceId: payload.traceId,
+      frameType: payload.type,
+      convId,
+      stage: "applyFriendResponse:friend-not-found",
+    });
+    return false;
+  }
   emitFriendLifecycleTrace("friendLifecycle:incoming-response:start", {
     traceId: payload.traceId,
     frameType: payload.type,
@@ -678,6 +693,9 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
     existing.primaryDeviceId;
   await saveProfile({
     ...existing,
+    displayName: payload.profile?.displayName ?? existing.displayName,
+    status: payload.profile?.status ?? existing.status,
+    avatarRef: payload.profile?.avatarRef ?? existing.avatarRef,
     friendStatus,
     primaryDeviceId: resolvedDeviceId,
     routingHints: sanitizeRoutingHints({
@@ -718,7 +736,7 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
         item.participants.includes(existing.id)
     ) ??
     null;
-  if (!conv) return;
+  if (!conv) return true;
   await saveConversation({
     ...conv,
     pendingAcceptance: false,
@@ -736,13 +754,14 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
     friendStatus,
     hidden: friendStatus === "blocked" ? true : conv.hidden,
   });
+  return true;
 };
 
 export const handleIncomingFriendFrame = async (
   payload: FriendControlFrame,
   options: { trustedEnvelope?: boolean; localFriendCode?: string } = {}
 ) => {
-  if (!isFriendControlFrame(payload)) return;
+  if (!isFriendControlFrame(payload)) return false;
   if (!options.trustedEnvelope) {
     const verified = await verifyFriendControlFrameSignature(payload);
     if (!verified) {
@@ -753,7 +772,7 @@ export const handleIncomingFriendFrame = async (
         convId: payload.convId,
         stage: "handleIncomingFriendFrame:invalid-signature",
       });
-      return;
+      return false;
     }
   }
   const protocolCheck = await verifyFriendControlFrameProtocol(payload, {
@@ -771,17 +790,18 @@ export const handleIncomingFriendFrame = async (
       stage: "handleIncomingFriendFrame:invalid-protocol",
       reason: protocolCheck.reason ?? null,
     });
-    return;
+    return false;
   }
   if (payload.type === "friend_req") {
     const convId = payload.convId ?? createId();
     await upsertFriendFromRequest(convId, payload);
-    return;
+    return true;
   }
   if (payload.type === "friend_accept" || payload.type === "friend_decline") {
     const convId = payload.convId ?? "";
-    await applyFriendResponse(convId, payload);
+    return applyFriendResponse(convId, payload);
   }
+  return false;
 };
 
 const verifyHandshakeCompat = async (
