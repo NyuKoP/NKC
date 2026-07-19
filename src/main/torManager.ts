@@ -462,6 +462,10 @@ export class TorManager {
     return this.status;
   }
 
+  invalidateResolvedPath() {
+    this.torPath = null;
+  }
+
   getDiagnostics(): TorDiagnostics {
     return {
       state: this.status.state,
