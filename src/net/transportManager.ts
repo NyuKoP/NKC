@@ -13,6 +13,7 @@ import {
 } from "../db/repo";
 import { createSafeConsole } from "../diagnostics/safeConsole";
 import { createId } from "../utils/ids";
+import { ONION_TRANSFER_MAX_BODY_BYTES } from "./mediaTransferLimits";
 
 const console = createSafeConsole(globalThis.console);
 
@@ -50,7 +51,7 @@ let directApprovalHandler: ((convId: string) => Promise<boolean>) | null = null;
 const DEFAULT_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
 const BACKOFF_RESET_MS = 10_000;
-const MAX_FRAME_BYTES = 256 * 1024;
+const MAX_FRAME_BYTES = ONION_TRANSFER_MAX_BODY_BYTES;
 const RATE_WINDOW_MS = 1000;
 const MAX_MESSAGES_PER_WINDOW = 20;
 const DEFAULT_SEND_TTL_MS = 7 * 24 * 60 * 60 * 1000;

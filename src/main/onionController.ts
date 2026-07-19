@@ -5,6 +5,7 @@ import type { TorStatus } from "./torManager";
 import type { alternateRouteStatus } from "./alternateRouteManager";
 import type { SocksTransport } from "./socksHttpClient";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
+import { ONION_TRANSFER_MAX_BODY_BYTES } from "../net/mediaTransferLimits";
 import { appendTestLogRecord } from "./testLogStore";
 
 type InboxItem = {
@@ -43,7 +44,7 @@ export type OnionControllerHandle = {
 
 const DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 60 * 1000;
-const MAX_BODY_BYTES = 256 * 1024;
+const MAX_BODY_BYTES = ONION_TRANSFER_MAX_BODY_BYTES;
 const MAX_INBOX_BYTES = 64 * 1024 * 1024;
 const MAX_DEVICE_INBOX_BYTES = 32 * 1024 * 1024;
 const MAX_INBOX_ITEMS = 4096;
