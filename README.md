@@ -105,6 +105,8 @@ npm run dist:linux  # Linux AppImage and DEB
 
 Artifacts are written to `release/`. Build each platform's installer on that platform. Code signing and notarization are not currently configured, so unsigned packages may trigger operating-system warnings.
 
+The Windows command deterministically generates `build/icon.png` and `build/icon.ico`, packages the unpacked application, applies the NKC icon and version metadata with `resedit-cli`, and then creates the NSIS installer. This avoids requiring Windows Developer Mode merely to unpack cross-platform signing-tool archives. It does not replace Authenticode signing; a trusted code-signing certificate is still required for signed public releases.
+
 ## Configuration
 
 Common development and runtime environment variables include:
