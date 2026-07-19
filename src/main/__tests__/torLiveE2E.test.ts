@@ -497,8 +497,12 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       const prewarm = await controllerA.prewarmTorRoute(bob.onionAddr);
       expect(prewarm.ok).toBe(true);
       const transferStartedAt = Date.now();
+      const sendWindow = 8;
 
-      for (let index = 0; index < totalChunks; index += 1) {
+      for (let windowStart = 0; windowStart < totalChunks; windowStart += sendWindow) {
+        const windowEnd = Math.min(totalChunks, windowStart + sendWindow);
+        const outgoing: Array<{ index: number; envelope: string }> = [];
+        for (let index = windowStart; index < windowEnd; index += 1) {
           const offset = index * LIVE_FILE_CHUNK_BYTES;
           const length = Math.min(LIVE_FILE_CHUNK_BYTES, totalBytes - offset);
           const bytes = Buffer.allocUnsafe(length);
@@ -533,75 +537,88 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
           );
           const envelope = JSON.stringify(encrypted);
 
-        if (!interruptionVerified && index >= Math.floor(totalChunks / 2)) {
-          const chatEnvelope = JSON.stringify({
-            type: "chat",
-            text: `chat-during-file-${Date.now()}`,
-          });
-          const chatStartedAt = Date.now();
-          await sendOverTor(
-            controllerB,
-            alice.onionAddr,
-            bob.deviceId,
-            alice.deviceId,
-            chatEnvelope
-          );
-          chatTransferMs = Date.now() - chatStartedAt;
-          const chatInbox = await readInbox(controllerA, alice.deviceId, inboxACursor);
-          inboxACursor = chatInbox.nextAfter;
-          expect(chatInbox.items.at(-1)?.envelope).toBe(chatEnvelope);
+          if (!interruptionVerified && index >= Math.floor(totalChunks / 2)) {
+            const chatEnvelope = JSON.stringify({
+              type: "chat",
+              text: `chat-during-file-${Date.now()}`,
+            });
+            const chatStartedAt = Date.now();
+            await sendOverTor(
+              controllerB,
+              alice.onionAddr,
+              bob.deviceId,
+              alice.deviceId,
+              chatEnvelope
+            );
+            chatTransferMs = Date.now() - chatStartedAt;
+            const chatInbox = await readInbox(controllerA, alice.deviceId, inboxACursor);
+            inboxACursor = chatInbox.nextAfter;
+            expect(chatInbox.items.at(-1)?.envelope).toBe(chatEnvelope);
 
-          await controllerA.setTorSocksProxy(null);
-          const pausedResult = await postJson(
-            `${controllerA.baseUrl}/onion/send`,
-            {
-              toDeviceId: bob.deviceId,
-              fromDeviceId: alice.deviceId,
-              toOnion: bob.onionAddr,
-              envelope,
-              route: { mode: "manual", torOnion: bob.onionAddr },
-            },
-            controllerA.authToken
-          );
-          expect(pausedResult.body.forwarded).not.toBe(true);
-          await controllerA.setTorSocksProxy(torProxyA);
-          const resumedPrewarm = await controllerA.prewarmTorRoute(bob.onionAddr);
-          expect(resumedPrewarm.ok).toBe(true);
-          interruptionVerified = true;
-        }
-
-        const chunkStartedAt = Date.now();
-        await sendOverTor(
-          controllerA,
-          bob.onionAddr,
-          alice.deviceId,
-          bob.deviceId,
-          envelope
-        );
-        chunkDurations.push(Date.now() - chunkStartedAt);
-
-        const inbox = await readInbox(controllerB, bob.deviceId, inboxBCursor);
-        inboxBCursor = inbox.nextAfter;
-        let received: { idx: number; b64: string } | null = null;
-        for (const item of inbox.items) {
-          const receivedEnvelope = JSON.parse(item.envelope) as Envelope;
-          if (receivedEventIds.has(receivedEnvelope.header.eventId)) {
-            duplicateDeliveries += 1;
-            continue;
+            await controllerA.setTorSocksProxy(null);
+            const pausedResult = await postJson(
+              `${controllerA.baseUrl}/onion/send`,
+              {
+                toDeviceId: bob.deviceId,
+                fromDeviceId: alice.deviceId,
+                toOnion: bob.onionAddr,
+                envelope,
+                route: { mode: "manual", torOnion: bob.onionAddr },
+              },
+              controllerA.authToken
+            );
+            expect(pausedResult.body.forwarded).not.toBe(true);
+            await controllerA.setTorSocksProxy(torProxyA);
+            const resumedPrewarm = await controllerA.prewarmTorRoute(bob.onionAddr);
+            expect(resumedPrewarm.ok).toBe(true);
+            interruptionVerified = true;
           }
-          receivedEventIds.add(receivedEnvelope.header.eventId);
-          const candidate = await decryptEnvelope<{ idx: number; b64: string }>(
-            conversationKeyB,
-            receivedEnvelope,
-            decodeBase64Url(alice.identityPub)
-          );
-          if (candidate.idx === index) received = candidate;
+          outgoing.push({ index, envelope });
         }
-        expect(received?.idx).toBe(index);
-        if (!received) throw new Error(`Missing unique chunk ${index}`);
-        const receivedChunk = Buffer.from(decodeBase64Url(received.b64));
-        receiverHash.update(receivedChunk);
-        receivedBytes += receivedChunk.length;
+
+        await Promise.all(
+          outgoing.map(async ({ envelope }) => {
+            const chunkStartedAt = Date.now();
+            await sendOverTor(
+              controllerA,
+              bob.onionAddr,
+              alice.deviceId,
+              bob.deviceId,
+              envelope
+            );
+            chunkDurations.push(Date.now() - chunkStartedAt);
+          })
+        );
+
+        const receivedByIndex = new Map<number, Buffer>();
+        const receiveDeadline = Date.now() + 60_000;
+        while (receivedByIndex.size < outgoing.length && Date.now() < receiveDeadline) {
+          const inbox = await readInbox(controllerB, bob.deviceId, inboxBCursor);
+          inboxBCursor = inbox.nextAfter;
+          for (const item of inbox.items) {
+            const receivedEnvelope = JSON.parse(item.envelope) as Envelope;
+            if (receivedEventIds.has(receivedEnvelope.header.eventId)) {
+              duplicateDeliveries += 1;
+              continue;
+            }
+            receivedEventIds.add(receivedEnvelope.header.eventId);
+            const candidate = await decryptEnvelope<{ idx: number; b64: string }>(
+              conversationKeyB,
+              receivedEnvelope,
+              decodeBase64Url(alice.identityPub)
+            );
+            if (candidate.idx >= windowStart && candidate.idx < windowEnd) {
+              receivedByIndex.set(candidate.idx, Buffer.from(decodeBase64Url(candidate.b64)));
+            }
+          }
+          if (receivedByIndex.size < outgoing.length) await wait(25);
+        }
+        for (const { index } of outgoing) {
+          const receivedChunk = receivedByIndex.get(index);
+          if (!receivedChunk) throw new Error(`Missing unique chunk ${index}`);
+          receiverHash.update(receivedChunk);
+          receivedBytes += receivedChunk.length;
+        }
       }
 
       const transferMs = Date.now() - transferStartedAt;
@@ -620,7 +637,7 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
           fileMiB: LIVE_TOR_FILE_MB,
           chunks: totalChunks,
           chunkBytes: LIVE_FILE_CHUNK_BYTES,
-          sendWindow: 1,
+          sendWindow,
           transferMs,
           throughputMiBps: Number((LIVE_TOR_FILE_MB / (transferMs / 1000)).toFixed(3)),
           chunkP50Ms: percentile(0.5),
@@ -633,6 +650,6 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
         })
       );
     },
-    Math.max(10 * 60_000, LIVE_TOR_FILE_MB * 60_000)
+    Math.max(10 * 60_000, LIVE_TOR_FILE_MB * 2_000)
   );
 });

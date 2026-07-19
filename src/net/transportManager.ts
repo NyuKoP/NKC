@@ -12,6 +12,7 @@ import {
   removeOutbox,
 } from "../db/repo";
 import { createSafeConsole } from "../diagnostics/safeConsole";
+import { createId } from "../utils/ids";
 
 const console = createSafeConsole(globalThis.console);
 
@@ -151,12 +152,7 @@ const scheduleRetry = (convId: string) => {
   state.backoffMs = Math.min(state.backoffMs * 2, MAX_BACKOFF_MS);
 };
 
-const createOutboxId = () => {
-  if (globalThis.crypto?.randomUUID) {
-    return globalThis.crypto.randomUUID();
-  }
-  return `outbox-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
-};
+const createOutboxId = createId;
 
 const toErrorDetail = (error: unknown) => (error instanceof Error ? error.message : String(error));
 

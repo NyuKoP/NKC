@@ -1720,10 +1720,17 @@ export default function App() {
       const payloadJson = JSON.stringify(signedPayload);
       const payloadByteLength = new TextEncoder().encode(payloadJson).byteLength;
       const netConfig = useNetConfigStore.getState().config;
-      const routingConfig = netConfig;
+      const hasExplicitOnionRoute = Boolean(
+        routingMeta.route?.torOnion || routingMeta.route?.lokinet
+      );
+      // Friend-control frames establish the relationship itself, so they cannot depend on an
+      // already-established self-onion relay path. Route them directly to the endpoint embedded
+      // in the friend code; normal chat traffic continues to use the configured mode.
+      const routingConfig = hasExplicitOnionRoute
+        ? { ...netConfig, mode: "onionRouter" as const }
+        : netConfig;
       const shouldPrewarmOnionRoute =
-        frameType === "friend_req" &&
-        Boolean(routingMeta.route?.torOnion || routingMeta.route?.lokinet);
+        hasExplicitOnionRoute;
       let prewarmResult: Awaited<ReturnType<typeof prewarmRouter>> | null = null;
       if (shouldPrewarmOnionRoute) {
         emitRouterTestLog({
@@ -3728,6 +3735,11 @@ export default function App() {
           verification: existing?.verification ?? { status: "unverified" },
           reachability,
           pskHint: Boolean(psk) || existing?.pskHint,
+          profileVcard: {
+            ...(existing?.profileVcard ?? {}),
+            friendCode,
+            updatedAt: now,
+          },
           createdAt: existing?.createdAt ?? now,
           updatedAt: now,
         };

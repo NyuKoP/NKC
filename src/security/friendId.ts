@@ -28,13 +28,10 @@ export const getShareId = async (userId: string) => {
     return shareId;
   } catch {
     const fallbackBytes = new Uint8Array(12);
-    if (globalThis.crypto?.getRandomValues) {
-      globalThis.crypto.getRandomValues(fallbackBytes);
-    } else {
-      for (let i = 0; i < fallbackBytes.length; i += 1) {
-        fallbackBytes[i] = Math.floor(Math.random() * 256);
-      }
+    if (!globalThis.crypto?.getRandomValues) {
+      throw new Error("Secure random generator is unavailable");
     }
+    globalThis.crypto.getRandomValues(fallbackBytes);
     const fallback = `${SHARE_ID_PREFIX}${toHex(fallbackBytes.buffer)}`;
     await store.set(SHARE_ID_KEY, fallback);
     return fallback;

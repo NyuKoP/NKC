@@ -39,7 +39,7 @@ const hashFallback = async (value: string) => {
     globalThis.crypto.getRandomValues(bytes);
     return toBase64Url(bytes);
   }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  throw new Error("Secure random generator is unavailable");
 };
 
 const toErrorMessage = (error: unknown) =>

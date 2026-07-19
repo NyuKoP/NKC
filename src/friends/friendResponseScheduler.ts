@@ -64,6 +64,7 @@ export const startFriendResponseScheduler = ({
 
   const start = () => {
     if (timer) return;
+    void tick();
     timer = setInterval(() => {
       void tick();
     }, intervalMs);
