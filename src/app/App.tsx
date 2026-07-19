@@ -1,4 +1,4 @@
-﻿import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 import { useAppStore } from "./store";
 import Onboarding from "../components/Onboarding";
@@ -237,7 +237,6 @@ export default function App() {
   const userProfile = useAppStore((state) => state.userProfile);
   const friends = useAppStore((state) => state.friends);
   const convs = useAppStore((state) => state.convs);
-  const messagesByConv = useAppStore((state) => state.messagesByConv);
   const setMode = useAppStore((state) => state.setMode);
   const setSelectedConv = useAppStore((state) => state.setSelectedConv);
   const setIsComposing = useAppStore((state) => state.setIsComposing);
@@ -2371,10 +2370,11 @@ export default function App() {
           try {
             await deleteMessagesById(payload.messageIds);
             const messageIdSet = new Set(payload.messageIds);
-            const existing = messagesByConv[payload.convId] || [];
+            const currentMessagesByConv = useAppStore.getState().messagesByConv;
+            const existing = currentMessagesByConv[payload.convId] || [];
             const remaining = existing.filter((msg) => !messageIdSet.has(msg.id));
             const updatedMessagesByConv = {
-              ...messagesByConv,
+              ...currentMessagesByConv,
               [payload.convId]: remaining,
             };
             let updatedConvs = convs;
@@ -2422,7 +2422,7 @@ export default function App() {
         },
       });
     },
-    [addToast, convs, friends, messagesByConv, setConfirm, setData, userProfile]
+    [addToast, convs, friends, setConfirm, setData, userProfile]
   );
 
   const findDirectConvWithFriend = useCallback(
@@ -3965,7 +3965,6 @@ export default function App() {
   const currentConversation = ui.selectedConvId
     ? convs.find((conv) => conv.id === ui.selectedConvId) || null
     : null;
-  const currentMessages = currentConversation ? messagesByConv[currentConversation.id] || [] : [];
   const currentTransportStatus = currentConversation
     ? transportStatusByConv[currentConversation.id] ??
       getTransportStatus(currentConversation.id)
@@ -4403,7 +4402,6 @@ export default function App() {
         conversation={currentConversation}
         conversationDisplayName={currentConversationDisplayName}
         transportStatus={currentTransportStatus}
-        messages={currentMessages}
         currentUserId={userProfile?.id || null}
         nameMap={nameMap}
         profilesById={profilesById}

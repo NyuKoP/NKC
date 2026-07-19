@@ -11,6 +11,7 @@ import {
 } from "electron";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
+import crypto from "node:crypto";
 import nodeNet from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -823,23 +824,54 @@ const registerP2PQueueIpc = () => {
   });
 };
 
+let preloadToken = crypto.randomUUID();
+let isTokenConsumed = false;
+
+export const resetPreloadToken = () => {
+  preloadToken = crypto.randomUUID();
+  isTokenConsumed = false;
+};
+
 const registerNativeWorkerIpc = () => {
+  ipcMain.on("security:get-preload-token", (event) => {
+    if (!isTrustedIpcSender(event)) {
+      event.returnValue = null;
+      return;
+    }
+    if (isTokenConsumed) {
+      event.returnValue = null;
+      return;
+    }
+    isTokenConsumed = true;
+    event.returnValue = preloadToken;
+  });
+
   ipcMain.handle(
     "nativeWorker:fileInspect",
-    async (event, payload: { path?: string; chunkSize?: number }) => {
+    async (event, payload: { path?: string; chunkSize?: number; token?: string }) => {
       assertTrustedIpcSender(event);
+      if (!payload?.token || payload.token !== preloadToken) {
+        throw new Error("Unauthorized file access: Invalid or missing token");
+      }
       if (!nativeWorkerClient) return { ok: false, error: "native-worker-unavailable" };
       if (!payload?.path || !path.isAbsolute(payload.path) || !Number.isInteger(payload.chunkSize)) {
         return { ok: false, error: "invalid-file-request" };
       }
-      const result = await nativeWorkerClient.request("file.inspect", payload, 120_000);
+      const result = await nativeWorkerClient.request(
+        "file.inspect",
+        { path: payload.path, chunkSize: payload.chunkSize },
+        120_000
+      );
       return { ok: true, result };
     }
   );
   ipcMain.handle(
     "nativeWorker:fileChunk",
-    async (event, payload: { path?: string; index?: number; chunkSize?: number }) => {
+    async (event, payload: { path?: string; index?: number; chunkSize?: number; token?: string }) => {
       assertTrustedIpcSender(event);
+      if (!payload?.token || payload.token !== preloadToken) {
+        throw new Error("Unauthorized file access: Invalid or missing token");
+      }
       if (!nativeWorkerClient) return { ok: false, error: "native-worker-unavailable" };
       if (
         !payload?.path ||
@@ -849,7 +881,11 @@ const registerNativeWorkerIpc = () => {
       ) {
         return { ok: false, error: "invalid-file-request" };
       }
-      const result = await nativeWorkerClient.request("file.chunk", payload, 30_000);
+      const result = await nativeWorkerClient.request(
+        "file.chunk",
+        { path: payload.path, index: payload.index, chunkSize: payload.chunkSize },
+        30_000
+      );
       return { ok: true, result };
     }
   );
@@ -1898,6 +1934,7 @@ const safeLog = (...args: unknown[]) => {
 
 export const createMainWindow = () => {
   if (focusMainWindow()) return mainWindow;
+  resetPreloadToken();
   installPipeErrorHandlers();
   const preloadPath = path.join(__dirname, "preload.js");
   const preloadExists = fsSync.existsSync(preloadPath);

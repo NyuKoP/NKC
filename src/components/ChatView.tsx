@@ -1,5 +1,6 @@
-﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent } from "react";
 import { useCallback } from "react";
+import { useAppStore } from "../app/store";
 import {
   AlertTriangle,
   ArrowDown,
@@ -74,7 +75,6 @@ type ChatViewProps = {
   conversation: Conversation | null;
   conversationDisplayName?: string;
   transportStatus?: ConversationTransportStatus | null;
-  messages: Message[];
   currentUserId: string | null;
   nameMap: Record<string, string>;
   profilesById: Record<string, UserProfile | undefined>;
@@ -98,7 +98,6 @@ export default function ChatView({
   conversation,
   conversationDisplayName,
   transportStatus,
-  messages,
   currentUserId,
   nameMap,
   profilesById,
@@ -115,6 +114,9 @@ export default function ChatView({
   onDeleteMessages,
   onToast,
 }: ChatViewProps) {
+  const messages = useAppStore((state) =>
+    conversation ? state.messagesByConv[conversation.id] || [] : []
+  );
   const [atBottom, setAtBottom] = useState(true);
   const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(false);
   const [sendStates, setSendStates] = useState<Record<string, SendState>>({});
