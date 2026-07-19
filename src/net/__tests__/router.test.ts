@@ -95,6 +95,71 @@ describe("router", () => {
     expect(store.size).toBe(1);
   });
 
+  it("bootstraps the first friend over an explicit Tor endpoint when selfOnion has no relays", async () => {
+    const store = new Map<string, OutboxRecord>();
+    vi.doMock("../../storage/outboxStore", () => ({
+      putOutbox: async (record: OutboxRecord) => {
+        store.set(record.id, record);
+      },
+      deleteOutbox: async (id: string) => {
+        store.delete(id);
+      },
+      deleteExpiredOutbox: async () => 0,
+    }));
+
+    const router = await import("../router");
+    const { useInternalOnionRouteStore } = await import("../../stores/internalOnionRouteStore");
+    useInternalOnionRouteStore.getState().setRouteState({
+      desiredHops: 3,
+      establishedHops: 0,
+      status: "idle",
+      hops: [],
+      lastError: "NO_RELAY_PEERS",
+      updatedAtTs: Date.now(),
+    });
+    const selfOnionTransport = createTransport("selfOnion");
+    const onionRouterTransport = createTransport("onionRouter");
+
+    const result = await router.sendCiphertext(
+      {
+        convId: "first-friend",
+        messageId: "first-friend-request",
+        ciphertext: "friend_req",
+        toDeviceId: "peer-device",
+        route: { torOnion: "peeraddress.onion" },
+        priority: "high",
+      },
+      {
+        resolveTransport: () => "selfOnion",
+        config: {
+          mode: "selfOnion",
+          onionProxyEnabled: false,
+          onionProxyUrl: "socks5://127.0.0.1:9050",
+          webrtcRelayOnly: false,
+          disableLinkPreview: false,
+          selfOnionEnabled: true,
+          selfOnionMinRelays: 3,
+          allowRemoteProxy: false,
+          onionEnabled: false,
+          onionSelectedNetwork: "tor",
+          tor: { installed: true, status: "ready", version: "15.0.18" },
+          alternateRoute: { installed: false, status: "idle" },
+          lastUpdateCheckAtMs: undefined,
+        },
+        transports: {
+          selfOnion: selfOnionTransport,
+          onionRouter: onionRouterTransport,
+        },
+      }
+    );
+
+    expect(result.ok).toBe(true);
+    expect(result.transport).toBe("onionRouter");
+    expect(selfOnionTransport.send).not.toHaveBeenCalled();
+    expect(onionRouterTransport.send).toHaveBeenCalledTimes(1);
+    expect(store.size).toBe(1);
+  });
+
   it("skips transport attempts when destination is missing", async () => {
     const store = new Map<string, OutboxRecord>();
     vi.doMock("../../storage/outboxStore", () => {

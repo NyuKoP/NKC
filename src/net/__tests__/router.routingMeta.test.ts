@@ -192,7 +192,7 @@ describe("router routing metadata", () => {
     const router = await import("../router");
     resetRouter = router.__testResetRouter;
 
-    const selfOnionTransport = createTransport("selfOnion");
+    const onionRouterTransport = createTransport("onionRouter");
     const record: OutboxRecord = {
       id: "msg-2",
       convId: "conv-2",
@@ -207,7 +207,7 @@ describe("router routing metadata", () => {
     const result = await router.sendOutboxRecord(record, {
       config: TEST_CONFIG,
       resolveTransport: () => "selfOnion",
-      transports: { selfOnion: selfOnionTransport },
+      transports: { onionRouter: onionRouterTransport },
     });
 
     expect(result.ok).toBe(true);
@@ -220,7 +220,7 @@ describe("router routing metadata", () => {
       })
     );
     const sentPacket = (
-      selfOnionTransport.send as unknown as { mock?: { calls?: unknown[][] } }
+      onionRouterTransport.send as unknown as { mock?: { calls?: unknown[][] } }
     ).mock?.calls?.[0]?.[0] as {
       toDeviceId?: string;
       route?: { torOnion?: string; alternateRoute?: string };

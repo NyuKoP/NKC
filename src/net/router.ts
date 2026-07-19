@@ -172,6 +172,10 @@ export const __testResetRouter = () => {
   delete transportStateByKind.directP2P;
   delete transportStateByKind.onionRouter;
   delete transportStateByKind.selfOnion;
+  if (inboundRetryTimer) clearTimeout(inboundRetryTimer);
+  inboundRetryTimer = null;
+  inboundRetryAttempt = 0;
+  inboundStartPromise = null;
 };
 
 const warnOnionRouterGuards = (config: NetConfig) => {
@@ -382,6 +386,10 @@ const getPrewarmKinds = (
 const inboundHandlers = new Set<(packet: TransportPacket, meta: IncomingPacketMeta) => void>();
 let inboundAttached = false;
 let inboundStartPromise: Promise<void> | null = null;
+let inboundRetryTimer: ReturnType<typeof setTimeout> | null = null;
+let inboundRetryAttempt = 0;
+const INBOUND_RETRY_BASE_MS = 2_000;
+const INBOUND_RETRY_MAX_MS = 30_000;
 
 export const prewarmRouter = async (deps: PrewarmDeps = {}) => {
   const config = deps.config ?? useNetConfigStore.getState().config;
@@ -420,6 +428,7 @@ export const prewarmRouter = async (deps: PrewarmDeps = {}) => {
 
 const ensureInboundListener = async () => {
   if (inboundStartPromise) return inboundStartPromise;
+  if (inboundHandlers.size === 0) return;
   const config = useNetConfigStore.getState().config;
   const controller = defaultRouteController;
   const httpClient = defaultHttpClient;
@@ -432,16 +441,42 @@ const ensureInboundListener = async () => {
     transports.map((transport) => ensureStarted(transport))
   )
     .then((results) => {
+      const onionRouterFailed = results[0]?.status === "rejected";
+      if (onionRouterFailed && inboundHandlers.size > 0 && !inboundRetryTimer) {
+        const delayMs = Math.min(
+          INBOUND_RETRY_MAX_MS,
+          INBOUND_RETRY_BASE_MS * 2 ** inboundRetryAttempt
+        );
+        inboundRetryAttempt += 1;
+        inboundRetryTimer = setTimeout(() => {
+          inboundRetryTimer = null;
+          void ensureInboundListener();
+        }, delayMs);
+      } else if (!onionRouterFailed) {
+        inboundRetryAttempt = 0;
+      }
       const allFailed = results.every((result) => result.status === "rejected");
       if (allFailed) {
         throw new Error("All inbound transports failed to start");
       }
     })
     .catch((error) => {
-      inboundStartPromise = null;
       void error;
+    })
+    .finally(() => {
+      inboundStartPromise = null;
     });
   return inboundStartPromise;
+};
+
+const resolveTransportForExplicitRoute = (
+  chosen: TransportKind,
+  route?: { torOnion?: string; alternateRoute?: string }
+) => {
+  if (chosen !== "selfOnion") return chosen;
+  if (!route?.torOnion && !route?.alternateRoute) return chosen;
+  const routeState = useInternalOnionRouteStore.getState().route;
+  return routeState.status === "ready" ? chosen : "onionRouter";
 };
 
 export const sendCiphertext = async (
@@ -476,7 +511,7 @@ export const sendCiphertext = async (
 
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
-  const chosen = resolve(config, controller);
+  const chosen = resolveTransportForExplicitRoute(resolve(config, controller), route);
   const attemptTrace: Array<{
     transport: TransportKind;
     phase: "primary" | "fallback";
@@ -1021,7 +1056,10 @@ export const sendOutboxRecord = async (
 
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
-  const chosen = resolve(config, controller);
+  const chosen = resolveTransportForExplicitRoute(
+    resolve(config, controller),
+    torOnion || alternateRoute ? { torOnion, alternateRoute } : undefined
+  );
   const gateDecision = enforceRouteGate({
     opId: record.id,
     wanted: chosen,
@@ -1408,5 +1446,10 @@ export const onIncomingPacket = (
   void ensureInboundListener();
   return () => {
     inboundHandlers.delete(handler);
+    if (inboundHandlers.size === 0 && inboundRetryTimer) {
+      clearTimeout(inboundRetryTimer);
+      inboundRetryTimer = null;
+      inboundRetryAttempt = 0;
+    }
   };
 };
