@@ -5,6 +5,8 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { startOnionController, type OnionControllerHandle } from "../onionController";
 import { TorManager } from "../torManager";
+import { NativeWorkerClient } from "../nativeWorkerClient";
+import { createNativeSocksTransport } from "../socksHttpClient";
 import {
   enrichFriendControlFrameWithProtocol,
   signFriendControlFrame,
@@ -33,6 +35,7 @@ const LIVE_TOR_FILE_MB = Math.min(
   Math.max(1, Number.parseInt(process.env.NKC_LIVE_TOR_FILE_MB ?? "10", 10) || 10)
 );
 const LIVE_FILE_CHUNK_BYTES = INLINE_MEDIA_CHUNK_SIZE;
+const LIVE_TOR_ROUTE_READY_TIMEOUT_MS = LIVE_TOR_LARGE_ENABLED ? 480_000 : 240_000;
 const DEVICE_A = randomUUID();
 const DEVICE_B = randomUUID();
 
@@ -47,18 +50,27 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const waitForTorRoute = async (
   controller: OnionControllerHandle,
   onionAddress: string,
-  timeoutMs = 240_000
+  timeoutMs = LIVE_TOR_ROUTE_READY_TIMEOUT_MS
 ) => {
   const startedAt = Date.now();
+  let attempts = 0;
+  const observedErrors = new Set<string>();
   let lastResult: Awaited<ReturnType<OnionControllerHandle["prewarmTorRoute"]>> | null = null;
   while (Date.now() - startedAt < timeoutMs) {
-    lastResult = await controller.prewarmTorRoute(onionAddress);
+    attempts += 1;
+    lastResult = await controller.prewarmTorRoute(onionAddress, { timeoutMs: 15_000 });
     if (lastResult.ok) {
-      return { ...lastResult, totalElapsedMs: Date.now() - startedAt };
+      return { ...lastResult, attempts, totalElapsedMs: Date.now() - startedAt };
     }
-    await wait(5_000);
+    if (lastResult.error) observedErrors.add(lastResult.error);
+    if (lastResult.error === "native_transport_unavailable") {
+      throw new Error(`Tor route cannot start: ${lastResult.error}`);
+    }
+    await wait(2_000);
   }
-  throw new Error(`Tor route did not become reachable: ${JSON.stringify(lastResult)}`);
+  throw new Error(
+    `Tor route did not become reachable: ${JSON.stringify({ attempts, observedErrors: [...observedErrors], lastResult })}`
+  );
 };
 
 const postJson = async (url: string, payload: unknown, authToken?: string) => {
@@ -141,6 +153,7 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
   let rootB: string;
   let torA: TorManager;
   let torB: TorManager;
+  let nativeWorker: NativeWorkerClient;
   let controllerA: OnionControllerHandle;
   let controllerB: OnionControllerHandle;
   let onionA: string;
@@ -156,10 +169,29 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
   beforeAll(async () => {
     rootA = await fs.mkdtemp(path.join(os.tmpdir(), "nkc-live-tor-a-"));
     rootB = await fs.mkdtemp(path.join(os.tmpdir(), "nkc-live-tor-b-"));
+    const workerExecutable =
+      process.env.NKC_GO_WORKER_PATH ||
+      path.join(
+        process.cwd(),
+        "native",
+        "bin",
+        process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker"
+      );
+    nativeWorker = new NativeWorkerClient(workerExecutable);
+    await nativeWorker.start();
+    const socksTransport = createNativeSocksTransport(nativeWorker);
     torA = new TorManager({ appDataDir: rootA });
     torB = new TorManager({ appDataDir: rootB });
-    controllerA = await startOnionController({ port: 0, getTorStatus: () => torA.getStatus() });
-    controllerB = await startOnionController({ port: 0, getTorStatus: () => torB.getStatus() });
+    controllerA = await startOnionController({
+      port: 0,
+      getTorStatus: () => torA.getStatus(),
+      socksTransport,
+    });
+    controllerB = await startOnionController({
+      port: 0,
+      getTorStatus: () => torB.getStatus(),
+      socksTransport,
+    });
 
     // Start sequentially so each manager observes the SOCKS port held by the previous instance.
     const serviceA = await torA.ensureHiddenService({ localPort: controllerA.port, virtPort: 80 });
@@ -177,11 +209,40 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
     controllerA.setTorOnionHost(onionA);
     controllerB.setTorOnionHost(onionB);
     torProxyA = statusA.socksProxyUrl;
-    const [routeAtoB, routeBtoA] = await Promise.all([
+    const localHealth = await Promise.all([
+      fetch(`${controllerA.baseUrl}/onion/health`),
+      fetch(`${controllerB.baseUrl}/onion/health`),
+    ]);
+    expect(localHealth.map((response) => response.status)).toEqual([200, 200]);
+
+    const routeResults = await Promise.allSettled([
       waitForTorRoute(controllerA, onionB),
       waitForTorRoute(controllerB, onionA),
     ]);
-    console.info("Tor hidden services reachable", { routeAtoB, routeBtoA });
+    const routeFailures = routeResults.flatMap((result) =>
+      result.status === "rejected"
+        ? [result.reason instanceof Error ? result.reason.message : String(result.reason)]
+        : []
+    );
+    if (routeFailures.length > 0) {
+      throw new Error(
+        `Tor hidden-service readiness failed: ${JSON.stringify({
+          routeFailures,
+          torA: torA.getDiagnostics(),
+          torB: torB.getDiagnostics(),
+          localControllersReachable: true,
+        })}`
+      );
+    }
+    const [routeAtoB, routeBtoA] = routeResults.map((result) =>
+      result.status === "fulfilled" ? result.value : null
+    );
+    console.info("Tor hidden services reachable", {
+      routeAtoBMs: routeAtoB?.totalElapsedMs,
+      routeBtoAMs: routeBtoA?.totalElapsedMs,
+      routeAtoBAttempts: routeAtoB?.attempts,
+      routeBtoAAttempts: routeBtoA?.attempts,
+    });
 
     const sodium = await getSodium();
     const identityA = sodium.crypto_sign_keypair();
@@ -206,7 +267,7 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       deviceId: DEVICE_B,
       onionAddr: onionB,
     });
-  }, 360_000);
+  }, LIVE_TOR_LARGE_ENABLED ? 660_000 : 360_000);
 
   afterAll(async () => {
     await Promise.allSettled([
@@ -214,6 +275,7 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       controllerB?.close(),
       torA?.stop(),
       torB?.stop(),
+      nativeWorker?.stop(),
     ]);
     await Promise.allSettled([
       rootA ? fs.rm(rootA, { recursive: true, force: true }) : Promise.resolve(),
@@ -399,8 +461,6 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
           chatBtoA: true,
           prewarmBtoAMs: prewarmBtoA.elapsedMs,
           chatTransferMs,
-          onionA,
-          onionB,
         })
       );
     },
@@ -426,6 +486,8 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       const senderHash = createHash("sha256");
       const receiverHash = createHash("sha256");
       const chunkDurations: number[] = [];
+      const receivedEventIds = new Set<string>();
+      let duplicateDeliveries = 0;
       let receivedBytes = 0;
       let inboxBCursor = (await readInbox(controllerB, bob.deviceId)).nextAfter;
       let inboxACursor = (await readInbox(controllerA, alice.deviceId)).nextAfter;
@@ -520,13 +582,23 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
 
         const inbox = await readInbox(controllerB, bob.deviceId, inboxBCursor);
         inboxBCursor = inbox.nextAfter;
-        expect(inbox.items).toHaveLength(1);
-        const receivedEnvelope = JSON.parse(inbox.items[0].envelope) as Envelope;
-        const received = await decryptEnvelope<{
-          idx: number;
-          b64: string;
-        }>(conversationKeyB, receivedEnvelope, decodeBase64Url(alice.identityPub));
-        expect(received.idx).toBe(index);
+        let received: { idx: number; b64: string } | null = null;
+        for (const item of inbox.items) {
+          const receivedEnvelope = JSON.parse(item.envelope) as Envelope;
+          if (receivedEventIds.has(receivedEnvelope.header.eventId)) {
+            duplicateDeliveries += 1;
+            continue;
+          }
+          receivedEventIds.add(receivedEnvelope.header.eventId);
+          const candidate = await decryptEnvelope<{ idx: number; b64: string }>(
+            conversationKeyB,
+            receivedEnvelope,
+            decodeBase64Url(alice.identityPub)
+          );
+          if (candidate.idx === index) received = candidate;
+        }
+        expect(received?.idx).toBe(index);
+        if (!received) throw new Error(`Missing unique chunk ${index}`);
         const receivedChunk = Buffer.from(decodeBase64Url(received.b64));
         receiverHash.update(receivedChunk);
         receivedBytes += receivedChunk.length;
@@ -555,6 +627,7 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
           chunkP95Ms: percentile(0.95),
           chatDuringTransferMs: chatTransferMs,
           interruptionVerified,
+          duplicateDeliveries,
           senderSha256,
           receiverSha256,
         })

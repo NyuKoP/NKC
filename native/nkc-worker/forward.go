@@ -110,8 +110,31 @@ func buildRouteCandidates(mode, torTarget, lokinetTarget, torProxy, lokinetProxy
 
 func normalizeForwardError(err error) string {
 	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "ingest_failed:429") {
+		return "upstream_rate_limited"
+	}
+	if strings.Contains(text, "ingest_failed:4") {
+		return "permanent_upstream_rejection"
+	}
+	if strings.Contains(text, "ingest_failed:5") {
+		return "upstream_http_error"
+	}
+	for _, code := range []string{"proxy_connect_timeout", "socks_handshake_timeout", "upstream_response_timeout"} {
+		if strings.Contains(text, code) {
+			return code
+		}
+	}
+	if strings.Contains(text, "socks_reply_host_unreachable") {
+		return "onion_descriptor_unavailable"
+	}
+	if strings.Contains(text, "socks_reply_network_unreachable") {
+		return "tor_network_unreachable"
+	}
+	if strings.Contains(text, "socks_reply_connection_refused") {
+		return "onion_service_refused"
+	}
 	if strings.Contains(text, "timeout") || strings.Contains(text, "deadline exceeded") {
-		return "timeout"
+		return "upstream_response_timeout"
 	}
 	if strings.Contains(text, "socks_auth") || strings.Contains(text, "socks_connect") || strings.Contains(text, "unsupported_socks") || strings.Contains(text, "invalid_socks") {
 		return "handshake_failed"
@@ -179,8 +202,7 @@ func (w *worker) forwardOnion(params transportForwardParams) (transportForwardRe
 		targetURL := candidate.target + "/onion/ingest"
 		traces = append(traces, map[string]any{
 			"event": "onionController:forward:start", "opId": msgID,
-			"routeKind": candidate.kind, "routeMode": mode, "destination": candidate.target,
-			"destinationUrl": targetURL, "toDeviceId": toDeviceID,
+			"routeKind": candidate.kind, "routeMode": mode,
 			"attempt": index + 1, "maxRouteAttempts": len(candidates), "timeoutMs": 45_000,
 		})
 		body, err := json.Marshal(map[string]any{
@@ -199,8 +221,7 @@ func (w *worker) forwardOnion(params transportForwardParams) (transportForwardRe
 		if err == nil && response.Status >= 200 && response.Status < 300 {
 			traces = append(traces, map[string]any{
 				"event": "onionController:forward:ok", "opId": msgID,
-				"routeKind": candidate.kind, "routeMode": mode, "destination": candidate.target,
-				"destinationUrl": targetURL, "toDeviceId": toDeviceID, "status": response.Status,
+				"routeKind": candidate.kind, "routeMode": mode, "status": response.Status,
 				"attempt": index + 1, "maxRouteAttempts": len(candidates),
 			})
 			return transportForwardResult{
@@ -215,8 +236,7 @@ func (w *worker) forwardOnion(params transportForwardParams) (transportForwardRe
 		}
 		traces = append(traces, map[string]any{
 			"event": "onionController:forward:fail", "level": "warn", "opId": msgID,
-			"routeKind": candidate.kind, "routeMode": mode, "destination": candidate.target,
-			"destinationUrl": targetURL, "toDeviceId": toDeviceID, "normalizedCode": code,
+			"routeKind": candidate.kind, "routeMode": mode, "normalizedCode": code,
 			"attempt": index + 1, "maxRouteAttempts": len(candidates),
 		})
 		terminalCode = "forward_failed:" + code
@@ -239,7 +259,7 @@ func (w *worker) forwardOnion(params transportForwardParams) (transportForwardRe
 			}
 			traces = append(traces, map[string]any{
 				"event": "onionController:offlineQueue:pending", "level": "warn",
-				"opId": msgID, "toDeviceId": toDeviceID, "destination": torTarget,
+				"opId":   msgID,
 				"reason": terminalCode,
 			})
 			return transportForwardResult{

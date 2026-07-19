@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTorBootstrapProgress } from "../torManager";
+import { parseTorBootstrapProgress, TorManager } from "../torManager";
 
 describe("TorManager bootstrap progress", () => {
   it("returns the highest bootstrap percentage from Tor output", () => {
@@ -17,5 +17,17 @@ describe("TorManager bootstrap progress", () => {
   it("ignores unrelated log messages and clamps invalid percentages", () => {
     expect(parseTorBootstrapProgress("Opening Socks listener")).toBe(0);
     expect(parseTorBootstrapProgress("Bootstrapped 999% (done): Done")).toBe(100);
+  });
+});
+
+describe("TorManager diagnostics", () => {
+  it("returns a safe initial state without paths or routing identifiers", () => {
+    const manager = new TorManager({ appDataDir: "unused" });
+    expect(manager.getDiagnostics()).toEqual({
+      state: "unavailable",
+      bootstrapProgress: 0,
+      processRunning: false,
+      bridgeMode: "direct",
+    });
   });
 });

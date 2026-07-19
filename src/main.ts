@@ -41,6 +41,9 @@ import {
 } from "./main/testLogStore";
 import { defaultAppPrefs, type AppPreferences, type AppPreferencesPatch } from "./preferences";
 import { fetchWithTimeout } from "./net/fetchWithTimeout";
+import { createSafeConsole } from "./diagnostics/safeConsole";
+
+const console = createSafeConsole(globalThis.console);
 
 type ProxyApplyPayload = {
   proxyUrl: string;

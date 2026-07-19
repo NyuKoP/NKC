@@ -9,6 +9,9 @@ import {
 } from "../storage/outboxStore";
 import { createId } from "../utils/ids";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
+import { createSafeConsole } from "../diagnostics/safeConsole";
+
+const console = createSafeConsole(globalThis.console);
 
 export type SendResult =
   | { ok: true }

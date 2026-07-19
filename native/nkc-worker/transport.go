@@ -151,8 +151,37 @@ func normalizeTransportError(err error) error {
 	if err == nil {
 		return nil
 	}
-	if err == context.DeadlineExceeded || strings.Contains(strings.ToLower(err.Error()), "timeout") || strings.Contains(strings.ToLower(err.Error()), "deadline exceeded") {
-		return fmt.Errorf("timeout")
+	text := strings.ToLower(err.Error())
+	if err == context.DeadlineExceeded || strings.Contains(text, "timeout") || strings.Contains(text, "deadline exceeded") {
+		switch {
+		case strings.Contains(text, "proxy_connect"):
+			return fmt.Errorf("proxy_connect_timeout")
+		case strings.Contains(text, "socks_handshake"), strings.Contains(text, "socks_auth"), strings.Contains(text, "socks_connect"):
+			return fmt.Errorf("socks_handshake_timeout")
+		default:
+			return fmt.Errorf("upstream_response_timeout")
+		}
+	}
+	for _, code := range []string{
+		"socks_reply_general_failure",
+		"socks_reply_ruleset_denied",
+		"socks_reply_network_unreachable",
+		"socks_reply_host_unreachable",
+		"socks_reply_connection_refused",
+		"socks_reply_ttl_expired",
+		"socks_reply_command_unsupported",
+		"socks_reply_address_unsupported",
+		"socks_reply_unknown",
+	} {
+		if strings.Contains(text, code) {
+			return fmt.Errorf("%s", code)
+		}
+	}
+	if strings.Contains(text, "proxy_connect") {
+		return fmt.Errorf("proxy_unreachable")
+	}
+	if strings.Contains(text, "socks_auth") || strings.Contains(text, "socks_handshake") || strings.Contains(text, "socks_connect") {
+		return fmt.Errorf("socks_handshake_failed")
 	}
 	return err
 }

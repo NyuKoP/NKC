@@ -121,4 +121,11 @@ func TestForwardSendsExpectedIngestEnvelope(t *testing.T) {
 	if err != nil || result.Status != http.StatusOK {
 		t.Fatalf("unexpected result: %#v err=%v", result, err)
 	}
+	for _, trace := range result.Traces {
+		for _, forbidden := range []string{"destination", "destinationUrl", "toDeviceId"} {
+			if _, exists := trace[forbidden]; exists {
+				t.Fatalf("trace leaked %s: %#v", forbidden, trace)
+			}
+		}
+	}
 }

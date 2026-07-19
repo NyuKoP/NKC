@@ -166,7 +166,41 @@ func TestTransportFetchNormalizesTimeout(t *testing.T) {
 		URL: "http://example.onion/", Method: http.MethodGet,
 		SocksProxyURL: "socks5h://" + listener.Addr().String(), TimeoutMS: 30,
 	})
-	if err == nil || err.Error() != "timeout" {
+	if err == nil || err.Error() != "upstream_response_timeout" {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestTransportFetchReportsSOCKSReplyReason(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		connection, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer connection.Close()
+		greeting := make([]byte, 3)
+		if _, readErr := io.ReadFull(connection, greeting); readErr != nil {
+			return
+		}
+		_, _ = connection.Write([]byte{5, 0})
+		head := make([]byte, 5)
+		if _, readErr := io.ReadFull(connection, head); readErr != nil {
+			return
+		}
+		_, _ = io.CopyN(io.Discard, connection, int64(head[4])+2)
+		_, _ = connection.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0})
+	}()
+	engine := newTransportEngine()
+	_, err = engine.fetch(transportFetchParams{
+		URL: "http://example.onion/", Method: http.MethodGet,
+		SocksProxyURL: "socks5h://" + listener.Addr().String(), TimeoutMS: 2_000,
+	})
+	if err == nil || err.Error() != "socks_reply_host_unreachable" {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

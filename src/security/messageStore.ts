@@ -21,6 +21,9 @@ import {
 import { db, ensureDbOpen } from "../db/schema";
 import { putReadCursor, putReceipt } from "../storage/receiptStore";
 import { applyGroupEvent, isGroupEventPayload } from "../sync/groupSync";
+import { createSafeConsole } from "../diagnostics/safeConsole";
+
+const console = createSafeConsole(globalThis.console);
 
 const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
   console.debug(`[msg] ${label}`, meta);

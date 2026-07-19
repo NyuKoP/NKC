@@ -41,6 +41,9 @@ type SendResponse = {
   ok: boolean;
   msgId?: string;
   error?: string;
+  forwarded?: boolean;
+  queued?: boolean;
+  status?: string;
 };
 
 type AddressResponse = {
@@ -347,7 +350,7 @@ export class OnionInboxClient {
       method: "POST",
       body,
       timeoutMs: sendTimeoutMs,
-      operationId: operationId ?? toDeviceId,
+      operationId: operationId ?? "onion-send",
     }, signal);
     if (!response.ok || !response.data) {
       const payloadError =

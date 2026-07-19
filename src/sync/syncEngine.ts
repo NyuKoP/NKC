@@ -32,6 +32,7 @@ import { applyTOFU } from "../security/trust";
 import { computeFriendId, decodeFriendCodeV1 } from "../security/friendCode";
 import { getPrivacyPrefs } from "../security/preferences";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
+import { createSafeConsole } from "../diagnostics/safeConsole";
 import { updateFromRoleEvent, type RoleChangeEvent } from "../devices/deviceRegistry";
 import { getDeviceApproval } from "../devices/deviceApprovals";
 import { createId } from "../utils/ids";
@@ -54,6 +55,8 @@ import {
   type FriendRequestFrame,
   type FriendResponseFrame,
 } from "../friends/friendControlFrame";
+
+const console = createSafeConsole(globalThis.console);
 
 type EnvelopeEvent = {
   eventId: string;

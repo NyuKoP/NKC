@@ -127,6 +127,72 @@ const dispatchInfoEvent = (eventName: string, payload: unknown) => {
 
 let infoSequence = 0;
 
+const SENSITIVE_LOG_KEYS = new Set([
+  "friendcode",
+  "toronion",
+  "lokinet",
+  "onionaddr",
+  "onionaddress",
+  "destination",
+  "destinationurl",
+  "todeviceid",
+  "fromdeviceid",
+  "senderdeviceid",
+  "profileid",
+  "friendid",
+  "identitypub",
+  "dhpub",
+  "envelope",
+  "ciphertext",
+  "plaintext",
+  "authtoken",
+  "password",
+  "credential",
+  "credentials",
+  "icecandidate",
+  "ipaddress",
+]);
+
+const sanitizeLogString = (value: string) =>
+  value
+    .replace(/\b[a-z2-7]{56}\.onion\b/gi, "[onion-redacted]")
+    .replace(/\bNKC1-[A-Za-z0-9_-]+\b/g, "[friend-code-redacted]")
+    .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[ip-redacted]")
+    .replace(/([?&]deviceId=)[^&\s]+/gi, "$1[redacted]")
+    .replace(
+      /\b((?:conv|event|record|friend|device|profile|message|packet|op)?id=)(?!\[redacted\])[^\s,}\]&]+/gi,
+      "$1[redacted]"
+    );
+
+export const sanitizeInfoLogPayload = <T>(value: T, depth = 0): T => {
+  if (typeof value === "string") return sanitizeLogString(value) as T;
+  if (value === null || typeof value !== "object" || depth >= 8) return value;
+  if (value instanceof Error) {
+    const coded = value as Error & { code?: unknown };
+    return {
+      name: value.name || "Error",
+      ...(typeof coded.code === "string" ? { code: sanitizeLogString(coded.code) } : {}),
+    } as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeInfoLogPayload(item, depth + 1)) as T;
+  }
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value)) {
+    const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const isIdentifier =
+      !normalizedKey.startsWith("has") &&
+      (normalizedKey.endsWith("deviceid") ||
+        normalizedKey.endsWith("friendid") ||
+        normalizedKey.endsWith("profileid") ||
+        normalizedKey.endsWith("friendidhash"));
+    sanitized[key] = SENSITIVE_LOG_KEYS.has(normalizedKey) || isIdentifier
+      ? "[redacted]"
+      : sanitizeInfoLogPayload(item, depth + 1);
+  }
+  return sanitized as T;
+};
+
 const withSequence = <T extends object>(payload: T) => ({
   ...payload,
   seq: ++infoSequence,
@@ -135,7 +201,7 @@ const withSequence = <T extends object>(payload: T) => ({
 export const emitFriendAddInfoLog = (detail: FriendAddInfoLogInput) => {
   if (!isInfoCollectionEnabled()) return;
   const payload = withSequence({
-    ...detail,
+    ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
   console.info("[test][friend-add]", payload);
@@ -145,7 +211,7 @@ export const emitFriendAddInfoLog = (detail: FriendAddInfoLogInput) => {
 export const emitFriendRouteOutgoingInfoLog = (detail: FriendRouteOutgoingInfoLogInput) => {
   if (!isInfoCollectionEnabled()) return;
   const payload = withSequence({
-    ...detail,
+    ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
   console.info("[test][friend-route]", payload);
@@ -155,7 +221,7 @@ export const emitFriendRouteOutgoingInfoLog = (detail: FriendRouteOutgoingInfoLo
 export const emitFriendRouteIncomingInfoLog = (detail: FriendRouteIncomingInfoLogInput) => {
   if (!isInfoCollectionEnabled()) return;
   const payload = withSequence({
-    ...detail,
+    ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
   console.info("[test][friend-route]", payload);
@@ -165,7 +231,7 @@ export const emitFriendRouteIncomingInfoLog = (detail: FriendRouteIncomingInfoLo
 export const emitRouterInfoLog = (detail: RouterInfoLogInput) => {
   if (!isInfoCollectionEnabled()) return;
   const payload = withSequence({
-    ...detail,
+    ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
   console.info("[test][router]", payload);
@@ -175,7 +241,7 @@ export const emitRouterInfoLog = (detail: RouterInfoLogInput) => {
 export const emitFlowTraceLog = (detail: FlowTraceLogInput) => {
   if (!isInfoCollectionEnabled()) return;
   const payload = withSequence({
-    ...detail,
+    ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
   const event = typeof payload.event === "string" ? payload.event : "unknown";

@@ -123,6 +123,7 @@ export class TorRuntime {
   private dataDir: string | null = null;
   private startPromise: Promise<void> | null = null;
   private stopPromise: Promise<void> | null = null;
+  private recoverPromise: Promise<void> | null = null;
 
   constructor(deps?: Partial<TorRuntimeDeps>) {
     const defaults = createDefaultDeps();
@@ -174,6 +175,18 @@ export class TorRuntime {
       this.stopPromise = null;
     });
     return this.stopPromise;
+  }
+
+  async recover(opts: TorStartOptions = {}) {
+    if (this.recoverPromise) return this.recoverPromise;
+    this.recoverPromise = (async () => {
+      this.markDegraded("proxy_recovery");
+      await this.stop();
+      await this.start(opts);
+    })().finally(() => {
+      this.recoverPromise = null;
+    });
+    return this.recoverPromise;
   }
 
   async awaitReady(timeoutMs: number, signal?: AbortSignal) {

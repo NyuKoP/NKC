@@ -11,6 +11,9 @@ import {
   markOutboxRetry,
   removeOutbox,
 } from "../db/repo";
+import { createSafeConsole } from "../diagnostics/safeConsole";
+
+const console = createSafeConsole(globalThis.console);
 
 export type ConversationTransportStatus = TransportStatus & {
   kind?: TransportKind;

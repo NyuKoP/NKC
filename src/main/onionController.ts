@@ -34,7 +34,10 @@ export type OnionControllerHandle = {
   setLokinetSocksProxy: (proxyUrl: string | null) => Promise<void>;
   setTorOnionHost: (host: string | null) => void;
   setLokinetAddress: (address: string | null) => void;
-  prewarmTorRoute: (onionAddress: string) => Promise<{ ok: boolean; elapsedMs: number; error?: string }>;
+  prewarmTorRoute: (
+    onionAddress: string,
+    options?: { timeoutMs?: number }
+  ) => Promise<{ ok: boolean; elapsedMs: number; error?: string }>;
   close: () => Promise<void>;
 };
 
@@ -49,6 +52,7 @@ const INGEST_RATE_WINDOW_MS = 1000;
 const MAX_INGESTS_PER_WINDOW = 120;
 const FORWARD_TIMEOUT_MS = 45_000;
 const KEEP_ALIVE_TIMEOUT_MS = 65_000;
+const TOR_PREWARM_CACHE_MS = 45_000;
 const sendJson = (res: http.ServerResponse, status: number, payload: unknown) => {
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -194,6 +198,11 @@ export const startOnionController = async (options?: {
     proxyUrl: null,
     ready: false,
   };
+  const torPrewarmSuccess = new Map<string, number>();
+  const torPrewarmInFlight = new Map<
+    string,
+    Promise<{ ok: boolean; elapsedMs: number; error?: string }>
+  >();
   const emitControllerTrace = (detail: {
     event: string;
     level?: "debug" | "info" | "warn" | "error";
@@ -227,6 +236,10 @@ export const startOnionController = async (options?: {
   const setTorSocksProxy = async (proxyUrl: string | null) => {
     const trimmed = proxyUrl?.trim() ?? "";
     const previousProxy = torForwarding.proxyUrl;
+    if (previousProxy !== trimmed) {
+      torPrewarmSuccess.clear();
+      torPrewarmInFlight.clear();
+    }
     if (previousProxy && previousProxy !== trimmed) await socksTransport.clearProxy(previousProxy);
     if (!trimmed) {
       torForwarding.proxyUrl = null;
@@ -237,7 +250,7 @@ export const startOnionController = async (options?: {
     torForwarding.ready = true;
   };
 
-  const prewarmTorRoute = async (onionAddress: string) => {
+  const prewarmTorRoute = async (onionAddress: string, probeOptions?: { timeoutMs?: number }) => {
     const startedAt = Date.now();
     const normalized = onionAddress.trim().toLowerCase().replace(/^https?:\/\//, "").split("/")[0];
     if (!/^[a-z2-7]{56}\.onion$/.test(normalized)) {
@@ -246,23 +259,42 @@ export const startOnionController = async (options?: {
     if (!torForwarding.ready || !torForwarding.proxyUrl) {
       return { ok: false, elapsedMs: Date.now() - startedAt, error: "tor-proxy-unavailable" };
     }
-    try {
-      const response = await socksTransport.fetch(`http://${normalized}/onion/health`, {
-        method: "GET",
-        socksProxyUrl: torForwarding.proxyUrl,
-        timeoutMs: FORWARD_TIMEOUT_MS,
-      });
-      const elapsedMs = Date.now() - startedAt;
-      return response.status === 200
-        ? { ok: true, elapsedMs }
-        : { ok: false, elapsedMs, error: `prewarm-http-${response.status}` };
-    } catch (error) {
-      return {
-        ok: false,
-        elapsedMs: Date.now() - startedAt,
-        error: error instanceof Error ? error.message : String(error),
-      };
+    const proxyUrl = torForwarding.proxyUrl;
+    const cachedAt = torPrewarmSuccess.get(normalized) ?? 0;
+    if (Date.now() - cachedAt < TOR_PREWARM_CACHE_MS) {
+      return { ok: true, elapsedMs: Date.now() - startedAt };
     }
+    const existing = torPrewarmInFlight.get(normalized);
+    if (existing) return existing;
+    const probe = (async () => {
+      try {
+        const timeoutMs = Math.max(
+          3_000,
+          Math.min(FORWARD_TIMEOUT_MS, probeOptions?.timeoutMs ?? FORWARD_TIMEOUT_MS)
+        );
+        const response = await socksTransport.fetch(`http://${normalized}/onion/health`, {
+          method: "GET",
+          socksProxyUrl: proxyUrl,
+          timeoutMs,
+        });
+        const elapsedMs = Date.now() - startedAt;
+        if (response.status === 200) {
+          torPrewarmSuccess.set(normalized, Date.now());
+          return { ok: true, elapsedMs };
+        }
+        return { ok: false, elapsedMs, error: `prewarm-http-${response.status}` };
+      } catch (error) {
+        return {
+          ok: false,
+          elapsedMs: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+    })();
+    torPrewarmInFlight.set(normalized, probe);
+    return probe.finally(() => {
+      if (torPrewarmInFlight.get(normalized) === probe) torPrewarmInFlight.delete(normalized);
+    });
   };
 
   const setLokinetSocksProxy = async (proxyUrl: string | null) => {

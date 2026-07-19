@@ -141,6 +141,9 @@ import {
   INLINE_MEDIA_CHUNK_SIZE,
   INLINE_MEDIA_MAX_BYTES,
 } from "../net/mediaTransferLimits";
+import { createSafeConsole } from "../diagnostics/safeConsole";
+
+const console = createSafeConsole(globalThis.console);
 
 const buildNameMap = (
   profiles: UserProfile[],

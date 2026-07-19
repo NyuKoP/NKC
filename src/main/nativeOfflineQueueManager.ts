@@ -6,11 +6,14 @@ export type P2PQueuedMessage = {
   friendId: string;
   onionAddress: string;
   payload: string;
-  status: "PENDING" | "IN_FLIGHT" | "DELIVERED";
+  status: "PENDING" | "IN_FLIGHT" | "DELIVERED" | "FAILED";
   createdAt: number;
   updatedAt: number;
   deliveredAt?: number;
   lastError?: string;
+  attempts?: number;
+  nextAttemptAt?: number;
+  failedAt?: number;
 };
 
 export type OfflineQueueManager = {
