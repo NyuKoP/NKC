@@ -122,16 +122,18 @@ contextBridge.exposeInMainWorld("p2p", {
   },
 });
 
+const preloadToken = ipcRenderer.sendSync("security:get-preload-token") as string | null;
+
 contextBridge.exposeInMainWorld("nativeWorker", {
   inspectFile: (file: File, chunkSize: number) => {
     const filePath = webUtils.getPathForFile(file);
     if (!filePath) return Promise.resolve({ ok: false, error: "file-path-unavailable" });
-    return ipcRenderer.invoke("nativeWorker:fileInspect", { path: filePath, chunkSize });
+    return ipcRenderer.invoke("nativeWorker:fileInspect", { path: filePath, chunkSize, token: preloadToken });
   },
   readFileChunk: (file: File, index: number, chunkSize: number) => {
     const filePath = webUtils.getPathForFile(file);
     if (!filePath) return Promise.resolve({ ok: false, error: "file-path-unavailable" });
-    return ipcRenderer.invoke("nativeWorker:fileChunk", { path: filePath, index, chunkSize });
+    return ipcRenderer.invoke("nativeWorker:fileChunk", { path: filePath, index, chunkSize, token: preloadToken });
   },
   planDelivery: (payload: unknown) => ipcRenderer.invoke("nativeWorker:schedule", payload),
 });
