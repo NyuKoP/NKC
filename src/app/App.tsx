@@ -1723,7 +1723,6 @@ export default function App() {
       const routingConfig = netConfig;
       const shouldPrewarmOnionRoute =
         frameType === "friend_req" &&
-        routingConfig.mode === "onionRouter" &&
         Boolean(routingMeta.route?.torOnion || routingMeta.route?.lokinet);
       let prewarmResult: Awaited<ReturnType<typeof prewarmRouter>> | null = null;
       if (shouldPrewarmOnionRoute) {

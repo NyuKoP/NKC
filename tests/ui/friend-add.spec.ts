@@ -206,9 +206,13 @@ const makeFriendCode = () => {
 const seedNetworkConfig = async (
   page: import("@playwright/test").Page,
   onionControllerUrl: string,
-  options?: { selectedNetwork?: "tor" | "lokinet"; serviceAddress?: string }
+  options?: {
+    selectedNetwork?: "tor" | "lokinet";
+    serviceAddress?: string;
+    mode?: "onionRouter" | "selfOnion";
+  }
 ) => {
-  await page.addInitScript(({ url, selectedNetwork, serviceAddress }) => {
+  await page.addInitScript(({ url, selectedNetwork, serviceAddress, mode }) => {
     const encodeBase64 = (value: string) => {
       const bytes = new TextEncoder().encode(value);
       let binary = "";
@@ -260,15 +264,15 @@ const seedNetworkConfig = async (
     localStorage.setItem(
       "netConfig.v1",
       JSON.stringify({
-        mode: "onionRouter",
-        onionProxyEnabled: true,
+        mode,
+        onionProxyEnabled: mode === "onionRouter",
         onionProxyUrl: "http://127.0.0.1:8080",
-        webrtcRelayOnly: true,
-        disableLinkPreview: true,
+        webrtcRelayOnly: mode === "onionRouter",
+        disableLinkPreview: mode === "onionRouter",
         selfOnionEnabled: true,
         selfOnionMinRelays: 3,
         allowRemoteProxy: false,
-        onionEnabled: true,
+        onionEnabled: mode === "onionRouter",
         onionSelectedNetwork: selectedNetwork,
         tor: { installed: selectedNetwork === "tor", status: selectedNetwork === "tor" ? "ready" : "idle" },
         lokinet: {
@@ -282,6 +286,7 @@ const seedNetworkConfig = async (
     url: onionControllerUrl,
     selectedNetwork: options?.selectedNetwork ?? "tor",
     serviceAddress: options?.serviceAddress ?? "",
+    mode: options?.mode ?? "onionRouter",
   });
 };
 
@@ -398,7 +403,8 @@ test.describe("Friend add E2E", () => {
 
   const runMutualEndpointExchange = async (
     browser: import("@playwright/test").Browser,
-    network: "tor" | "lokinet"
+    network: "tor" | "lokinet",
+    mode: "onionRouter" | "selfOnion" = "onionRouter"
   ) => {
     const aliceContext = await browser.newContext();
     const bobContext = await browser.newContext();
@@ -415,10 +421,12 @@ test.describe("Friend add E2E", () => {
     await seedNetworkConfig(alice, onionServer.baseUrl, {
       selectedNetwork: network,
       serviceAddress: aliceServiceAddress,
+      mode,
     });
     await seedNetworkConfig(bob, onionServer.baseUrl, {
       selectedNetwork: network,
       serviceAddress: bobServiceAddress,
+      mode,
     });
     await enableFriendFlowCapture(alice);
     await enableFriendFlowCapture(bob);
@@ -494,5 +502,11 @@ test.describe("Friend add E2E", () => {
     browser,
   }) => {
     await runMutualEndpointExchange(browser, "tor");
+  });
+
+  test("first friend exchange bootstraps over Tor from default selfOnion mode", async ({
+    browser,
+  }) => {
+    await runMutualEndpointExchange(browser, "tor", "selfOnion");
   });
 });
