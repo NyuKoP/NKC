@@ -2,7 +2,7 @@
 
 NKC is a serverless, end-to-end encrypted desktop chat application built with Electron, React, TypeScript, and a native Go worker. It stores encrypted event envelopes locally and routes peer-to-peer traffic through privacy-preserving transports, with onion routing preferred by policy.
 
-> **Project status:** active development. The current package version is `0.2.0`; interfaces, storage formats, and network behavior may still change.
+> **Project status:** active development. The current package version is `0.3.0`; interfaces, storage formats, and network behavior may still change.
 
 ## Features
 
@@ -15,7 +15,7 @@ NKC is a serverless, end-to-end encrypted desktop chat application built with El
 - Onion-first routing, Tor hidden-service support, and optional direct fallback
 - alternateRoute integration and configurable route policy
 - Electron main/preload isolation with a narrow IPC bridge
-- Native Go worker for offline queue and file operations
+- Native Go worker for SOCKS5/HTTP transport, connection pooling, offline queue, scheduling, and file operations
 
 For the security rules that implementations must preserve, see [Transport Security Invariants](docs/SECURITY-transport-invariants.md).
 
@@ -136,7 +136,7 @@ Do not commit secrets, private keys, start keys, friend codes, bridge credential
 | `src/net/`, `src/adapters/transports/` | Routing and transport implementations |
 | `src/sync/`, `src/storage/`, `src/db/` | Synchronization and persistent data |
 | `src/main/onion/`, `src/main/tor/` | Managed onion components and Tor runtime |
-| `native/nkc-worker/` | Native Go worker |
+| `native/nkc-worker/` | Native Go worker for transport, queueing, scheduling, and file operations |
 | `tests/ui/` | Playwright end-to-end and visual tests |
 | `docs/` | Architecture, operations, migration, and manual test documentation |
 | `scripts/` | Build, test, diagnostics, and pin-generation utilities |

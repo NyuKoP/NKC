@@ -23,6 +23,14 @@
 - `GET /onion/inbox`: poll inbox items.
 - `GET /onion/address`: return published Tor/alternateRoute addresses.
 
+## Native transport boundary
+- Electron keeps the authenticated loopback HTTP boundary, local inbox, IPC, and diagnostic event publication.
+- The Go worker owns route validation, alternateRoute/Tor failover, SOCKS5 negotiation, optional username/password authentication, HTTP/HTTPS requests, bounded concurrency, retries, response-size enforcement, reusable connection pools, and failure queueing.
+- Electron communicates with the worker through `transport.fetch` and `transport.clearProxy`; payload bytes are Base64-encoded only at this control boundary.
+- Routed `/onion/send` requests use `transport.forward`; successful and failed route events are returned to Electron for the existing diagnostic sinks.
+- The worker never follows HTTP redirects automatically, preventing an onion or alternateRoute destination from redirecting a request to an unintended network target.
+- Offline queue delivery and interactive forwarding share the same Go SOCKS dialer so protocol validation remains consistent.
+
 ## Error taxonomy
 Forwarding errors normalize to:
 - timeout

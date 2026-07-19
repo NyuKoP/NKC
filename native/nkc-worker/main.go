@@ -23,8 +23,9 @@ type response struct {
 }
 
 type worker struct {
-	queueMu sync.RWMutex
-	queue   *queueStore
+	queueMu   sync.RWMutex
+	queue     *queueStore
+	transport *transportEngine
 }
 
 func (w *worker) getQueue() *queueStore {
@@ -45,7 +46,7 @@ func decodeParams[T any](raw json.RawMessage) (T, error) {
 func (w *worker) handle(req request) (any, error) {
 	switch req.Method {
 	case "health":
-		return map[string]any{"version": 1, "features": []string{"file", "queue", "scheduler"}}, nil
+		return map[string]any{"version": 1, "features": []string{"file", "queue", "scheduler", "transport"}}, nil
 	case "file.inspect":
 		params, err := decodeParams[fileInspectParams](req.Params)
 		if err != nil {
@@ -64,6 +65,27 @@ func (w *worker) handle(req request) (any, error) {
 			return nil, err
 		}
 		return planSchedule(params)
+	case "transport.fetch":
+		params, err := decodeParams[transportFetchParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return w.transport.fetch(params)
+	case "transport.clearProxy":
+		params, err := decodeParams[struct {
+			ProxyURL string `json:"proxyUrl"`
+		}](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		w.transport.clearProxy(strings.TrimSpace(params.ProxyURL))
+		return map[string]bool{"cleared": true}, nil
+	case "transport.forward":
+		params, err := decodeParams[transportForwardParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return w.forwardOnion(params)
 	case "queue.init":
 		params, err := decodeParams[queueInitParams](req.Params)
 		if err != nil {
@@ -133,7 +155,7 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	encoder := json.NewEncoder(os.Stdout)
-	w := &worker{}
+	w := &worker{transport: newTransportEngine()}
 	var outputMu sync.Mutex
 	var requests sync.WaitGroup
 	writeResponse := func(payload response) {
