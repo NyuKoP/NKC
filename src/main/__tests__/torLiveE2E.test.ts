@@ -99,7 +99,8 @@ const sendOverTor = async (
   envelope: string
 ) => {
   let lastResult: Awaited<ReturnType<typeof postJson>> | null = null;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  const maxAttempts = 5;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     lastResult = await postJson(
       `${sender.baseUrl}/onion/send`,
       {
@@ -119,7 +120,10 @@ const sendOverTor = async (
     ) {
       return lastResult;
     }
-    if (attempt < 3) await wait(5_000);
+    if (attempt < maxAttempts) {
+      await sender.prewarmTorRoute(recipientOnion, { timeoutMs: 15_000 }).catch(() => null);
+      await wait(Math.min(attempt * 5_000, 15_000));
+    }
   }
   throw new Error(`Tor forwarding failed: ${JSON.stringify(lastResult)}`);
 };
@@ -497,7 +501,13 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       const prewarm = await controllerA.prewarmTorRoute(bob.onionAddr);
       expect(prewarm.ok).toBe(true);
       const transferStartedAt = Date.now();
-      const sendWindow = 8;
+      // A single Tor circuit becomes less reliable when several 128 KiB HTTP forwards compete
+      // for it. Keep the Tor lane serial and rely on binary streaming to bound memory usage.
+      const sendWindow = 1;
+      const progressEveryChunks = Math.max(
+        1,
+        Math.round((32 * 1024 * 1024) / LIVE_FILE_CHUNK_BYTES)
+      );
 
       for (let windowStart = 0; windowStart < totalChunks; windowStart += sendWindow) {
         const windowEnd = Math.min(totalChunks, windowStart + sendWindow);
@@ -619,6 +629,22 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
           receiverHash.update(receivedChunk);
           receivedBytes += receivedChunk.length;
         }
+        const completedChunks = windowEnd;
+        if (completedChunks === totalChunks || completedChunks % progressEveryChunks === 0) {
+          const elapsedMs = Date.now() - transferStartedAt;
+          console.log(
+            JSON.stringify({
+              event: "tor-large-transfer-progress",
+              completedMiB: Number((receivedBytes / (1024 * 1024)).toFixed(1)),
+              totalMiB: LIVE_TOR_FILE_MB,
+              percent: Number(((completedChunks / totalChunks) * 100).toFixed(1)),
+              elapsedMs,
+              throughputMiBps: Number(
+                (receivedBytes / (1024 * 1024) / (elapsedMs / 1000)).toFixed(3)
+              ),
+            })
+          );
+        }
       }
 
       const transferMs = Date.now() - transferStartedAt;
@@ -650,6 +676,6 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
         })
       );
     },
-    Math.max(10 * 60_000, LIVE_TOR_FILE_MB * 2_000)
+    Math.max(10 * 60_000, LIVE_TOR_FILE_MB * 15_000)
   );
 });

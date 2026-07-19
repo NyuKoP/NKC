@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	transportBodyLimit        = 256 * 1024
+	transportBodyLimit        = 2 * 1024 * 1024
 	transportMaxInflight      = 8
 	transportConnectTimeout   = 45 * time.Second
 	transportIdleTimeout      = 65 * time.Second

@@ -22,7 +22,7 @@ import (
 	"time"
 )
 
-const queueFrameLimit = 256 * 1024
+const queueFrameLimit = 2 * 1024 * 1024
 
 type friendRoute struct {
 	FriendID     string `json:"friendId"`

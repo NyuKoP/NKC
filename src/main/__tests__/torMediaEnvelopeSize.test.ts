@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { decryptEnvelope, encryptEnvelope, type EnvelopeHeader } from "../../crypto/box";
-import { INLINE_MEDIA_CHUNK_SIZE } from "../../net/mediaTransferLimits";
+import {
+  INLINE_MEDIA_CHUNK_SIZE,
+  ONION_TRANSFER_MAX_BODY_BYTES,
+} from "../../net/mediaTransferLimits";
 import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
 import { getSodium } from "../../security/sodium";
-
-const ONION_CONTROLLER_MAX_BODY_BYTES = 256 * 1024;
 
 describe("Tor media envelope sizing", () => {
   it("keeps an encrypted media chunk inside the controller request limit", async () => {
@@ -48,8 +49,8 @@ describe("Tor media envelope sizing", () => {
       route: { mode: "manual", torOnion: `${"a".repeat(56)}.onion` },
     });
 
-    expect(Buffer.byteLength(envelopeJson)).toBeLessThan(256 * 1024);
-    expect(Buffer.byteLength(requestBody)).toBeLessThanOrEqual(ONION_CONTROLLER_MAX_BODY_BYTES);
+    expect(Buffer.byteLength(envelopeJson)).toBeLessThan(ONION_TRANSFER_MAX_BODY_BYTES);
+    expect(Buffer.byteLength(requestBody)).toBeLessThanOrEqual(ONION_TRANSFER_MAX_BODY_BYTES);
 
     const decrypted = await decryptEnvelope<{ b64: string }>(
       key,
@@ -57,5 +58,5 @@ describe("Tor media envelope sizing", () => {
       identity.publicKey
     );
     expect(decodeBase64Url(decrypted.b64)).toEqual(bytes);
-  });
+  }, 20_000);
 });
