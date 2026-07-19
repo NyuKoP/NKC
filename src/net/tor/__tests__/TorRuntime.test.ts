@@ -111,4 +111,37 @@ describe("TorRuntime", () => {
     });
     expect(runtime.getState()).toBe("DEGRADED");
   });
+
+  it("coalesces proxy recovery into one stop and restart", async () => {
+    let status: unknown = { state: "unavailable" };
+    const startTor = vi.fn(async () => {
+      status = {
+        state: "running",
+        socksProxyUrl: "socks5://127.0.0.1:19050",
+        dataDir: "C:/tmp/nkc-tor",
+      };
+    });
+    const stopTor = vi.fn(async () => {
+      status = { state: "unavailable" };
+    });
+    const runtime = new TorRuntime({
+      getBridge: () => ({
+        getTorStatus: async () => status,
+        startTor,
+        stopTor,
+        setOnionForwardProxy: async () => {},
+      }),
+      checkProxyReachable: async () => true,
+      sleep: async () => {},
+      now: () => Date.now(),
+      log: () => {},
+    });
+
+    await runtime.start();
+    await Promise.all([runtime.recover(), runtime.recover()]);
+
+    expect(stopTor).toHaveBeenCalledTimes(1);
+    expect(startTor).toHaveBeenCalledTimes(2);
+    expect(runtime.getState()).toBe("READY");
+  });
 });

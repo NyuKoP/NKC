@@ -1,7 +1,7 @@
 {
   "name": "test",
   "private": true,
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "NKC serverless secure chat desktop app",
   "author": {
     "name": "NyuKoP",
@@ -21,8 +21,11 @@
     "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb --publish never",
     "test": "vitest",
-    "test:tor:live": "node scripts/run-live-tor-e2e.mjs",
-    "test:tor:large": "node scripts/run-live-tor-e2e.mjs --large --size-mb=1",
+    "test:tor:live": "npm run build:native && node scripts/run-live-tor-e2e.mjs",
+    "test:tor:large": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=1",
+    "test:tor:large:10": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=10",
+    "test:tor:large:100": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=100",
+    "test:tor:large:500": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=500",
     "bench:transfer": "vitest bench --run src/perf/transferEncoding.bench.ts",
     "bench:transfer:500mb": "cross-env NKC_LARGE_TRANSFER_BENCH=1 vitest run src/perf/largeTransferPipeline.test.ts --reporter=verbose",
     "test:ui": "playwright test",
@@ -88,7 +91,9 @@
       {
         "from": "native/bin",
         "to": "native",
-        "filter": ["**/*"]
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "extraMetadata": {

@@ -30,15 +30,18 @@ type friendRoute struct {
 }
 
 type queuedMessage struct {
-	ID           string `json:"id"`
-	FriendID     string `json:"friendId"`
-	OnionAddress string `json:"onionAddress"`
-	Payload      string `json:"payload"`
-	Status       string `json:"status"`
-	CreatedAt    int64  `json:"createdAt"`
-	UpdatedAt    int64  `json:"updatedAt"`
-	DeliveredAt  int64  `json:"deliveredAt,omitempty"`
-	LastError    string `json:"lastError,omitempty"`
+	ID            string `json:"id"`
+	FriendID      string `json:"friendId"`
+	OnionAddress  string `json:"onionAddress"`
+	Payload       string `json:"payload"`
+	Status        string `json:"status"`
+	CreatedAt     int64  `json:"createdAt"`
+	UpdatedAt     int64  `json:"updatedAt"`
+	DeliveredAt   int64  `json:"deliveredAt,omitempty"`
+	LastError     string `json:"lastError,omitempty"`
+	Attempts      int    `json:"attempts,omitempty"`
+	NextAttemptAt int64  `json:"nextAttemptAt,omitempty"`
+	FailedAt      int64  `json:"failedAt,omitempty"`
 }
 
 type queueFile struct {
@@ -293,6 +296,7 @@ func (q *queueStore) enqueue(input enqueueParams) (queuedMessage, error) {
 		}
 		if existing.Status != "DELIVERED" {
 			existing.Status, existing.UpdatedAt, existing.LastError = "PENDING", now, ""
+			existing.Attempts, existing.NextAttemptAt, existing.FailedAt = 0, now, 0
 			q.state.Messages[index] = existing
 			return existing, q.persist()
 		}
@@ -300,7 +304,7 @@ func (q *queueStore) enqueue(input enqueueParams) (queuedMessage, error) {
 	}
 	message := queuedMessage{
 		ID: input.ID, FriendID: input.FriendID, OnionAddress: onion, Payload: input.Payload,
-		Status: "PENDING", CreatedAt: input.CreatedAt, UpdatedAt: now,
+		Status: "PENDING", CreatedAt: input.CreatedAt, UpdatedAt: now, NextAttemptAt: now,
 	}
 	q.state.Messages = append(q.state.Messages, message)
 	found := false
@@ -372,7 +376,7 @@ func dialSOCKSContext(ctx context.Context, proxyURL, target string, targetPort i
 	}
 	conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", proxy.address)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("proxy_connect:%w", err)
 	}
 	fail := func(err error) (net.Conn, error) { _ = conn.Close(); return nil, err }
 	deadline := time.Now().Add(timeout)
@@ -385,11 +389,11 @@ func dialSOCKSContext(ctx context.Context, proxyURL, target string, targetPort i
 		method = 2
 	}
 	if _, err = conn.Write([]byte{5, 1, method}); err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("socks_handshake:%w", err))
 	}
 	reply := make([]byte, 2)
 	if _, err = io.ReadFull(conn, reply); err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("socks_handshake:%w", err))
 	}
 	if reply[0] != 5 || reply[1] != method {
 		return fail(fmt.Errorf("socks_auth_failed"))
@@ -400,11 +404,11 @@ func dialSOCKSContext(ctx context.Context, proxyURL, target string, targetPort i
 		authRequest = append(authRequest, byte(len(proxy.password)))
 		authRequest = append(authRequest, []byte(proxy.password)...)
 		if _, err = conn.Write(authRequest); err != nil {
-			return fail(err)
+			return fail(fmt.Errorf("socks_auth:%w", err))
 		}
 		authReply := make([]byte, 2)
 		if _, err = io.ReadFull(conn, authReply); err != nil {
-			return fail(err)
+			return fail(fmt.Errorf("socks_auth:%w", err))
 		}
 		if authReply[0] != 1 || authReply[1] != 0 {
 			return fail(fmt.Errorf("socks_auth_failed"))
@@ -419,14 +423,14 @@ func dialSOCKSContext(ctx context.Context, proxyURL, target string, targetPort i
 	binary.BigEndian.PutUint16(port, uint16(targetPort))
 	request = append(request, port...)
 	if _, err = conn.Write(request); err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("socks_connect:%w", err))
 	}
 	head := make([]byte, 4)
 	if _, err = io.ReadFull(conn, head); err != nil {
-		return fail(err)
+		return fail(fmt.Errorf("socks_connect:%w", err))
 	}
 	if head[0] != 5 || head[1] != 0 {
-		return fail(fmt.Errorf("socks_connect_failed"))
+		return fail(fmt.Errorf("socks_reply_%s", socksReplyName(head[1])))
 	}
 	addressBytes := 0
 	switch head[3] {
@@ -450,15 +454,84 @@ func dialSOCKSContext(ctx context.Context, proxyURL, target string, targetPort i
 	return conn, nil
 }
 
-func (q *queueStore) pendingForFriend(friendID string) []queuedMessage {
+func socksReplyName(code byte) string {
+	switch code {
+	case 1:
+		return "general_failure"
+	case 2:
+		return "ruleset_denied"
+	case 3:
+		return "network_unreachable"
+	case 4:
+		return "host_unreachable"
+	case 5:
+		return "connection_refused"
+	case 6:
+		return "ttl_expired"
+	case 7:
+		return "command_unsupported"
+	case 8:
+		return "address_unsupported"
+	default:
+		return "unknown"
+	}
+}
+
+func (q *queueStore) pendingForFriend(friendID string, now int64) []queuedMessage {
 	result := []queuedMessage{}
 	for _, message := range q.state.Messages {
-		if message.FriendID == friendID && message.Status == "PENDING" {
+		if message.FriendID == friendID && message.Status == "PENDING" && message.NextAttemptAt <= now {
 			result = append(result, message)
 		}
 	}
 	sort.SliceStable(result, func(i, j int) bool { return result[i].CreatedAt < result[j].CreatedAt })
 	return result
+}
+
+func queueFailurePolicy(err error, attempts int, now int64) (string, string, int64) {
+	code := normalizeForwardError(err)
+	text := strings.ToLower(err.Error())
+	permanent := strings.Contains(text, "invalid_") ||
+		strings.Contains(text, "unsupported_") ||
+		strings.Contains(text, "socks_auth_failed") ||
+		strings.Contains(text, "response_too_large") ||
+		(strings.HasPrefix(text, "ingest_failed:4") && !strings.HasPrefix(text, "ingest_failed:429"))
+	if permanent || attempts >= 15 {
+		return "FAILED", code, 0
+	}
+	base, capDelay := int64(3_000), int64(120_000)
+	switch code {
+	case "onion_service_refused":
+		base, capDelay = 1_000, 30_000
+	case "proxy_unreachable", "proxy_connect_timeout":
+		base, capDelay = 2_000, 60_000
+	case "onion_descriptor_unavailable":
+		base, capDelay = 5_000, 120_000
+	}
+	exponent := min(max(attempts-1, 0), 6)
+	delay := base * int64(1<<exponent)
+	if delay > capDelay {
+		delay = capDelay
+	}
+	return "PENDING", code, now + delay
+}
+
+func (q *queueStore) patchFailure(id string, failure error) error {
+	now := time.Now().UnixMilli()
+	for index := range q.state.Messages {
+		message := &q.state.Messages[index]
+		if message.ID != id {
+			continue
+		}
+		message.Attempts++
+		message.Status, message.LastError, message.NextAttemptAt = queueFailurePolicy(failure, message.Attempts, now)
+		message.UpdatedAt = now
+		if message.Status == "FAILED" {
+			message.FailedAt = now
+		}
+		break
+	}
+	return q.persist()
 }
 
 func (q *queueStore) patchStatus(ids map[string]bool, status, lastError string) error {
@@ -471,6 +544,8 @@ func (q *queueStore) patchStatus(ids map[string]bool, status, lastError string) 
 		q.state.Messages[index].UpdatedAt = now
 		q.state.Messages[index].LastError = lastError
 		if status == "DELIVERED" {
+			q.state.Messages[index].NextAttemptAt = 0
+			q.state.Messages[index].LastError = ""
 			q.state.Messages[index].DeliveredAt = now
 		}
 	}
@@ -561,10 +636,11 @@ func (q *queueStore) flush(params flushParams) (any, error) {
 		ackTimeout = 10 * time.Second
 	}
 	delivered := 0
+	now := time.Now().UnixMilli()
 	client := createOnionHTTPClient(q.proxyURL, connectTimeout)
 	defer client.CloseIdleConnections()
 	for _, friend := range q.state.Friends {
-		pending := q.pendingForFriend(friend.FriendID)
+		pending := q.pendingForFriend(friend.FriendID, now)
 		if len(pending) == 0 {
 			continue
 		}
@@ -574,7 +650,7 @@ func (q *queueStore) flush(params flushParams) (any, error) {
 				break
 			}
 			if err := postIngest(client, message, ackTimeout); err != nil {
-				_ = q.patchStatus(ids, "PENDING", err.Error())
+				_ = q.patchFailure(message.ID, err)
 				break
 			}
 			if err := q.patchStatus(ids, "DELIVERED", ""); err != nil {

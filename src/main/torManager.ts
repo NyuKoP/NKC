@@ -13,6 +13,13 @@ export type TorStatus =
   | { state: "running"; socksProxyUrl: string; dataDir: string; details?: string }
   | { state: "failed"; details: string };
 
+export type TorDiagnostics = {
+  state: TorStatus["state"];
+  bootstrapProgress: number;
+  processRunning: boolean;
+  bridgeMode: "direct" | "bridged";
+};
+
 type HiddenServiceConfig = {
   localPort: number;
   virtPort: number;
@@ -453,6 +460,15 @@ export class TorManager {
 
   getStatus() {
     return this.status;
+  }
+
+  getDiagnostics(): TorDiagnostics {
+    return {
+      state: this.status.state,
+      bootstrapProgress: this.bootstrapProgress,
+      processRunning: Boolean(this.process),
+      bridgeMode: this.bridgeDetail?.startsWith("bridges-enabled") ? "bridged" : "direct",
+    };
   }
 
   async ensureHiddenService(opts: { localPort: number; virtPort: number }) {

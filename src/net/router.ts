@@ -17,6 +17,9 @@ import { useInternalOnionRouteStore } from "../stores/internalOnionRouteStore";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { createTransportError, getTransportErrorCode } from "./transportErrors";
 import { decodeFriendCodeV1 } from "../security/friendCode";
+import { createSafeConsole } from "../diagnostics/safeConsole";
+
+const console = createSafeConsole(globalThis.console);
 
 export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
 export type IncomingPacketMeta = {

@@ -195,7 +195,9 @@ export async function onionFetch(
 type OnionRouterOptions = {
   httpClient: HttpClient;
   config: NetConfig;
-  torRuntime?: Pick<TorRuntime, "start" | "awaitReady" | "markDegraded">;
+  torRuntime?: Pick<TorRuntime, "start" | "awaitReady" | "markDegraded"> & {
+    recover?: TorRuntime["recover"];
+  };
 };
 
 export const createOnionRouterTransport = ({
@@ -279,6 +281,15 @@ export const createOnionRouterTransport = ({
     } catch {
       throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: Tor runtime is not ready");
     }
+  };
+
+  const recoverTorProxyInBackground = (result: { queued?: boolean; error?: string }) => {
+    if (!result.queued || !result.error || !isForwardProxyNotReadyError(result.error)) return;
+    torRuntime.markDegraded("proxy_unreachable", result.error);
+    if (!torRuntime.recover) return;
+    void torRuntime.recover({ timeoutMs: 30_000 }).catch((error) => {
+      torRuntime.markDegraded("proxy_recovery_failed", error);
+    });
   };
 
   const resolveControllerUrl = async () => {
@@ -447,6 +458,7 @@ export const createOnionRouterTransport = ({
           }
           throw new Error(message);
         }
+        recoverTorProxyInBackground(result);
         ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
         return;
       }
@@ -462,6 +474,7 @@ export const createOnionRouterTransport = ({
         }
         const result = await sendOnce();
         if (result.ok) {
+          recoverTorProxyInBackground(result);
           ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
           return;
         }

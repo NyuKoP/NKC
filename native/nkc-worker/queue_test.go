@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -42,6 +43,22 @@ func TestQueuePersistsAndDeduplicates(t *testing.T) {
 	}
 	if len(reloaded.list()) != 1 {
 		t.Fatalf("queue was not deduplicated: %#v", reloaded.list())
+	}
+}
+
+func TestQueueFailurePolicySeparatesTransientAndPermanentErrors(t *testing.T) {
+	now := int64(1_000)
+	status, code, retryAt := queueFailurePolicy(fmt.Errorf("socks_reply_host_unreachable"), 1, now)
+	if status != "PENDING" || code != "onion_descriptor_unavailable" || retryAt != now+5_000 {
+		t.Fatalf("unexpected descriptor policy: %s %s %d", status, code, retryAt)
+	}
+	status, code, retryAt = queueFailurePolicy(fmt.Errorf("ingest_failed:400"), 1, now)
+	if status != "FAILED" || code != "permanent_upstream_rejection" || retryAt != 0 {
+		t.Fatalf("unexpected permanent policy: %s %s %d", status, code, retryAt)
+	}
+	status, _, retryAt = queueFailurePolicy(fmt.Errorf("connection refused"), 15, now)
+	if status != "FAILED" || retryAt != 0 {
+		t.Fatalf("expected retry cap, got %s %d", status, retryAt)
 	}
 }
 
@@ -103,7 +120,11 @@ func TestQueueFlushDeliversThroughSOCKS5HTTP(t *testing.T) {
 	received := make(chan map[string]any, 1)
 	target := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		var payload map[string]any
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil { t.Error(err); response.WriteHeader(400); return }
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Error(err)
+			response.WriteHeader(400)
+			return
+		}
 		received <- payload
 		response.Header().Set("Content-Type", "application/json")
 		_, _ = response.Write([]byte(`{"ok":true,"msgId":"queued-message"}`))
@@ -112,23 +133,37 @@ func TestQueueFlushDeliversThroughSOCKS5HTTP(t *testing.T) {
 	targetAddress := strings.TrimPrefix(target.URL, "http://")
 
 	proxy, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer proxy.Close()
 	go func() {
 		for {
 			client, acceptErr := proxy.Accept()
-			if acceptErr != nil { return }
+			if acceptErr != nil {
+				return
+			}
 			go func(client net.Conn) {
 				defer client.Close()
 				greeting := make([]byte, 3)
-				if _, err := io.ReadFull(client, greeting); err != nil { return }
+				if _, err := io.ReadFull(client, greeting); err != nil {
+					return
+				}
 				_, _ = client.Write([]byte{5, 0})
 				head := make([]byte, 5)
-				if _, err := io.ReadFull(client, head); err != nil { return }
-				if head[3] != 3 { return }
-				if _, err := io.ReadFull(client, make([]byte, int(head[4])+2)); err != nil { return }
+				if _, err := io.ReadFull(client, head); err != nil {
+					return
+				}
+				if head[3] != 3 {
+					return
+				}
+				if _, err := io.ReadFull(client, make([]byte, int(head[4])+2)); err != nil {
+					return
+				}
 				upstream, err := net.Dial("tcp", targetAddress)
-				if err != nil { return }
+				if err != nil {
+					return
+				}
 				defer upstream.Close()
 				_, _ = client.Write([]byte{5, 0, 0, 1, 127, 0, 0, 1, 0, 80})
 				done := make(chan struct{}, 1)
@@ -140,17 +175,29 @@ func TestQueueFlushDeliversThroughSOCKS5HTTP(t *testing.T) {
 	}()
 
 	store, err := openQueueStore(filepath.Join(t.TempDir(), "queue.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	store.setProxy("socks5h://" + proxy.Addr().String())
 	onion := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion"
-	if _, err = store.enqueue(enqueueParams{ID:"queued-message", FriendID:"device-1", OnionAddress:onion, Payload:"encrypted-envelope", CreatedAt:1}); err != nil { t.Fatal(err) }
-	result, err := store.flush(flushParams{ConnectTimeoutMs:2_000, AckTimeoutMs:2_000})
-	if err != nil { t.Fatal(err) }
-	if result.(map[string]int)["delivered"] != 1 { t.Fatalf("message was not delivered: %#v", result) }
-	if store.list()[0].Status != "DELIVERED" { t.Fatalf("unexpected queue status: %#v", store.list()) }
+	if _, err = store.enqueue(enqueueParams{ID: "queued-message", FriendID: "device-1", OnionAddress: onion, Payload: "encrypted-envelope", CreatedAt: 1}); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.flush(flushParams{ConnectTimeoutMs: 2_000, AckTimeoutMs: 2_000})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.(map[string]int)["delivered"] != 1 {
+		t.Fatalf("message was not delivered: %#v", result)
+	}
+	if store.list()[0].Status != "DELIVERED" {
+		t.Fatalf("unexpected queue status: %#v", store.list())
+	}
 	select {
 	case payload := <-received:
-		if payload["id"] != "queued-message" || payload["toDeviceId"] != "device-1" { t.Fatalf("unexpected payload: %#v", payload) }
+		if payload["id"] != "queued-message" || payload["toDeviceId"] != "device-1" {
+			t.Fatalf("unexpected payload: %#v", payload)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("target did not receive queued message")
 	}
