@@ -1,0 +1,256 @@
+package main
+
+import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+)
+
+var (
+	torTargetPattern     = regexp.MustCompile(`^[a-z2-7]{56}\.onion$`)
+	lokinetTargetPattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+loki$`)
+)
+
+type onionRoutePayload struct {
+	To           string `json:"to"`
+	From         string `json:"from"`
+	Envelope     string `json:"envelope"`
+	ToDeviceID   string `json:"toDeviceId"`
+	ToOnion      string `json:"toOnion"`
+	FromDeviceID string `json:"fromDeviceId"`
+	Route        struct {
+		Mode     string `json:"mode"`
+		TorOnion string `json:"torOnion"`
+		Lokinet  string `json:"lokinet"`
+	} `json:"route"`
+}
+
+type transportForwardParams struct {
+	Payload         onionRoutePayload `json:"payload"`
+	TorProxyURL     string            `json:"torProxyUrl"`
+	LokinetProxyURL string            `json:"lokinetProxyUrl"`
+	QueueOnFailure  bool              `json:"queueOnFailure"`
+}
+
+type transportForwardResult struct {
+	Status int              `json:"status"`
+	Body   map[string]any   `json:"body"`
+	Traces []map[string]any `json:"traces"`
+}
+
+type routeCandidate struct {
+	kind   string
+	target string
+	proxy  string
+}
+
+func normalizeRouteTarget(kind, value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if !strings.HasPrefix(value, "http://") {
+		value = "http://" + value
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "http" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
+		return ""
+	}
+	hostname := strings.ToLower(parsed.Hostname())
+	if kind == "tor" && !torTargetPattern.MatchString(hostname) {
+		return ""
+	}
+	if kind == "lokinet" && !lokinetTargetPattern.MatchString(hostname) {
+		return ""
+	}
+	return "http://" + parsed.Host
+}
+
+func buildRouteCandidates(mode, torTarget, lokinetTarget, torProxy, lokinetProxy string) []routeCandidate {
+	tor := routeCandidate{kind: "tor", target: torTarget, proxy: strings.TrimSpace(torProxy)}
+	lokinet := routeCandidate{kind: "lokinet", target: lokinetTarget, proxy: strings.TrimSpace(lokinetProxy)}
+	hasTor := tor.target != "" && tor.proxy != ""
+	hasLokinet := lokinet.target != "" && lokinet.proxy != ""
+	switch mode {
+	case "preferTor":
+		if hasTor {
+			return []routeCandidate{tor}
+		}
+	case "preferLokinet":
+		if hasLokinet {
+			return []routeCandidate{lokinet}
+		}
+	case "manual":
+		if torTarget != "" && lokinetTarget != "" {
+			return nil
+		}
+		if hasTor {
+			return []routeCandidate{tor}
+		}
+		if hasLokinet {
+			return []routeCandidate{lokinet}
+		}
+	case "auto":
+		result := make([]routeCandidate, 0, 2)
+		if hasLokinet {
+			result = append(result, lokinet)
+		}
+		if hasTor {
+			result = append(result, tor)
+		}
+		return result
+	}
+	return nil
+}
+
+func normalizeForwardError(err error) string {
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "timeout") || strings.Contains(text, "deadline exceeded") {
+		return "timeout"
+	}
+	if strings.Contains(text, "socks_auth") || strings.Contains(text, "socks_connect") || strings.Contains(text, "unsupported_socks") || strings.Contains(text, "invalid_socks") {
+		return "handshake_failed"
+	}
+	if strings.Contains(text, "connection refused") || strings.Contains(text, "actively refused") || strings.Contains(text, "connectex") || strings.Contains(text, "no such host") || strings.Contains(text, "network is unreachable") || strings.Contains(text, "host is unreachable") || strings.Contains(text, "connection reset") || strings.Contains(text, "forcibly closed") || strings.Contains(text, "connect_fail") {
+		return "proxy_unreachable"
+	}
+	return "upstream_error"
+}
+
+func forwardFailure(status int, msgID, code string, traces []map[string]any) transportForwardResult {
+	return transportForwardResult{
+		Status: status,
+		Body:   map[string]any{"ok": false, "error": code},
+		Traces: traces,
+	}
+}
+
+func (w *worker) forwardOnion(params transportForwardParams) (transportForwardResult, error) {
+	payload := params.Payload
+	if payload.Envelope == "" {
+		return forwardFailure(http.StatusBadRequest, "", "missing-fields", nil), nil
+	}
+	msgID := newID()
+	now := time.Now().UnixMilli()
+	toDeviceID := payload.ToDeviceID
+	if toDeviceID == "" {
+		toDeviceID = payload.To
+	}
+	fromDeviceID := payload.FromDeviceID
+	if fromDeviceID == "" {
+		fromDeviceID = payload.From
+	}
+	if toDeviceID == "" {
+		return forwardFailure(http.StatusBadRequest, msgID, "missing-to-device", nil), nil
+	}
+	if len(toDeviceID) > 256 || len(fromDeviceID) > 256 {
+		return forwardFailure(http.StatusBadRequest, msgID, "invalid-device-id", nil), nil
+	}
+	mode := payload.Route.Mode
+	if mode == "" {
+		mode = "manual"
+	}
+	if mode != "auto" && mode != "preferLokinet" && mode != "preferTor" && mode != "manual" {
+		return forwardFailure(http.StatusBadRequest, msgID, "invalid-route-mode", nil), nil
+	}
+	torValue := payload.ToOnion
+	if torValue == "" {
+		torValue = payload.Route.TorOnion
+	}
+	if torValue == "" && strings.Contains(payload.To, ".onion") {
+		torValue = payload.To
+	}
+	torTarget := normalizeRouteTarget("tor", torValue)
+	lokinetTarget := normalizeRouteTarget("lokinet", payload.Route.Lokinet)
+	if (torValue != "" && torTarget == "") || (payload.Route.Lokinet != "" && lokinetTarget == "") {
+		return forwardFailure(http.StatusBadRequest, msgID, "invalid-route-target", nil), nil
+	}
+
+	candidates := buildRouteCandidates(mode, torTarget, lokinetTarget, params.TorProxyURL, params.LokinetProxyURL)
+	traces := make([]map[string]any, 0, len(candidates)*2)
+	terminalCode := "forward_failed:no_route"
+	terminalStatus := http.StatusBadRequest
+	for index, candidate := range candidates {
+		targetURL := candidate.target + "/onion/ingest"
+		traces = append(traces, map[string]any{
+			"event": "onionController:forward:start", "opId": msgID,
+			"routeKind": candidate.kind, "routeMode": mode, "destination": candidate.target,
+			"destinationUrl": targetURL, "toDeviceId": toDeviceID,
+			"attempt": index + 1, "maxRouteAttempts": len(candidates), "timeoutMs": 45_000,
+		})
+		body, err := json.Marshal(map[string]any{
+			"toDeviceId": toDeviceID, "from": fromDeviceID, "envelope": payload.Envelope,
+			"ts": now, "id": msgID,
+		})
+		if err != nil {
+			return transportForwardResult{}, err
+		}
+		response, err := w.transport.fetch(transportFetchParams{
+			URL: targetURL, Method: http.MethodPost,
+			Headers:    map[string]string{"Content-Type": "application/json"},
+			BodyBase64: base64.StdEncoding.EncodeToString(body), TimeoutMS: 45_000,
+			SocksProxyURL: candidate.proxy, Retry: transportRetryParams{Attempts: 1, DelayMS: 350},
+		})
+		if err == nil && response.Status >= 200 && response.Status < 300 {
+			traces = append(traces, map[string]any{
+				"event": "onionController:forward:ok", "opId": msgID,
+				"routeKind": candidate.kind, "routeMode": mode, "destination": candidate.target,
+				"destinationUrl": targetURL, "toDeviceId": toDeviceID, "status": response.Status,
+				"attempt": index + 1, "maxRouteAttempts": len(candidates),
+			})
+			return transportForwardResult{
+				Status: http.StatusOK,
+				Body:   map[string]any{"ok": true, "msgId": msgID, "forwarded": true, "via": candidate.kind},
+				Traces: traces,
+			}, nil
+		}
+		code := "upstream_error"
+		if err != nil {
+			code = normalizeForwardError(err)
+		}
+		traces = append(traces, map[string]any{
+			"event": "onionController:forward:fail", "level": "warn", "opId": msgID,
+			"routeKind": candidate.kind, "routeMode": mode, "destination": candidate.target,
+			"destinationUrl": targetURL, "toDeviceId": toDeviceID, "normalizedCode": code,
+			"attempt": index + 1, "maxRouteAttempts": len(candidates),
+		})
+		terminalCode = "forward_failed:" + code
+		terminalStatus = http.StatusBadGateway
+		if mode != "auto" {
+			break
+		}
+	}
+
+	shouldQueue := params.QueueOnFailure && torTarget != "" && mode != "preferLokinet"
+	if shouldQueue {
+		queue := w.getQueue()
+		if queue != nil {
+			_, err := queue.enqueue(enqueueParams{
+				ID: msgID, FriendID: toDeviceID, OnionAddress: torTarget,
+				Payload: payload.Envelope, CreatedAt: now,
+			})
+			if err != nil {
+				return transportForwardResult{}, fmt.Errorf("queue_forward_failure:%w", err)
+			}
+			traces = append(traces, map[string]any{
+				"event": "onionController:offlineQueue:pending", "level": "warn",
+				"opId": msgID, "toDeviceId": toDeviceID, "destination": torTarget,
+				"reason": terminalCode,
+			})
+			return transportForwardResult{
+				Status: http.StatusAccepted,
+				Body: map[string]any{
+					"ok": true, "msgId": msgID, "forwarded": false, "queued": true,
+					"status": "PENDING", "error": terminalCode,
+				},
+				Traces: traces,
+			}, nil
+		}
+	}
+	return forwardFailure(terminalStatus, msgID, terminalCode, traces), nil
+}

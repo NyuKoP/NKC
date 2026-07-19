@@ -1,7 +1,7 @@
 {
   "name": "test",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "NKC serverless secure chat desktop app",
   "author": {
     "name": "NyuKoP",

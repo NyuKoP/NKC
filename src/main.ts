@@ -29,6 +29,7 @@ import {
   type P2PFriendRoute,
 } from "./main/nativeOfflineQueueManager";
 import { NativeWorkerClient } from "./main/nativeWorkerClient";
+import { createNativeSocksTransport } from "./main/socksHttpClient";
 import { TorManager } from "./main/torManager";
 import { LokinetManager } from "./main/lokinetManager";
 import { readAppPrefs, setAppPrefs } from "./main/preferences";
@@ -2060,9 +2061,10 @@ app.whenReady().then(async () => {
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
           getLokinetStatus: () => lokinetManager?.getStatus() ?? { state: "unavailable" },
           userDataPath: app.getPath("userData"),
-          enqueueOfflineMessage: async (item) => {
-            await p2pQueueManager?.enqueueMessage(item);
-          },
+          queueOnFailure: true,
+          socksTransport: nativeWorkerClient
+            ? createNativeSocksTransport(nativeWorkerClient)
+            : undefined,
         });
     } catch (error) {
       const code =
@@ -2075,9 +2077,10 @@ app.whenReady().then(async () => {
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
           getLokinetStatus: () => lokinetManager?.getStatus() ?? { state: "unavailable" },
           userDataPath: app.getPath("userData"),
-          enqueueOfflineMessage: async (item) => {
-            await p2pQueueManager?.enqueueMessage(item);
-          },
+          queueOnFailure: true,
+          socksTransport: nativeWorkerClient
+            ? createNativeSocksTransport(nativeWorkerClient)
+            : undefined,
         });
       } else {
         throw error;

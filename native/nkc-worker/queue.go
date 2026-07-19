@@ -330,42 +330,85 @@ func (q *queueStore) setProxy(value string) {
 	q.proxyURL = strings.TrimSpace(value)
 }
 
-func parseProxy(proxyURL string) (string, error) {
+type socksProxyConfig struct {
+	address  string
+	username string
+	password string
+	hasAuth  bool
+}
+
+func parseProxy(proxyURL string) (socksProxyConfig, error) {
 	parsed, err := url.Parse(proxyURL)
 	if err != nil {
-		return "", err
+		return socksProxyConfig{}, err
 	}
 	if parsed.Scheme != "socks5" && parsed.Scheme != "socks5h" {
-		return "", fmt.Errorf("unsupported_socks_protocol")
+		return socksProxyConfig{}, fmt.Errorf("unsupported_socks_protocol")
 	}
 	if parsed.Hostname() == "" || parsed.Port() == "" {
-		return "", fmt.Errorf("invalid_socks_proxy")
+		return socksProxyConfig{}, fmt.Errorf("invalid_socks_proxy")
 	}
-	return net.JoinHostPort(parsed.Hostname(), parsed.Port()), nil
+	config := socksProxyConfig{address: net.JoinHostPort(parsed.Hostname(), parsed.Port())}
+	if parsed.User != nil {
+		config.username = parsed.User.Username()
+		config.password, config.hasAuth = parsed.User.Password()
+		if config.username == "" || !config.hasAuth || config.password == "" || len(config.username) > 255 || len(config.password) > 255 {
+			return socksProxyConfig{}, fmt.Errorf("invalid_socks_auth")
+		}
+	}
+	return config, nil
 }
 
 func dialSOCKS(proxyURL, target string, targetPort int, timeout time.Duration) (net.Conn, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return dialSOCKSContext(ctx, proxyURL, target, targetPort, timeout)
+}
+
+func dialSOCKSContext(ctx context.Context, proxyURL, target string, targetPort int, timeout time.Duration) (net.Conn, error) {
 	proxy, err := parseProxy(proxyURL)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	conn, err := (&net.Dialer{}).DialContext(ctx, "tcp", proxy)
+	conn, err := (&net.Dialer{Timeout: timeout}).DialContext(ctx, "tcp", proxy.address)
 	if err != nil {
 		return nil, err
 	}
 	fail := func(err error) (net.Conn, error) { _ = conn.Close(); return nil, err }
-	_ = conn.SetDeadline(time.Now().Add(timeout))
-	if _, err = conn.Write([]byte{5, 1, 0}); err != nil {
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	method := byte(0)
+	if proxy.hasAuth {
+		method = 2
+	}
+	if _, err = conn.Write([]byte{5, 1, method}); err != nil {
 		return fail(err)
 	}
 	reply := make([]byte, 2)
 	if _, err = io.ReadFull(conn, reply); err != nil {
 		return fail(err)
 	}
-	if reply[0] != 5 || reply[1] != 0 {
+	if reply[0] != 5 || reply[1] != method {
 		return fail(fmt.Errorf("socks_auth_failed"))
+	}
+	if proxy.hasAuth {
+		authRequest := []byte{1, byte(len(proxy.username))}
+		authRequest = append(authRequest, []byte(proxy.username)...)
+		authRequest = append(authRequest, byte(len(proxy.password)))
+		authRequest = append(authRequest, []byte(proxy.password)...)
+		if _, err = conn.Write(authRequest); err != nil {
+			return fail(err)
+		}
+		authReply := make([]byte, 2)
+		if _, err = io.ReadFull(conn, authReply); err != nil {
+			return fail(err)
+		}
+		if authReply[0] != 1 || authReply[1] != 0 {
+			return fail(fmt.Errorf("socks_auth_failed"))
+		}
 	}
 	host := []byte(normalizeOnion(target))
 	if len(host) == 0 || len(host) > 255 {
@@ -441,7 +484,7 @@ func createOnionHTTPClient(proxyURL string, connectTimeout time.Duration) *http.
 		IdleConnTimeout:     65 * time.Second,
 		DisableCompression:  true,
 	}
-	transport.DialContext = func(_ context.Context, _, address string) (net.Conn, error) {
+	transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
 		host, portText, err := net.SplitHostPort(address)
 		if err != nil {
 			return nil, err
@@ -450,9 +493,14 @@ func createOnionHTTPClient(proxyURL string, connectTimeout time.Duration) *http.
 		if err != nil || port < 1 || port > 65535 {
 			return nil, fmt.Errorf("invalid_target_port")
 		}
-		return dialSOCKS(proxyURL, host, port, connectTimeout)
+		return dialSOCKSContext(ctx, proxyURL, host, port, connectTimeout)
 	}
-	return &http.Client{Transport: transport}
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 }
 
 func postIngest(client *http.Client, message queuedMessage, timeout time.Duration) error {

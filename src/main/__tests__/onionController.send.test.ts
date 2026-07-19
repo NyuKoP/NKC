@@ -1,199 +1,84 @@
 import { describe, expect, it, vi } from "vitest";
 import { handleOnionSend } from "../onionController";
-import { selectRoute } from "../routePolicy";
-
-const TOR_ONION = `${"a".repeat(56)}.onion`;
-const LOKINET_ADDRESS = "peer.loki";
 
 const baseDeps = () => ({
-  socksFetch: vi.fn(),
-  selectRoute,
   now: () => 123456789,
-  uuid: () => "msg-1",
-  torProxyUrl: "socks5://127.0.0.1:9050",
-  lokinetProxyUrl: "socks5://127.0.0.1:22000",
+  uuid: () => "msg-local",
   storeLocal: vi.fn(),
+  forwardRouted: vi.fn(async () => ({
+    status: 200,
+    body: { ok: true, msgId: "msg-go", forwarded: true, via: "tor" },
+    traces: [{ event: "onionController:forward:ok", routeKind: "tor" }],
+  })),
+  emitTrace: vi.fn(),
 });
 
-describe("handleOnionSend routing", () => {
-  it("auto: lokinet fails then tor succeeds", async () => {
+describe("handleOnionSend Go routing boundary", () => {
+  it("delegates routed delivery and trace events to the Go worker adapter", async () => {
     const deps = baseDeps();
-    deps.socksFetch.mockImplementation(async (url: string) => {
-      if (url.includes(LOKINET_ADDRESS)) {
-        throw new Error("lokinet down");
-      }
-      return { status: 200, headers: {}, body: Buffer.alloc(0) };
-    });
-    const result = await handleOnionSend(
-      {
-        toDeviceId: "peer-1",
-        envelope: "env",
-        route: { mode: "auto", lokinet: LOKINET_ADDRESS, torOnion: TOR_ONION },
-      },
-      deps
-    );
-    expect(result.body.ok).toBe(true);
-    expect(result.body.forwarded).toBe(true);
-    expect("via" in result.body ? result.body.via : undefined).toBe("tor");
-    expect(deps.socksFetch.mock.calls.map((call) => call[0])).toEqual([
-      `http://${LOKINET_ADDRESS}/onion/ingest`,
-      `http://${TOR_ONION}/onion/ingest`,
-    ]);
-  });
-
-  it("auto: lokinet success is not preempted by missing tor proxy offline queue", async () => {
-    const deps = {
-      ...baseDeps(),
-      torProxyUrl: null,
-      enqueueOfflineMessage: vi.fn(),
+    const payload = {
+      toDeviceId: "peer-1",
+      envelope: "ciphertext",
+      route: { mode: "preferTor" as const, torOnion: `${"a".repeat(56)}.onion` },
     };
-    deps.socksFetch.mockResolvedValue({ status: 200, headers: {}, body: Buffer.alloc(0) });
 
-    const result = await handleOnionSend(
-      {
-        toDeviceId: "peer-1",
-        envelope: "env",
-        route: { mode: "auto", lokinet: LOKINET_ADDRESS, torOnion: TOR_ONION },
-      },
-      deps
-    );
+    const result = await handleOnionSend(payload, deps);
 
-    expect(result.body.ok).toBe(true);
-    expect(result.body.forwarded).toBe(true);
-    expect("via" in result.body ? result.body.via : undefined).toBe("lokinet");
-    expect(deps.enqueueOfflineMessage).not.toHaveBeenCalled();
-    expect(deps.socksFetch).toHaveBeenCalledTimes(1);
-    expect(deps.socksFetch.mock.calls[0][0]).toBe(`http://${LOKINET_ADDRESS}/onion/ingest`);
-  });
-
-  it("auto: queues tor onion only after all live route candidates fail", async () => {
-    const deps = {
-      ...baseDeps(),
-      torProxyUrl: null,
-      enqueueOfflineMessage: vi.fn(async () => undefined),
-    };
-    deps.socksFetch.mockRejectedValue(new Error("lokinet down"));
-
-    const result = await handleOnionSend(
-      {
-        toDeviceId: "peer-1",
-        envelope: "env",
-        route: { mode: "auto", lokinet: LOKINET_ADDRESS, torOnion: TOR_ONION },
-      },
-      deps
-    );
-
-    expect(result.status).toBe(202);
-    expect(result.body.ok).toBe(true);
-    expect("queued" in result.body ? result.body.queued : undefined).toBe(true);
-    expect(deps.socksFetch).toHaveBeenCalledTimes(1);
-    expect(deps.enqueueOfflineMessage).toHaveBeenCalledWith({
-      id: "msg-1",
-      friendId: "peer-1",
-      onionAddress: TOR_ONION,
-      payload: "env",
-      createdAt: 123456789,
+    expect(result).toEqual({
+      status: 200,
+      body: { ok: true, msgId: "msg-go", forwarded: true, via: "tor" },
     });
+    expect(deps.forwardRouted).toHaveBeenCalledWith(payload);
+    expect(deps.emitTrace).toHaveBeenCalledWith({
+      event: "onionController:forward:ok",
+      routeKind: "tor",
+    });
+    expect(deps.storeLocal).not.toHaveBeenCalled();
   });
 
-  it("preferLokinet: fail does not try tor", async () => {
+  it("keeps explicit loopback storage in the local controller", async () => {
     const deps = baseDeps();
-    deps.socksFetch.mockRejectedValue(new Error("lokinet down"));
     const result = await handleOnionSend(
-      {
-        toDeviceId: "peer-1",
-        envelope: "env",
-        route: { mode: "preferLokinet", lokinet: LOKINET_ADDRESS, torOnion: TOR_ONION },
-      },
+      { toDeviceId: "same-device", fromDeviceId: "same-device", envelope: "ciphertext" },
       deps
     );
-    expect(result.body.ok).toBe(false);
-    expect(deps.socksFetch).toHaveBeenCalledTimes(1);
-    expect(deps.socksFetch.mock.calls[0][0]).toBe(`http://${LOKINET_ADDRESS}/onion/ingest`);
+
+    expect(result).toEqual({
+      status: 200,
+      body: { ok: true, msgId: "msg-local", forwarded: false },
+    });
+    expect(deps.storeLocal).toHaveBeenCalledTimes(1);
+    expect(deps.forwardRouted).not.toHaveBeenCalled();
   });
 
-  it("preferTor: fail does not try lokinet", async () => {
-    const deps = baseDeps();
-    deps.socksFetch.mockRejectedValue(new Error("tor down"));
-    const result = await handleOnionSend(
-      {
-        toDeviceId: "peer-1",
-        envelope: "env",
-        route: { mode: "preferTor", lokinet: LOKINET_ADDRESS, torOnion: TOR_ONION },
-      },
-      deps
-    );
-    expect(result.body.ok).toBe(false);
-    expect(deps.socksFetch).toHaveBeenCalledTimes(1);
-    expect(deps.socksFetch.mock.calls[0][0]).toBe(`http://${TOR_ONION}/onion/ingest`);
-  });
-
-  it("missing envelope returns ok:false", async () => {
-    const deps = baseDeps();
-    const result = await handleOnionSend({ toDeviceId: "peer-1" }, deps);
-    expect(result.body.ok).toBe(false);
-    expect(result.status).toBe(400);
-  });
-
-  it("rejects arbitrary route targets before proxying", async () => {
+  it("blocks non-loopback sends without a route target", async () => {
     const deps = baseDeps();
     const result = await handleOnionSend(
-      {
-        toDeviceId: "peer-1",
-        envelope: "env",
-        route: { mode: "manual", torOnion: "http://127.0.0.1:8080" },
-      },
+      { toDeviceId: "peer-1", fromDeviceId: "sender-1", envelope: "ciphertext" },
       deps
     );
     expect(result).toEqual({
       status: 400,
-      body: { ok: false, error: "invalid-route-target" },
+      body: { ok: false, error: "forward_failed:no_route_target" },
     });
-    expect(deps.socksFetch).not.toHaveBeenCalled();
+    expect(deps.storeLocal).not.toHaveBeenCalled();
+    expect(deps.forwardRouted).not.toHaveBeenCalled();
   });
 
-  it("legacy payload stores locally and skips socks", async () => {
+  it("fails closed when the native routing boundary is unavailable", async () => {
     const deps = baseDeps();
-    const result = await handleOnionSend(
-      { to: "local-peer", envelope: "env" },
-      deps
-    );
-    expect(result.body.ok).toBe(true);
-    expect(result.body.forwarded).toBe(false);
-    expect(deps.socksFetch).not.toHaveBeenCalled();
-    expect(deps.storeLocal).toHaveBeenCalledTimes(1);
-  });
-
-  it("fails when route target is missing for non-loopback send", async () => {
-    const deps = baseDeps();
+    const withoutNative = { ...deps, forwardRouted: undefined };
     const result = await handleOnionSend(
       {
         toDeviceId: "peer-1",
-        fromDeviceId: "sender-1",
-        envelope: "env",
+        envelope: "ciphertext",
+        route: { mode: "preferTor", torOnion: `${"a".repeat(56)}.onion` },
       },
-      deps
+      withoutNative
     );
-    expect(result.status).toBe(400);
-    expect(result.body.ok).toBe(false);
-    expect(result.body.error).toBe("forward_failed:no_route_target");
-    expect(deps.socksFetch).not.toHaveBeenCalled();
-    expect(deps.storeLocal).not.toHaveBeenCalled();
-  });
-
-  it("allows explicit loopback send without route target", async () => {
-    const deps = baseDeps();
-    const result = await handleOnionSend(
-      {
-        toDeviceId: "same-device",
-        fromDeviceId: "same-device",
-        envelope: "env",
-      },
-      deps
-    );
-    expect(result.status).toBe(200);
-    expect(result.body.ok).toBe(true);
-    expect(result.body.forwarded).toBe(false);
-    expect(deps.storeLocal).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({
+      status: 502,
+      body: { ok: false, error: "forward_failed:native_transport_unavailable" },
+    });
   });
 });

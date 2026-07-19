@@ -3,8 +3,7 @@ import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import type { TorStatus } from "./torManager";
 import type { LokinetStatus } from "./lokinetManager";
-import { clearSocksAgentPool, socksFetch } from "./socksHttpClient";
-import { normalizeRouteTarget, selectRoute, type RouteMode } from "./routePolicy";
+import type { SocksTransport } from "./socksHttpClient";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { appendTestLogRecord } from "./testLogStore";
 
@@ -49,8 +48,6 @@ const MAX_DEVICE_INBOX_ITEMS = 2048;
 const INGEST_RATE_WINDOW_MS = 1000;
 const MAX_INGESTS_PER_WINDOW = 120;
 const FORWARD_TIMEOUT_MS = 45_000;
-const FORWARD_RETRY_ATTEMPTS = 1;
-const FORWARD_RETRY_DELAY_MS = 350;
 const KEEP_ALIVE_TIMEOUT_MS = 65_000;
 const sendJson = (res: http.ServerResponse, status: number, payload: unknown) => {
   res.statusCode = status;
@@ -93,30 +90,26 @@ export type OnionSendPayload = {
   toOnion?: string;
   fromDeviceId?: string;
   route?: {
-    mode?: RouteMode;
+    mode?: "auto" | "preferLokinet" | "preferTor" | "manual";
     torOnion?: string;
     lokinet?: string;
   };
 };
 
 type OnionSendDeps = {
-  socksFetch: typeof socksFetch;
-  selectRoute: typeof selectRoute;
   now: () => number;
   uuid: () => string;
-  torProxyUrl: string | null;
-  lokinetProxyUrl: string | null;
   storeLocal: (
     deviceId: string,
     item: Omit<InboxItem, "expiresAt"> & { ttlMs?: number }
   ) => boolean | void;
-  enqueueOfflineMessage?: (item: {
-    id: string;
-    friendId: string;
-    onionAddress: string;
-    payload: string;
-    createdAt: number;
-  }) => Promise<void>;
+  forwardRouted?: (
+    payload: OnionSendPayload
+  ) => Promise<{
+    status: number;
+    body: Record<string, unknown>;
+    traces?: Array<Record<string, unknown> & { event: string }>;
+  }>;
   emitTrace?: (detail: {
     event: string;
     level?: "debug" | "info" | "warn" | "error";
@@ -124,339 +117,37 @@ type OnionSendDeps = {
   }) => void;
 };
 
-const normalizeForwardError = (error: unknown) => {
-  const code =
-    error && typeof error === "object" && "code" in error
-      ? String((error as { code?: unknown }).code ?? "")
-      : "";
-  if (code === "timeout" || code === "proxy_unreachable" || code === "handshake_failed" || code === "upstream_error") {
-    return code;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  const text = message.toLowerCase();
-  if (text.includes("timeout")) return "timeout";
-  if (
-    text.includes("socks_auth_failed") ||
-    text.includes("socks_connect_failed") ||
-    text.includes("unsupported_socks_protocol") ||
-    text.includes("invalid_socks_proxy") ||
-    text.includes("socks_auth_unsupported")
-  ) {
-    return "handshake_failed";
-  }
-  if (
-    text.includes("econnrefused") ||
-    text.includes("enotfound") ||
-    text.includes("ehostunreach") ||
-    text.includes("econnreset") ||
-    text.includes("connect_fail")
-  ) {
-    return "proxy_unreachable";
-  }
-  return "upstream_error";
-};
-
-const summarizeProxy = (proxyUrl: string | null) => {
-  if (!proxyUrl) return null;
-  try {
-    const parsed = new URL(proxyUrl);
-    return {
-      protocol: parsed.protocol.replace(/:$/, ""),
-      host: parsed.hostname || null,
-      port: parsed.port || null,
-    };
-  } catch {
-    return {
-      protocol: "invalid",
-      host: null,
-      port: null,
-    };
-  }
-};
-
-const serializeForwardError = (error: unknown) => {
-  const code =
-    error && typeof error === "object" && "code" in error
-      ? String((error as { code?: unknown }).code ?? "")
-      : "";
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  const stackTop =
-    error instanceof Error && typeof error.stack === "string"
-      ? error.stack.split("\n").slice(0, 2).join("\n")
-      : undefined;
-  return {
-    code: code || undefined,
-    message,
-    stackTop,
-  };
-};
-
 export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSendDeps) => {
   const emitTrace = deps.emitTrace ?? ((detail) => emitFlowTraceLog(detail));
   if (!payload || typeof payload !== "object" || typeof payload.envelope !== "string" || !payload.envelope) {
     return { status: 400, body: { ok: false, error: "missing-fields" } };
   }
-  const msgId = deps.uuid();
-  const ts = deps.now();
-  const toOnion =
-    payload.toOnion ??
-    payload.route?.torOnion ??
-    (payload.to?.includes(".onion") ? payload.to : undefined);
   const toDeviceId = payload.toDeviceId ?? payload.to;
   const fromDeviceId = payload.fromDeviceId ?? payload.from ?? "";
-  const routeMode = payload.route?.mode ?? "manual";
-  const lokinetAddress = payload.route?.lokinet;
-
-  if (!(["auto", "preferLokinet", "preferTor", "manual"] as const).includes(routeMode)) {
-    return { status: 400, body: { ok: false, error: "invalid-route-mode" } };
-  }
   if (typeof toDeviceId !== "string" || !toDeviceId) {
     return { status: 400, body: { ok: false, error: "missing-to-device" } };
   }
-  if (
-    toDeviceId.length > 256 ||
-    typeof fromDeviceId !== "string" ||
-    fromDeviceId.length > 256
-  ) {
+  if (toDeviceId.length > 256 || typeof fromDeviceId !== "string" || fromDeviceId.length > 256) {
     return { status: 400, body: { ok: false, error: "invalid-device-id" } };
   }
 
-  if (
-    (toOnion && !normalizeRouteTarget("tor", toOnion)) ||
-    (lokinetAddress && !normalizeRouteTarget("lokinet", lokinetAddress))
-  ) {
-    return { status: 400, body: { ok: false, error: "invalid-route-target" } };
-  }
-
-  const hasRouteTargets = Boolean(toOnion || lokinetAddress);
-  if (payload.route || hasRouteTargets) {
-    let offlineQueueReason: string | null = null;
-    let terminalFailure: { status: number; body: { ok: false; error: string } } | null = null;
-    const queueTorPending = async (error: string) => {
-      if (!toOnion || !deps.enqueueOfflineMessage) return null;
-      await deps.enqueueOfflineMessage({
-        id: msgId,
-        friendId: toDeviceId,
-        onionAddress: toOnion,
-        payload: payload.envelope ?? "",
-        createdAt: ts,
-      });
-      emitTrace({
-        event: "onionController:offlineQueue:pending",
-        level: "warn",
-        opId: msgId,
-        toDeviceId,
-        destination: toOnion,
-        reason: error,
-      });
+  const hasRouteTargets = Boolean(
+    payload.toOnion ||
+      payload.route?.torOnion ||
+      payload.route?.lokinet ||
+      payload.to?.includes(".onion") ||
+      payload.route
+  );
+  if (hasRouteTargets) {
+    if (!deps.forwardRouted) {
       return {
-        status: 202,
-        body: {
-          ok: true,
-          msgId,
-          forwarded: false,
-          queued: true,
-          status: "PENDING",
-          error,
-        },
+        status: 502,
+        body: { ok: false, error: "forward_failed:native_transport_unavailable" },
       };
-    };
-    const candidates = deps.selectRoute(
-      routeMode,
-      {
-        torOnion: toOnion,
-        lokinet: lokinetAddress,
-      },
-      {
-        tor: Boolean(deps.torProxyUrl),
-        lokinet: Boolean(deps.lokinetProxyUrl),
-      }
-    );
-    for (let index = 0; index < candidates.length; index += 1) {
-      const candidate = candidates[index];
-      const isLast = index === candidates.length - 1;
-      const proxyUrl = candidate.kind === "tor" ? deps.torProxyUrl : deps.lokinetProxyUrl;
-      const targetUrl = `${candidate.target}/onion/ingest`;
-      const proxySummary = summarizeProxy(proxyUrl);
-      if (!proxyUrl) {
-        emitTrace({
-          event: "onionController:forward:skip",
-          level: "warn",
-          opId: msgId,
-          routeKind: candidate.kind,
-          routeMode,
-          destination: candidate.target,
-          toDeviceId,
-          attempt: index + 1,
-          maxRouteAttempts: candidates.length,
-          reason: "missing-forward-proxy",
-        });
-        if (candidate.kind === "tor") {
-          offlineQueueReason = "forward_failed:no_proxy";
-        }
-        if (routeMode === "auto") continue;
-        terminalFailure = {
-          status: 400,
-          body: { ok: false, error: "forward_failed:no_proxy" },
-        };
-        continue;
-      }
-      try {
-        emitTrace({
-          event: "onionController:forward:start",
-          opId: msgId,
-          routeKind: candidate.kind,
-          routeMode,
-          destination: candidate.target,
-          destinationUrl: targetUrl,
-          toDeviceId,
-          attempt: index + 1,
-          maxRouteAttempts: candidates.length,
-          socksProxy: proxySummary,
-          timeoutMs: FORWARD_TIMEOUT_MS,
-          retryAttempts: FORWARD_RETRY_ATTEMPTS,
-          retryDelayMs: FORWARD_RETRY_DELAY_MS,
-        });
-        const response = await deps.socksFetch(targetUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: Buffer.from(
-            JSON.stringify({
-              toDeviceId,
-              from: fromDeviceId,
-              envelope: payload.envelope,
-              ts,
-              id: msgId,
-            })
-          ),
-          timeoutMs: FORWARD_TIMEOUT_MS,
-          socksProxyUrl: proxyUrl,
-          retry: { attempts: FORWARD_RETRY_ATTEMPTS, delayMs: FORWARD_RETRY_DELAY_MS },
-          onAttemptStart: ({ attempt, maxAttempts }) => {
-            emitTrace({
-              event: "onionController:forward:attempt",
-              opId: msgId,
-              routeKind: candidate.kind,
-              routeMode,
-              destination: candidate.target,
-              destinationUrl: targetUrl,
-              toDeviceId,
-              attempt,
-              maxAttempts,
-              socksProxy: proxySummary,
-              timeoutMs: FORWARD_TIMEOUT_MS,
-            });
-          },
-          onAttemptSuccess: ({ attempt, maxAttempts, status }) => {
-            emitTrace({
-              event: "onionController:forward:attempt_ok",
-              opId: msgId,
-              routeKind: candidate.kind,
-              routeMode,
-              destination: candidate.target,
-              destinationUrl: targetUrl,
-              toDeviceId,
-              attempt,
-              maxAttempts,
-              status,
-              socksProxy: proxySummary,
-            });
-          },
-          onAttemptFailure: ({ attempt, maxAttempts, error, retryDelayMs }) => {
-            emitTrace({
-              event: "onionController:forward:attempt_fail",
-              level: "warn",
-              opId: msgId,
-              routeKind: candidate.kind,
-              routeMode,
-              destination: candidate.target,
-              destinationUrl: targetUrl,
-              toDeviceId,
-              attempt,
-              maxAttempts,
-              retryDelayMs,
-              socksProxy: proxySummary,
-              error: serializeForwardError(error),
-            });
-          },
-        });
-        if (response.status >= 200 && response.status < 300) {
-          emitTrace({
-            event: "onionController:forward:ok",
-            opId: msgId,
-            routeKind: candidate.kind,
-            routeMode,
-            destination: candidate.target,
-            destinationUrl: targetUrl,
-            toDeviceId,
-            attempt: index + 1,
-            maxRouteAttempts: candidates.length,
-            status: response.status,
-            socksProxy: proxySummary,
-          });
-          return { status: 200, body: { ok: true, msgId, forwarded: true, via: candidate.kind } };
-        }
-        emitTrace({
-          event: "onionController:forward:bad_status",
-          level: "warn",
-          opId: msgId,
-          routeKind: candidate.kind,
-          routeMode,
-          destination: candidate.target,
-          destinationUrl: targetUrl,
-          toDeviceId,
-          attempt: index + 1,
-          maxRouteAttempts: candidates.length,
-          status: response.status,
-          socksProxy: proxySummary,
-        });
-        if (!isLast && routeMode === "auto") {
-          continue;
-        }
-        const code = normalizeForwardError("upstream_error");
-        if (candidate.kind === "tor") {
-          offlineQueueReason = `forward_failed:${code}`;
-        }
-        terminalFailure = {
-          status: 502,
-          body: { ok: false, error: `forward_failed:${code}` },
-        };
-        continue;
-      } catch (error) {
-        const code = normalizeForwardError(error);
-        emitTrace({
-          event: "onionController:forward:fail",
-          level: "warn",
-          opId: msgId,
-          routeKind: candidate.kind,
-          routeMode,
-          destination: candidate.target,
-          destinationUrl: targetUrl,
-          toDeviceId,
-          attempt: index + 1,
-          maxRouteAttempts: candidates.length,
-          normalizedCode: code,
-          socksProxy: proxySummary,
-          error: serializeForwardError(error),
-        });
-        if (!isLast && routeMode === "auto") {
-          continue;
-        }
-        if (candidate.kind === "tor") {
-          offlineQueueReason = `forward_failed:${code}`;
-        }
-        terminalFailure = { status: 502, body: { ok: false, error: `forward_failed:${code}` } };
-      }
     }
-    if (!offlineQueueReason && toOnion && deps.enqueueOfflineMessage && routeMode !== "preferLokinet") {
-      offlineQueueReason = terminalFailure?.body.error ?? "forward_failed:no_route";
-    }
-    if (offlineQueueReason) {
-      const queued = await queueTorPending(offlineQueueReason);
-      if (queued) return queued;
-    }
-    if (terminalFailure) return terminalFailure;
-    return { status: 400, body: { ok: false, error: "forward_failed:no_route" } };
+    const result = await deps.forwardRouted(payload);
+    result.traces?.forEach((trace) => emitTrace(trace));
+    return { status: result.status, body: result.body };
   }
 
   // Legacy/local fallback is only safe for explicit loopback sends.
@@ -464,6 +155,8 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
     return { status: 400, body: { ok: false, error: "forward_failed:no_route_target" } };
   }
 
+  const msgId = deps.uuid();
+  const ts = deps.now();
   const stored = deps.storeLocal(toDeviceId, {
     id: msgId,
     ts,
@@ -482,7 +175,8 @@ export const startOnionController = async (options?: {
   getTorStatus?: () => TorStatus;
   getLokinetStatus?: () => LokinetStatus;
   userDataPath?: string;
-  enqueueOfflineMessage?: OnionSendDeps["enqueueOfflineMessage"];
+  queueOnFailure?: boolean;
+  socksTransport?: SocksTransport;
 }): Promise<OnionControllerHandle> => {
   const host = "127.0.0.1";
   const port = options?.port ?? 3210;
@@ -519,10 +213,21 @@ export const startOnionController = async (options?: {
   };
   let myTorOnionHost: string | null = null;
   let myLokinetAddress: string | null = null;
+  const socksTransport: SocksTransport =
+    options?.socksTransport ?? {
+      fetch: async () => {
+        throw new Error("native_transport_unavailable");
+      },
+      forward: async () => ({
+        status: 502,
+        body: { ok: false, error: "forward_failed:native_transport_unavailable" },
+      }),
+      clearProxy: async () => undefined,
+    };
   const setTorSocksProxy = async (proxyUrl: string | null) => {
     const trimmed = proxyUrl?.trim() ?? "";
     const previousProxy = torForwarding.proxyUrl;
-    if (previousProxy && previousProxy !== trimmed) clearSocksAgentPool(previousProxy);
+    if (previousProxy && previousProxy !== trimmed) await socksTransport.clearProxy(previousProxy);
     if (!trimmed) {
       torForwarding.proxyUrl = null;
       torForwarding.ready = false;
@@ -542,7 +247,7 @@ export const startOnionController = async (options?: {
       return { ok: false, elapsedMs: Date.now() - startedAt, error: "tor-proxy-unavailable" };
     }
     try {
-      const response = await socksFetch(`http://${normalized}/onion/health`, {
+      const response = await socksTransport.fetch(`http://${normalized}/onion/health`, {
         method: "GET",
         socksProxyUrl: torForwarding.proxyUrl,
         timeoutMs: FORWARD_TIMEOUT_MS,
@@ -562,6 +267,8 @@ export const startOnionController = async (options?: {
 
   const setLokinetSocksProxy = async (proxyUrl: string | null) => {
     const trimmed = proxyUrl?.trim() ?? "";
+    const previousProxy = lokinetForwarding.proxyUrl;
+    if (previousProxy && previousProxy !== trimmed) await socksTransport.clearProxy(previousProxy);
     if (!trimmed) {
       lokinetForwarding.proxyUrl = null;
       lokinetForwarding.ready = false;
@@ -717,14 +424,15 @@ export const startOnionController = async (options?: {
         return;
       }
       const result = await handleOnionSend(payload, {
-        socksFetch,
-        selectRoute,
         now: () => Date.now(),
         uuid: () => randomUUID(),
-        torProxyUrl: torForwarding.proxyUrl,
-        lokinetProxyUrl: lokinetForwarding.proxyUrl,
         storeLocal: (deviceId, item) => enqueue(deviceId, item),
-        enqueueOfflineMessage: options?.enqueueOfflineMessage,
+        forwardRouted: (routedPayload) =>
+          socksTransport.forward(routedPayload, {
+            torProxyUrl: torForwarding.proxyUrl,
+            lokinetProxyUrl: lokinetForwarding.proxyUrl,
+            queueOnFailure: options?.queueOnFailure ?? true,
+          }),
         emitTrace: emitControllerTrace,
       });
       sendJson(res, result.status, result.body);
@@ -855,7 +563,10 @@ export const startOnionController = async (options?: {
     prewarmTorRoute,
     close: async () => {
       clearInterval(cleanupTimer);
-      clearSocksAgentPool(torForwarding.proxyUrl);
+      await Promise.all([
+        socksTransport.clearProxy(torForwarding.proxyUrl),
+        socksTransport.clearProxy(lokinetForwarding.proxyUrl),
+      ]);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };
