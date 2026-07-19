@@ -16,6 +16,7 @@ NKC is a serverless, end-to-end encrypted desktop chat application built with El
 - Lokinet integration and configurable route policy
 - Electron main/preload isolation with a narrow IPC bridge
 - Native Go worker for SOCKS5/HTTP transport, connection pooling, offline queue, scheduling, and file operations
+- Bounded-memory file transfer up to 500 MiB with 1 MiB encrypted chunks
 
 For the security rules that implementations must preserve, see [Transport Security Invariants](docs/SECURITY-transport-invariants.md).
 
@@ -88,9 +89,15 @@ The live test requires an installed Tor binary. Install Tor through NKC first or
 ```bash
 npm run test:tor:live
 npm run test:tor:large
+npm run test:tor:large:10
+npm run test:tor:large:100
+npm run test:tor:large:500
+npm run bench:transfer:500mb
 ```
 
-The large-transfer command uses a 1 MiB payload by default. The underlying runner accepts `--size-mb=<number>`.
+The staged commands transfer 1, 10, 100, or 500 MiB through real Tor hidden services. The underlying runner also accepts `--size-mb=<number>`. Live tests verify encryption, sender/receiver SHA-256 equality, duplicate detection, reverse chat during transfer, and recovery after an intentional proxy interruption.
+
+The current transfer format uses 1 MiB plaintext chunks and a 2 MiB encrypted request/frame ceiling. On the validated Windows test host, the full 500 MiB Tor run completed in 3,768.472 seconds at 0.133 MiB/s with no duplicate deliveries. Tor performance varies significantly by circuit and hidden-service publication time; use `npm run bench:transfer:500mb` for a short local bounded-memory pipeline check.
 
 ## Packaging
 
@@ -148,6 +155,7 @@ Do not commit secrets, private keys, start keys, friend codes, bridge credential
 Start with the [documentation index](docs/README.md). Important references include:
 
 - [Transport and Routing Architecture](docs/ARCH-transport-and-routing.md)
+- [Large File Transfer](docs/LARGE-FILE-TRANSFER.md)
 - [Transport Security Invariants](docs/SECURITY-transport-invariants.md)
 - [Two-Device Manual Checklist](docs/manual-two-device-checklist.md)
 - [Phase 4.6 Operations](docs/phase46-operations.md)

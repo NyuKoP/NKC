@@ -24,6 +24,16 @@ npm run build
 
 Run `npm run test:ui` for user-flow or visual changes. Run the live Tor commands only when Tor is installed and the change affects its actual runtime path.
 
+For file-transfer, controller body-limit, Go queue, or SOCKS transport changes, run at least:
+
+```bash
+npm run test:native
+npx vitest run src/main/__tests__/torMediaEnvelopeSize.test.ts
+npm run bench:transfer:500mb
+```
+
+Use the staged live commands (`test:tor:large`, `:10`, `:100`, and `:500`) in proportion to the risk. The 500 MiB Tor soak can take more than an hour and must not replace the faster local pipeline benchmark during normal iteration.
+
 Focused tests are encouraged during development:
 
 ```bash
@@ -46,6 +56,8 @@ npx eslint path/to/changed-file.ts
 Changes in `src/crypto/`, `src/security/`, transport selection, persistence, device trust, or Electron IPC require extra care. Preserve the rules in [Transport Security Invariants](docs/SECURITY-transport-invariants.md), including signature verification before decryption and storage, encrypted-at-rest records, replay protection, and privacy-safe routing metadata.
 
 Do not replace established cryptographic primitives or alter serialization/AAD formats without compatibility analysis and dedicated tests.
+
+Payload-limit changes must remain consistent across `src/net/mediaTransferLimits.ts`, the Electron onion controller, renderer transport frame validation, and the Go transport/offline queue. Preserve bounded memory, inbox capacity limits, request timeouts, and retry caps when increasing throughput.
 
 ## Native Worker
 

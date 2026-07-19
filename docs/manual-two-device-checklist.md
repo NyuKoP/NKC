@@ -38,3 +38,37 @@ Steps:
 Expected:
 - Expired codes fail.
 - Reused codes fail; a new code must be generated.
+
+## 5) Friend-code request and acceptance over Tor
+
+Steps:
+
+1. Start Tor on devices A and B and wait until both publish onion addresses.
+2. On device A, add device B using B's friend code.
+3. Confirm that device B shows A as a pending incoming request.
+4. Open A's pending entry on device B and select **Accept**.
+5. Return to device A and open the friend list.
+
+Expected:
+
+- The initial request reaches B even when A starts in the default self-onion mode.
+- B can accept without an already-established friendship route.
+- A receives `friend_accept` and shows B's supplied display name and status.
+- Both profiles retain the current friend code and Tor/Lokinet routing hints.
+- Invalidly signed or protocol-invalid control frames are logged as dropped and do not change profiles or conversations.
+
+## 6) Large file and concurrent chat
+
+Steps:
+
+1. Send a file large enough to span multiple 1 MiB chunks.
+2. Send a chat message in the reverse direction during transfer.
+3. Temporarily interrupt the sender's Tor proxy and restore it.
+4. Wait for transfer completion and compare the source and received file hashes.
+
+Expected:
+
+- Chat remains usable during the file transfer.
+- Transfer resumes after the Tor route is restored.
+- No duplicate chunks are assembled.
+- Source and destination SHA-256 values match.
