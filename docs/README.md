@@ -7,6 +7,7 @@ This directory contains current architectural references, operational guidance, 
 - [Project overview and setup](../README.md)
 - [Contributing and validation](../CONTRIBUTING.md)
 - [Transport and routing architecture](ARCH-transport-and-routing.md)
+- [Large file transfer](LARGE-FILE-TRANSFER.md)
 - [Transport security invariants](SECURITY-transport-invariants.md)
 - [Manual two-device checklist](manual-two-device-checklist.md)
 
@@ -16,6 +17,7 @@ This directory contains current architectural references, operational guidance, 
 | --- | --- |
 | [Transport and Routing Architecture](ARCH-transport-and-routing.md) | Available transports, route policy, controller contracts, and error classes |
 | [Transport Security Invariants](SECURITY-transport-invariants.md) | Security properties that transport changes must preserve |
+| [Large File Transfer](LARGE-FILE-TRANSFER.md) | Chunk sizing, bounded-memory flow, live Tor commands, and validated measurements |
 | [WebRTC Manual Pairing](webrtc-manual-pairing.md) | Manual direct peer-to-peer offer/answer pairing flow |
 
 ## Operations and Testing
@@ -31,6 +33,9 @@ This directory contains current architectural references, operational guidance, 
 | --- | --- |
 | [Start Key and Device Sync Migration](migration-start-key.md) | Behavioral changes for account start keys and synchronized devices |
 | [NKC v0.1.1](releases/v0.1.1.md) | Historical release notes for version 0.1.1 |
+| [NKC v0.3.0](releases/v0.3.0.md) | Go transport core migration |
+| [NKC v0.3.1](releases/v0.3.1.md) | Tor reliability, privacy, and staged transfer validation |
+| [NKC v0.3.2](releases/v0.3.2.md) | Tor 15.0.18, login safety, friend acceptance, and 500 MiB transfer follow-up |
 
 ## Implementation History
 
