@@ -9,6 +9,20 @@ const getErrorCode = (error: unknown) =>
     ? String((error as { code?: unknown }).code ?? "")
     : "";
 
+const verifyRemoved = async (targetPath: string) => {
+  try {
+    await fs.lstat(targetPath);
+    const error = new Error(`Path still exists after removal: ${targetPath}`) as Error & {
+      code?: string;
+    };
+    error.code = "ENOTEMPTY";
+    throw error;
+  } catch (error) {
+    if (getErrorCode(error) === "ENOENT") return;
+    throw error;
+  }
+};
+
 export const removeWithRetry = async (
   targetPath: string,
   opts: { attempts?: number; baseDelayMs?: number } = {}
@@ -20,6 +34,7 @@ export const removeWithRetry = async (
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       await fs.rm(targetPath, { recursive: true, force: true });
+      await verifyRemoved(targetPath);
       return;
     } catch (error) {
       lastError = error;

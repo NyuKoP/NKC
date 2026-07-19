@@ -18,6 +18,7 @@ import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
 import { installLokinet } from "./main/onion/install/installLokinet";
 import { removeWithRetry } from "./main/onion/install/removeWithRetry";
+import { removeTorInstallationArtifacts } from "./main/onion/install/cleanupTor";
 import { readCurrentPointer } from "./main/onion/install/swapperRollback";
 import { OnionRuntime } from "./main/onion/runtime/onionRuntime";
 import { checkUpdates } from "./main/onion/update/checkUpdates";
@@ -42,6 +43,7 @@ import {
 import { defaultAppPrefs, type AppPreferences, type AppPreferencesPatch } from "./preferences";
 import { fetchWithTimeout } from "./net/fetchWithTimeout";
 import { createSafeConsole } from "./diagnostics/safeConsole";
+import { shouldUseDevRuntime } from "./main/runtimeMode";
 
 const console = createSafeConsole(globalThis.console);
 
@@ -221,7 +223,7 @@ type SyncResultPayload = {
 };
 
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
-const isDev = Boolean(rendererUrl);
+const isDev = shouldUseDevRuntime({ isPackaged: app.isPackaged, rendererUrl });
 const isAutoStartLaunch = process.argv.includes("--autostart");
 const SECRET_STORE_FILENAME = "secret-store.json";
 const ALLOWED_PROXY_PROTOCOLS = new Set(["socks5:", "socks5h:", "http:", "https:"]);
@@ -1429,6 +1431,9 @@ const registerOnionIpc = () => {
     }
     const userDataDir = app.getPath("userData");
     try {
+      const runtimeBeforeMutation = onionRuntime.getStatus();
+      const shouldRestartRuntime =
+        runtimeBeforeMutation.status === "running" && runtimeBeforeMutation.network === network;
       await stopNetworkRuntimeForMutation(network);
       const install =
         network === "tor"
@@ -1483,8 +1488,8 @@ const registerOnionIpc = () => {
               updateInfo.assetName ?? undefined
             );
       const result = await install;
-      const runtime = onionRuntime.getStatus();
-      if (runtime.status === "running" && runtime.network === network) {
+      if (network === "tor") torManager?.invalidateResolvedPath();
+      if (shouldRestartRuntime) {
         try {
           await onionRuntime.start(userDataDir, network);
         } catch (error) {
@@ -1541,8 +1546,13 @@ const registerOnionIpc = () => {
     const network = requireOnionNetwork(payload?.network);
     await stopNetworkRuntimeForMutation(network);
     const userDataDir = app.getPath("userData");
-    const componentRoot = path.join(userDataDir, "onion", "components", network);
-    await removeWithRetry(componentRoot);
+    if (network === "tor") {
+      await removeTorInstallationArtifacts(userDataDir);
+      torManager?.invalidateResolvedPath();
+    } else {
+      const componentRoot = path.join(userDataDir, "onion", "components", network);
+      await removeWithRetry(componentRoot);
+    }
     onionComponentCache[network] = { installed: false, status: "idle" };
   });
 
@@ -1929,7 +1939,7 @@ export const createMainWindow = () => {
   }
 
   const loadRenderer = async () => {
-    if (rendererUrl) {
+    if (isDev && rendererUrl) {
       console.log("[dev] rendererUrl =", rendererUrl);
       const ok = await canReach(rendererUrl);
       if (ok) {
@@ -1967,7 +1977,7 @@ export const createMainWindow = () => {
       win.show();
     }
   });
-  if (process.env.OPEN_DEV_TOOLS) {
+  if (isDev && process.env.OPEN_DEV_TOOLS) {
     win.webContents.openDevTools({ mode: "detach" });
   }
   mainWindow = win;
@@ -1998,7 +2008,7 @@ if (!gotTheLock) {
   });
 }
 
-if (process.env.VITE_DEV_SERVER_URL) {
+if (isDev) {
   const temp = app.getPath("temp");
   const devRoot = process.env.NKC_E2E_USER_DATA_DIR || path.join(temp, "nkc-electron-dev");
   const devUserData = path.join(devRoot, "userData");

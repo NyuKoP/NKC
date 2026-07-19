@@ -81,6 +81,10 @@ import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
 import { useNetConfigStore } from "../net/netConfigStore";
 import { getOnionStatus } from "../net/onionControl";
+import {
+  runVerifiedTorAutoUpdate,
+  TOR_AUTO_UPDATE_INTERVAL_MS,
+} from "../net/torAutoUpdate";
 import { TorRuntime } from "../net/tor/TorRuntime";
 import { sanitizeRoutingHints } from "../net/privacy";
 import {
@@ -840,7 +844,7 @@ export default function App() {
           const session = await getStoredSession();
           if (session?.vaultKey) {
             setVaultKey(session.vaultKey);
-            await setStoredSession(session.vaultKey, undefined, { remember: true });
+            await setStoredSession(session.vaultKey);
             await hydrateVault();
             return;
           }
@@ -872,6 +876,18 @@ export default function App() {
     if (outboxSchedulerStarted.current) return;
     startOutboxScheduler();
     outboxSchedulerStarted.current = true;
+  }, [ui.mode]);
+
+  useEffect(() => {
+    if (ui.mode !== "app") return;
+    const runUpdate = () => {
+      void runVerifiedTorAutoUpdate().catch((error) => {
+        console.error("Verified Tor auto-update failed", error);
+      });
+    };
+    runUpdate();
+    const interval = window.setInterval(runUpdate, TOR_AUTO_UPDATE_INTERVAL_MS);
+    return () => window.clearInterval(interval);
   }, [ui.mode]);
 
   useEffect(() => {
@@ -1117,7 +1133,7 @@ export default function App() {
       };
 
       await withTimeout(seedVaultData(user), "seedVaultData");
-      await withTimeout(setStoredSession(vk, undefined, { remember: true }), "setStoredSession");
+      await withTimeout(setStoredSession(vk), "setStoredSession");
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Vault bootstrap failed", error);
@@ -1159,7 +1175,7 @@ export default function App() {
         throw new Error("기존 계정 프로필을 찾을 수 없습니다.");
       }
 
-      await withTimeout(setStoredSession(vk, undefined, { remember: true }), "setStoredSession");
+      await withTimeout(setStoredSession(vk), "setStoredSession");
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
       console.error("Start key unlock failed", error);
@@ -1217,7 +1233,7 @@ export default function App() {
         };
       }
       setVaultKey(result.vaultKey);
-      await setStoredSession(result.vaultKey, undefined, { remember: true });
+      await setStoredSession(result.vaultKey);
       await hydrateVault();
       navigate("/");
       return { ok: true };
@@ -1375,7 +1391,7 @@ export default function App() {
 
       await rotateVaultKeys(newKey, () => {});
       const vk = getVaultKey();
-      if (vk) await setStoredSession(vk, undefined, { remember: true });
+      if (vk) await setStoredSession(vk);
 
       await clearPinRecord();
       setPinEnabled(true);

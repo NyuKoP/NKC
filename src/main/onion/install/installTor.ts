@@ -71,7 +71,7 @@ export const installTor = async (
 
   const baseOnionDir = path.join(userDataDir, "onion");
   await fs.mkdir(baseOnionDir, { recursive: true });
-  const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-"));
+  const tempDir = await fs.mkdtemp(path.join(baseOnionDir, "tmp-tor-"));
   const resolvedUrl = downloadUrl ?? url;
   const archivePath = path.join(tempDir, resolvedAssetName);
   const installPath = path.join(userDataDir, "onion", "components", network, version);

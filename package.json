@@ -1,7 +1,7 @@
 {
   "name": "test",
   "private": true,
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "NKC serverless secure chat desktop app",
   "author": {
     "name": "NyuKoP",
@@ -24,6 +24,7 @@
     "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb --publish never",
     "test": "vitest",
     "test:tor:live": "npm run build:native && node scripts/run-live-tor-e2e.mjs",
+    "test:tor:reinstall": "cross-env NKC_TOR_REINSTALL_LIVE=1 vitest run src/main/onion/install/__tests__/torReinstall.live.test.ts --reporter=verbose",
     "test:tor:large": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=1",
     "test:tor:large:10": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=10",
     "test:tor:large:100": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=100",
@@ -32,6 +33,7 @@
     "bench:transfer:500mb": "cross-env NKC_LARGE_TRANSFER_BENCH=1 vitest run src/perf/largeTransferPipeline.test.ts --reporter=verbose",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
+    "test:packaged:first-run": "node scripts/verify-packaged-first-run.cjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node scripts/start-electron.cjs",
