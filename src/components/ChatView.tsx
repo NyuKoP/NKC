@@ -23,6 +23,8 @@ import Avatar from "./Avatar";
 import MessageGroupBubble, { type ChatMessageLike } from "./MessageGroupBubble";
 import { groupMessages, type MessageGroup } from "../ui/groupMessages";
 
+const EMPTY_ARRAY: Message[] = [];
+
 const MAX_ATTACH_TOTAL_BYTES = 500 * 1024 * 1024;
 const MAX_ATTACH_IMAGE_COUNT = 30;
 const MAX_ATTACH_TOTAL_COUNT = 30;
@@ -115,13 +117,14 @@ export default function ChatView({
   onToast,
 }: ChatViewProps) {
   const messages = useAppStore((state) =>
-    conversation ? state.messagesByConv[conversation.id] || [] : []
+    conversation ? state.messagesByConv[conversation.id] || EMPTY_ARRAY : EMPTY_ARRAY
   );
   const [atBottom, setAtBottom] = useState(true);
   const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(false);
   const [sendStates, setSendStates] = useState<Record<string, SendState>>({});
   const [readCursors, setReadCursors] = useState<Record<string, number>>({});
   const [copiedFriendCode, setCopiedFriendCode] = useState<string | null>(null);
+  const [safetyTipsOpen, setSafetyTipsOpen] = useState(false);
   const timelineRef = useRef<HTMLDivElement | null>(null);
   const copyTimerRef = useRef<number | null>(null);
   const latestIncomingRef = useRef<HTMLDivElement | null>(null);
@@ -627,10 +630,10 @@ export default function ChatView({
 
   const renderSendState = (state?: SendState) => {
     if (!state) return null;
-    if (state === "queued") return <Clock size={12} className="text-nkc-muted" />;
-    if (state === "sent") return <Check size={12} className="text-nkc-muted" />;
-    if (state === "delivered") return <CheckCheck size={12} className="text-nkc-muted" />;
-    return <CheckCheck size={12} className="text-nkc-accent" />;
+    if (state === "queued") return <Clock size={12} className="text-white" />;
+    if (state === "sent") return <Check size={12} className="text-white" />;
+    if (state === "delivered") return <CheckCheck size={12} className="text-white" />;
+    return <CheckCheck size={12} className="text-white" />;
   };
 
   const goToSearchResult = (direction: 1 | -1) => {
@@ -663,7 +666,7 @@ export default function ChatView({
 
   return (
     <section
-      className="flex h-full flex-1 flex-col rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft"
+      className="flex h-full flex-1 flex-col bg-nkc-bg"
       data-testid="chat-view"
       onDragEnter={(event) => {
         event.preventDefault();
@@ -682,17 +685,26 @@ export default function ChatView({
         window.dispatchEvent(new CustomEvent("nkc:attach-files", { detail: { files } }));
       }}
     >
-      <header className="flex items-center justify-between border-b border-nkc-border px-6 py-5">
+      {conversation ? (
+      <header className="flex min-h-[64px] items-center justify-between border-b border-nkc-border bg-nkc-panel px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <button
             onClick={onBack}
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text lg:hidden"
+            aria-label="대화 목록으로 돌아가기"
           >
             <ArrowLeft size={16} />
           </button>
+          {conversation ? (
+            <Avatar
+              name={conversationDisplayName || conversation.name}
+              avatarRef={peerProfile?.avatarRef}
+              size={36}
+            />
+          ) : null}
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <div className="text-base font-semibold text-nkc-text line-clamp-1">
+              <div className="text-[15px] font-semibold text-nkc-text line-clamp-1">
                 {conversation
                   ? conversationDisplayName || conversation.name
                   : "대화를 선택하세요"}
@@ -701,7 +713,7 @@ export default function ChatView({
                 <span
                   className={`inline-flex items-center gap-1 rounded-full border px-2 py-1 text-[11px] ${
                     transportStatus?.kind === "direct"
-                      ? "border-red-400/40 text-red-200"
+                      ? "border-red-400/30 text-red-400 bg-red-500/10"
                       : "border-nkc-border text-nkc-muted"
                   }`}
                 >
@@ -724,7 +736,7 @@ export default function ChatView({
           <button
             type="button"
             onClick={toggleSearch}
-            className="flex h-9 w-9 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text"
             disabled={!conversation}
             aria-label="채팅 검색"
           >
@@ -732,18 +744,19 @@ export default function ChatView({
           </button>
           <button
             onClick={onToggleRight}
-            className="flex h-9 items-center gap-2 rounded-nkc border border-nkc-border px-3 text-xs text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text"
+            className="flex h-8 w-8 items-center justify-center rounded-full text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text"
             disabled={!conversation}
+            aria-label={rightPanelOpen ? "정보 닫기" : "대화 정보"}
           >
-            <PanelRight size={14} />
-            {rightPanelOpen ? "닫기" : "정보"}
+            <PanelRight size={16} />
           </button>
         </div>
       </header>
+      ) : null}
       {searchOpen && conversation ? (
-        <div className="border-b border-nkc-border bg-nkc-panel px-6 py-3">
+        <div className="border-b border-nkc-border bg-nkc-bg px-4 py-2">
           <div className="flex flex-wrap items-center gap-2 text-xs text-nkc-muted">
-            <div className="flex flex-1 items-center gap-2 rounded-nkc border border-nkc-border bg-nkc-panelMuted px-2 py-1">
+            <div className="flex flex-1 items-center gap-2 rounded-full bg-nkc-hover px-3 py-1.5">
               <Search size={12} />
               <input
                 ref={searchInputRef}
@@ -780,7 +793,7 @@ export default function ChatView({
                 type="button"
                 onClick={() => goToSearchResult(-1)}
                 disabled={!searchMatches.length}
-                className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                className="rounded-md px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-hover disabled:opacity-40"
               >
                 이전
               </button>
@@ -788,14 +801,14 @@ export default function ChatView({
                 type="button"
                 onClick={() => goToSearchResult(1)}
                 disabled={!searchMatches.length}
-                className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                className="rounded-md px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-hover disabled:opacity-40"
               >
                 다음
               </button>
               <button
                 type="button"
                 onClick={closeSearch}
-                className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                className="rounded-md px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-hover"
               >
                 닫기
               </button>
@@ -807,60 +820,53 @@ export default function ChatView({
       <div
         ref={timelineRef}
         onScroll={handleScroll}
-        className="scrollbar-hidden relative flex-1 overflow-y-auto bg-nkc-panelMuted"
+        className="scrollbar-hidden relative flex-1 overflow-y-auto bg-nkc-bg"
       >
         {conversation ? (
           <div className="ml-auto mr-0 flex w-full max-w-[min(100%,1800px)] flex-col gap-4 px-8 py-6">
             {requestIncoming ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3 text-sm">
-                <div className="space-y-2">
-                  <div className="text-nkc-text">메시지 요청</div>
-                  <div className="text-xs text-nkc-muted">
-                    <div>
-                      보낸 사람: <span className="text-nkc-text">{pendingSenderName}</span>
-                    </div>
-                    <div className="mt-1 flex flex-wrap items-center gap-2">
-                      <span>코드:</span>
-                      {pendingFriendCode ? (
-                        <>
-                          <span className="font-mono text-nkc-text">{pendingFriendCode}</span>
-                          <button
-                            type="button"
-                            onClick={handleCopyFriendCode}
-                            className="rounded-nkc border border-nkc-border px-2 py-0.5 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
-                          >
-                            복사
-                          </button>
-                          {codeCopied ? (
-                            <span className="text-[11px] text-nkc-muted">복사됨</span>
-                          ) : null}
-                        </>
-                      ) : (
-                        <span className="text-nkc-muted">알 수 없음</span>
-                      )}
-                    </div>
+              <div className="-mx-8 -mt-6 border-b border-nkc-border px-6 py-6 text-center" data-testid="message-request-profile">
+                <Avatar
+                  name={pendingSenderName}
+                  avatarRef={peerProfile?.avatarRef}
+                  size={72}
+                  className="mx-auto"
+                />
+                <div className="mt-3 text-lg font-semibold text-nkc-text">{pendingSenderName}</div>
+                <div className="mt-1 text-xs text-nkc-muted">새 연락처의 메시지 요청</div>
+                <button
+                  type="button"
+                  onClick={() => setSafetyTipsOpen((open) => !open)}
+                  className="mt-3 rounded-full bg-nkc-hover px-4 py-2 text-xs font-semibold text-nkc-text hover:bg-nkc-selected"
+                  aria-expanded={safetyTipsOpen}
+                >
+                  안전 팁
+                </button>
+                {safetyTipsOpen ? (
+                  <div className="mx-auto mt-4 max-w-lg rounded-xl border border-nkc-border bg-nkc-panelMuted p-4 text-left text-xs leading-5 text-nkc-muted" data-testid="message-request-safety-tips">
+                    <ul className="list-disc space-y-1 pl-4">
+                      <li>표시 이름과 프로필 사진만으로 상대의 신원을 확인할 수 없습니다.</li>
+                      <li>아는 사람이 맞는지 다른 연락 수단으로 먼저 확인하세요.</li>
+                      <li>시작 키, PIN 또는 개인 키는 누구에게도 공유하지 마세요.</li>
+                    </ul>
+                    {pendingFriendCode ? (
+                      <div className="mt-3 flex min-w-0 items-center gap-2 border-t border-nkc-border pt-3">
+                        <span className="min-w-0 flex-1 truncate font-mono text-nkc-text">{pendingFriendCode}</span>
+                        <button
+                          type="button"
+                          onClick={handleCopyFriendCode}
+                          className="shrink-0 rounded-lg px-2 py-1 font-semibold text-nkc-accent hover:bg-nkc-hover"
+                        >
+                          {codeCopied ? "복사됨" : "코드 복사"}
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    type="button"
-                    onClick={onDeclineRequest}
-                    className="rounded-nkc border border-nkc-border px-3 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted"
-                  >
-                    거절
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onAcceptRequest}
-                    className="rounded-nkc bg-nkc-accent px-3 py-1 text-xs font-semibold text-nkc-bg"
-                  >
-                    수락
-                  </button>
-                </div>
+                ) : null}
               </div>
             ) : null}
             {requestOutgoing ? (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3 text-sm">
+              <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg bg-nkc-surface px-4 py-3 text-sm">
                 <div className="space-y-1">
                   <div className="text-nkc-text">친구 요청을 보냈습니다.</div>
                   <div className="text-xs text-nkc-muted">
@@ -871,7 +877,7 @@ export default function ChatView({
                   <button
                     type="button"
                     onClick={onCancelOutgoingRequest}
-                    className="rounded-nkc border border-nkc-border px-3 py-1 text-xs text-nkc-text hover:bg-nkc-panelMuted"
+                    className="rounded-lg px-3 py-1.5 text-xs text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text"
                   >
                     친구추가요청 취소
                   </button>
@@ -898,14 +904,14 @@ export default function ChatView({
                 <div key={group.key} className="space-y-2">
                   {dateLabel ? (
                     <div className="flex justify-center">
-                      <span className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-xs font-medium text-nkc-muted">
+                      <span className="rounded-full bg-nkc-surface/80 px-3 py-1 text-[11px] font-medium text-nkc-muted">
                         {dateLabel}
                       </span>
                     </div>
                   ) : null}
                   {isSystem ? (
                     <div className="flex justify-center">
-                      <span className="rounded-full border border-nkc-border bg-nkc-panel px-3 py-1 text-xs text-nkc-muted">
+                      <span className="rounded-full bg-nkc-surface/80 px-3 py-1 text-[11px] text-nkc-muted">
                         {group.items.map((item) => item.text).filter(Boolean).join(" ")}
                       </span>
                     </div>
@@ -957,19 +963,65 @@ export default function ChatView({
                 </div>
               );
             })}
+            {requestIncoming ? (
+              <div className="mx-auto mt-2 w-full max-w-2xl border-t border-nkc-border pt-5 text-center" data-testid="message-request-actions">
+                <div className="text-sm font-semibold text-amber-600">
+                  신중하게 메시지 요청을 검토하세요
+                </div>
+                <p className="mx-auto mt-2 max-w-xl text-xs leading-5 text-nkc-muted">
+                  {pendingSenderName}님이 처음 메시지를 보냈습니다. 수락하기 전까지 상대방은 읽음 여부를 확인할 수 없으며, 메시지 전송도 제한됩니다.
+                </p>
+                <div className="mt-4 flex justify-center gap-3">
+                  <button
+                    type="button"
+                    onClick={onDeclineRequest}
+                    className="min-w-28 rounded-full bg-nkc-hover px-5 py-2 text-sm font-semibold text-red-500 hover:bg-red-500/10"
+                  >
+                    차단
+                  </button>
+                  <button
+                    type="button"
+                    onClick={onAcceptRequest}
+                    className="min-w-28 rounded-full bg-nkc-accent px-5 py-2 text-sm font-semibold text-white hover:brightness-110"
+                  >
+                    수락
+                  </button>
+                </div>
+              </div>
+            ) : null}
           </div>
         ) : (
-          <div className="flex h-full flex-col items-center justify-center gap-3 text-nkc-muted">
-            <div className="text-3xl">💬</div>
-            <div className="text-base font-semibold">대화를 선택하세요</div>
-            <div className="text-sm">왼쪽에서 대화를 골라 메시지가 표시됩니다.</div>
+          <div className="relative flex h-full flex-col items-center justify-center gap-2 px-6 pb-12 text-center text-nkc-muted">
+            <div
+              className="mb-3 h-24 w-24 bg-nkc-accent"
+              aria-label="NKC"
+              role="img"
+              style={{
+                WebkitMaskImage: 'url("./nkc-n-mark.png")',
+                WebkitMaskPosition: "center",
+                WebkitMaskRepeat: "no-repeat",
+                WebkitMaskSize: "contain",
+                maskImage: 'url("./nkc-n-mark.png")',
+                maskPosition: "center",
+                maskRepeat: "no-repeat",
+                maskSize: "contain",
+              }}
+            >
+            </div>
+            <div className="text-lg font-semibold text-nkc-text">NKC에 오신 것을 환영합니다</div>
+            <div className="max-w-sm text-sm leading-6">
+              친구를 추가하거나 왼쪽에서 대화를 선택해 시작하세요.
+            </div>
+            <div className="absolute bottom-6 text-xs text-nkc-muted">
+              NKC의 대화는 종단간 암호화됩니다.
+            </div>
           </div>
         )}
 
         {!atBottom && conversation ? (
           <button
             onClick={() => scrollToBottom(timelineRef.current)}
-            className="absolute bottom-6 left-1/2 flex -translate-x-1/2 items-center gap-2 rounded-full border border-nkc-border bg-nkc-panel px-4 py-2 text-xs text-nkc-text shadow-soft"
+            className="absolute bottom-4 left-1/2 flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-nkc-accent px-4 py-2 text-xs font-medium text-white"
           >
             <ArrowDown size={12} />
             맨 아래로
@@ -981,13 +1033,13 @@ export default function ChatView({
         <div className="fixed inset-0 z-50">
           <div
             ref={menuRef}
-            className="pointer-events-auto fixed min-w-[140px] rounded-nkc border border-nkc-border bg-nkc-panel p-1 text-xs shadow-soft"
+            className="pointer-events-auto fixed min-w-[140px] rounded-lg border border-nkc-border bg-nkc-surface p-1 text-xs animate-signal-fade-scale"
             style={{ left: messageMenu.x, top: messageMenu.y }}
             onClick={(event) => event.stopPropagation()}
           >
             <button
               type="button"
-              className="flex w-full items-center rounded-nkc px-2 py-1.5 text-left text-nkc-text hover:bg-nkc-panelMuted"
+              className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-nkc-text hover:bg-nkc-hover"
               onClick={() => {
                 void handleCopyGroup(messageMenu.group);
                 setMessageMenu(null);
@@ -998,7 +1050,7 @@ export default function ChatView({
             {onDeleteMessages ? (
               <button
                 type="button"
-                className="flex w-full items-center rounded-nkc px-2 py-1.5 text-left text-red-400 hover:bg-red-500/10"
+                className="flex w-full items-center rounded-md px-3 py-1.5 text-left text-red-400 hover:bg-red-500/10"
                 onClick={() => {
                   const convId =
                     messageMenu.group.items[0]?.convId || conversation?.id || "";
@@ -1018,11 +1070,11 @@ export default function ChatView({
 
       {viewerGroup ? (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="relative w-full max-w-3xl rounded-nkc bg-nkc-panel p-4 shadow-soft">
+          <div className="relative w-full max-w-3xl rounded-xl bg-nkc-surface p-4">
             <button
               type="button"
               onClick={closeViewer}
-              className="absolute right-4 top-4 rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+              className="absolute right-4 top-4 rounded-md px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-hover"
             >
               닫기
             </button>
@@ -1042,7 +1094,7 @@ export default function ChatView({
                     <img
                       src={previewUrl}
                       alt={media.name}
-                      className="max-h-[60vh] w-full rounded-nkc object-contain"
+                      className="max-h-[60vh] w-full rounded-lg object-contain"
                     />
                   );
                 }
@@ -1059,7 +1111,7 @@ export default function ChatView({
                   type="button"
                   onClick={() => setViewerIndex((prev) => Math.max(0, prev - 1))}
                   disabled={viewerIndex === 0}
-                  className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                  className="rounded-md px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-hover disabled:opacity-40"
                 >
                   이전
                 </button>
@@ -1071,12 +1123,12 @@ export default function ChatView({
                     )
                   }
                   disabled={viewerIndex >= viewerGroup.length - 1}
-                  className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                  className="rounded-md px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-hover disabled:opacity-40"
                 >
                   다음
                 </button>
               </div>
-              <span className="rounded-full border border-nkc-border bg-nkc-panelMuted px-3 py-1 text-[11px] text-nkc-muted">
+              <span className="rounded-full bg-nkc-hover px-3 py-1 text-[11px] text-nkc-muted">
                 {viewerIndex + 1}/{viewerGroup.length}
               </span>
             </div>
@@ -1090,7 +1142,7 @@ export default function ChatView({
                     key={message.id}
                     type="button"
                     onClick={() => setViewerIndex(index)}
-                    className={`h-16 w-20 rounded-nkc border ${
+                    className={`h-16 w-20 rounded-md border ${
                       index === viewerIndex ? "border-nkc-text" : "border-nkc-border"
                     }`}
                   >
@@ -1098,7 +1150,7 @@ export default function ChatView({
                       <img
                         src={previewUrl}
                         alt={media.name}
-                        className="h-full w-full rounded-nkc object-cover"
+                        className="h-full w-full rounded-md object-cover"
                       />
                     ) : (
                       <div className="flex h-full w-full items-center justify-center text-[10px] text-nkc-muted">
@@ -1113,6 +1165,7 @@ export default function ChatView({
         </div>
       ) : null}
 
+      {conversation && !requestIncoming ? (
       <MessageComposer
         key={conversation?.id ?? "none"}
         conversation={conversation}
@@ -1122,6 +1175,7 @@ export default function ChatView({
         onComposingChange={onComposingChange}
         onSendBatch={onSendBatch}
       />
+      ) : null}
     </section>
   );
 }
@@ -1224,11 +1278,11 @@ const MessageComposer = ({
         if (isComposing) return;
         handleSend();
       }}
-      className={`border-t border-nkc-border bg-nkc-panel px-6 py-5 ${
+      className={`border-t border-nkc-border bg-nkc-bg px-4 py-3 ${
         conversation && !disabled ? "" : "opacity-60"
       }`}
     >
-      <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3">
+      <div className="rounded-2xl bg-nkc-hover p-3">
         {textOnly ? (
           <div className="mb-2 text-xs text-nkc-muted">
             요청 대기중: 텍스트만 전송할 수 있습니다.
@@ -1253,7 +1307,8 @@ const MessageComposer = ({
             {previews.map((preview) => (
               <div
                 key={`${preview.file.name}-${preview.file.lastModified}`}
-                className="relative h-20 w-20 flex-shrink-0 rounded-md border border-nkc-border bg-nkc-panelMuted"
+                data-testid="attachment-preview"
+                className="relative h-20 w-20 flex-shrink-0 rounded-lg bg-nkc-hover"
               >
                 {preview.isImage ? (
                   <img
@@ -1272,7 +1327,7 @@ const MessageComposer = ({
                   onClick={() =>
                     setAttachments((prev) => prev.filter((file) => file !== preview.file))
                   }
-                  className="absolute right-1 top-1 rounded-full border border-nkc-border bg-nkc-panel px-1 text-[10px] text-nkc-text hover:bg-nkc-panelMuted"
+                  className="absolute right-1 top-1 rounded-full bg-nkc-surface px-1 text-[10px] text-nkc-text hover:bg-nkc-hover"
                 >
                   ✕
                 </button>
@@ -1305,7 +1360,7 @@ const MessageComposer = ({
         <div className="mt-3 flex items-center justify-between text-xs text-nkc-muted">
           <div className="flex items-center gap-3">
             <label
-              className={`flex h-8 w-8 items-center justify-center rounded-full border border-nkc-border text-nkc-muted hover:bg-nkc-panel ${
+              className={`flex h-8 w-8 items-center justify-center rounded-full text-nkc-muted hover:bg-nkc-surface hover:text-nkc-text ${
                 conversation && !disabled && !textOnly ? "" : "pointer-events-none opacity-50"
               }`}
               data-testid="chat-attach-button"
@@ -1325,8 +1380,9 @@ const MessageComposer = ({
           </div>
           <button
             type="submit"
+            data-testid="chat-send-button"
             disabled={!conversation || disabled || (!text.trim() && attachments.length === 0)}
-            className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-full bg-nkc-accent px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-30 hover:brightness-110"
           >
             전송
           </button>
@@ -1343,6 +1399,3 @@ const scrollToBottom = (el: HTMLDivElement | null) => {
   if (!el) return;
   el.scrollTop = el.scrollHeight;
 };
-
-
-

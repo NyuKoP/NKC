@@ -8,6 +8,8 @@ import {
   maskKey,
   setStartKeyConfirmed,
 } from "../security/startKey";
+import AuthShell from "./auth/AuthShell";
+import { KeyIcon } from "./icons/Icons";
 
 type StartKeyProps = {
   onRotate: (key: string) => Promise<void>;
@@ -73,35 +75,32 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
   };
 
   return (
-    <div className="flex h-full items-center justify-center px-6 py-10">
-      <div className="w-full max-w-2xl rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold">시작 키(로그인 키)</h1>
-            <p className="mt-2 text-sm text-nkc-muted">
-              시작 키는 이 기기의 잠금 해제와 로컬 암호화에만 사용됩니다.
-            </p>
+    <AuthShell testId="start-key-screen">
+        <div className="text-center">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-nkc-selected text-2xl">
+            <KeyIcon className="h-7 w-7 text-nkc-accent" />
           </div>
-          <span className="rounded-full bg-nkc-panelMuted px-3 py-1 text-xs font-semibold text-nkc-accent">
-            NKC
-          </span>
+          <h1 className="text-2xl font-semibold tracking-[-0.02em]">시작 키 저장</h1>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-nkc-muted">
+            이 키는 NKC 계정에 다시 로그인할 수 있는 유일한 복구 수단입니다.
+          </p>
         </div>
 
-        <div className="mt-6 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4">
-          <div className="flex flex-col gap-2 rounded-nkc border border-dashed border-nkc-border bg-nkc-panel px-3 py-2">
+        <div className="mt-7 rounded-xl border border-nkc-border bg-nkc-panelMuted p-4">
+          <div className="flex flex-col gap-3 rounded-xl border border-dashed border-nkc-border bg-nkc-bg px-4 py-3">
             <input
               value={maskedValue}
               readOnly
               autoComplete="off"
               aria-label="시작 키"
-              className="w-full bg-transparent text-sm font-semibold text-nkc-text focus:outline-none"
+              className="w-full bg-transparent font-mono text-sm font-semibold leading-6 text-nkc-text focus:outline-none"
               placeholder="시작 키를 생성하세요"
             />
             <button
               type="button"
               onClick={() => setMasked((value) => !value)}
               aria-label={masked ? "시작 키 보기" : "시작 키 숨기기"}
-              className="inline-flex w-fit items-center gap-1 rounded-nkc border border-nkc-border px-3 py-1 text-xs font-medium text-nkc-text hover:bg-nkc-panelMuted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nkc-accent focus-visible:ring-offset-2 focus-visible:ring-offset-nkc-panel"
+              className="inline-flex w-fit items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-medium text-nkc-text hover:bg-nkc-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nkc-accent"
               disabled={!startKey || busy}
             >
               {masked ? <Eye size={14} /> : <EyeOff size={14} />}
@@ -111,7 +110,7 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
           <div className="mt-3 flex flex-wrap gap-2">
             <button
               onClick={handleCopy}
-              className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
+              className="flex items-center gap-2 rounded-lg border border-nkc-border px-3 py-2 text-xs hover:bg-nkc-hover disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!startKey || busy}
             >
               <Copy size={14} />
@@ -120,7 +119,7 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
           </div>
         </div>
 
-        <label className="mt-4 flex items-center gap-2 text-xs text-nkc-muted">
+        <label className="mt-4 flex items-start gap-2.5 rounded-xl border border-nkc-border px-3 py-3 text-xs leading-5 text-nkc-muted">
           <input
             type="checkbox"
             checked={confirmed}
@@ -157,13 +156,12 @@ export default function StartKey({ onRotate, onDone }: StartKeyProps) {
         <div className="mt-6 flex justify-end gap-2">
           <button
             onClick={onDone}
-            className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-xl bg-nkc-accent px-5 py-2.5 text-sm font-semibold text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
             disabled={alreadyConfirmed ? false : !startKey || !confirmed}
           >
             완료
           </button>
         </div>
-      </div>
-    </div>
+    </AuthShell>
   );
 }

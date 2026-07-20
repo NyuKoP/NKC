@@ -1,5 +1,7 @@
 ﻿import { useEffect, useState } from "react";
 import { Upload } from "lucide-react";
+import AuthShell from "./auth/AuthShell";
+import { LockIcon } from "./icons/Icons";
 
 type OnboardingProps = {
   onCreate: (displayName: string) => Promise<void>;
@@ -37,27 +39,25 @@ export default function Onboarding({
   };
 
   return (
-    <div
-      className="flex h-full items-center justify-center bg-nkc-bg px-6 py-10"
-      data-testid="onboarding-screen"
-    >
-      <div className="w-full max-w-2xl rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-xl font-semibold">NKC 시작</h1>
-            <p className="mt-2 text-sm text-nkc-muted">
-              시작 키(로그인 키)는 이 기기의 잠금 해제에만 사용됩니다.
-            </p>
+    <AuthShell testId="onboarding-screen">
+        <div className="text-center">
+          <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-nkc-selected text-2xl">
+            <LockIcon className="h-7 w-7 text-nkc-accent" />
           </div>
-          <span className="rounded-full bg-nkc-panelMuted px-3 py-1 text-xs font-semibold text-nkc-accent">
-            NKC
-          </span>
+          <h1 className="text-2xl font-semibold tracking-[-0.02em]">
+            {tab === "create" ? "NKC 계정 만들기" : "NKC에 로그인"}
+          </h1>
+          <p className="mx-auto mt-2 max-w-md text-sm leading-6 text-nkc-muted">
+            {tab === "create"
+              ? "서버 계정 없이 이 기기에 암호화된 개인 프로필을 만듭니다."
+              : "보관해 둔 시작 키로 기존 로컬 금고를 잠금 해제합니다."}
+          </p>
         </div>
 
-        <div className="mt-6 grid grid-cols-2 gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-sm">
+        <div className="mt-7 grid grid-cols-2 gap-1 rounded-xl bg-nkc-panelMuted p-1 text-sm">
           <button
-            className={`rounded-nkc px-4 py-2 font-semibold ${
-              tab === "create" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
+            className={`rounded-lg px-4 py-2.5 font-semibold transition-colors ${
+              tab === "create" ? "bg-nkc-surface text-nkc-text" : "text-nkc-muted hover:text-nkc-text"
             }`}
             onClick={() => setTab("create")}
             data-testid="onboarding-create-tab"
@@ -65,20 +65,20 @@ export default function Onboarding({
             새 계정
           </button>
           <button
-            className={`rounded-nkc px-4 py-2 font-semibold ${
-              tab === "startKey" ? "bg-nkc-panel text-nkc-text" : "text-nkc-muted"
+            className={`rounded-lg px-4 py-2.5 font-semibold transition-colors ${
+              tab === "startKey" ? "bg-nkc-surface text-nkc-text" : "text-nkc-muted hover:text-nkc-text"
             }`}
             onClick={() => setTab("startKey")}
             data-testid="onboarding-start-key-tab"
           >
-            시작 키로 잠금 해제
+            시작 키 로그인
           </button>
         </div>
 
         {tab === "create" ? (
           <div className="mt-6 space-y-4">
-            <div className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-xs text-nkc-muted">
-              기존 기기를 분실하거나 파손하면 이 계정은 복구할 수 없고 새 계정을 만들어야 합니다.
+            <div className="rounded-xl border border-nkc-border bg-nkc-panelMuted p-4 text-xs leading-5 text-nkc-muted">
+              NKC는 중앙 서버 없이 작동합니다. 기기를 잃어버리면 시작 키 없이는 계정을 복구할 수 없으므로, 시작 키를 안전하게 보관하세요.
             </div>
 
             <label className="text-sm">
@@ -86,13 +86,13 @@ export default function Onboarding({
               <input
                 value={displayName}
                 onChange={(event) => setDisplayName(event.target.value)}
-                className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+                className="nkc-auth-input mt-2"
                 placeholder="NKC 사용자"
                 data-testid="onboarding-display-name"
               />
             </label>
 
-            <label className="flex items-center gap-2 text-xs text-nkc-muted">
+            <label className="flex items-start gap-2.5 rounded-xl border border-nkc-border px-3 py-3 text-xs leading-5 text-nkc-muted">
               <input
                 type="checkbox"
                 checked={confirmed}
@@ -102,7 +102,7 @@ export default function Onboarding({
                 }}
                 data-testid="onboarding-confirm-checkbox"
               />
-              위 내용을 확인했습니다.
+              시작 키를 별도로 보관해야 계정을 다시 열 수 있다는 내용을 확인했습니다.
             </label>
 
             <button
@@ -124,11 +124,11 @@ export default function Onboarding({
                   setBusy(null);
                 }
               }}
-              className="w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+              className="w-full rounded-xl bg-nkc-accent px-4 py-3 text-sm font-semibold text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={!confirmed || busy === "create"}
               data-testid="onboarding-create-button"
             >
-              {busy === "create" ? "처리 중..." : "계속하기"}
+              {busy === "create" ? "계정 만드는 중..." : "계정 만들기"}
             </button>
             {!confirmed ? (
               <div className="text-xs text-nkc-muted">확인 체크박스를 선택해 주세요.</div>
@@ -148,13 +148,13 @@ export default function Onboarding({
                   setStartKey(event.target.value);
                   setLocalError("");
                 }}
-                className="mt-2 h-24 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+                className="nkc-auth-input mt-2 h-28 resize-none font-mono text-xs"
                 placeholder="NKC-..."
                 data-testid="onboarding-start-key-input"
               />
             </label>
 
-            <label className="flex cursor-pointer items-center gap-2 rounded-nkc border border-dashed border-nkc-border px-3 py-2 text-xs text-nkc-muted">
+            <label className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-nkc-border px-3 py-3 text-xs text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text">
               <Upload size={14} />
               txt 파일 가져오기
               <input
@@ -186,11 +186,11 @@ export default function Onboarding({
                   setBusy(null);
                 }
               }}
-              className="w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+              className="w-full rounded-xl bg-nkc-accent px-4 py-3 text-sm font-semibold text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
               disabled={busy === "startKey"}
               data-testid="onboarding-start-key-button"
             >
-              {busy === "startKey" ? "처리 중..." : "시작 키로 잠금 해제"}
+              {busy === "startKey" ? "로그인 중..." : "로그인"}
             </button>
             {!startKey.trim() ? (
               <div className="text-xs text-nkc-muted">시작 키를 입력해 주세요.</div>
@@ -199,7 +199,6 @@ export default function Onboarding({
             {errorMessage ? <div className="text-xs text-red-300">{errorMessage}</div> : null}
           </div>
         )}
-      </div>
-    </div>
+    </AuthShell>
   );
 }

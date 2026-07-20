@@ -49,7 +49,12 @@ export type SettingsRoute = {
 };
 
 export const SETTINGS_ROUTES: SettingsRoute[] = [
-  { key: "settings.notifications", view: "notifications", label: { ko: "알림", en: "Notifications" } },
+  {
+    key: "settings.notifications",
+    view: "notifications",
+    label: { ko: "알림", en: "Notifications" },
+    testId: "settings-notifications-button",
+  },
   { key: "settings.friends", view: "friends", label: { ko: "친구 관리", en: "Friend management" } },
   {
     key: "settings.network",
@@ -60,7 +65,12 @@ export const SETTINGS_ROUTES: SettingsRoute[] = [
   { key: "settings.devices", view: "devices", label: { ko: "기기/동기화", en: "Devices / Sync" } },
   { key: "settings.privacy", view: "privacy", label: { ko: "보안 / 개인정보", en: "Security / Privacy" } },
   { key: "settings.login", view: "login", label: { ko: "로그인", en: "Login" } },
-  { key: "settings.theme", view: "theme", label: { ko: "테마", en: "Theme" } },
+  {
+    key: "settings.theme",
+    view: "theme",
+    label: { ko: "테마", en: "Theme" },
+    testId: "settings-theme-button",
+  },
   { key: "settings.storage", view: "storage", label: { ko: "저장소 관리", en: "Storage management" } },
 ];
 

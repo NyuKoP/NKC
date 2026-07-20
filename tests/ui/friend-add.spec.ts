@@ -469,6 +469,14 @@ test.describe("Friend add E2E", () => {
         .toBeGreaterThan(0);
 
       await bob.getByTestId("sidebar").getByText("Alice", { exact: true }).first().click();
+      const requestProfile = bob.getByTestId("message-request-profile");
+      await expect(requestProfile).toBeVisible();
+      await expect(requestProfile.getByText("Alice", { exact: true })).toBeVisible();
+      await requestProfile.getByRole("button", { name: "안전 팁" }).click();
+      await expect(bob.getByTestId("message-request-safety-tips")).toBeVisible();
+      await expect(bob.getByRole("button", { name: "차단", exact: true })).toBeVisible();
+      await expect(bob.getByRole("button", { name: "신고", exact: true })).toHaveCount(0);
+      await expect(bob.getByTestId("chat-message-input")).toHaveCount(0);
       await expect(bob.getByRole("button", { name: "수락", exact: true })).toBeVisible();
       await bob.getByRole("button", { name: "수락", exact: true }).click();
       await expect

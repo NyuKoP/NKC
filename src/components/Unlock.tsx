@@ -1,6 +1,8 @@
 ﻿import { useEffect, useMemo, useState } from "react";
 import { wipeVault } from "../db/repo";
 import { clearSession as clearStoredSession } from "../security/session";
+import AuthShell from "./auth/AuthShell";
+import { LockIcon } from "./icons/Icons";
 
 export type UnlockResult = {
   ok: boolean;
@@ -68,14 +70,17 @@ export default function Unlock({ onUnlock, onUseStartKey }: UnlockProps) {
   };
 
   return (
-    <div className="flex h-full items-center justify-center bg-nkc-bg px-6">
-      <div className="w-full max-w-md rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
-        <h1 className="text-xl font-semibold">NKC 잠금 해제</h1>
-        <p className="mt-2 text-sm text-nkc-muted">
-          PIN 잠금이 설정되어 있습니다. PIN을 잊었다면 시작 키로 재설정해야 합니다.
+    <AuthShell testId="unlock-screen">
+      <div className="mx-auto max-w-sm text-center">
+        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full bg-nkc-selected text-2xl">
+          <LockIcon className="h-7 w-7 text-nkc-accent" />
+        </div>
+        <h1 className="text-2xl font-semibold tracking-[-0.02em]">다시 오신 것을 환영합니다</h1>
+        <p className="mt-2 text-sm leading-6 text-nkc-muted">
+          이 기기의 NKC 금고를 열려면 PIN을 입력하세요.
         </p>
 
-        <label className="mt-6 text-sm">
+        <label className="mt-7 block text-left text-sm font-medium">
           PIN
           <input
             type="password"
@@ -84,40 +89,43 @@ export default function Unlock({ onUnlock, onUseStartKey }: UnlockProps) {
             maxLength={8}
             value={pin}
             onChange={(event) => setPin(event.target.value)}
-            className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
+            className="nkc-auth-input mt-2 text-center text-lg tracking-[0.35em]"
             placeholder="4-8자리"
+            autoFocus
+            data-testid="unlock-pin-input"
           />
         </label>
 
         {retrySeconds ? (
-          <div className="mt-2 text-xs text-nkc-muted">
+          <div className="mt-2 text-left text-xs text-nkc-muted">
             다시 시도 가능: {retrySeconds}s
           </div>
         ) : null}
-        {error ? <div className="mt-2 text-xs text-red-300">{error}</div> : null}
+        {error ? <div className="mt-2 text-left text-xs text-red-300">{error}</div> : null}
 
         <button
           onClick={handleUnlock}
-          className="mt-6 w-full rounded-nkc bg-nkc-accent px-4 py-3 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+          className="mt-6 w-full rounded-xl bg-nkc-accent px-4 py-3 text-sm font-semibold text-white hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50"
           disabled={busy || retrySeconds > 0 || !pin}
+          data-testid="unlock-submit-button"
         >
-          잠금 해제
+          {busy ? "로그인 중..." : "로그인"}
         </button>
         {reason === "not_set" && onUseStartKey ? (
           <button
             onClick={() => void onUseStartKey()}
-            className="mt-3 w-full rounded-nkc border border-nkc-border px-4 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+            className="mt-3 w-full rounded-xl px-4 py-2.5 text-xs font-medium text-nkc-accent hover:bg-nkc-hover"
           >
             시작 키로 재설정
           </button>
         ) : null}
         <button
           onClick={handleReset}
-          className="mt-3 w-full rounded-nkc border border-nkc-border px-4 py-2 text-xs text-nkc-muted hover:bg-nkc-panel"
+          className="mt-1 w-full rounded-xl px-4 py-2.5 text-xs text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text"
         >
           로컬 금고 초기화
         </button>
       </div>
-    </div>
+    </AuthShell>
   );
 }

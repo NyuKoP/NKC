@@ -1098,7 +1098,7 @@ export default function SettingsDialog({
                           <button
                             type="button"
                             onClick={saveEdit}
-                            className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg"
+                            className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText"
                           >
                             {t("저장", "Save")}
                           </button>
@@ -1225,6 +1225,7 @@ export default function SettingsDialog({
                       key={opt.value}
                       type="button"
                       onClick={() => setTheme(opt.value)}
+                      data-testid={`theme-option-${opt.value}`}
                       className={`rounded-nkc border px-4 py-2 text-xs ${
                         theme === opt.value
                           ? "border-nkc-accent bg-nkc-panel text-nkc-text"
@@ -1267,12 +1268,13 @@ export default function SettingsDialog({
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
+                  data-testid="theme-save-button"
                   onClick={async () => {
                     await onSaveProfile({ displayName, status, theme });
                     setSaveMessage(t("저장되었습니다.", "Saved."));
                     setView("main");
                   }}
-                  className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg"
+                  className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-accentText"
                 >
                   {t("저장", "Save")}
                 </button>
