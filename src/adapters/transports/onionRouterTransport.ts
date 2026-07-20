@@ -1,6 +1,5 @@
 import type { HttpClient } from "../../net/httpClient";
 import type { NetConfig } from "../../net/netConfig";
-import { useNetConfigStore } from "../../net/netConfigStore";
 import { OnionInboxClient } from "../../net/onionInboxClient";
 import {
   decodeBase64,
@@ -109,50 +108,15 @@ const extractAbortSignal = (packet: TransportPacket) =>
 type SendRoute = {
   mode: RouteMode;
   torOnion?: string;
-  lokinet?: string;
 };
 
-const normalizeSendRoute = (
-  route: SendRoute,
-  selectedNetwork: "tor" | "lokinet"
-): SendRoute => {
-  const hasTor = Boolean(route.torOnion);
-  const hasLokinet = Boolean(route.lokinet);
-  if (!hasTor && !hasLokinet) {
-    return route;
-  }
-  if (route.mode === "preferLokinet" && !hasLokinet && hasTor) {
-    return { ...route, mode: "preferTor" };
-  }
-  if (route.mode === "preferTor" && !hasTor && hasLokinet) {
-    return { ...route, mode: "preferLokinet" };
-  }
-  if (route.mode === "manual" && hasTor && hasLokinet) {
-    if (selectedNetwork === "lokinet") {
-      return {
-        mode: "manual",
-        lokinet: route.lokinet,
-      };
-    }
-    return {
-      mode: "manual",
-      torOnion: route.torOnion,
-    };
-  }
-  return route;
-};
+const normalizeSendRoute = (route: SendRoute): SendRoute =>
+  route.torOnion ? { ...route, mode: "preferTor" } : route;
 
 const buildRelaxedRoute = (route: SendRoute): SendRoute => {
   const hasTor = Boolean(route.torOnion);
-  const hasLokinet = Boolean(route.lokinet);
-  if (hasTor && hasLokinet) {
-    return { ...route, mode: "auto" };
-  }
   if (hasTor) {
     return { ...route, mode: "preferTor" };
-  }
-  if (hasLokinet) {
-    return { ...route, mode: "preferLokinet" };
   }
   return route;
 };
@@ -389,16 +353,11 @@ export const createOnionRouterTransport = ({
         (packet as { route?: { torOnion?: string; toOnion?: string } }).route?.toOnion ??
         (packet as { meta?: { torOnion?: string; toOnion?: string } }).meta?.torOnion ??
         (packet as { meta?: { torOnion?: string; toOnion?: string } }).meta?.toOnion;
-      const lokinet =
-        (packet as { lokinet?: string }).lokinet ??
-        (packet as { route?: { lokinet?: string } }).route?.lokinet ??
-        (packet as { meta?: { lokinet?: string } }).meta?.lokinet;
       const routeMode =
         ((packet as { route?: { mode?: RouteMode } }).route?.mode ??
           (packet as { meta?: { routeMode?: RouteMode } }).meta?.routeMode ??
           (packet as { meta?: { routePolicy?: RouteMode } }).meta?.routePolicy) ??
         ((await getRoutePolicy()) as RouteMode);
-      const selectedNetwork = useNetConfigStore.getState().config.onionSelectedNetwork ?? config.onionSelectedNetwork;
       const toDeviceId =
         (packet as { toDeviceId?: string }).toDeviceId ??
         (packet as { meta?: { toDeviceId?: string } }).meta?.toDeviceId ??
@@ -413,20 +372,14 @@ export const createOnionRouterTransport = ({
         throw createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: missing destination 'to'");
       }
       const initialRoute =
-        torOnion || lokinet
+        torOnion
           ? {
               mode: routeMode,
               torOnion,
-              lokinet,
             }
           : undefined;
-      let route = initialRoute ? normalizeSendRoute(initialRoute, selectedNetwork) : undefined;
-      const requiresTor =
-        Boolean(route?.torOnion) ||
-        (!route && selectedNetwork === "tor");
-      if (requiresTor) {
-        await ensureTorReady(signal);
-      }
+      let route = initialRoute ? normalizeSendRoute(initialRoute) : undefined;
+      await ensureTorReady(signal);
       if (signal?.aborted) {
         throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: send aborted");
       }

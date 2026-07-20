@@ -31,15 +31,16 @@ const pickColor = (name: string) => {
 
 type AvatarProps = {
   name: string;
+  colorKey?: string;
   avatarRef?: AvatarRef;
   size?: number;
   className?: string;
 };
 
-export default function Avatar({ name, avatarRef, size = 40, className }: AvatarProps) {
+export default function Avatar({ name, colorKey, avatarRef, size = 40, className }: AvatarProps) {
   const [url, setUrl] = useState<string | null>(null);
   const initials = useMemo(() => getInitials(name), [name]);
-  const bgClass = useMemo(() => pickColor(name), [name]);
+  const bgClass = useMemo(() => pickColor(colorKey || name), [colorKey, name]);
 
   useEffect(() => {
     let active = true;

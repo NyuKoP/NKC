@@ -368,8 +368,8 @@ export default function App() {
       return {
         torState: runtime.network === "tor" ? runtime.status : null,
         torDetail: runtime.network === "tor" ? runtime.error ?? null : null,
-        lokinetState: runtime.network === "lokinet" ? runtime.status : null,
-        lokinetDetail: runtime.network === "lokinet" ? runtime.error ?? null : null,
+        lokinetState: null,
+        lokinetDetail: null,
       };
     } catch {
       // Browser-only tests and older preload surfaces may not expose the built-in Onion bridge.
@@ -379,7 +379,6 @@ export default function App() {
       globalThis as {
         nkc?: {
           getTorStatus?: () => Promise<unknown>;
-          getLokinetStatus?: () => Promise<unknown>;
         };
       }
     ).nkc;
@@ -391,15 +390,12 @@ export default function App() {
         lokinetDetail: null,
       };
     }
-    const [torRaw, lokinetRaw] = await Promise.all([
-      nkc.getTorStatus ? nkc.getTorStatus() : Promise.resolve(null),
-      nkc.getLokinetStatus ? nkc.getLokinetStatus() : Promise.resolve(null),
-    ]);
+    const torRaw = nkc.getTorStatus ? await nkc.getTorStatus() : null;
     return {
       torState: toRuntimeState(torRaw),
       torDetail: toRuntimeDetail(torRaw),
-      lokinetState: toRuntimeState(lokinetRaw),
-      lokinetDetail: toRuntimeDetail(lokinetRaw),
+      lokinetState: null,
+      lokinetDetail: null,
     };
   }, []);
 
@@ -1888,7 +1884,7 @@ export default function App() {
         webrtcRelayOnly: netConfig.webrtcRelayOnly,
         disableLinkPreview: netConfig.disableLinkPreview,
         torStatus: netConfig.tor?.status ?? null,
-        lokinetStatus: netConfig.lokinet?.status ?? null,
+        lokinetStatus: null,
         torRuntimeState: runtimeSnapshot.torState,
         torRuntimeDetail: runtimeSnapshot.torDetail,
         lokinetRuntimeState: runtimeSnapshot.lokinetState,
@@ -3046,7 +3042,7 @@ export default function App() {
       onionEnabled: netConfig.onionEnabled,
       onionSelectedNetwork: netConfig.onionSelectedNetwork,
       torStatus: netConfig.tor.status,
-      lokinetStatus: netConfig.lokinet.status,
+      lokinetStatus: null,
     };
     const runtimeBootstrap: Record<string, unknown> = {};
     emitRouterTestLog({
@@ -3063,7 +3059,6 @@ export default function App() {
         globalThis as {
           nkc?: {
             startTor?: () => Promise<unknown>;
-            startLokinet?: () => Promise<unknown>;
             ensureHiddenService?: () => Promise<unknown>;
           };
         }
@@ -3078,14 +3073,6 @@ export default function App() {
             runtimeBootstrap.torDataDir = torRuntime.getDataDir();
           } catch (error) {
             runtimeBootstrap.torStartError = error instanceof Error ? error.message : String(error);
-          }
-        }
-        if (netConfig.onionSelectedNetwork === "lokinet" && nkc.startLokinet) {
-          try {
-            await nkc.startLokinet();
-          } catch (error) {
-            runtimeBootstrap.lokinetStartError =
-              error instanceof Error ? error.message : String(error);
           }
         }
         if (nkc.ensureHiddenService) {

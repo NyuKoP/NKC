@@ -7,7 +7,6 @@ import { getBinaryPath } from "../componentRegistry";
 import type { OnionNetwork } from "../../../net/netConfig";
 import { readCurrentPointer } from "../install/swapperRollback";
 import { TorManager } from "./torManager";
-import { LokinetManager } from "./lokinetManager";
 
 type RuntimeStatus = {
   status: "idle" | "starting" | "running" | "failed";
@@ -64,7 +63,6 @@ const waitForPort = async (
 
 export class OnionRuntime {
   private torManager = new TorManager();
-  private lokinetManager = new LokinetManager();
   private status: RuntimeStatus = { status: "idle" };
 
   private findInPath(binName: string) {
@@ -166,12 +164,7 @@ export class OnionRuntime {
         throw new Error(`BINARY_MISSING: ${binaryPath}`);
       }
 
-      if (network === "tor") {
-        await this.startTorWithFallback(binaryPath, port, dataDir);
-      } else {
-        await this.lokinetManager.start(binaryPath, port, dataDir);
-        await waitForPort(port, 30000);
-      }
+      await this.startTorWithFallback(binaryPath, port, dataDir);
       await session.defaultSession.setProxy({ proxyRules: `socks5://127.0.0.1:${port}` });
       this.status = { status: "running", network, socksPort: port };
     } catch (error) {
@@ -186,7 +179,6 @@ export class OnionRuntime {
 
   async stop() {
     await this.torManager.stop();
-    await this.lokinetManager.stop();
     await session.defaultSession.setProxy({ mode: "direct" });
     this.status = { status: "idle" };
   }
@@ -195,7 +187,6 @@ export class OnionRuntime {
     return {
       ...this.status,
       tor: this.torManager.getState(),
-      lokinet: this.lokinetManager.getState(),
     };
   }
 }

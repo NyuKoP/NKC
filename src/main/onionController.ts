@@ -2,7 +2,6 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import type { TorStatus } from "./torManager";
-import type { LokinetStatus } from "./lokinetManager";
 import type { SocksTransport } from "./socksHttpClient";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { ONION_TRANSFER_MAX_BODY_BYTES } from "../net/mediaTransferLimits";
@@ -32,9 +31,7 @@ export type OnionControllerHandle = {
   port: number;
   authToken: string;
   setTorSocksProxy: (proxyUrl: string | null) => Promise<void>;
-  setLokinetSocksProxy: (proxyUrl: string | null) => Promise<void>;
   setTorOnionHost: (host: string | null) => void;
-  setLokinetAddress: (address: string | null) => void;
   prewarmTorRoute: (
     onionAddress: string,
     options?: { timeoutMs?: number }
@@ -95,9 +92,8 @@ export type OnionSendPayload = {
   toOnion?: string;
   fromDeviceId?: string;
   route?: {
-    mode?: "auto" | "preferLokinet" | "preferTor" | "manual";
+    mode?: "auto" | "preferTor" | "manual";
     torOnion?: string;
-    lokinet?: string;
   };
 };
 
@@ -139,7 +135,6 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
   const hasRouteTargets = Boolean(
     payload.toOnion ||
       payload.route?.torOnion ||
-      payload.route?.lokinet ||
       payload.to?.includes(".onion") ||
       payload.route
   );
@@ -178,7 +173,6 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
 export const startOnionController = async (options?: {
   port?: number;
   getTorStatus?: () => TorStatus;
-  getLokinetStatus?: () => LokinetStatus;
   userDataPath?: string;
   queueOnFailure?: boolean;
   socksTransport?: SocksTransport;
@@ -192,10 +186,6 @@ export const startOnionController = async (options?: {
   let ingestWindowStartedAt = Date.now();
   let ingestWindowCount = 0;
   const torForwarding: ForwardingState = {
-    proxyUrl: null,
-    ready: false,
-  };
-  const lokinetForwarding: ForwardingState = {
     proxyUrl: null,
     ready: false,
   };
@@ -222,7 +212,6 @@ export const startOnionController = async (options?: {
     });
   };
   let myTorOnionHost: string | null = null;
-  let myLokinetAddress: string | null = null;
   const socksTransport: SocksTransport =
     options?.socksTransport ?? {
       fetch: async () => {
@@ -298,27 +287,9 @@ export const startOnionController = async (options?: {
     });
   };
 
-  const setLokinetSocksProxy = async (proxyUrl: string | null) => {
-    const trimmed = proxyUrl?.trim() ?? "";
-    const previousProxy = lokinetForwarding.proxyUrl;
-    if (previousProxy && previousProxy !== trimmed) await socksTransport.clearProxy(previousProxy);
-    if (!trimmed) {
-      lokinetForwarding.proxyUrl = null;
-      lokinetForwarding.ready = false;
-      return;
-    }
-    lokinetForwarding.proxyUrl = trimmed;
-    lokinetForwarding.ready = true;
-  };
-
   const setTorOnionHost = (hostValue: string | null) => {
     const trimmed = hostValue?.trim() ?? "";
     myTorOnionHost = trimmed ? trimmed : null;
-  };
-
-  const setLokinetAddress = (addressValue: string | null) => {
-    const trimmed = addressValue?.trim() ?? "";
-    myLokinetAddress = trimmed ? trimmed : null;
   };
 
   const getItemBytes = (item: Pick<InboxItem, "id" | "from" | "envelope">) =>
@@ -392,21 +363,14 @@ export const startOnionController = async (options?: {
     }
     if (req.method === "GET" && url.pathname === "/onion/health") {
       const torStatus = options?.getTorStatus ? options.getTorStatus() : null;
-      const lokinetStatus = options?.getLokinetStatus ? options.getLokinetStatus() : null;
       const torActive = Boolean(
         torStatus &&
           torStatus.state === "running" &&
           torForwarding.ready &&
           torForwarding.proxyUrl
       );
-      const lokinetActive = Boolean(
-        lokinetStatus &&
-          lokinetStatus.state === "running" &&
-          lokinetForwarding.ready &&
-          lokinetForwarding.proxyUrl
-      );
-      const details = torActive || lokinetActive ? "route proxies enabled" : "local-only mode";
-      const network = torActive ? "tor" : lokinetActive ? "lokinet" : "none";
+      const details = torActive ? "route proxy enabled" : "local-only mode";
+      const network = torActive ? "tor" : "none";
       sendJson(res, 200, authorized ? {
         ok: true,
         network,
@@ -417,13 +381,7 @@ export const startOnionController = async (options?: {
           address: myTorOnionHost ?? undefined,
           details: torStatus?.state,
         },
-        lokinet: {
-          active: lokinetActive,
-          proxyUrl: lokinetForwarding.proxyUrl ?? null,
-          address: myLokinetAddress ?? undefined,
-          details: lokinetStatus?.state,
-        },
-      } : { ok: true, network: torActive ? "tor" : lokinetActive ? "lokinet" : "none" });
+      } : { ok: true, network: torActive ? "tor" : "none" });
       return;
     }
 
@@ -431,11 +389,7 @@ export const startOnionController = async (options?: {
       sendJson(res, 200, {
         ok: true,
         torOnion: myTorOnionHost ?? undefined,
-        lokinet: myLokinetAddress ?? undefined,
-        details:
-          myTorOnionHost || myLokinetAddress
-            ? undefined
-            : "address-unavailable",
+        details: myTorOnionHost ? undefined : "address-unavailable",
       });
       return;
     }
@@ -463,7 +417,6 @@ export const startOnionController = async (options?: {
         forwardRouted: (routedPayload) =>
           socksTransport.forward(routedPayload, {
             torProxyUrl: torForwarding.proxyUrl,
-            lokinetProxyUrl: lokinetForwarding.proxyUrl,
             queueOnFailure: options?.queueOnFailure ?? true,
           }),
         emitTrace: emitControllerTrace,
@@ -590,16 +543,11 @@ export const startOnionController = async (options?: {
     port: assignedPort,
     authToken,
     setTorSocksProxy,
-    setLokinetSocksProxy,
     setTorOnionHost,
-    setLokinetAddress,
     prewarmTorRoute,
     close: async () => {
       clearInterval(cleanupTimer);
-      await Promise.all([
-        socksTransport.clearProxy(torForwarding.proxyUrl),
-        socksTransport.clearProxy(lokinetForwarding.proxyUrl),
-      ]);
+      await socksTransport.clearProxy(torForwarding.proxyUrl);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

@@ -17,7 +17,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
-import { installLokinet } from "./main/onion/install/installLokinet";
 import { removeWithRetry } from "./main/onion/install/removeWithRetry";
 import { removeTorInstallationArtifacts } from "./main/onion/install/cleanupTor";
 import { readCurrentPointer } from "./main/onion/install/swapperRollback";
@@ -33,7 +32,6 @@ import {
 import { NativeWorkerClient } from "./main/nativeWorkerClient";
 import { createNativeSocksTransport } from "./main/socksHttpClient";
 import { TorManager } from "./main/torManager";
-import { LokinetManager } from "./main/lokinetManager";
 import { readAppPrefs, setAppPrefs } from "./main/preferences";
 import {
   appendTestLogRecord,
@@ -123,7 +121,7 @@ const createIpcError = (error: string): IpcErrorResponse => ({
 });
 
 const requireOnionNetwork = (value: unknown): OnionNetwork => {
-  if (value === "tor" || value === "lokinet") return value;
+  if (value === "tor") return value;
   throw new Error("invalid-onion-network");
 };
 
@@ -735,32 +733,6 @@ const registerOnionControllerIpc = () => {
     assertTrustedIpcSender(event);
     return myOnionAddress ?? "";
   });
-  ipcMain.handle("nkc:getLokinetStatus", async (event) => {
-    assertTrustedIpcSender(event);
-    return lokinetManager?.getStatus() ?? { state: "unavailable" };
-  });
-  ipcMain.handle("nkc:configureLokinetExternal", async (event, payload: { proxyUrl: string; serviceAddress?: string }) => {
-    assertTrustedIpcSender(event);
-    if (!lokinetManager) return { ok: false };
-    await lokinetManager.configureExternal(payload);
-    return { ok: true };
-  });
-  ipcMain.handle("nkc:startLokinet", async (event) => {
-    assertTrustedIpcSender(event);
-    if (!lokinetManager) return { ok: false };
-    await lokinetManager.start();
-    return { ok: true };
-  });
-  ipcMain.handle("nkc:stopLokinet", async (event) => {
-    assertTrustedIpcSender(event);
-    if (!lokinetManager) return { ok: false };
-    await lokinetManager.stop();
-    return { ok: true };
-  });
-  ipcMain.handle("nkc:getMyLokinetAddress", async (event) => {
-    assertTrustedIpcSender(event);
-    return myLokinetAddress ?? "";
-  });
 };
 
 const isP2PFriendRouteArray = (payload: unknown): payload is P2PFriendRoute[] =>
@@ -1055,7 +1027,6 @@ const registerTestLogIpc = () => {
 type OnionStatusPayload = {
   components: {
     tor: OnionComponentState;
-    lokinet: OnionComponentState;
   };
   runtime: ReturnType<OnionRuntime["getStatus"]>;
 };
@@ -1063,14 +1034,11 @@ type OnionStatusPayload = {
 const onionRuntime = new OnionRuntime();
 const onionComponentCache: Record<OnionNetwork, OnionComponentState> = {
   tor: { installed: false, status: "idle" },
-  lokinet: { installed: false, status: "idle" },
 };
 let onionController: OnionControllerHandle | null = null;
 let onionControllerUrl = "";
 let torManager: TorManager | null = null;
 let myOnionAddress: string | null = null;
-let lokinetManager: LokinetManager | null = null;
-let myLokinetAddress: string | null = null;
 let p2pQueueManager: OfflineQueueManager | null = null;
 let nativeWorkerClient: NativeWorkerClient | null = null;
 let currentTorSocksProxy: string | null = null;
@@ -1084,7 +1052,6 @@ const shutdownBackgroundRuntimes = async () => {
     await Promise.allSettled([
       onionController?.close(),
       torManager?.stop(),
-      lokinetManager?.stop(),
     ]);
     await nativeWorkerClient?.stop();
     nativeWorkerClient = null;
@@ -1196,19 +1163,12 @@ const emitOnionProgress = (
   event.sender.send("onion:progress", { network, status });
 };
 
-const stopNetworkRuntimeForMutation = async (network: OnionNetwork) => {
+const stopNetworkRuntimeForMutation = async () => {
   await onionRuntime.stop();
-  if (network === "tor") {
-    await torManager?.stop();
-    currentTorSocksProxy = null;
-    p2pQueueManager?.updateProxyUrl(null);
-    await onionController?.setTorSocksProxy(null);
-  } else {
-    await lokinetManager?.stop();
-    myLokinetAddress = null;
-    onionController?.setLokinetAddress(null);
-    await onionController?.setLokinetSocksProxy(null);
-  }
+  await torManager?.stop();
+  currentTorSocksProxy = null;
+  p2pQueueManager?.updateProxyUrl(null);
+  await onionController?.setTorSocksProxy(null);
   emitOnionRuntimeBackgroundStatus();
 };
 
@@ -1219,7 +1179,6 @@ const registerOnionIpc = () => {
     return {
       components: {
         tor: await refreshComponentState(userDataDir, "tor"),
-        lokinet: await refreshComponentState(userDataDir, "lokinet"),
       },
       runtime: onionRuntime.getStatus(),
     } satisfies OnionStatusPayload;
@@ -1229,7 +1188,6 @@ const registerOnionIpc = () => {
     assertTrustedIpcSender(event);
     const userDataDir = app.getPath("userData");
     const torUpdate = await checkUpdates("tor");
-    const lokinetUpdate = await checkUpdates("lokinet");
     console.log("[onion] checkUpdates", {
       tor: {
         version: torUpdate.version,
@@ -1238,20 +1196,10 @@ const registerOnionIpc = () => {
         sha256: torUpdate.sha256 ? "<present>" : "<missing>",
         errorCode: torUpdate.errorCode,
       },
-      lokinet: {
-        version: lokinetUpdate.version,
-        assetName: lokinetUpdate.assetName,
-        downloadUrl: lokinetUpdate.downloadUrl,
-        sha256: lokinetUpdate.sha256 ? "<present>" : "<missing>",
-        errorCode: lokinetUpdate.errorCode,
-      },
     });
     const torState = await refreshComponentState(userDataDir, "tor");
-    const lokinetState = await refreshComponentState(userDataDir, "lokinet");
     const torHasVerifiedUpdate =
       Boolean(torUpdate.version && torUpdate.sha256 && torUpdate.downloadUrl);
-    const lokinetHasVerifiedUpdate =
-      Boolean(lokinetUpdate.version && lokinetUpdate.sha256 && lokinetUpdate.downloadUrl);
     onionComponentCache.tor = {
       ...torState,
       latest: torHasVerifiedUpdate ? torUpdate.version ?? undefined : undefined,
@@ -1268,26 +1216,9 @@ const registerOnionIpc = () => {
             ? `No compatible Tor asset for ${process.platform}/${process.arch}`
           : undefined,
     };
-    onionComponentCache.lokinet = {
-      ...lokinetState,
-      latest: lokinetHasVerifiedUpdate ? lokinetUpdate.version ?? undefined : undefined,
-      error:
-        lokinetUpdate.errorCode === "PINNED_HASH_MISSING"
-          ? "PINNED_HASH_MISSING"
-          : lokinetUpdate.errorCode === "ASSET_NOT_FOUND"
-            ? "ASSET_NOT_FOUND"
-            : undefined,
-      detail:
-        lokinetUpdate.errorCode === "PINNED_HASH_MISSING"
-          ? `Pinned hash missing for ${lokinetUpdate.assetName ?? lokinetUpdate.version ?? "unknown"}`
-          : lokinetUpdate.errorCode === "ASSET_NOT_FOUND"
-            ? `No compatible Lokinet asset for ${process.platform}/${process.arch}`
-          : undefined,
-    };
     return {
       components: {
         tor: onionComponentCache.tor,
-        lokinet: onionComponentCache.lokinet,
       },
       runtime: onionRuntime.getStatus(),
     } satisfies OnionStatusPayload;
@@ -1334,35 +1265,8 @@ const registerOnionIpc = () => {
         progress: undefined,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
-      await stopNetworkRuntimeForMutation(network);
-      const install =
-        network === "tor"
-          ? installTor(
-              userDataDir,
-              updates.version,
-              (progress) => {
-                onionComponentCache[network] = {
-                  ...onionComponentCache[network],
-                  status: progress.step === "download" ? "downloading" : "installing",
-                  detail:
-                    (progress.message ?? "") +
-                    (progress.receivedBytes || progress.totalBytes
-                      ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})`
-                      : ""),
-                  progress:
-                    progress.receivedBytes || progress.totalBytes
-                      ? {
-                          receivedBytes: progress.receivedBytes ?? 0,
-                          totalBytes: progress.totalBytes ?? 0,
-                        }
-                      : undefined,
-                };
-                emitOnionProgress(event, network, onionComponentCache[network]);
-              },
-              updates.downloadUrl ?? undefined,
-              updates.assetName ?? undefined
-            )
-          : installLokinet(
+      await stopNetworkRuntimeForMutation();
+      const install = installTor(
               userDataDir,
               updates.version,
               (progress) => {
@@ -1470,35 +1374,8 @@ const registerOnionIpc = () => {
       const runtimeBeforeMutation = onionRuntime.getStatus();
       const shouldRestartRuntime =
         runtimeBeforeMutation.status === "running" && runtimeBeforeMutation.network === network;
-      await stopNetworkRuntimeForMutation(network);
-      const install =
-        network === "tor"
-          ? installTor(
-              userDataDir,
-              updateVersion,
-              (progress) => {
-                onionComponentCache[network] = {
-                  ...onionComponentCache[network],
-                  status: progress.step === "download" ? "downloading" : "installing",
-                  detail:
-                    (progress.message ?? "") +
-                    (progress.receivedBytes || progress.totalBytes
-                      ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})`
-                      : ""),
-                  progress:
-                    progress.receivedBytes || progress.totalBytes
-                      ? {
-                          receivedBytes: progress.receivedBytes ?? 0,
-                          totalBytes: progress.totalBytes ?? 0,
-                        }
-                      : undefined,
-                };
-                emitOnionProgress(event, network, onionComponentCache[network]);
-              },
-              updateInfo.downloadUrl ?? undefined,
-              updateInfo.assetName ?? undefined
-            )
-          : installLokinet(
+      await stopNetworkRuntimeForMutation();
+      const install = installTor(
               userDataDir,
               updateVersion,
               (progress) => {
@@ -1580,7 +1457,7 @@ const registerOnionIpc = () => {
   ipcMain.handle("onion:uninstall", async (event, payload: { network: OnionNetwork }) => {
     assertTrustedIpcSender(event);
     const network = requireOnionNetwork(payload?.network);
-    await stopNetworkRuntimeForMutation(network);
+    await stopNetworkRuntimeForMutation();
     const userDataDir = app.getPath("userData");
     if (network === "tor") {
       await removeTorInstallationArtifacts(userDataDir);
@@ -1627,7 +1504,7 @@ const emitOnionRuntimeBackgroundStatus = () => {
   if (runtime.status === "running") {
     emitRuntimeBackgroundStatus({
       state: "connected",
-      route: runtime.network === "lokinet" ? "Lokinet Network" : "Tor Network",
+      route: "Tor Network",
     });
     return;
   }
@@ -2092,7 +1969,6 @@ app.whenReady().then(async () => {
   registerTestLogIpc();
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
-    lokinetManager = new LokinetManager({ appDataDir: app.getPath("userData") });
     const legacyQueuePath = path.join(app.getPath("userData"), "p2p-offline-queue.json");
     try {
       const executableName = process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker";
@@ -2122,7 +1998,6 @@ app.whenReady().then(async () => {
         onionController = await startOnionController({
           port: 3210,
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
-          getLokinetStatus: () => lokinetManager?.getStatus() ?? { state: "unavailable" },
           userDataPath: app.getPath("userData"),
           queueOnFailure: true,
           socksTransport: nativeWorkerClient
@@ -2138,7 +2013,6 @@ app.whenReady().then(async () => {
         onionController = await startOnionController({
           port: 0,
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
-          getLokinetStatus: () => lokinetManager?.getStatus() ?? { state: "unavailable" },
           userDataPath: app.getPath("userData"),
           queueOnFailure: true,
           socksTransport: nativeWorkerClient
@@ -2163,22 +2037,6 @@ app.whenReady().then(async () => {
         emitRuntimeBackgroundStatus({
           state: "disconnected",
           route: status.state === "starting" ? "Tor starting" : "Tor offline",
-        });
-      }
-    });
-    lokinetManager.onStatus((status) => {
-      if (status.state === "running") {
-        myLokinetAddress = status.serviceAddress ?? null;
-        onionController?.setLokinetAddress(status.serviceAddress ?? null);
-        void onionController?.setLokinetSocksProxy(status.proxyUrl);
-        emitRuntimeBackgroundStatus({ state: "connected", route: "Lokinet Network" });
-      } else {
-        myLokinetAddress = null;
-        onionController?.setLokinetAddress(null);
-        void onionController?.setLokinetSocksProxy(null);
-        emitRuntimeBackgroundStatus({
-          state: "disconnected",
-          route: status.state === "starting" ? "Lokinet starting" : "Lokinet offline",
         });
       }
     });

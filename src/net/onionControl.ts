@@ -10,7 +10,6 @@ export type OnionRuntimeStatus = {
 export type OnionStatus = {
   components: {
     tor: OnionComponentState;
-    lokinet: OnionComponentState;
   };
   runtime: OnionRuntimeStatus;
 };

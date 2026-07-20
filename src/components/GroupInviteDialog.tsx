@@ -118,6 +118,7 @@ export default function GroupInviteDialog({
                     />
                     <Avatar
                       name={friend.displayName}
+                      colorKey={friend.id}
                       avatarRef={friend.avatarRef}
                       size={32}
                     />

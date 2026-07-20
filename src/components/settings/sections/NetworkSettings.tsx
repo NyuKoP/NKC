@@ -1,4 +1,4 @@
-﻿import type { ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Clock } from "lucide-react";
 import type { OnionStatus } from "../../../net/onionControl";
 import type { NetConfig, OnionNetwork } from "../../../net/netConfig";
@@ -19,7 +19,7 @@ type NetworkSettingsProps = {
   onConnectionChoiceChange: (choice: ConnectionChoice) => void | Promise<void>;
   draftMode: NetworkMode;
   onionStatus: OnionStatus | null;
-  getDotState: (kind: "tor" | "lokinet", status: OnionStatus | null) => DotState;
+  getDotState: (kind: OnionNetwork, status: OnionStatus | null) => DotState;
   getDotClass: (state: DotState) => string;
   buildComponentLabel: (state: NetConfig["tor"]) => string;
   netConfig: NetConfig;
@@ -31,24 +31,16 @@ type NetworkSettingsProps = {
   runtimeNetworkLabel: string;
   runtimeErrorLabel: string;
   torUpdateStatus: string;
-  lokinetUpdateStatus: string;
   torErrorLabel: string | null;
-  lokinetErrorLabel: string | null;
   torInstallBusy: boolean;
   torStatusBusy: boolean;
   torCheckBusy: boolean;
   torApplyBusy: boolean;
   torUninstallBusy: boolean;
-  lokinetInstallBusy: boolean;
-  lokinetStatusBusy: boolean;
-  lokinetApplyBusy: boolean;
-  lokinetUninstallBusy: boolean;
   torUpdateAvailable: boolean;
-  lokinetUpdateAvailable: boolean;
   isComponentReady: (state: NetConfig["tor"]) => boolean;
   onInstall: (network: OnionNetwork) => void | Promise<void>;
   onTorStatus: () => void | Promise<void>;
-  onLokinetStatus: () => void | Promise<void>;
   onConnectOnion: (network?: OnionNetwork) => void | Promise<void>;
   onDisconnectOnion: (network?: OnionNetwork) => void | Promise<void>;
   onCheckUpdates: () => void | Promise<void>;
@@ -65,7 +57,6 @@ type NetworkSettingsProps = {
   onSelfOnionHopChange: (value: number) => void;
   showDirectWarning: boolean;
   torAddress: string;
-  lokinetAddress: string;
   onCopyAddress: (value: string, label: string) => void | Promise<void>;
   onionEnabledDraft: boolean;
   setOnionEnabledDraft: (value: boolean) => void;
@@ -97,24 +88,16 @@ export default function NetworkSettings({
   runtimeNetworkLabel,
   runtimeErrorLabel,
   torUpdateStatus,
-  lokinetUpdateStatus,
   torErrorLabel,
-  lokinetErrorLabel,
   torInstallBusy,
   torStatusBusy,
   torCheckBusy,
   torApplyBusy,
   torUninstallBusy,
-  lokinetInstallBusy,
-  lokinetStatusBusy,
-  lokinetApplyBusy,
-  lokinetUninstallBusy,
   torUpdateAvailable,
-  lokinetUpdateAvailable,
   isComponentReady,
   onInstall,
   onTorStatus,
-  onLokinetStatus,
   onConnectOnion,
   onDisconnectOnion,
   onCheckUpdates,
@@ -131,7 +114,6 @@ export default function NetworkSettings({
   onSelfOnionHopChange,
   showDirectWarning,
   torAddress,
-  lokinetAddress,
   onCopyAddress,
   onionEnabledDraft,
   setOnionEnabledDraft,
@@ -145,7 +127,6 @@ export default function NetworkSettings({
 }: NetworkSettingsProps) {
   const runtime = onionStatus?.runtime;
   const torConnected = runtime?.status === "running" && runtime.network === "tor";
-  const lokinetConnected = runtime?.status === "running" && runtime.network === "lokinet";
   const formatHopStatus = (status: InternalOnionHopState["status"]) => {
     if (status === "ok") return t("연결됨", "Connected");
     if (status === "dead") return t("불안정", "Degraded");
@@ -343,172 +324,6 @@ export default function NetworkSettings({
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
                         {torStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <input
-                  id="network-mode-lokinetOnion"
-                  type="radio"
-                  name="network-mode"
-                  className="mt-1"
-                  checked={connectionChoice === "lokinetOnion"}
-                  onChange={() => void onConnectionChoiceChange("lokinetOnion")}
-                  data-testid="network-mode-lokinetOnion"
-                />
-                <div>
-                  <label
-                    htmlFor="network-mode-lokinetOnion"
-                    className="flex items-center gap-2 text-sm font-medium text-nkc-text"
-                  >
-                    <span>Lokinet Onion</span>
-                    <span
-                      title={t("Lokinet 상태", "Lokinet status")}
-                      className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
-                        getDotState("lokinet", onionStatus)
-                      )} cursor-pointer`}
-                      tabIndex={0}
-                    />
-                    <span className="text-xs text-nkc-muted">{t("고급", "Advanced")}</span>
-                  </label>
-                  <div className="text-xs text-nkc-muted">
-                    {t("Exit/VPN 기반 앱 전용 라우팅", "Exit/VPN based app-only routing")}
-                  </div>
-                </div>
-              </div>
-              <div className="text-xs text-nkc-muted">{buildComponentLabel(netConfig.lokinet)}</div>
-            </div>
-            {connectionChoice === "lokinetOnion" ? (
-              <div className="mt-3 border-t border-nkc-border pt-3">
-                <div className="flex items-start justify-between gap-4 text-xs text-nkc-muted">
-                  <div className="flex items-center gap-1">
-                    <span
-                      title={runtimeStatusTooltip}
-                      className="inline-flex items-center cursor-pointer"
-                      tabIndex={0}
-                    >
-                      {runtimeStatusIcon}
-                    </span>
-                    <span>
-                      {activeRouteLabel}
-                      {runtimeSocksLabel}
-                    </span>
-                  </div>
-                  <div className="text-right">
-                    <div>
-                      {runtimeStateLabel} {runtimeNetworkLabel}
-                    </div>
-                    {runtimeErrorLabel ? <div className="text-red-300">{runtimeErrorLabel}</div> : null}
-                  </div>
-                </div>
-                {lokinetAddress ? (
-                  <div className="mt-2 flex items-center justify-between gap-2 text-xs text-nkc-muted">
-                    <span className="font-mono break-all">{lokinetAddress}</span>
-                    <button
-                      type="button"
-                      onClick={() => void onCopyAddress(lokinetAddress, "Lokinet")}
-                      className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
-                    >
-                      {t("복사", "Copy")}
-                    </button>
-                  </div>
-                ) : null}
-                <div className="mt-2 text-xs text-nkc-muted">
-                  {netConfig.lokinet.installed
-                    ? t("상태: 설치됨", "Status: installed")
-                    : t("상태: 미설치", "Status: not installed")}
-                </div>
-                {lokinetUpdateStatus ? (
-                  <div className="mt-2 max-w-full break-words text-xs text-nkc-muted">{lokinetUpdateStatus}</div>
-                ) : null}
-                {netConfig.lokinet.detail ? (
-                  <div className="mt-2 max-h-24 max-w-full overflow-auto overflow-x-hidden whitespace-pre-wrap break-all text-[11px] text-nkc-muted">
-                    {netConfig.lokinet.detail}
-                  </div>
-                ) : null}
-                {lokinetErrorLabel ? (
-                  <div className="mt-2 max-w-full break-words text-xs text-red-300">{lokinetErrorLabel}</div>
-                ) : null}
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {!netConfig.lokinet.installed ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => void onInstall("lokinet")}
-                        disabled={lokinetInstallBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {lokinetInstallBusy ? t("처리 중...", "Working...") : t("설치", "Install")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onLokinetStatus()}
-                        disabled={lokinetStatusBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {lokinetStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void (
-                            lokinetConnected
-                              ? onDisconnectOnion("lokinet")
-                              : onConnectOnion("lokinet")
-                          )
-                        }
-                        disabled={
-                          lokinetConnected
-                            ? lokinetInstallBusy
-                            : lokinetInstallBusy || !isComponentReady(netConfig.lokinet)
-                        }
-                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
-                      >
-                        {lokinetConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          lokinetUpdateAvailable
-                            ? void onApplyUpdate("lokinet")
-                            : void onCheckUpdates()
-                        }
-                        disabled={lokinetUpdateAvailable ? lokinetApplyBusy : torCheckBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {lokinetUpdateAvailable
-                          ? lokinetApplyBusy
-                            ? t("처리 중...", "Working...")
-                            : t("업데이트 적용", "Apply update")
-                          : torCheckBusy
-                            ? t("처리 중...", "Working...")
-                            : t("업데이트 확인", "Check updates")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onUninstall("lokinet")}
-                        disabled={lokinetUninstallBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {lokinetUninstallBusy ? t("처리 중...", "Working...") : t("제거", "Uninstall")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onLokinetStatus()}
-                        disabled={lokinetStatusBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {lokinetStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
                       </button>
                     </>
                   )}

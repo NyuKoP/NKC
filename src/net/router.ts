@@ -316,7 +316,7 @@ const toRouteGateSnapshot = (
     torBootstrapped: config.onionSelectedNetwork === "tor" ? routerConnected : null,
     torControlReady: null,
     directOpen,
-    lokinetReady: config.onionSelectedNetwork === "lokinet" ? routerConnected : null,
+    lokinetReady: null,
     wakuReady: null,
     hasRouteTarget: Boolean(route?.torOnion || route?.lokinet),
   };

@@ -5,7 +5,6 @@ import { runVerifiedTorAutoUpdate, shouldAutoUpdateTor } from "../torAutoUpdate"
 const status = (tor: OnionStatus["components"]["tor"]): OnionStatus => ({
   components: {
     tor,
-    lokinet: { installed: false, status: "idle" },
   },
   runtime: { status: "idle" },
 });
