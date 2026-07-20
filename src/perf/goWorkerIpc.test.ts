@@ -1,94 +1,85 @@
 import { describe, expect, it, beforeAll, afterAll } from "vitest";
 import path from "node:path";
 import fs from "node:fs";
-import { execSync } from "node:child_process";
+import crypto from "node:crypto";
 import { NativeWorkerClient } from "../main/nativeWorkerClient";
 
-describe("Go Worker Stdin/Stdout IPC Benchmark", () => {
-  let client: NativeWorkerClient | null = null;
-  let tempFilePath: string | null = null;
+const root = process.cwd();
+const executableName = process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker";
+const executablePath = path.join(root, "native", "bin", executableName);
+const hasWorkerBinary = fs.existsSync(executablePath);
+
+describe.skipIf(!hasWorkerBinary)("Go Worker IPC Functional & Integrity Tests", () => {
+  let client: NativeWorkerClient;
+  let tempFilePath: string;
+  let sampleBuffer: Buffer;
+  let expectedSha256: string;
 
   beforeAll(async () => {
-    const root = process.cwd();
-    const executableName = process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker";
-    let executablePath = path.join(root, "native", "bin", executableName);
+    client = new NativeWorkerClient(executablePath);
+    await client.start();
 
-    if (!fs.existsSync(executablePath)) {
-      try {
-        console.info("[go-ipc-bench] Building Go worker binary...");
-        execSync("node scripts/build-go-worker.mjs", { cwd: root, stdio: "inherit" });
-      } catch (err) {
-        console.warn("[go-ipc-bench] Failed to build Go worker. Tests will skip if binary is missing.", err);
-      }
-    }
-
-    if (fs.existsSync(executablePath)) {
-      client = new NativeWorkerClient(executablePath);
-      await client.start();
-    }
-
-    // Create a 1MB temp file to benchmark file.chunk IPC reads
-    tempFilePath = path.join(root, "node_modules", ".cache", "ipc-test-1mb.tmp");
+    // Create a 1MiB test file with random bytes.
+    tempFilePath = path.join(root, "node_modules", ".cache", "go-ipc-integrity-test.tmp");
     const dir = path.dirname(tempFilePath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const chunk = Buffer.alloc(1024 * 1024, 0x5a);
-    fs.writeFileSync(tempFilePath, chunk);
+
+    sampleBuffer = crypto.randomBytes(1024 * 1024);
+    expectedSha256 = crypto.createHash("sha256").update(sampleBuffer).digest("hex");
+    fs.writeFileSync(tempFilePath, sampleBuffer);
   }, 30_000);
 
   afterAll(async () => {
-    if (client) {
-      await client.stop();
-    }
-    if (tempFilePath && fs.existsSync(tempFilePath)) {
-      try { fs.unlinkSync(tempFilePath); } catch {}
+    await client.stop();
+    if (fs.existsSync(tempFilePath)) {
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (err) {
+        console.warn("[go-worker-test] Failed to clean up temp file:", err);
+      }
     }
   });
 
-  it("measures health RPC roundtrip latency (100 iterations)", async () => {
-    if (!client) {
-      console.warn("[go-ipc-bench] Skipped: Go worker binary not available.");
-      return;
-    }
-
-    const iterations = 100;
-    const start = performance.now();
-
-    for (let i = 0; i < iterations; i++) {
-      const res = await client.request<{ version: number }>("health", {});
-      expect(res.version).toBe(1);
-    }
-
-    const totalMs = performance.now() - start;
-    const avgMs = totalMs / iterations;
-    console.info(`[go-ipc-bench] Health RPC avg latency: ${avgMs.toFixed(3)} ms per request (${totalMs.toFixed(2)} ms total for ${iterations} requests)`);
-    expect(avgMs).toBeLessThan(50); // Should be very fast (typically < 1-2ms)
+  it("verifies health RPC response and features", async () => {
+    const res = await client.request<{ version: number; features: string[] }>("health", {});
+    expect(res.version).toBe(1);
+    expect(res.features).toContain("file");
+    expect(res.features).toContain("queue");
   });
 
-  it("measures 512KB chunk file.chunk RPC IPC throughput", async () => {
-    if (!client || !tempFilePath) {
-      console.warn("[go-ipc-bench] Skipped: Client or temp file missing.");
-      return;
-    }
-
-    const iterations = 50;
+  it("verifies file.inspect sha256 and chunk count", async () => {
     const chunkSize = 512 * 1024;
-    const start = performance.now();
+    const res = await client.request<{ size: number; chunkSize: number; total: number; sha256: string }>(
+      "file.inspect",
+      { path: tempFilePath, chunkSize }
+    );
+    expect(res.size).toBe(1024 * 1024);
+    expect(res.chunkSize).toBe(chunkSize);
+    expect(res.total).toBe(2);
+    expect(res.sha256).toBe(expectedSha256);
+  });
 
-    for (let i = 0; i < iterations; i++) {
-      const res = await client.request<{ data: string; bytes: number }>("file.chunk", {
-        path: tempFilePath,
-        index: 0,
-        chunkSize: chunkSize,
-      });
-      expect(res.bytes).toBe(chunkSize);
-      expect(res.data).toBeDefined();
-    }
+  it("verifies file.chunk payload data integrity and sha256 hash match", async () => {
+    const chunkSize = 512 * 1024;
+    const res = await client.request<{ index: number; bytes: number; data: string; sha256: string }>(
+      "file.chunk",
+      { path: tempFilePath, index: 0, chunkSize }
+    );
 
-    const totalMs = performance.now() - start;
-    const avgMs = totalMs / iterations;
-    const throughputMBps = ((chunkSize * iterations) / (1024 * 1024)) / (totalMs / 1000);
+    expect(res.index).toBe(0);
+    expect(res.bytes).toBe(chunkSize);
 
-    console.info(`[go-ipc-bench] 512KB file.chunk RPC avg time: ${avgMs.toFixed(2)} ms (${throughputMBps.toFixed(2)} MB/s throughput over stdin/stdout IPC)`);
-    expect(avgMs).toBeLessThan(500);
+    // Decode RawURLEncoding Base64
+    const b64Standard = res.data.replace(/-/g, "+").replace(/_/g, "/");
+    const decodedBuffer = Buffer.from(b64Standard, "base64");
+    expect(decodedBuffer.byteLength).toBe(chunkSize);
+
+    // Byte-level integrity check against original source buffer
+    const expectedChunkBuffer = sampleBuffer.subarray(0, chunkSize);
+    expect(decodedBuffer.equals(expectedChunkBuffer)).toBe(true);
+
+    // SHA256 checksum check
+    const chunkSha256 = crypto.createHash("sha256").update(decodedBuffer).digest("hex");
+    expect(res.sha256).toBe(chunkSha256);
   });
 });
