@@ -31,6 +31,7 @@
     "test:tor:large:500": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=500",
     "bench:transfer": "vitest bench --run src/perf/transferEncoding.bench.ts",
     "bench:transfer:500mb": "cross-env NKC_LARGE_TRANSFER_BENCH=1 vitest run src/perf/largeTransferPipeline.test.ts --reporter=verbose",
+    "bench:ipc": "npm run build:native && node scripts/bench-go-ipc.mjs",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
     "test:packaged:first-run": "node scripts/verify-packaged-first-run.cjs",
