@@ -4,6 +4,10 @@ import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
 import { getOrCreateDeviceId } from "../../security/deviceRole";
 import { createId } from "../../utils/ids";
 import { useInternalOnionRouteStore } from "../../stores/internalOnionRouteStore";
+import {
+  signLocalControlPlaneMessage,
+  verifyPeerControlPlaneMessage,
+} from "./controlPlaneAuth";
 import type { HopAckMessage, HopPongMessage, InternalOnionControlPlaneMessage } from "./types";
 
 const RELAY_FRAME_TYPE = "internal_onion_relay";
@@ -40,14 +44,19 @@ type RelayHandleResult = {
 };
 
 type ControlHandlers = {
-  onAck: (message: HopAckMessage) => void;
-  onPong: (message: HopPongMessage) => void;
+  onAck: (message: HopAckMessage) => void | Promise<void>;
+  onPong: (message: HopPongMessage) => void | Promise<void>;
 };
 
 type RelayDeps = {
   now: () => number;
   getLocalPeerId: () => string;
   sendRelayEnvelope: (toPeerId: string, envelope: RelayEnvelope) => Promise<void>;
+  signControlMessage: <T extends InternalOnionControlPlaneMessage>(message: T) => Promise<T>;
+  verifyControlMessage: (
+    message: InternalOnionControlPlaneMessage,
+    peerId: string
+  ) => Promise<boolean>;
 };
 
 const encoder = new TextEncoder();
@@ -108,6 +117,8 @@ const defaultDeps: RelayDeps = {
       throw new Error(result.error ?? "relay send failed");
     }
   },
+  signControlMessage: signLocalControlPlaneMessage,
+  verifyControlMessage: verifyPeerControlPlaneMessage,
 };
 
 let deps: RelayDeps = defaultDeps;
@@ -195,11 +206,12 @@ const sendControlToPeer = async (
   toPeerId: string,
   message: HopAckMessage | HopPongMessage
 ) => {
+  const signedMessage = await deps.signControlMessage(message);
   const envelope = buildRelayEnvelope({
     circuitId: message.circuitId,
     chain: [toPeerId],
     hopCursor: 0,
-    payload: { kind: "control", message },
+    payload: { kind: "control", message: signedMessage },
   });
   await sendEnvelope(envelope);
 };
@@ -216,13 +228,14 @@ export const sendControlPlaneMessage = async (
   if (!chain.length) {
     throw new Error("relay chain unavailable");
   }
+  const signedMessage = await deps.signControlMessage(message);
   const envelope = buildRelayEnvelope({
     circuitId: message.circuitId,
     chain,
     hopCursor: 0,
     payload: {
       kind: "control",
-      message,
+      message: signedMessage,
     },
   });
   await sendEnvelope(envelope);
@@ -305,6 +318,18 @@ export const handleIncomingRelayPacket = async (
   }
 
   const message = envelope.payload.message;
+  const signerPeerId =
+    message.type === "HOP_HELLO"
+      ? message.senderPeerId
+      : message.type === "HOP_ACK"
+        ? message.relayPeerId
+        : envelope.senderPeerId;
+  if (signerPeerId !== envelope.senderPeerId) {
+    return { handled: true };
+  }
+  if (!(await deps.verifyControlMessage(message, signerPeerId))) {
+    return { handled: true };
+  }
   if (message.type === "HOP_HELLO") {
     const ack: HopAckMessage = {
       type: "HOP_ACK",
@@ -313,7 +338,6 @@ export const handleIncomingRelayPacket = async (
       ts: deps.now(),
       relayPeerId: localPeerId,
       ok: true,
-      // TODO: attach relay Ed25519 signature when key material is available.
     };
     await sendControlToPeer(envelope.senderPeerId, ack);
     return { handled: true };
@@ -329,11 +353,11 @@ export const handleIncomingRelayPacket = async (
     return { handled: true };
   }
   if (message.type === "HOP_ACK") {
-    controlHandlers?.onAck(message);
+    await controlHandlers?.onAck(message);
     return { handled: true };
   }
   if (message.type === "HOP_PONG") {
-    controlHandlers?.onPong(message);
+    await controlHandlers?.onPong(message);
     return { handled: true };
   }
   return { handled: true };

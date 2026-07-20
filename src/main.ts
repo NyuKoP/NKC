@@ -3,7 +3,6 @@ import {
   BrowserWindow,
   ipcMain,
   net,
-  safeStorage,
   session,
   Menu,
   Tray,
@@ -11,7 +10,6 @@ import {
 } from "electron";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
-import crypto from "node:crypto";
 import nodeNet from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,22 +25,22 @@ import { startOnionController, type OnionControllerHandle } from "./main/onionCo
 import {
   NativeOfflineQueueManager,
   type OfflineQueueManager,
-  type P2PFriendRoute,
 } from "./main/nativeOfflineQueueManager";
 import { NativeWorkerClient } from "./main/nativeWorkerClient";
 import { createNativeSocksTransport } from "./main/socksHttpClient";
 import { TorManager } from "./main/torManager";
 import { readAppPrefs, setAppPrefs } from "./main/preferences";
-import {
-  appendTestLogRecord,
-  getFriendFlowTestLogPath,
-  getTestLogPath,
-  type TestLogAppendPayload,
-} from "./main/testLogStore";
+import { registerNativeWorkerIpc, resetPreloadToken } from "./main/ipc/nativeWorkerIpc";
+import { registerP2PQueueIpc } from "./main/ipc/p2pQueueIpc";
+import { registerSecretStoreIpc } from "./main/ipc/secretStoreIpc";
+import { registerTestLogIpc } from "./main/ipc/testLogIpc";
 import { defaultAppPrefs, type AppPreferences, type AppPreferencesPatch } from "./preferences";
 import { fetchWithTimeout } from "./net/fetchWithTimeout";
 import { createSafeConsole } from "./diagnostics/safeConsole";
 import { shouldUseDevRuntime } from "./main/runtimeMode";
+
+export { resetPreloadToken } from "./main/ipc/nativeWorkerIpc";
+export { loadKeyPair, saveKeyPair } from "./main/services/secretStore";
 
 const console = createSafeConsole(globalThis.console);
 
@@ -92,20 +90,6 @@ type StartTorPayload = {
   profileScopedDataDir?: boolean;
 };
 
-const SECRET_STORE_EXACT_KEYS = new Set([
-  "nkc_identity_priv_v1",
-  "nkc_dh_priv_v1",
-  "nkc_session_v1",
-  "nkc_pin_v1",
-  "nkc_pin_reset_v1",
-]);
-
-const SECRET_STORE_PREFIXES = [
-  "nkc_friend_psk_v1:",
-  "nkc_invite_used_v1:",
-  "nkc_ratchet_v1:",
-  "nkc_ratchet_v2:",
-];
 const ONION_CONTROLLER_NOT_READY_MESSAGE = "Onion Controller가 초기화되지 않았습니다.";
 
 type IpcErrorResponse = {
@@ -124,13 +108,6 @@ const requireOnionNetwork = (value: unknown): OnionNetwork => {
   if (value === "tor") return value;
   throw new Error("invalid-onion-network");
 };
-
-const isAllowedSecretStoreKey = (key: unknown): key is string =>
-  typeof key === "string" &&
-  key.length > 0 &&
-  key.length <= 256 &&
-  (SECRET_STORE_EXACT_KEYS.has(key) ||
-    SECRET_STORE_PREFIXES.some((prefix) => key.startsWith(prefix)));
 
 const isTrustedRendererUrl = (url: string) => {
   if (!url) return false;
@@ -224,7 +201,6 @@ type SyncResultPayload = {
 const rendererUrl = process.env.VITE_DEV_SERVER_URL;
 const isDev = shouldUseDevRuntime({ isPackaged: app.isPackaged, rendererUrl });
 const isAutoStartLaunch = process.argv.includes("--autostart");
-const SECRET_STORE_FILENAME = "secret-store.json";
 const ALLOWED_PROXY_PROTOCOLS = new Set(["socks5:", "socks5h:", "http:", "https:"]);
 let onionSession: Electron.Session | null = null;
 const getOnionSession = () => {
@@ -735,224 +711,6 @@ const registerOnionControllerIpc = () => {
   });
 };
 
-const isP2PFriendRouteArray = (payload: unknown): payload is P2PFriendRoute[] =>
-  Array.isArray(payload) &&
-  payload.every(
-    (item) =>
-      item &&
-      typeof item === "object" &&
-      typeof (item as P2PFriendRoute).friendId === "string" &&
-      typeof (item as P2PFriendRoute).onionAddress === "string"
-  );
-
-const registerP2PQueueIpc = () => {
-  ipcMain.handle("p2pQueue:setFriends", async (event, payload: unknown) => {
-    assertTrustedIpcSender(event);
-    if (!p2pQueueManager) return { ok: false, error: "p2p-queue-unavailable" };
-    if (!isP2PFriendRouteArray(payload)) {
-      return { ok: false, error: "invalid-friends" };
-    }
-    await p2pQueueManager.setFriends(payload);
-    return { ok: true };
-  });
-
-  ipcMain.handle(
-    "p2pQueue:enqueue",
-    async (
-      event,
-      payload: {
-        friendId?: string;
-        onionAddress?: string;
-        messageId?: string;
-        payload?: string;
-      }
-    ) => {
-      assertTrustedIpcSender(event);
-      if (!p2pQueueManager) return { ok: false, error: "p2p-queue-unavailable" };
-      if (!payload?.friendId || !payload.onionAddress || typeof payload.payload !== "string") {
-        return { ok: false, error: "invalid-message" };
-      }
-      const message = await p2pQueueManager.enqueueMessage({
-        id: payload.messageId,
-        friendId: payload.friendId,
-        onionAddress: payload.onionAddress,
-        payload: payload.payload,
-      });
-      return { ok: true, message };
-    }
-  );
-
-  ipcMain.handle("p2pQueue:list", async (event) => {
-    assertTrustedIpcSender(event);
-    if (!p2pQueueManager) return { ok: false, error: "p2p-queue-unavailable", messages: [] };
-    return { ok: true, messages: await p2pQueueManager.listMessages() };
-  });
-
-  ipcMain.handle("p2pQueue:flushNow", async (event) => {
-    assertTrustedIpcSender(event);
-    if (!p2pQueueManager) return { ok: false, error: "p2p-queue-unavailable" };
-    await p2pQueueManager.flushNow();
-    return { ok: true };
-  });
-};
-
-let preloadToken = crypto.randomUUID();
-let isTokenConsumed = false;
-
-export const resetPreloadToken = () => {
-  preloadToken = crypto.randomUUID();
-  isTokenConsumed = false;
-};
-
-const registerNativeWorkerIpc = () => {
-  ipcMain.on("security:get-preload-token", (event) => {
-    if (!isTrustedIpcSender(event)) {
-      event.returnValue = null;
-      return;
-    }
-    if (isTokenConsumed) {
-      event.returnValue = null;
-      return;
-    }
-    isTokenConsumed = true;
-    event.returnValue = preloadToken;
-  });
-
-  ipcMain.handle(
-    "nativeWorker:fileInspect",
-    async (event, payload: { path?: string; chunkSize?: number; token?: string }) => {
-      assertTrustedIpcSender(event);
-      if (!payload?.token || payload.token !== preloadToken) {
-        throw new Error("Unauthorized file access: Invalid or missing token");
-      }
-      if (!nativeWorkerClient) return { ok: false, error: "native-worker-unavailable" };
-      if (!payload?.path || !path.isAbsolute(payload.path) || !Number.isInteger(payload.chunkSize)) {
-        return { ok: false, error: "invalid-file-request" };
-      }
-      const result = await nativeWorkerClient.request(
-        "file.inspect",
-        { path: payload.path, chunkSize: payload.chunkSize },
-        120_000
-      );
-      return { ok: true, result };
-    }
-  );
-  ipcMain.handle(
-    "nativeWorker:fileChunk",
-    async (event, payload: { path?: string; index?: number; chunkSize?: number; token?: string }) => {
-      assertTrustedIpcSender(event);
-      if (!payload?.token || payload.token !== preloadToken) {
-        throw new Error("Unauthorized file access: Invalid or missing token");
-      }
-      if (!nativeWorkerClient) return { ok: false, error: "native-worker-unavailable" };
-      if (
-        !payload?.path ||
-        !path.isAbsolute(payload.path) ||
-        !Number.isInteger(payload.index) ||
-        !Number.isInteger(payload.chunkSize)
-      ) {
-        return { ok: false, error: "invalid-file-request" };
-      }
-      const result = await nativeWorkerClient.request(
-        "file.chunk",
-        { path: payload.path, index: payload.index, chunkSize: payload.chunkSize },
-        30_000
-      );
-      return { ok: true, result };
-    }
-  );
-  ipcMain.handle("nativeWorker:schedule", async (event, payload: unknown) => {
-    assertTrustedIpcSender(event);
-    if (!nativeWorkerClient) return { ok: false, error: "native-worker-unavailable" };
-    const result = await nativeWorkerClient.request("scheduler.plan", payload, 5_000);
-    return { ok: true, result };
-  });
-};
-
-const readSecretStore = async () => {
-  const filePath = path.join(app.getPath("userData"), SECRET_STORE_FILENAME);
-  try {
-    const raw = await fs.readFile(filePath, "utf8");
-    const parsed = JSON.parse(raw) as Record<string, string>;
-    if (!parsed || typeof parsed !== "object") return {};
-    return parsed;
-  } catch (error) {
-    if (error && typeof error === "object" && "code" in error) {
-      const code = String((error as { code?: unknown }).code ?? "");
-      if (code === "ENOENT") return {};
-    }
-    return {};
-  }
-};
-
-const writeSecretStore = async (payload: Record<string, string>) => {
-  const filePath = path.join(app.getPath("userData"), SECRET_STORE_FILENAME);
-  await fs.writeFile(filePath, JSON.stringify(payload), "utf8");
-};
-
-export const saveKeyPair = async (key: string, value: string) => {
-  if (!isAllowedSecretStoreKey(key) || typeof value !== "string") {
-    return false;
-  }
-  if (!safeStorage.isEncryptionAvailable()) {
-    return false;
-  }
-  const data = await readSecretStore();
-  data[key] = safeStorage.encryptString(value).toString("base64");
-  await writeSecretStore(data);
-  return true;
-};
-
-export const loadKeyPair = async (key: string) => {
-  if (!isAllowedSecretStoreKey(key)) {
-    return null;
-  }
-  if (!safeStorage.isEncryptionAvailable()) {
-    return null;
-  }
-  const data = await readSecretStore();
-  const entry = data[key];
-  if (!entry) return null;
-  try {
-    return safeStorage.decryptString(Buffer.from(entry, "base64"));
-  } catch {
-    return null;
-  }
-};
-
-const registerSecretStoreIpc = () => {
-  ipcMain.handle("secretStore:get", async (event, key: string) => {
-    assertTrustedIpcSender(event);
-    return loadKeyPair(key);
-  });
-
-  ipcMain.handle("secretStore:set", async (event, key: string, value: string) => {
-    assertTrustedIpcSender(event);
-    return saveKeyPair(key, value);
-  });
-
-  ipcMain.handle("secretStore:remove", async (event, key: string) => {
-    assertTrustedIpcSender(event);
-    if (!isAllowedSecretStoreKey(key)) {
-      return false;
-    }
-    if (!safeStorage.isEncryptionAvailable()) {
-      return false;
-    }
-    const data = await readSecretStore();
-    if (key in data) {
-      delete data[key];
-      await writeSecretStore(data);
-    }
-    return true;
-  });
-
-  ipcMain.handle("secretStore:isAvailable", async (event) => {
-    assertTrustedIpcSender(event);
-    return safeStorage.isEncryptionAvailable();
-  });
-};
-
 const registerAppIpc = () => {
   ipcMain.handle("prefs:get", async (event) => {
     assertTrustedIpcSender(event);
@@ -994,33 +752,6 @@ const registerAppIpc = () => {
     assertTrustedIpcSender(event);
     isQuitting = true;
     app.quit();
-  });
-};
-
-const registerTestLogIpc = () => {
-  ipcMain.handle("testLog:path", async (event) => {
-    assertTrustedIpcSender(event);
-    return getTestLogPath(app.getPath("userData"));
-  });
-  ipcMain.handle("testLog:friendFlowPath", async (event) => {
-    assertTrustedIpcSender(event);
-    return getFriendFlowTestLogPath(app.getPath("userData"));
-  });
-  ipcMain.handle("testLog:append", async (event, payload: TestLogAppendPayload) => {
-    assertTrustedIpcSender(event);
-    if (!payload || typeof payload !== "object") {
-      throw new Error("invalid-test-log-payload");
-    }
-    if (typeof payload.channel !== "string" || !payload.channel.trim()) {
-      throw new Error("invalid-test-log-channel");
-    }
-    const userDataPath = app.getPath("userData");
-    await appendTestLogRecord(userDataPath, {
-      channel: payload.channel.trim(),
-      event: payload.event,
-      at: payload.at,
-    });
-    return { ok: true, path: getTestLogPath(userDataPath) };
   });
 };
 
@@ -1960,13 +1691,20 @@ app.whenReady().then(async () => {
   backgroundService = new BackgroundService();
   registerProxyIpc();
   registerOnionFetchIpc();
-  registerSecretStoreIpc();
+  registerSecretStoreIpc(assertTrustedIpcSender);
   registerOnionIpc();
   registerOnionControllerIpc();
-  registerP2PQueueIpc();
-  registerNativeWorkerIpc();
+  registerP2PQueueIpc({
+    assertTrustedIpcSender,
+    getQueueManager: () => p2pQueueManager,
+  });
+  registerNativeWorkerIpc({
+    assertTrustedIpcSender,
+    isTrustedIpcSender,
+    getNativeWorkerClient: () => nativeWorkerClient,
+  });
   registerAppIpc();
-  registerTestLogIpc();
+  registerTestLogIpc(assertTrustedIpcSender);
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
     const legacyQueuePath = path.join(app.getPath("userData"), "p2p-offline-queue.json");
