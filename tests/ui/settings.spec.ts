@@ -201,6 +201,30 @@ test.describe("Settings and media E2E", () => {
     await expect(page.getByTestId("friends-section")).toHaveCSS("border-top-width", "0px");
   });
 
+  test("conversation rows use Signal-style hover separation without dividers", async ({ page }) => {
+    await ensureChatsList(page);
+    const row = page.locator('[data-testid^="conversation-row-"][data-selected="false"]').first();
+    await expect(row).toBeVisible();
+    await expect(row).toHaveCSS("border-top-width", "0px");
+    await expect(row).toHaveCSS("border-bottom-width", "0px");
+    await expect(row).toHaveCSS("border-radius", "10px");
+    await expect(row).toHaveCSS("min-height", "72px");
+
+    const idleBackground = await row.evaluate((element) => getComputedStyle(element).backgroundColor);
+    await row.hover();
+    await expect
+      .poll(() => row.evaluate((element) => getComputedStyle(element).backgroundColor))
+      .not.toBe(idleBackground);
+
+    const rowTestId = await row.getAttribute("data-testid");
+    expect(rowTestId).toBeTruthy();
+    await row.click();
+    const selectedRow = page.getByTestId(rowTestId!);
+    await expect(selectedRow).toHaveAttribute("aria-pressed", "true");
+    await expect(selectedRow).toHaveCSS("background-color", "rgb(232, 238, 253)");
+    await expect(selectedRow).not.toBeFocused();
+  });
+
   test("large media send keeps UI responsive and reloads safely", async ({ page }) => {
     test.setTimeout(120_000);
 
