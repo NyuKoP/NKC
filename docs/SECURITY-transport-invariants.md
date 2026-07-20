@@ -1,7 +1,7 @@
 # Transport Security Invariants
 
 ## Non-negotiable invariants
-- Never claim Tor/alternateRoute active unless proxy is reachable and address present.
+- Never claim Tor active unless proxy is reachable and address present.
 - Forwarding must never return ok:true on failure.
 - socks5h must use remote DNS (ATYP=0x03).
 - Failover is allowed only in auto mode.
@@ -17,7 +17,6 @@
 ## Tests that enforce invariants
 - `src/main/__tests__/socksHttpClient.test.ts`
 - `src/main/__tests__/onionController.send.test.ts`
-- `src/main/__tests__/routePolicy.test.ts`
 - `src/main/__tests__/torMediaEnvelopeSize.test.ts`
 - `src/main/__tests__/torLiveE2E.test.ts` (environment-gated)
 - `src/diagnostics/__tests__/infoCollectionLogs.test.ts`
