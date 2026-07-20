@@ -18,10 +18,15 @@ import { loadMessageMedia } from "../db/repo";
 import type { ConversationTransportStatus } from "../net/transportManager";
 import { getOutbox } from "../storage/outboxStore";
 import { getReadCursors, getReceiptState } from "../storage/receiptStore";
-import { getPrivacyPrefs } from "../security/preferences";
+import { getPrivacyPrefs, PRIVACY_PREFS_CHANGED_EVENT } from "../security/preferences";
 import Avatar from "./Avatar";
 import MessageGroupBubble, { type ChatMessageLike } from "./MessageGroupBubble";
 import { groupMessages, type MessageGroup } from "../ui/groupMessages";
+import {
+  MESSAGE_DELIVERY_LABELS,
+  resolveMessageDeliveryStatus,
+  type MessageDeliveryStatus,
+} from "../ui/messageDeliveryStatus";
 
 const EMPTY_ARRAY: Message[] = [];
 
@@ -94,8 +99,6 @@ type ChatViewProps = {
   onToast?: (message: string) => void;
 };
 
-type SendState = "queued" | "sent" | "delivered" | "read";
-
 export default function ChatView({
   conversation,
   conversationDisplayName,
@@ -121,7 +124,7 @@ export default function ChatView({
   );
   const [atBottom, setAtBottom] = useState(true);
   const [readReceiptsEnabled, setReadReceiptsEnabled] = useState(false);
-  const [sendStates, setSendStates] = useState<Record<string, SendState>>({});
+  const [sendStates, setSendStates] = useState<Record<string, MessageDeliveryStatus>>({});
   const [readCursors, setReadCursors] = useState<Record<string, number>>({});
   const [copiedFriendCode, setCopiedFriendCode] = useState<string | null>(null);
   const [safetyTipsOpen, setSafetyTipsOpen] = useState(false);
@@ -441,6 +444,11 @@ export default function ChatView({
 
   useEffect(() => {
     let active = true;
+    const handlePrivacyChange = (event: Event) => {
+      const prefs = (event as CustomEvent<{ readReceipts?: boolean }>).detail;
+      setReadReceiptsEnabled(Boolean(prefs?.readReceipts));
+    };
+    window.addEventListener(PRIVACY_PREFS_CHANGED_EVENT, handlePrivacyChange);
     void getPrivacyPrefs()
       .then((prefs) => {
         if (active) setReadReceiptsEnabled(Boolean(prefs.readReceipts));
@@ -450,6 +458,7 @@ export default function ChatView({
       });
     return () => {
       active = false;
+      window.removeEventListener(PRIVACY_PREFS_CHANGED_EVENT, handlePrivacyChange);
     };
   }, [conversation]);
 
@@ -469,21 +478,21 @@ export default function ChatView({
           getOutbox(message.id),
           getReceiptState(message.id),
         ]);
-        let state: SendState = "queued";
-        if (readReceiptsEnabled && receiptState.read) {
-          state = "read";
-        } else if (receiptState.delivered || outbox?.status === "acked") {
-          state = "delivered";
-        } else if (outbox?.status === "in_flight") {
-          state = "sent";
-        } else {
-          state = "queued";
-        }
+        const readByPeerCursor = Object.entries(readCursors).some(
+          ([actorId, cursorTs]) =>
+            actorId !== currentUserId && Number.isFinite(cursorTs) && cursorTs >= message.ts
+        );
+        const state = resolveMessageDeliveryStatus({
+          outboxStatus: outbox?.status,
+          delivered: receiptState.delivered,
+          read: receiptState.read || readByPeerCursor,
+          readReceiptsEnabled,
+        });
         return [message.id, state] as const;
       })
     );
     setSendStates(Object.fromEntries(entries));
-  }, [currentUserId, messages, readReceiptsEnabled]);
+  }, [currentUserId, messages, readCursors, readReceiptsEnabled]);
 
   useEffect(() => {
     let active = true;
@@ -628,12 +637,28 @@ export default function ChatView({
         ? "Onion"
         : null;
 
-  const renderSendState = (state?: SendState) => {
+  const renderSendState = (state?: MessageDeliveryStatus) => {
     if (!state) return null;
-    if (state === "queued") return <Clock size={12} className="text-white" />;
-    if (state === "sent") return <Check size={12} className="text-white" />;
-    if (state === "delivered") return <CheckCheck size={12} className="text-white" />;
-    return <CheckCheck size={12} className="text-white" />;
+    const label = MESSAGE_DELIVERY_LABELS[state];
+    const icon =
+      state === "queued" ? (
+        <Clock size={13} aria-hidden="true" />
+      ) : state === "sent" ? (
+        <Check size={13} aria-hidden="true" />
+      ) : (
+        <CheckCheck size={13} aria-hidden="true" />
+      );
+    return (
+      <span
+        className={`inline-flex items-center ${state === "read" ? "text-[#e5faff]" : "text-white"}`}
+        role="img"
+        aria-label={`${label.ko} (${label.en})`}
+        title={`${label.ko} (${label.en})`}
+        data-message-delivery-status={state}
+      >
+        {icon}
+      </span>
+    );
   };
 
   const goToSearchResult = (direction: 1 | -1) => {

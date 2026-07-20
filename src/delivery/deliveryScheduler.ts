@@ -5,6 +5,7 @@ import {
   listRetryableOutbox,
   listInFlightTimedOut,
   listPendingOutbox,
+  markOutboxInFlightUnlessAcked,
   updateOutbox,
 } from "../storage/outboxStore";
 import { createId } from "../utils/ids";
@@ -161,19 +162,22 @@ export const createDeliveryScheduler = (
           });
 
           if (result.ok) {
-            await updateOutbox(rec.id, {
-              status: "in_flight",
+            const movedToInFlight = await markOutboxInFlightUnlessAcked(rec.id, {
               inFlightAtMs: now,
               ackDeadlineMs: now + ackTimeoutMs,
             });
-            emitFlowTraceLog({
-              event: "friendRequest:stateChange",
-              opId: rec.id,
-              from: rec.status,
-              to: "in_flight",
-              why: "send-ok",
-            });
-            log.debug?.(`[delivery] send ok -> in_flight id=${rec.id}`);
+            if (movedToInFlight) {
+              emitFlowTraceLog({
+                event: "friendRequest:stateChange",
+                opId: rec.id,
+                from: rec.status,
+                to: "in_flight",
+                why: "send-ok",
+              });
+              log.debug?.(`[delivery] send ok -> in_flight id=${rec.id}`);
+            } else {
+              log.debug?.(`[delivery] send ok; ack already recorded id=${rec.id}`);
+            }
           } else {
             if (!result.retryable) {
               emitFlowTraceLog({

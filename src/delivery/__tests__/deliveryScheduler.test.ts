@@ -4,6 +4,7 @@ const listRetryableOutbox = vi.fn();
 const listPendingOutbox = vi.fn();
 const listInFlightTimedOut = vi.fn();
 const updateOutbox = vi.fn();
+const markOutboxInFlightUnlessAcked = vi.fn();
 const sweepExpired = vi.fn();
 
 vi.mock("../../storage/outboxStore", () => {
@@ -12,6 +13,8 @@ vi.mock("../../storage/outboxStore", () => {
     listRetryableOutbox: (...args: unknown[]) => listRetryableOutbox(...args),
     listInFlightTimedOut: (...args: unknown[]) => listInFlightTimedOut(...args),
     updateOutbox: (...args: unknown[]) => updateOutbox(...args),
+    markOutboxInFlightUnlessAcked: (...args: unknown[]) =>
+      markOutboxInFlightUnlessAcked(...args),
   };
 });
 
@@ -43,6 +46,8 @@ describe("deliveryScheduler", () => {
     listPendingOutbox.mockReset();
     listInFlightTimedOut.mockReset();
     updateOutbox.mockReset();
+    markOutboxInFlightUnlessAcked.mockReset();
+    markOutboxInFlightUnlessAcked.mockResolvedValue(true);
     sweepExpired.mockReset();
   });
 
@@ -101,9 +106,37 @@ describe("deliveryScheduler", () => {
       attempts: 1,
       lastAttemptAtMs: now,
     }));
-    expect(updateOutbox).toHaveBeenCalledWith("m2", expect.objectContaining({
-      status: "in_flight",
+    expect(markOutboxInFlightUnlessAcked).toHaveBeenCalledWith("m2", expect.objectContaining({
       ackDeadlineMs: now + 1000,
     }));
+  });
+
+  it("does not overwrite an ack that arrives while send is completing", async () => {
+    const now = Date.now();
+    const record: OutboxRecord = {
+      id: "m3",
+      convId: "c1",
+      ciphertext: "enc",
+      createdAtMs: now - 100,
+      expiresAtMs: now + 10_000,
+      attempts: 0,
+      nextAttemptAtMs: now,
+      status: "pending",
+    };
+    listPendingOutbox.mockResolvedValue([record]);
+    listInFlightTimedOut.mockResolvedValue([]);
+    listRetryableOutbox.mockResolvedValue([record]);
+    markOutboxInFlightUnlessAcked.mockResolvedValue(false);
+
+    const scheduler = createDeliveryScheduler(vi.fn(async () => ({ ok: true as const })), {
+      planDelivery: nativePlanner,
+    });
+    await scheduler._tick();
+
+    expect(markOutboxInFlightUnlessAcked).toHaveBeenCalledOnce();
+    expect(updateOutbox).not.toHaveBeenCalledWith(
+      "m3",
+      expect.objectContaining({ status: "in_flight" })
+    );
   });
 });
