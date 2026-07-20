@@ -18,6 +18,7 @@ const alternateRoute_PROXY_URL_KEY = "alternateRoute_proxy_url_v1";
 const alternateRoute_SERVICE_ADDR_KEY = "alternateRoute_service_addr_v1";
 const LEGACY_alternateRoute_SERVICE_ADDRESS_KEY = "alternateRoute_service_address_v1";
 const GROUP_AVATAR_OVERRIDE_PREFIX = "nkc_group_avatar_override_v1:";
+export const PRIVACY_PREFS_CHANGED_EVENT = "nkc:privacy-prefs-changed";
 
 export const defaultPrivacyPrefs: PrivacyPreferences = {
   readReceipts: false,
@@ -43,6 +44,11 @@ export const getPrivacyPrefs = async () => {
 export const setPrivacyPrefs = async (prefs: PrivacyPreferences) => {
   const store = getPublicStore();
   await store.set(PREF_KEY, JSON.stringify({ ...prefs, updatedAt: Date.now() }));
+  if (typeof window !== "undefined") {
+    window.dispatchEvent(
+      new CustomEvent<PrivacyPreferences>(PRIVACY_PREFS_CHANGED_EVENT, { detail: prefs })
+    );
+  }
 };
 
 export const getConvAllowDirect = async (convId: string) => {
