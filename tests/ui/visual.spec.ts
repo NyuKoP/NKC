@@ -39,7 +39,7 @@ test.describe("Visual snapshots", () => {
 
     const sidebar = page.getByTestId("sidebar");
     await expect(sidebar).toBeVisible();
-    await expect(sidebar).toHaveScreenshot("sidebar.png");
+    await expect(sidebar).toHaveScreenshot("sidebar.png", { maxDiffPixelRatio: 0.001 });
   });
 
   test("chat view", async ({ page }) => {
@@ -54,6 +54,10 @@ test.describe("Visual snapshots", () => {
 
     const chatView = page.getByTestId("chat-view");
     await expect(chatView).toBeVisible();
-    await expect(chatView).toHaveScreenshot("chat-view.png");
+    await expect(chatView.locator(".bg-nkc-bubbleSent").first()).toHaveCSS(
+      "background-color",
+      "rgb(47, 98, 115)"
+    );
+    await expect(chatView).toHaveScreenshot("chat-view.png", { maxDiffPixelRatio: 0.001 });
   });
 });

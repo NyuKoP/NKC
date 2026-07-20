@@ -1837,12 +1837,24 @@ const focusMainWindow = () => {
   return true;
 };
 
-const createTray = () => {
-  if (tray) return tray;
-  const icon = nativeImage.createFromDataURL(
+const transparentIcon = () =>
+  nativeImage.createFromDataURL(
     "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO7+lbkAAAAASUVORK5CYII="
   );
-  tray = new Tray(icon);
+
+const getRuntimeIcon = () => {
+  const candidates = app.isPackaged
+    ? [path.join(process.resourcesPath, "icon.png")]
+    : [path.join(app.getAppPath(), "build", "icon.png"), path.join(process.cwd(), "build", "icon.png")];
+  const iconPath = candidates.find((candidate) => fsSync.existsSync(candidate));
+  if (!iconPath) return transparentIcon();
+  const icon = nativeImage.createFromPath(iconPath);
+  return icon.isEmpty() ? transparentIcon() : icon;
+};
+
+const createTray = () => {
+  if (tray) return tray;
+  tray = new Tray(getRuntimeIcon());
   tray.setToolTip("NKC");
   tray.on("click", () => {
     if (mainWindow?.isVisible()) {
@@ -1946,6 +1958,7 @@ export const createMainWindow = () => {
     width: 1280,
     height: 800,
     show: false,
+    icon: getRuntimeIcon(),
     webPreferences: {
       preload: preloadExists ? preloadPath : undefined,
       contextIsolation: true,

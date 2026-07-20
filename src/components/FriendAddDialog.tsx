@@ -133,7 +133,7 @@ export default function FriendAddDialog({
                 type="button"
                 onClick={() => void handleAdd()}
                 data-testid="friend-add-submit"
-                className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
                 disabled={!code.trim() || busy}
               >
                 {busy ? "추가 중..." : "친구 추가"}

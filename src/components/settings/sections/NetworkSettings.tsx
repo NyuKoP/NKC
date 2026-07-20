@@ -6,6 +6,7 @@ import type { NetworkMode } from "../../../net/mode";
 import type { InternalOnionHopState } from "../../../net/internalOnion/types";
 import type { ConnectionChoice } from "../settingsTypes";
 import SettingsBackHeader from "../SettingsBackHeader";
+import ToggleSwitch from "../ToggleSwitch";
 
 type Translate = (ko: string, en: string) => string;
 
@@ -301,7 +302,7 @@ export default function NetworkSettings({
                         disabled={
                           torConnected ? torInstallBusy : torInstallBusy || !isComponentReady(netConfig.tor)
                         }
-                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
                       >
                         {torConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
                       </button>
@@ -320,7 +321,7 @@ export default function NetworkSettings({
                           type="button"
                           onClick={() => void onApplyUpdate("tor")}
                           disabled={torApplyBusy}
-                          className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                          className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
                         >
                           {torApplyBusy
                             ? t("처리 중...", "Working...")
@@ -471,7 +472,7 @@ export default function NetworkSettings({
                             ? alternateRouteInstallBusy
                             : alternateRouteInstallBusy || !isComponentReady(netConfig.alternateRoute)
                         }
-                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
                       >
                         {alternateRouteConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
                       </button>
@@ -621,10 +622,10 @@ export default function NetworkSettings({
                   )}
                 </div>
               </div>
-              <input
-                type="checkbox"
+              <ToggleSwitch
+                label={t("IP 보호 모드 사용", "Enable IP protection")}
                 checked={onionEnabledDraft}
-                onChange={(e) => setOnionEnabledDraft(e.target.checked)}
+                onChange={setOnionEnabledDraft}
               />
             </div>
           </section>
@@ -673,7 +674,7 @@ export default function NetworkSettings({
         <button
           type="button"
           onClick={() => void onSaveOnion()}
-          className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+          className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-accentText disabled:cursor-not-allowed disabled:opacity-50"
           disabled={draftMode === "onionRouter" && onionEnabledDraft && !canSaveOnion}
         >
           {t("Save", "Save")}

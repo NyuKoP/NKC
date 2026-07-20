@@ -6,6 +6,7 @@ import type {
 } from "../../../devices/devicePairing";
 import type { DeviceSyncTransportPolicy } from "../../../preferences";
 import SettingsBackHeader from "../SettingsBackHeader";
+import ToggleSwitch from "../ToggleSwitch";
 
 type Translate = (ko: string, en: string) => string;
 
@@ -143,14 +144,14 @@ export default function DevicesSettings({
             placeholder="https://example.com"
             className="w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
           />
-          <label className="flex items-center gap-2 text-xs text-nkc-text">
-            <input
-              type="checkbox"
-              checked={rendezvousUseOnionProxy}
-              onChange={(event) => onRendezvousUseOnionChange(event.target.checked)}
-            />
+          <div className="flex items-center justify-between gap-3 text-xs text-nkc-text">
             <span>{t("신호 요청을 Onion 프록시로 전송", "Send signaling through Onion proxy")}</span>
-          </label>
+            <ToggleSwitch
+              label={t("신호 요청을 Onion 프록시로 전송", "Send signaling through Onion proxy")}
+              checked={rendezvousUseOnionProxy}
+              onChange={onRendezvousUseOnionChange}
+            />
+          </div>
           <div className="text-xs text-nkc-muted">
             {t("호스트 상태", "Host status")}: {statusLabel(hostRendezvousStatus, t)} |{" "}
             {t("참가 상태", "Guest status")}: {statusLabel(guestRendezvousStatus, t)}
@@ -172,7 +173,7 @@ export default function DevicesSettings({
           <button
             type="button"
             onClick={onGenerateSyncCode}
-            className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg"
+            className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText"
           >
             {t("코드 생성", "Generate code")}
           </button>
@@ -213,7 +214,7 @@ export default function DevicesSettings({
                 type="button"
                 onClick={() => void onApproveRequest()}
                 disabled={pairingRequestBusy}
-                className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
               >
                 {t("승인", "Approve")}
               </button>
@@ -260,7 +261,7 @@ export default function DevicesSettings({
             type="button"
             onClick={() => void onSubmitLink()}
             disabled={linkBusy}
-            className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+            className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
           >
             {linkBusy ? t("연결 중...", "Connecting...") : t("연결 요청", "Request link")}
           </button>

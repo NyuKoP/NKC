@@ -232,6 +232,16 @@ const sameRuntimeNetworkSnapshot = (lhs: RuntimeNetworkSnapshot, rhs: RuntimeNet
   lhs.alternateRouteState === rhs.alternateRouteState &&
   lhs.alternateRouteDetail === rhs.alternateRouteDetail;
 
+const applyDocumentTheme = (theme: "dark" | "light") => {
+  if (typeof document === "undefined") return;
+  const root = document.documentElement;
+  root.classList.toggle("light", theme === "light");
+  root.classList.toggle("dark", theme === "dark");
+  root.dataset.theme = theme;
+  root.style.colorScheme = theme;
+  window.localStorage.setItem("nkc.theme", theme);
+};
+
 export default function App() {
   const ui = useAppStore((state) => state.ui);
   const userProfile = useAppStore((state) => state.userProfile);
@@ -253,6 +263,12 @@ export default function App() {
 
   const navigate = useNavigate();
   const location = useLocation();
+
+  useEffect(() => {
+    const storedTheme = window.localStorage.getItem("nkc.theme");
+    const fallbackTheme = storedTheme === "dark" || storedTheme === "light" ? storedTheme : "light";
+    applyDocumentTheme(userProfile?.theme ?? fallbackTheme);
+  }, [userProfile?.theme]);
 
   const [pinEnabled, setPinEnabled] = useState(false);
   const [defaultTab, setDefaultTab] = useState<"create" | "startKey">("create");
@@ -1125,7 +1141,7 @@ export default function App() {
         id: createId(),
         displayName,
         status: "Hello from NKC",
-        theme: "dark",
+        theme: "light",
         kind: "user",
         createdAt: now,
         updatedAt: now,
@@ -1415,6 +1431,22 @@ export default function App() {
 
     await saveProfile(updated);
     await hydrateVault();
+  };
+
+  const handleToggleTheme = async () => {
+    if (!userProfile) return;
+    const nextTheme = userProfile.theme === "dark" ? "light" : "dark";
+    applyDocumentTheme(nextTheme);
+    try {
+      await handleSaveProfile({
+        displayName: userProfile.displayName,
+        status: userProfile.status ?? "",
+        theme: nextTheme,
+      });
+    } catch (error) {
+      applyDocumentTheme(userProfile.theme);
+      throw error;
+    }
   };
 
   const handleUploadPhoto = async (file: File) => {
@@ -4362,12 +4394,11 @@ export default function App() {
   }
 
   const appShell = (
-    <div className="flex h-full gap-6 bg-nkc-bg p-6">
+    <div className="flex h-full min-w-0 overflow-hidden bg-nkc-bg">
       <Sidebar
         convs={convs}
         friends={friends}
         userId={userProfile?.id || null}
-        userProfile={userProfile}
         groupAvatarRefsByConv={groupAvatarRefsByConv}
         friendAliasesById={friendAliasesById}
         selectedConvId={ui.selectedConvId}
@@ -4388,8 +4419,9 @@ export default function App() {
         onSetFriendAlias={handleSetFriendAlias}
         onListModeChange={setListMode}
         onListFilterChange={setListFilter}
+        theme={userProfile?.theme ?? "light"}
+        onToggleTheme={handleToggleTheme}
         onSettings={() => navigate("/settings")}
-        onLock={handleLock}
         onHide={handleHide}
         onDelete={handleDelete}
         onTogglePin={handleTogglePin}

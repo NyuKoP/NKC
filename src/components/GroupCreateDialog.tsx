@@ -218,7 +218,7 @@ export default function GroupCreateDialog({
             </Dialog.Close>
             <button
               onClick={handleCreate}
-              className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-accentText disabled:cursor-not-allowed disabled:opacity-50"
               disabled={selected.size === 0 || busy}
             >
               만들기

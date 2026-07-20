@@ -1,6 +1,7 @@
 import { Lock } from "lucide-react";
 import type { PrivacyPreferences } from "../../../security/preferences";
 import SettingsBackHeader from "../SettingsBackHeader";
+import ToggleSwitch from "../ToggleSwitch";
 
 type Translate = (ko: string, en: string) => string;
 
@@ -60,11 +61,11 @@ export default function PrivacySettings({
         <div className="mt-4 grid gap-3">
           <label className="flex items-center justify-between text-sm text-nkc-text">
             <span>{t("PIN 잠금", "PIN lock")}</span>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("PIN 잠금", "PIN lock")}
               checked={pinEnabled}
-              onChange={(e) => void onTogglePin(e.target.checked)}
               disabled={!pinAvailable}
+              onChange={(checked) => void onTogglePin(checked)}
             />
           </label>
 
@@ -93,7 +94,7 @@ export default function PrivacySettings({
               <button
                 type="button"
                 onClick={() => void onSetPin()}
-                className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                className="w-fit rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
                 disabled={!pinDraft || !pinAvailable}
               >
                 {t("PIN 설정", "Set PIN")}
@@ -114,11 +115,11 @@ export default function PrivacySettings({
                 {t("상대에게 읽음 상태를 공유합니다.", "Share read status with the other person.")}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("읽음 표시", "Read receipts")}
               checked={privacyPrefs.readReceipts}
-              onChange={(e) =>
-                void onUpdatePrivacy({ ...privacyPrefs, readReceipts: e.target.checked })
+              onChange={(checked) =>
+                void onUpdatePrivacy({ ...privacyPrefs, readReceipts: checked })
               }
             />
           </div>
@@ -130,11 +131,11 @@ export default function PrivacySettings({
                 {t("상대에게 입력 중 상태를 표시합니다.", "Show typing status to the other person.")}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("입력 표시", "Typing indicator")}
               checked={privacyPrefs.typingIndicator}
-              onChange={(e) =>
-                void onUpdatePrivacy({ ...privacyPrefs, typingIndicator: e.target.checked })
+              onChange={(checked) =>
+                void onUpdatePrivacy({ ...privacyPrefs, typingIndicator: checked })
               }
             />
           </div>
@@ -144,11 +145,11 @@ export default function PrivacySettings({
               <div className="text-sm font-medium text-nkc-text">{t("링크 미리보기", "Link preview")}</div>
               <div className="text-xs text-nkc-muted">{t("링크 카드 표시", "Show link card")}</div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("링크 미리보기", "Link preview")}
               checked={privacyPrefs.linkPreviews}
-              onChange={(e) =>
-                void onUpdatePrivacy({ ...privacyPrefs, linkPreviews: e.target.checked })
+              onChange={(checked) =>
+                void onUpdatePrivacy({ ...privacyPrefs, linkPreviews: checked })
               }
             />
           </div>
@@ -165,13 +166,13 @@ export default function PrivacySettings({
                 )}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("알 수 없는 요청 자동 거절", "Auto-reject unknown requests")}
               checked={privacyPrefs.autoRejectUnknownRequests}
-              onChange={(e) =>
+              onChange={(checked) =>
                 void onUpdatePrivacy({
                   ...privacyPrefs,
-                  autoRejectUnknownRequests: e.target.checked,
+                  autoRejectUnknownRequests: checked,
                 })
               }
             />
