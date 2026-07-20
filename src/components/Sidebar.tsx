@@ -278,18 +278,23 @@ export default function Sidebar({
         className="group flex min-h-[72px] w-full cursor-pointer items-center gap-3 rounded-[10px] px-5 py-2 text-nkc-text transition-colors duration-100 hover:bg-nkc-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-nkc-listFocus"
       >
         <div className="shrink-0">
-          <Avatar name={displayName} avatarRef={friend.avatarRef} size={40} />
+          <Avatar name={displayName} colorKey={friend.id} avatarRef={friend.avatarRef} size={40} />
         </div>
         <div className="flex min-w-0 flex-1 items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-2">
-            <span className="min-w-0 truncate text-sm font-semibold tracking-normal text-nkc-text">
-            {displayName}
-            </span>
-            {statusBadge ? (
-              <span className="shrink-0 rounded border border-nkc-border bg-nkc-panel px-1.5 py-0.5 text-[10px] font-medium text-nkc-muted">
-                {statusBadge}
+          <div className="min-w-0 flex-1">
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="min-w-0 truncate text-sm font-semibold tracking-normal text-nkc-text">
+                {displayName}
               </span>
-            ) : null}
+              {statusBadge ? (
+                <span className="shrink-0 rounded border border-nkc-border bg-nkc-panel px-1.5 py-0.5 text-[10px] font-medium text-nkc-muted">
+                  {statusBadge}
+                </span>
+              ) : null}
+            </div>
+            <div className="mt-0.5 truncate text-xs text-nkc-muted">
+              {friend.status?.trim() || t("상태 메시지 없음", "No status message")}
+            </div>
           </div>
         </div>
         <div className="shrink-0 opacity-100 transition-opacity duration-150 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
@@ -341,11 +346,11 @@ export default function Sidebar({
               onListModeChange("chats");
               onListFilterChange("all");
             }}
-            className={`relative flex h-11 w-11 items-center justify-center rounded-xl ${
+            className={`relative order-2 flex h-11 w-11 items-center justify-center rounded-xl ${
               listMode === "chats" ? "bg-nkc-selected text-nkc-accent" : "text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text"
             }`}
             data-testid="list-mode-chats"
-            aria-label={t("채팅", "Chats")}
+            aria-label={t("대화", "Chats")}
           >
             <MessageIcon className="h-5 w-5" />
             {unreadConversationCount > 0 ? (
@@ -363,7 +368,7 @@ export default function Sidebar({
               onListModeChange("friends");
               onListFilterChange("all");
             }}
-            className={`relative flex h-11 w-11 items-center justify-center rounded-xl ${
+            className={`relative order-1 flex h-11 w-11 items-center justify-center rounded-xl ${
               listMode === "friends" ? "bg-nkc-selected text-nkc-accent" : "text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text"
             }`}
             data-testid="list-mode-friends"
@@ -436,7 +441,7 @@ export default function Sidebar({
                 aria-label={t("친구 추가", "Add friend")}
                 title={t("친구 추가", "Add friend")}
               >
-                <AddFriendIcon className="h-[18px] w-[18px]" />
+                <AddFriendIcon className="h-5 w-5" />
               </button>
             ) : (
               <button
@@ -498,7 +503,7 @@ export default function Sidebar({
                     onClick={() => setPinnedChatsOpen((prev) => !prev)}
                     className="flex w-full items-center justify-between px-2 py-1.5 text-[13px] font-bold tracking-normal text-nkc-muted"
                   >
-                    <span>{t("고정된 채팅", "Pinned chats")} ({pinned.length})</span>
+                    <span>{t("고정된 대화", "Pinned chats")} ({pinned.length})</span>
                     <span className="text-nkc-muted">
                       {pinnedChatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                     </span>
@@ -538,7 +543,7 @@ export default function Sidebar({
                   onClick={() => setChatsOpen((prev) => !prev)}
                   className="flex w-full items-center justify-between px-2 py-1.5 text-[13px] font-bold tracking-normal text-nkc-muted"
                 >
-                  <span>{t("채팅", "Chats")} ({regular.length})</span>
+                  <span>{t("대화", "Chats")} ({regular.length})</span>
                   <span className="text-nkc-muted">
                     {chatsOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
                   </span>
@@ -786,7 +791,7 @@ function ConversationRow({
         const avatarRef = isGroup ? groupAvatarRefsByConv[conv.id] : friend?.avatarRef;
         const directName = resolveFriendDisplayName(friend, friendAliasesById);
         const avatarName = isGroup ? conv.name : directName;
-        return <Avatar name={avatarName} avatarRef={avatarRef} size={44} />;
+        return <Avatar name={avatarName} colorKey={isGroup ? conv.id : friend?.id ?? conv.id} avatarRef={avatarRef} size={44} />;
       })()}
       <div className="min-w-0 flex-1 overflow-hidden">
         <div className="flex items-center gap-2">

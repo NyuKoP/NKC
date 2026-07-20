@@ -43,7 +43,6 @@ export type SocksTransport = {
     payload: unknown,
     options: {
       torProxyUrl?: string | null;
-      alternateRouteProxyUrl?: string | null;
       queueOnFailure?: boolean;
     }
   ) => Promise<{
@@ -109,7 +108,6 @@ export const createNativeSocksTransport = (
       {
         payload,
         torProxyUrl: options.torProxyUrl?.trim() ?? "",
-        alternateRouteProxyUrl: options.alternateRouteProxyUrl?.trim() ?? "",
         queueOnFailure: options.queueOnFailure ?? true,
       },
       95_000

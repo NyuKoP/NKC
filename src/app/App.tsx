@@ -368,8 +368,8 @@ export default function App() {
       return {
         torState: runtime.network === "tor" ? runtime.status : null,
         torDetail: runtime.network === "tor" ? runtime.error ?? null : null,
-        alternateRouteState: runtime.network === "alternateRoute" ? runtime.status : null,
-        alternateRouteDetail: runtime.network === "alternateRoute" ? runtime.error ?? null : null,
+        alternateRouteState: null,
+        alternateRouteDetail: null,
       };
     } catch {
       // Browser-only tests and older preload surfaces may not expose the built-in Onion bridge.
@@ -379,7 +379,6 @@ export default function App() {
       globalThis as {
         nkc?: {
           getTorStatus?: () => Promise<unknown>;
-          getalternateRouteStatus?: () => Promise<unknown>;
         };
       }
     ).nkc;
@@ -391,15 +390,12 @@ export default function App() {
         alternateRouteDetail: null,
       };
     }
-    const [torRaw, alternateRouteRaw] = await Promise.all([
-      nkc.getTorStatus ? nkc.getTorStatus() : Promise.resolve(null),
-      nkc.getalternateRouteStatus ? nkc.getalternateRouteStatus() : Promise.resolve(null),
-    ]);
+    const torRaw = nkc.getTorStatus ? await nkc.getTorStatus() : null;
     return {
       torState: toRuntimeState(torRaw),
       torDetail: toRuntimeDetail(torRaw),
-      alternateRouteState: toRuntimeState(alternateRouteRaw),
-      alternateRouteDetail: toRuntimeDetail(alternateRouteRaw),
+      alternateRouteState: null,
+      alternateRouteDetail: null,
     };
   }, []);
 
@@ -1888,7 +1884,7 @@ export default function App() {
         webrtcRelayOnly: netConfig.webrtcRelayOnly,
         disableLinkPreview: netConfig.disableLinkPreview,
         torStatus: netConfig.tor?.status ?? null,
-        alternateRouteStatus: netConfig.alternateRoute?.status ?? null,
+        alternateRouteStatus: null,
         torRuntimeState: runtimeSnapshot.torState,
         torRuntimeDetail: runtimeSnapshot.torDetail,
         alternateRouteRuntimeState: runtimeSnapshot.alternateRouteState,
@@ -3046,7 +3042,7 @@ export default function App() {
       onionEnabled: netConfig.onionEnabled,
       onionSelectedNetwork: netConfig.onionSelectedNetwork,
       torStatus: netConfig.tor.status,
-      alternateRouteStatus: netConfig.alternateRoute.status,
+      alternateRouteStatus: null,
     };
     const runtimeBootstrap: Record<string, unknown> = {};
     emitRouterTestLog({
@@ -3063,7 +3059,6 @@ export default function App() {
         globalThis as {
           nkc?: {
             startTor?: () => Promise<unknown>;
-            startalternateRoute?: () => Promise<unknown>;
             ensureHiddenService?: () => Promise<unknown>;
           };
         }
@@ -3078,14 +3073,6 @@ export default function App() {
             runtimeBootstrap.torDataDir = torRuntime.getDataDir();
           } catch (error) {
             runtimeBootstrap.torStartError = error instanceof Error ? error.message : String(error);
-          }
-        }
-        if (netConfig.onionSelectedNetwork === "alternateRoute" && nkc.startalternateRoute) {
-          try {
-            await nkc.startalternateRoute();
-          } catch (error) {
-            runtimeBootstrap.alternateRouteStartError =
-              error instanceof Error ? error.message : String(error);
           }
         }
         if (nkc.ensureHiddenService) {

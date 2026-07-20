@@ -698,6 +698,7 @@ export default function ChatView({
           {conversation ? (
             <Avatar
               name={conversationDisplayName || conversation.name}
+              colorKey={isGroup ? conversation.id : peerProfile?.id ?? conversation.id}
               avatarRef={peerProfile?.avatarRef}
               size={36}
             />
@@ -828,6 +829,7 @@ export default function ChatView({
               <div className="-mx-8 -mt-6 border-b border-nkc-border px-6 py-6 text-center" data-testid="message-request-profile">
                 <Avatar
                   name={pendingSenderName}
+                  colorKey={peerProfile?.id ?? conversation.id}
                   avatarRef={peerProfile?.avatarRef}
                   size={72}
                   className="mx-auto"
@@ -925,6 +927,7 @@ export default function ChatView({
                     {group.senderId !== currentUserId ? (
                       <Avatar
                         name={senderName}
+                        colorKey={group.senderId}
                         avatarRef={senderProfile?.avatarRef}
                         size={32}
                         className="mt-1"
@@ -1221,8 +1224,10 @@ const MessageComposer = ({
     textareaRef.current.style.height = "auto";
     textareaRef.current.style.height = `${Math.min(
       textareaRef.current.scrollHeight,
-      160
+      60
     )}px`;
+    textareaRef.current.style.overflowY =
+      textareaRef.current.scrollHeight > 60 ? "auto" : "hidden";
   }, [text]);
 
   const addFilesToQueue = useCallback((incoming: File[]) => {
@@ -1282,7 +1287,7 @@ const MessageComposer = ({
         conversation && !disabled ? "" : "opacity-60"
       }`}
     >
-      <div className="rounded-2xl bg-nkc-hover p-3">
+      <div className="rounded-[18px] bg-nkc-hover p-3 transition-[background-color,box-shadow] duration-150 ease-out focus-within:shadow-[0_0_0_1px_var(--nkc-accent)]">
         {textOnly ? (
           <div className="mb-2 text-xs text-nkc-muted">
             요청 대기중: 텍스트만 전송할 수 있습니다.
@@ -1351,7 +1356,7 @@ const MessageComposer = ({
               handleSend();
             }
           }}
-          className="h-auto w-full resize-none bg-transparent text-sm leading-relaxed text-nkc-text placeholder:text-nkc-muted focus:outline-none"
+          className="h-auto min-h-5 max-h-[60px] w-full resize-none overflow-y-hidden bg-transparent text-sm leading-5 text-nkc-text transition-[height] duration-100 ease-out placeholder:text-nkc-muted focus:outline-none"
           placeholder="메시지를 입력하세요"
           rows={1}
           maxLength={240}

@@ -2,7 +2,6 @@ import http from "node:http";
 import { randomUUID } from "node:crypto";
 import { URL } from "node:url";
 import type { TorStatus } from "./torManager";
-import type { alternateRouteStatus } from "./alternateRouteManager";
 import type { SocksTransport } from "./socksHttpClient";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { ONION_TRANSFER_MAX_BODY_BYTES } from "../net/mediaTransferLimits";
@@ -32,9 +31,7 @@ export type OnionControllerHandle = {
   port: number;
   authToken: string;
   setTorSocksProxy: (proxyUrl: string | null) => Promise<void>;
-  setalternateRouteSocksProxy: (proxyUrl: string | null) => Promise<void>;
   setTorOnionHost: (host: string | null) => void;
-  setalternateRouteAddress: (address: string | null) => void;
   prewarmTorRoute: (
     onionAddress: string,
     options?: { timeoutMs?: number }
@@ -95,9 +92,8 @@ export type OnionSendPayload = {
   toOnion?: string;
   fromDeviceId?: string;
   route?: {
-    mode?: "auto" | "preferalternateRoute" | "preferTor" | "manual";
+    mode?: "auto" | "preferTor" | "manual";
     torOnion?: string;
-    alternateRoute?: string;
   };
 };
 
@@ -139,7 +135,6 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
   const hasRouteTargets = Boolean(
     payload.toOnion ||
       payload.route?.torOnion ||
-      payload.route?.alternateRoute ||
       payload.to?.includes(".onion") ||
       payload.route
   );
@@ -178,7 +173,6 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
 export const startOnionController = async (options?: {
   port?: number;
   getTorStatus?: () => TorStatus;
-  getalternateRouteStatus?: () => alternateRouteStatus;
   userDataPath?: string;
   queueOnFailure?: boolean;
   socksTransport?: SocksTransport;
@@ -192,10 +186,6 @@ export const startOnionController = async (options?: {
   let ingestWindowStartedAt = Date.now();
   let ingestWindowCount = 0;
   const torForwarding: ForwardingState = {
-    proxyUrl: null,
-    ready: false,
-  };
-  const alternateRouteForwarding: ForwardingState = {
     proxyUrl: null,
     ready: false,
   };
@@ -222,7 +212,6 @@ export const startOnionController = async (options?: {
     });
   };
   let myTorOnionHost: string | null = null;
-  let myalternateRouteAddress: string | null = null;
   const socksTransport: SocksTransport =
     options?.socksTransport ?? {
       fetch: async () => {
@@ -298,27 +287,9 @@ export const startOnionController = async (options?: {
     });
   };
 
-  const setalternateRouteSocksProxy = async (proxyUrl: string | null) => {
-    const trimmed = proxyUrl?.trim() ?? "";
-    const previousProxy = alternateRouteForwarding.proxyUrl;
-    if (previousProxy && previousProxy !== trimmed) await socksTransport.clearProxy(previousProxy);
-    if (!trimmed) {
-      alternateRouteForwarding.proxyUrl = null;
-      alternateRouteForwarding.ready = false;
-      return;
-    }
-    alternateRouteForwarding.proxyUrl = trimmed;
-    alternateRouteForwarding.ready = true;
-  };
-
   const setTorOnionHost = (hostValue: string | null) => {
     const trimmed = hostValue?.trim() ?? "";
     myTorOnionHost = trimmed ? trimmed : null;
-  };
-
-  const setalternateRouteAddress = (addressValue: string | null) => {
-    const trimmed = addressValue?.trim() ?? "";
-    myalternateRouteAddress = trimmed ? trimmed : null;
   };
 
   const getItemBytes = (item: Pick<InboxItem, "id" | "from" | "envelope">) =>
@@ -392,21 +363,14 @@ export const startOnionController = async (options?: {
     }
     if (req.method === "GET" && url.pathname === "/onion/health") {
       const torStatus = options?.getTorStatus ? options.getTorStatus() : null;
-      const alternateRouteStatus = options?.getalternateRouteStatus ? options.getalternateRouteStatus() : null;
       const torActive = Boolean(
         torStatus &&
           torStatus.state === "running" &&
           torForwarding.ready &&
           torForwarding.proxyUrl
       );
-      const alternateRouteActive = Boolean(
-        alternateRouteStatus &&
-          alternateRouteStatus.state === "running" &&
-          alternateRouteForwarding.ready &&
-          alternateRouteForwarding.proxyUrl
-      );
-      const details = torActive || alternateRouteActive ? "route proxies enabled" : "local-only mode";
-      const network = torActive ? "tor" : alternateRouteActive ? "alternateRoute" : "none";
+      const details = torActive ? "route proxy enabled" : "local-only mode";
+      const network = torActive ? "tor" : "none";
       sendJson(res, 200, authorized ? {
         ok: true,
         network,
@@ -417,13 +381,7 @@ export const startOnionController = async (options?: {
           address: myTorOnionHost ?? undefined,
           details: torStatus?.state,
         },
-        alternateRoute: {
-          active: alternateRouteActive,
-          proxyUrl: alternateRouteForwarding.proxyUrl ?? null,
-          address: myalternateRouteAddress ?? undefined,
-          details: alternateRouteStatus?.state,
-        },
-      } : { ok: true, network: torActive ? "tor" : alternateRouteActive ? "alternateRoute" : "none" });
+      } : { ok: true, network: torActive ? "tor" : "none" });
       return;
     }
 
@@ -431,11 +389,7 @@ export const startOnionController = async (options?: {
       sendJson(res, 200, {
         ok: true,
         torOnion: myTorOnionHost ?? undefined,
-        alternateRoute: myalternateRouteAddress ?? undefined,
-        details:
-          myTorOnionHost || myalternateRouteAddress
-            ? undefined
-            : "address-unavailable",
+        details: myTorOnionHost ? undefined : "address-unavailable",
       });
       return;
     }
@@ -463,7 +417,6 @@ export const startOnionController = async (options?: {
         forwardRouted: (routedPayload) =>
           socksTransport.forward(routedPayload, {
             torProxyUrl: torForwarding.proxyUrl,
-            alternateRouteProxyUrl: alternateRouteForwarding.proxyUrl,
             queueOnFailure: options?.queueOnFailure ?? true,
           }),
         emitTrace: emitControllerTrace,
@@ -590,16 +543,11 @@ export const startOnionController = async (options?: {
     port: assignedPort,
     authToken,
     setTorSocksProxy,
-    setalternateRouteSocksProxy,
     setTorOnionHost,
-    setalternateRouteAddress,
     prewarmTorRoute,
     close: async () => {
       clearInterval(cleanupTimer);
-      await Promise.all([
-        socksTransport.clearProxy(torForwarding.proxyUrl),
-        socksTransport.clearProxy(alternateRouteForwarding.proxyUrl),
-      ]);
+      await socksTransport.clearProxy(torForwarding.proxyUrl);
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

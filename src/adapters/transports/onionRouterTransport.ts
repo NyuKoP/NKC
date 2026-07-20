@@ -1,6 +1,5 @@
 import type { HttpClient } from "../../net/httpClient";
 import type { NetConfig } from "../../net/netConfig";
-import { useNetConfigStore } from "../../net/netConfigStore";
 import { OnionInboxClient } from "../../net/onionInboxClient";
 import {
   decodeBase64,
@@ -109,50 +108,15 @@ const extractAbortSignal = (packet: TransportPacket) =>
 type SendRoute = {
   mode: RouteMode;
   torOnion?: string;
-  alternateRoute?: string;
 };
 
-const normalizeSendRoute = (
-  route: SendRoute,
-  selectedNetwork: "tor" | "alternateRoute"
-): SendRoute => {
-  const hasTor = Boolean(route.torOnion);
-  const hasalternateRoute = Boolean(route.alternateRoute);
-  if (!hasTor && !hasalternateRoute) {
-    return route;
-  }
-  if (route.mode === "preferalternateRoute" && !hasalternateRoute && hasTor) {
-    return { ...route, mode: "preferTor" };
-  }
-  if (route.mode === "preferTor" && !hasTor && hasalternateRoute) {
-    return { ...route, mode: "preferalternateRoute" };
-  }
-  if (route.mode === "manual" && hasTor && hasalternateRoute) {
-    if (selectedNetwork === "alternateRoute") {
-      return {
-        mode: "manual",
-        alternateRoute: route.alternateRoute,
-      };
-    }
-    return {
-      mode: "manual",
-      torOnion: route.torOnion,
-    };
-  }
-  return route;
-};
+const normalizeSendRoute = (route: SendRoute): SendRoute =>
+  route.torOnion ? { ...route, mode: "preferTor" } : route;
 
 const buildRelaxedRoute = (route: SendRoute): SendRoute => {
   const hasTor = Boolean(route.torOnion);
-  const hasalternateRoute = Boolean(route.alternateRoute);
-  if (hasTor && hasalternateRoute) {
-    return { ...route, mode: "auto" };
-  }
   if (hasTor) {
     return { ...route, mode: "preferTor" };
-  }
-  if (hasalternateRoute) {
-    return { ...route, mode: "preferalternateRoute" };
   }
   return route;
 };
@@ -389,16 +353,11 @@ export const createOnionRouterTransport = ({
         (packet as { route?: { torOnion?: string; toOnion?: string } }).route?.toOnion ??
         (packet as { meta?: { torOnion?: string; toOnion?: string } }).meta?.torOnion ??
         (packet as { meta?: { torOnion?: string; toOnion?: string } }).meta?.toOnion;
-      const alternateRoute =
-        (packet as { alternateRoute?: string }).alternateRoute ??
-        (packet as { route?: { alternateRoute?: string } }).route?.alternateRoute ??
-        (packet as { meta?: { alternateRoute?: string } }).meta?.alternateRoute;
       const routeMode =
         ((packet as { route?: { mode?: RouteMode } }).route?.mode ??
           (packet as { meta?: { routeMode?: RouteMode } }).meta?.routeMode ??
           (packet as { meta?: { routePolicy?: RouteMode } }).meta?.routePolicy) ??
         ((await getRoutePolicy()) as RouteMode);
-      const selectedNetwork = useNetConfigStore.getState().config.onionSelectedNetwork ?? config.onionSelectedNetwork;
       const toDeviceId =
         (packet as { toDeviceId?: string }).toDeviceId ??
         (packet as { meta?: { toDeviceId?: string } }).meta?.toDeviceId ??
@@ -413,20 +372,14 @@ export const createOnionRouterTransport = ({
         throw createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: missing destination 'to'");
       }
       const initialRoute =
-        torOnion || alternateRoute
+        torOnion
           ? {
               mode: routeMode,
               torOnion,
-              alternateRoute,
             }
           : undefined;
-      let route = initialRoute ? normalizeSendRoute(initialRoute, selectedNetwork) : undefined;
-      const requiresTor =
-        Boolean(route?.torOnion) ||
-        (!route && selectedNetwork === "tor");
-      if (requiresTor) {
-        await ensureTorReady(signal);
-      }
+      let route = initialRoute ? normalizeSendRoute(initialRoute) : undefined;
+      await ensureTorReady(signal);
       if (signal?.aborted) {
         throw createRouteError("TOR_NOT_READY", "TOR_NOT_READY: send aborted");
       }

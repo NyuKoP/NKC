@@ -51,8 +51,4 @@ export const pinnedSha256 = {
     [makePinnedKey({ platform: "win32", arch: "ia32", version: "15.0.18", filename: "tor-expert-bundle-windows-i686-15.0.18.tar.gz" })]: "aaf3786d119a2d61607640e392e0a2e7ede4057f050509c81189b3e9e11d46bb",
     [makePinnedKey({ platform: "win32", arch: "x64", version: "15.0.18", filename: "tor-expert-bundle-windows-x86_64-15.0.18.tar.gz" })]: "6ac067402c7b4a3dc37887ed3754b3914b67fdc220c966190683e9ccf91abf0f",
   },
-  alternateRoute: {
-    [makePinnedKey({ platform: "linux", arch: "x64", version: "0.9.14", filename: "alternateRoute-linux-amd64-v0.9.14.tar.xz" })]: "4097f96779a007abf35f37a46394eb5af39debd27244c190ce6867caf7a5115d",
-    [makePinnedKey({ platform: "win32", arch: "x64", version: "0.9.11", filename: "alternateRoute-0.9.11-win64.exe" })]: "0a4a972e1f2d7d2af7f6aebcd15953d98f4ff53b5e823a7d7aa2953eeea2c8d2",
-  },
 } as const;

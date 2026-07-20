@@ -433,7 +433,12 @@ export default function RightPanel({
           {conversation ? (
             <div className="w-full space-y-4 rounded-lg bg-nkc-hover p-4">
               <div className="flex items-center gap-3">
-                <Avatar name={aboutAvatarName} avatarRef={aboutAvatarRef} size={52} />
+                <Avatar
+                  name={aboutAvatarName}
+                  colorKey={isGroup ? conversation.id : friendProfile?.id ?? conversation.id}
+                  avatarRef={aboutAvatarRef}
+                  size={52}
+                />
                 <div>
                   <div className="text-sm font-semibold text-nkc-text">
                     {displayName || conversation.name}
@@ -527,7 +532,7 @@ export default function RightPanel({
                     <div className="mt-2 space-y-1">
                       {members.map((member) => (
                         <div key={member.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-nkc-hover">
-                          <Avatar name={member.name} avatarRef={member.avatarRef} size={28} />
+                          <Avatar name={member.name} colorKey={member.id} avatarRef={member.avatarRef} size={28} />
                           <div className="min-w-0">
                             <div className="text-xs font-semibold text-nkc-text line-clamp-1">
                               {member.name}
@@ -917,8 +922,6 @@ export default function RightPanel({
     </aside>
   );
 }
-
-
 
 
 

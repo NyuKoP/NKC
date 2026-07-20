@@ -101,12 +101,9 @@ type SettingsDialogProps = {
   onWipe: () => void;
 };
 
-const getConnectionChoiceFromConfig = (
-  mode: NetworkMode,
-  onionNetwork: OnionNetwork
-): ConnectionChoice => {
+const getConnectionChoiceFromConfig = (mode: NetworkMode): ConnectionChoice => {
   if (mode === "onionRouter") {
-    return onionNetwork === "alternateRoute" ? "alternateRouteOnion" : "torOnion";
+    return "torOnion";
   }
   if (mode === "selfOnion") return "selfOnion";
   return "directP2P";
@@ -167,7 +164,7 @@ export default function SettingsDialog({
   const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
   const [onionNetworkDraft, setOnionNetworkDraft] = useState(netConfig.onionSelectedNetwork);
   const [connectionChoiceDraft, setConnectionChoiceDraft] = useState<ConnectionChoice>(
-    getConnectionChoiceFromConfig(netConfig.mode, netConfig.onionSelectedNetwork)
+    getConnectionChoiceFromConfig(netConfig.mode)
   );
   const [onionStatus, setOnionStatus] = useState<OnionStatus | null>(null);
   const [proxyUrlDraft, setProxyUrlDraft] = useState(netConfig.onionProxyUrl);
@@ -177,10 +174,6 @@ export default function SettingsDialog({
   const [torApplyBusy, setTorApplyBusy] = useState(false);
   const [torUninstallBusy, setTorUninstallBusy] = useState(false);
   const [torStatusBusy, setTorStatusBusy] = useState(false);
-  const [alternateRouteInstallBusy, setalternateRouteInstallBusy] = useState(false);
-  const [alternateRouteStatusBusy, setalternateRouteStatusBusy] = useState(false);
-  const [alternateRouteApplyBusy, setalternateRouteApplyBusy] = useState(false);
-  const [alternateRouteUninstallBusy, setalternateRouteUninstallBusy] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState(getConnectionStatus());
   const [chatWipeBusy, setChatWipeBusy] = useState(false);
   const [mediaWipeBusy, setMediaWipeBusy] = useState(false);
@@ -259,7 +252,7 @@ export default function SettingsDialog({
       setOnionEnabledDraft(netConfig.onionEnabled);
       setOnionNetworkDraft(netConfig.onionSelectedNetwork);
       setConnectionChoiceDraft(
-        getConnectionChoiceFromConfig(netConfig.mode, netConfig.onionSelectedNetwork)
+        getConnectionChoiceFromConfig(netConfig.mode)
       );
       setProxyUrlDraft(netConfig.onionProxyUrl);
       setProxyUrlError("");
@@ -319,7 +312,6 @@ export default function SettingsDialog({
         const status = await getOnionStatus();
         setOnionStatus(status);
         setComponentState("tor", status.components.tor);
-        setComponentState("alternateRoute", status.components.alternateRoute);
       } catch {
         // Ignore transient polling errors.
       }
@@ -393,7 +385,6 @@ export default function SettingsDialog({
       const status = await getOnionStatus();
       setOnionStatus(status);
       setComponentState("tor", status.components.tor);
-      setComponentState("alternateRoute", status.components.alternateRoute);
     } catch (error) {
       console.error("Failed to refresh onion status", error);
     }
@@ -413,20 +404,6 @@ export default function SettingsDialog({
     }
   };
 
-  const handlealternateRouteStatus = async () => {
-    if (alternateRouteStatusBusy) return;
-    setalternateRouteStatusBusy(true);
-    try {
-      await refreshOnionStatus();
-      setSaveMessage(t("alternateRoute 상태 확인 완료", "alternateRoute status checked"));
-    } catch (error) {
-      console.error("Failed to refresh alternateRoute status", error);
-      setSaveMessage(t("alternateRoute 상태 확인 실패", "alternateRoute status check failed"));
-    } finally {
-      setalternateRouteStatusBusy(false);
-    }
-  };
-
   const handleCheckUpdates = async () => {
     if (torCheckBusy) return;
     setTorCheckBusy(true);
@@ -434,7 +411,6 @@ export default function SettingsDialog({
       const status = await checkOnionUpdates();
       setOnionStatus(status);
       setComponentState("tor", status.components.tor);
-      setComponentState("alternateRoute", status.components.alternateRoute);
       setLastUpdateCheckAt(Date.now());
       setSaveMessage(t("업데이트 확인 완료", "Update check complete"));
     } catch (error) {
@@ -445,11 +421,9 @@ export default function SettingsDialog({
     }
   };
 
-  const handleApplyUpdate = async (network: "tor" | "alternateRoute") => {
-    if (network === "tor" && torApplyBusy) return;
-    if (network === "alternateRoute" && alternateRouteApplyBusy) return;
-    if (network === "tor") setTorApplyBusy(true);
-    if (network === "alternateRoute") setalternateRouteApplyBusy(true);
+  const handleApplyUpdate = async (network: OnionNetwork) => {
+    if (torApplyBusy) return;
+    setTorApplyBusy(true);
     try {
       await applyOnionUpdate(network);
       await refreshOnionStatus();
@@ -458,63 +432,45 @@ export default function SettingsDialog({
       console.error("Failed to apply onion update", error);
       setSaveMessage(t("업데이트 적용 실패", "Update failed"));
     } finally {
-      if (network === "tor") setTorApplyBusy(false);
-      if (network === "alternateRoute") setalternateRouteApplyBusy(false);
+      setTorApplyBusy(false);
     }
   };
 
-  const handleInstall = async (network: "tor" | "alternateRoute") => {
-    if (network === "tor" && torInstallBusy) return;
-    if (network === "alternateRoute" && alternateRouteInstallBusy) return;
-    if (network === "tor") setTorInstallBusy(true);
-    if (network === "alternateRoute") setalternateRouteInstallBusy(true);
+  const handleInstall = async (network: OnionNetwork) => {
+    if (torInstallBusy) return;
+    setTorInstallBusy(true);
     try {
       await installOnion(network);
       await refreshOnionStatus();
-      if (network === "tor") {
-        try {
-          const status = await checkOnionUpdates();
-          setOnionStatus(status);
-          setComponentState("tor", status.components.tor);
-          setComponentState("alternateRoute", status.components.alternateRoute);
-          setLastUpdateCheckAt(Date.now());
-        } catch (error) {
-          console.error("Failed to check onion updates after install", error);
-        }
+      try {
+        const status = await checkOnionUpdates();
+        setOnionStatus(status);
+        setComponentState("tor", status.components.tor);
+        setLastUpdateCheckAt(Date.now());
+      } catch (error) {
+        console.error("Failed to check onion updates after install", error);
       }
-      setSaveMessage(
-        network === "tor" ? t("Tor 설치 완료", "Tor installed") : t("alternateRoute 설치 완료", "alternateRoute installed")
-      );
+      setSaveMessage(t("Tor 설치 완료", "Tor installed"));
     } catch (error) {
       console.error("Failed to install onion component", error);
-      setSaveMessage(
-        network === "tor" ? t("Tor 설치 실패", "Tor install failed") : t("alternateRoute 설치 실패", "alternateRoute install failed")
-      );
+      setSaveMessage(t("Tor 설치 실패", "Tor install failed"));
     } finally {
-      if (network === "tor") setTorInstallBusy(false);
-      if (network === "alternateRoute") setalternateRouteInstallBusy(false);
+      setTorInstallBusy(false);
     }
   };
 
-  const handleUninstall = async (network: "tor" | "alternateRoute") => {
-    if (network === "tor" && torUninstallBusy) return;
-    if (network === "alternateRoute" && alternateRouteUninstallBusy) return;
-    if (network === "tor") setTorUninstallBusy(true);
-    if (network === "alternateRoute") setalternateRouteUninstallBusy(true);
+  const handleUninstall = async (network: OnionNetwork) => {
+    if (torUninstallBusy) return;
+    setTorUninstallBusy(true);
     try {
       await uninstallOnion(network);
       await refreshOnionStatus();
-      setSaveMessage(
-        network === "tor" ? t("Tor 제거 완료", "Tor removed") : t("alternateRoute 제거 완료", "alternateRoute removed")
-      );
+      setSaveMessage(t("Tor 제거 완료", "Tor removed"));
     } catch (error) {
       console.error("Failed to uninstall onion component", error);
-      setSaveMessage(
-        network === "tor" ? t("Tor 제거 실패", "Tor remove failed") : t("alternateRoute 제거 실패", "alternateRoute remove failed")
-      );
+      setSaveMessage(t("Tor 제거 실패", "Tor remove failed"));
     } finally {
-      if (network === "tor") setTorUninstallBusy(false);
-      if (network === "alternateRoute") setalternateRouteUninstallBusy(false);
+      setTorUninstallBusy(false);
     }
   };
 
@@ -525,8 +481,7 @@ export default function SettingsDialog({
         : connectionChoiceDraft === "selfOnion"
           ? "selfOnion"
           : "onionRouter";
-    const nextOnionNetwork: OnionNetwork =
-      connectionChoiceDraft === "alternateRouteOnion" ? "alternateRoute" : "tor";
+    const nextOnionNetwork: OnionNetwork = "tor";
     const nextOnionEnabled = nextMode === "onionRouter" ? onionEnabledDraft : false;
     try {
       setMode(nextMode);
@@ -584,8 +539,6 @@ export default function SettingsDialog({
       setOnionEnabledDraft(true);
       return;
     }
-    setOnionNetworkDraft("alternateRoute");
-    setOnionEnabledDraft(true);
   };
 
   const formatBytes = (value: number) => {
@@ -713,7 +666,7 @@ export default function SettingsDialog({
 
   type DotState = "running" | "starting" | "stopped" | "error";
 
-  const getDotState = (kind: "tor" | "alternateRoute", status: OnionStatus | null): DotState => {
+  const getDotState = (kind: OnionNetwork, status: OnionStatus | null): DotState => {
     const component = status?.components?.[kind];
     if (component?.error || component?.status === "failed") return "error";
     if (status?.runtime?.status === "running" && status.runtime.network === kind) return "running";
@@ -738,26 +691,16 @@ export default function SettingsDialog({
     connection: typeof connectionStatus;
     mode: typeof netConfig.mode;
     runtime?: OnionStatus["runtime"];
-    onionNetwork: OnionNetwork;
-    torState: typeof netConfig.tor;
-    alternateRouteState: typeof netConfig.alternateRoute;
     internalRoute: typeof internalOnionRoute;
     torAddress?: string;
-    alternateRouteAddress?: string;
   }) => {
     const {
       connection,
       mode,
       runtime,
-      onionNetwork,
-      torState,
-      alternateRouteState,
       internalRoute,
       torAddress,
-      alternateRouteAddress,
     } = snapshot;
-    const torFailed = torState.status === "failed" || Boolean(torState.error);
-    const alternateRouteFailed = alternateRouteState.status === "failed" || Boolean(alternateRouteState.error);
 
     if (mode === "selfOnion" || connection.transport === "selfOnion") {
       if (internalRoute.status === "ready") {
@@ -795,9 +738,6 @@ export default function SettingsDialog({
       const network = runtime?.network;
       const status = runtime?.status;
       if (network === "tor") {
-        if (status === "running" && onionNetwork === "alternateRoute" && alternateRouteFailed) {
-          return t("경로: Tor (alternateRoute 실패)", "Route: Tor (alternateRoute failed)");
-        }
         if (status === "running" && torAddress) {
           return t("경로: Tor Hidden Service", "Route: Tor Hidden Service");
         }
@@ -814,27 +754,6 @@ export default function SettingsDialog({
           return t("경로: Tor (대기)", "Route: Tor (idle)");
         }
         return t("경로: Tor", "Route: Tor");
-      }
-      if (network === "alternateRoute") {
-        if (status === "running" && onionNetwork === "tor" && torFailed) {
-          return t("경로: alternateRoute (Tor 실패)", "Route: alternateRoute (Tor failed)");
-        }
-        if (status === "running" && alternateRouteAddress) {
-          return t("경로: alternateRoute (서비스)", "Route: alternateRoute (service)");
-        }
-        if (status === "running") {
-          return t("경로: alternateRoute", "Route: alternateRoute");
-        }
-        if (status === "starting") {
-          return t("경로: alternateRoute (연결 중)", "Route: alternateRoute (connecting)");
-        }
-        if (status === "failed") {
-          return t("경로: alternateRoute (실패)", "Route: alternateRoute (failed)");
-        }
-        if (status === "idle") {
-          return t("경로: alternateRoute (대기)", "Route: alternateRoute (idle)");
-        }
-        return t("경로: alternateRoute", "Route: alternateRoute");
       }
       if (status === "starting") {
         return t("경로: Onion (연결 중)", "Route: Onion (connecting)");
@@ -856,22 +775,15 @@ export default function SettingsDialog({
       : connectionChoiceDraft === "selfOnion"
         ? "selfOnion"
         : "onionRouter";
-  const draftOnionNetwork: OnionNetwork =
-    connectionChoiceDraft === "alternateRouteOnion" ? "alternateRoute" : "tor";
   const routeInfo = getRouteInfo(netConfig.mode, netConfig, internalOnionRoute);
   const runtime = onionStatus?.runtime;
   const torAddress = userProfileState?.routingHints?.onionAddr ?? "";
-  const alternateRouteAddress = userProfileState?.routingHints?.alternateRouteAddr ?? "";
   const activeRouteLabel = formatActiveRouteLabel({
     connection: connectionStatus,
     mode: netConfig.mode,
     runtime,
-    onionNetwork: onionNetworkDraft,
-    torState: netConfig.tor,
-    alternateRouteState: netConfig.alternateRoute,
     internalRoute: internalOnionRoute,
     torAddress,
-    alternateRouteAddress,
   });
   const runtimeStateLabel = runtime
     ? runtime.status === "running"
@@ -966,9 +878,6 @@ export default function SettingsDialog({
   const torUpdateAvailable = Boolean(
     netConfig.tor.latest && netConfig.tor.latest !== netConfig.tor.version
   );
-  const alternateRouteUpdateAvailable = Boolean(
-    netConfig.alternateRoute.latest && netConfig.alternateRoute.latest !== netConfig.alternateRoute.version
-  );
   const torUpdateStatus = netConfig.lastUpdateCheckAtMs
     ? netConfig.tor.error === "PINNED_HASH_MISSING"
       ? t("검증 데이터 없음", "Missing verification data")
@@ -978,28 +887,18 @@ export default function SettingsDialog({
         ? `${t("업데이트 가능", "Update available")}: ${netConfig.tor.latest}`
         : t("최신 상태", "Up to date")
     : "";
-  const alternateRouteUpdateStatus = netConfig.lastUpdateCheckAtMs
-    ? netConfig.alternateRoute.error === "PINNED_HASH_MISSING"
-      ? t("검증 데이터 없음", "Missing verification data")
-      : netConfig.alternateRoute.error === "ASSET_NOT_FOUND"
-        ? t("지원 자산 없음", "No compatible asset")
-      : alternateRouteUpdateAvailable
-        ? `${t("업데이트 가능", "Update available")}: ${netConfig.alternateRoute.latest}`
-        : t("최신 상태", "Up to date")
-    : "";
   const torErrorLabel = formatOnionError(netConfig.tor.error);
-  const alternateRouteErrorLabel = formatOnionError(netConfig.alternateRoute.error);
 
   const canSaveOnion =
     draftMode !== "onionRouter" ||
     !onionEnabledDraft ||
-    (draftOnionNetwork === "tor" ? netConfig.tor.installed : netConfig.alternateRoute.installed);
+    netConfig.tor.installed;
 
   const connectionDescription =
     draftMode === "onionRouter"
       ? t(
-          "외부 Onion: Tor 또는 alternateRoute 경로를 사용합니다.",
-          "External Onion: uses a Tor or alternateRoute route."
+          "외부 Onion: Tor 경로를 사용합니다.",
+          "External Onion: uses a Tor route."
         )
       : draftMode === "directP2P"
         ? t(
@@ -1033,7 +932,7 @@ export default function SettingsDialog({
             <div className="mt-6 grid gap-6">
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
                 <div className="flex items-start gap-4">
-                  <Avatar name={displayName} avatarRef={user.avatarRef} size={64} />
+                  <Avatar name={displayName} colorKey={user.id} avatarRef={user.avatarRef} size={64} />
                   <div className="min-w-0 flex-1">
                     {!editing ? (
                       <>
@@ -1307,24 +1206,16 @@ export default function SettingsDialog({
               runtimeNetworkLabel={runtimeNetworkLabel}
               runtimeErrorLabel={runtimeErrorLabel}
               torUpdateStatus={torUpdateStatus}
-              alternateRouteUpdateStatus={alternateRouteUpdateStatus}
               torErrorLabel={torErrorLabel}
-              alternateRouteErrorLabel={alternateRouteErrorLabel}
               torInstallBusy={torInstallBusy}
               torStatusBusy={torStatusBusy}
               torCheckBusy={torCheckBusy}
               torApplyBusy={torApplyBusy}
               torUninstallBusy={torUninstallBusy}
-              alternateRouteInstallBusy={alternateRouteInstallBusy}
-              alternateRouteStatusBusy={alternateRouteStatusBusy}
-              alternateRouteApplyBusy={alternateRouteApplyBusy}
-              alternateRouteUninstallBusy={alternateRouteUninstallBusy}
               torUpdateAvailable={torUpdateAvailable}
-              alternateRouteUpdateAvailable={alternateRouteUpdateAvailable}
               isComponentReady={isComponentReady}
               onInstall={handleInstall}
               onTorStatus={handleTorStatus}
-              onalternateRouteStatus={handlealternateRouteStatus}
               onConnectOnion={handleConnectOnion}
               onDisconnectOnion={handleDisconnectOnion}
               onCheckUpdates={handleCheckUpdates}
@@ -1341,7 +1232,6 @@ export default function SettingsDialog({
               onSelfOnionHopChange={setSelfOnionMinRelays}
               showDirectWarning={showDirectWarning}
               torAddress={torAddress}
-              alternateRouteAddress={alternateRouteAddress}
               onCopyAddress={handleCopyAddress}
               onionEnabledDraft={onionEnabledDraft}
               setOnionEnabledDraft={setOnionEnabledDraft}

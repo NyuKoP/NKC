@@ -1,6 +1,6 @@
 import type { NetworkMode } from "./mode";
 
-export type OnionNetwork = "tor" | "alternateRoute";
+export type OnionNetwork = "tor";
 
 export type OnionComponentStatus = "idle" | "downloading" | "installing" | "ready" | "failed";
 
@@ -29,7 +29,6 @@ export interface NetConfig {
   onionEnabled: boolean;
   onionSelectedNetwork: OnionNetwork;
   tor: OnionComponentState;
-  alternateRoute: OnionComponentState;
   lastUpdateCheckAtMs?: number;
 }
 
@@ -46,6 +45,5 @@ export const DEFAULT_NET_CONFIG: NetConfig = {
   onionEnabled: false,
   onionSelectedNetwork: "tor",
   tor: { installed: false, status: "idle" },
-  alternateRoute: { installed: false, status: "idle" },
   lastUpdateCheckAtMs: undefined,
 };

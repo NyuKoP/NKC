@@ -10,7 +10,6 @@ export type OnionRuntimeStatus = {
 export type OnionStatus = {
   components: {
     tor: OnionComponentState;
-    alternateRoute: OnionComponentState;
   };
   runtime: OnionRuntimeStatus;
 };

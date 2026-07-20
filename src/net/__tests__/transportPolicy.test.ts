@@ -36,7 +36,6 @@ describe("transportPolicy", () => {
         onionEnabled: false,
         onionSelectedNetwork: "tor",
         tor: { installed: false, status: "idle" },
-        alternateRoute: { installed: false, status: "idle" },
       },
       controller
     );
@@ -58,7 +57,6 @@ describe("transportPolicy", () => {
         onionEnabled: true,
         onionSelectedNetwork: "tor",
         tor: { installed: true, status: "ready" },
-        alternateRoute: { installed: false, status: "idle" },
       },
       controller
     );

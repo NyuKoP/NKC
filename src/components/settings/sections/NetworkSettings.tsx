@@ -1,4 +1,4 @@
-﻿import type { ReactNode } from "react";
+import type { ReactNode } from "react";
 import { Clock } from "lucide-react";
 import type { OnionStatus } from "../../../net/onionControl";
 import type { NetConfig, OnionNetwork } from "../../../net/netConfig";
@@ -19,7 +19,7 @@ type NetworkSettingsProps = {
   onConnectionChoiceChange: (choice: ConnectionChoice) => void | Promise<void>;
   draftMode: NetworkMode;
   onionStatus: OnionStatus | null;
-  getDotState: (kind: "tor" | "alternateRoute", status: OnionStatus | null) => DotState;
+  getDotState: (kind: OnionNetwork, status: OnionStatus | null) => DotState;
   getDotClass: (state: DotState) => string;
   buildComponentLabel: (state: NetConfig["tor"]) => string;
   netConfig: NetConfig;
@@ -31,24 +31,16 @@ type NetworkSettingsProps = {
   runtimeNetworkLabel: string;
   runtimeErrorLabel: string;
   torUpdateStatus: string;
-  alternateRouteUpdateStatus: string;
   torErrorLabel: string | null;
-  alternateRouteErrorLabel: string | null;
   torInstallBusy: boolean;
   torStatusBusy: boolean;
   torCheckBusy: boolean;
   torApplyBusy: boolean;
   torUninstallBusy: boolean;
-  alternateRouteInstallBusy: boolean;
-  alternateRouteStatusBusy: boolean;
-  alternateRouteApplyBusy: boolean;
-  alternateRouteUninstallBusy: boolean;
   torUpdateAvailable: boolean;
-  alternateRouteUpdateAvailable: boolean;
   isComponentReady: (state: NetConfig["tor"]) => boolean;
   onInstall: (network: OnionNetwork) => void | Promise<void>;
   onTorStatus: () => void | Promise<void>;
-  onalternateRouteStatus: () => void | Promise<void>;
   onConnectOnion: (network?: OnionNetwork) => void | Promise<void>;
   onDisconnectOnion: (network?: OnionNetwork) => void | Promise<void>;
   onCheckUpdates: () => void | Promise<void>;
@@ -65,7 +57,6 @@ type NetworkSettingsProps = {
   onSelfOnionHopChange: (value: number) => void;
   showDirectWarning: boolean;
   torAddress: string;
-  alternateRouteAddress: string;
   onCopyAddress: (value: string, label: string) => void | Promise<void>;
   onionEnabledDraft: boolean;
   setOnionEnabledDraft: (value: boolean) => void;
@@ -97,24 +88,16 @@ export default function NetworkSettings({
   runtimeNetworkLabel,
   runtimeErrorLabel,
   torUpdateStatus,
-  alternateRouteUpdateStatus,
   torErrorLabel,
-  alternateRouteErrorLabel,
   torInstallBusy,
   torStatusBusy,
   torCheckBusy,
   torApplyBusy,
   torUninstallBusy,
-  alternateRouteInstallBusy,
-  alternateRouteStatusBusy,
-  alternateRouteApplyBusy,
-  alternateRouteUninstallBusy,
   torUpdateAvailable,
-  alternateRouteUpdateAvailable,
   isComponentReady,
   onInstall,
   onTorStatus,
-  onalternateRouteStatus,
   onConnectOnion,
   onDisconnectOnion,
   onCheckUpdates,
@@ -131,7 +114,6 @@ export default function NetworkSettings({
   onSelfOnionHopChange,
   showDirectWarning,
   torAddress,
-  alternateRouteAddress,
   onCopyAddress,
   onionEnabledDraft,
   setOnionEnabledDraft,
@@ -145,7 +127,6 @@ export default function NetworkSettings({
 }: NetworkSettingsProps) {
   const runtime = onionStatus?.runtime;
   const torConnected = runtime?.status === "running" && runtime.network === "tor";
-  const alternateRouteConnected = runtime?.status === "running" && runtime.network === "alternateRoute";
   const formatHopStatus = (status: InternalOnionHopState["status"]) => {
     if (status === "ok") return t("연결됨", "Connected");
     if (status === "dead") return t("불안정", "Degraded");
@@ -343,172 +324,6 @@ export default function NetworkSettings({
                         className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
                       >
                         {torStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
-                      </button>
-                    </>
-                  )}
-                </div>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
-            <div className="flex items-start justify-between gap-3">
-              <div className="flex items-start gap-3">
-                <input
-                  id="network-mode-alternateRouteOnion"
-                  type="radio"
-                  name="network-mode"
-                  className="mt-1"
-                  checked={connectionChoice === "alternateRouteOnion"}
-                  onChange={() => void onConnectionChoiceChange("alternateRouteOnion")}
-                  data-testid="network-mode-alternateRouteOnion"
-                />
-                <div>
-                  <label
-                    htmlFor="network-mode-alternateRouteOnion"
-                    className="flex items-center gap-2 text-sm font-medium text-nkc-text"
-                  >
-                    <span>alternateRoute Onion</span>
-                    <span
-                      title={t("alternateRoute 상태", "alternateRoute status")}
-                      className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
-                        getDotState("alternateRoute", onionStatus)
-                      )} cursor-pointer`}
-                      tabIndex={0}
-                    />
-                    <span className="text-xs text-nkc-muted">{t("고급", "Advanced")}</span>
-                  </label>
-                  <div className="text-xs text-nkc-muted">
-                    {t("Exit/VPN 기반 앱 전용 라우팅", "Exit/VPN based app-only routing")}
-                  </div>
-                </div>
-              </div>
-              <div className="text-xs text-nkc-muted">{buildComponentLabel(netConfig.alternateRoute)}</div>
-            </div>
-            {connectionChoice === "alternateRouteOnion" ? (
-              <div className="mt-3 border-t border-nkc-border pt-3">
-                <div className="flex items-start justify-between gap-4 text-xs text-nkc-muted">
-                  <div className="flex items-center gap-1">
-                    <span
-                      title={runtimeStatusTooltip}
-                      className="inline-flex items-center cursor-pointer"
-                      tabIndex={0}
-                    >
-                      {runtimeStatusIcon}
-                    </span>
-                    <span>
-                      {activeRouteLabel}
-                      {runtimeSocksLabel}
-                    </span>
-                  </div>
-                  <div className="text-right">
-                    <div>
-                      {runtimeStateLabel} {runtimeNetworkLabel}
-                    </div>
-                    {runtimeErrorLabel ? <div className="text-red-300">{runtimeErrorLabel}</div> : null}
-                  </div>
-                </div>
-                {alternateRouteAddress ? (
-                  <div className="mt-2 flex items-center justify-between gap-2 text-xs text-nkc-muted">
-                    <span className="font-mono break-all">{alternateRouteAddress}</span>
-                    <button
-                      type="button"
-                      onClick={() => void onCopyAddress(alternateRouteAddress, "alternateRoute")}
-                      className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
-                    >
-                      {t("복사", "Copy")}
-                    </button>
-                  </div>
-                ) : null}
-                <div className="mt-2 text-xs text-nkc-muted">
-                  {netConfig.alternateRoute.installed
-                    ? t("상태: 설치됨", "Status: installed")
-                    : t("상태: 미설치", "Status: not installed")}
-                </div>
-                {alternateRouteUpdateStatus ? (
-                  <div className="mt-2 max-w-full break-words text-xs text-nkc-muted">{alternateRouteUpdateStatus}</div>
-                ) : null}
-                {netConfig.alternateRoute.detail ? (
-                  <div className="mt-2 max-h-24 max-w-full overflow-auto overflow-x-hidden whitespace-pre-wrap break-all text-[11px] text-nkc-muted">
-                    {netConfig.alternateRoute.detail}
-                  </div>
-                ) : null}
-                {alternateRouteErrorLabel ? (
-                  <div className="mt-2 max-w-full break-words text-xs text-red-300">{alternateRouteErrorLabel}</div>
-                ) : null}
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {!netConfig.alternateRoute.installed ? (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => void onInstall("alternateRoute")}
-                        disabled={alternateRouteInstallBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {alternateRouteInstallBusy ? t("처리 중...", "Working...") : t("설치", "Install")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onalternateRouteStatus()}
-                        disabled={alternateRouteStatusBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {alternateRouteStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          void (
-                            alternateRouteConnected
-                              ? onDisconnectOnion("alternateRoute")
-                              : onConnectOnion("alternateRoute")
-                          )
-                        }
-                        disabled={
-                          alternateRouteConnected
-                            ? alternateRouteInstallBusy
-                            : alternateRouteInstallBusy || !isComponentReady(netConfig.alternateRoute)
-                        }
-                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
-                      >
-                        {alternateRouteConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          alternateRouteUpdateAvailable
-                            ? void onApplyUpdate("alternateRoute")
-                            : void onCheckUpdates()
-                        }
-                        disabled={alternateRouteUpdateAvailable ? alternateRouteApplyBusy : torCheckBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {alternateRouteUpdateAvailable
-                          ? alternateRouteApplyBusy
-                            ? t("처리 중...", "Working...")
-                            : t("업데이트 적용", "Apply update")
-                          : torCheckBusy
-                            ? t("처리 중...", "Working...")
-                            : t("업데이트 확인", "Check updates")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onUninstall("alternateRoute")}
-                        disabled={alternateRouteUninstallBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {alternateRouteUninstallBusy ? t("처리 중...", "Working...") : t("제거", "Uninstall")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onalternateRouteStatus()}
-                        disabled={alternateRouteStatusBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
-                      >
-                        {alternateRouteStatusBusy ? t("처리 중...", "Working...") : t("상태 확인", "Check status")}
                       </button>
                     </>
                   )}

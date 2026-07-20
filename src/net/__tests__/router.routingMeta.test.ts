@@ -34,7 +34,6 @@ const TEST_CONFIG = {
   onionEnabled: false,
   onionSelectedNetwork: "tor",
   tor: { installed: false, status: "idle" },
-  alternateRoute: { installed: false, status: "idle" },
   lastUpdateCheckAtMs: undefined,
 } as const;
 

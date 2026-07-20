@@ -17,7 +17,7 @@ export const themeOptions: { value: "dark" | "light"; label: LocalizedLabel }[] 
   { value: "light", label: { ko: "라이트", en: "Light" } },
 ];
 
-export type ConnectionChoice = "directP2P" | "selfOnion" | "torOnion" | "alternateRouteOnion";
+export type ConnectionChoice = "directP2P" | "selfOnion" | "torOnion";
 
 export type SettingsView =
   | "main"

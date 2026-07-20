@@ -24,15 +24,15 @@ contextBridge.exposeInMainWorld("secureProxy", {
 });
 
 contextBridge.exposeInMainWorld("onion", {
-  install: (payload: { network: "tor" | "alternateRoute" }) =>
+  install: (payload: { network: "tor" }) =>
     ipcRenderer.invoke("onion:install", payload) as Promise<void>,
-  uninstall: (payload: { network: "tor" | "alternateRoute" }) =>
+  uninstall: (payload: { network: "tor" }) =>
     ipcRenderer.invoke("onion:uninstall", payload) as Promise<void>,
-  setMode: (payload: { enabled: boolean; network: "tor" | "alternateRoute" }) =>
+  setMode: (payload: { enabled: boolean; network: "tor" }) =>
     ipcRenderer.invoke("onion:setMode", payload) as Promise<void>,
   status: () => ipcRenderer.invoke("onion:status") as Promise<unknown>,
   checkUpdates: () => ipcRenderer.invoke("onion:checkUpdates") as Promise<unknown>,
-  applyUpdate: (payload: { network: "tor" | "alternateRoute" }) =>
+  applyUpdate: (payload: { network: "tor" }) =>
     ipcRenderer.invoke("onion:applyUpdate", payload) as Promise<void>,
   onProgress: (cb: (payload: unknown) => void) => {
     const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
@@ -76,12 +76,6 @@ contextBridge.exposeInMainWorld("nkc", {
     ipcRenderer.invoke("nkc:checkSocksProxyReachable", payload) as Promise<boolean>,
   ensureHiddenService: () => ipcRenderer.invoke("nkc:ensureHiddenService") as Promise<unknown>,
   getMyOnionAddress: () => ipcRenderer.invoke("nkc:getMyOnionAddress") as Promise<string>,
-  getalternateRouteStatus: () => ipcRenderer.invoke("nkc:getalternateRouteStatus") as Promise<unknown>,
-  configurealternateRouteExternal: (payload: { proxyUrl: string; serviceAddress?: string }) =>
-    ipcRenderer.invoke("nkc:configurealternateRouteExternal", payload) as Promise<unknown>,
-  startalternateRoute: () => ipcRenderer.invoke("nkc:startalternateRoute") as Promise<unknown>,
-  stopalternateRoute: () => ipcRenderer.invoke("nkc:stopalternateRoute") as Promise<unknown>,
-  getMyalternateRouteAddress: () => ipcRenderer.invoke("nkc:getMyalternateRouteAddress") as Promise<string>,
 });
 
 contextBridge.exposeInMainWorld("prefs", {

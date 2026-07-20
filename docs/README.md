@@ -36,6 +36,7 @@ This directory contains current architectural references, operational guidance, 
 | [NKC v0.3.0](releases/v0.3.0.md) | Go transport core migration |
 | [NKC v0.3.1](releases/v0.3.1.md) | Tor reliability, privacy, and staged transfer validation |
 | [NKC v0.3.2](releases/v0.3.2.md) | Tor 15.0.18, login safety, friend acceptance, and 500 MiB transfer follow-up |
+| [NKC v0.4.0](releases/v0.4.0.md) | New UI, persistent encrypted sessions, and Tor-only routing |
 
 ## Implementation History
 

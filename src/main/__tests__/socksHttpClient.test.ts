@@ -63,7 +63,6 @@ describe("native SOCKS transport adapter", () => {
       {
         payload,
         torProxyUrl: "socks5h://127.0.0.1:9050",
-        alternateRouteProxyUrl: "",
         queueOnFailure: true,
       },
       95_000

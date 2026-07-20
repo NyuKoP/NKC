@@ -33,13 +33,10 @@ const formatBytes = (bytes: number) => {
   return `${size.toFixed(digits)} ${units[unit]}`;
 };
 
-const getTextBubbleClass = (text: string) => {
-  const len = text.trim().length;
-  if (len <= 6) return "max-w-[200px]";
-  if (len <= 16) return "max-w-[300px]";
-  if (len <= 32) return "max-w-[420px]";
-  return "max-w-[520px]";
-};
+// Signal lets text wrap according to the available timeline width instead of
+// changing the bubble at arbitrary character-count thresholds.
+const textBubbleWidthClass =
+  "max-w-[min(306px,calc(100vw-96px))] md:max-w-[370px] xl:max-w-[50vw]";
 
 const getMediaBubbleClass = (count: number) => {
   if (count <= 2) return "max-w-[240px]";
@@ -135,10 +132,9 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
   const fileItems = mediaItems.filter((item) =>
     item.media ? !isPreviewableMedia(item.media) : false
   );
-  const textBlob = textItems.map((item) => item.text).join(" ");
   const bubbleWidthClass = mediaItems.length
     ? getMediaBubbleClass(mediaItems.length)
-    : getTextBubbleClass(textBlob);
+    : textBubbleWidthClass;
 
   const gridCols = imageItems.length >= 3 ? 3 : imageItems.length;
   const thumbAspect = imageItems.length <= 4 ? "aspect-square h-20" : "aspect-[4/3] h-16";
@@ -228,4 +224,3 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
     </div>
   );
 }
-

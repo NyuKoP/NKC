@@ -13,7 +13,7 @@ export const startOutboxScheduler = () => {
     if (config.mode === "directP2P") return "direct";
     if (config.mode === "selfOnion") return "onion";
     if (config.mode === "onionRouter" || config.onionEnabled) {
-      return config.onionSelectedNetwork === "alternateRoute" ? "alternateRoute" : "tor";
+      return "tor";
     }
     return "onion";
   };

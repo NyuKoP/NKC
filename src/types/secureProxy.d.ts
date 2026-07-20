@@ -60,12 +60,12 @@ declare global {
       checkProxy: () => Promise<{ ok: boolean; message: string }>;
     };
     onion?: {
-      install: (payload: { network: "tor" | "alternateRoute" }) => Promise<void>;
-      uninstall: (payload: { network: "tor" | "alternateRoute" }) => Promise<void>;
-      setMode: (payload: { enabled: boolean; network: "tor" | "alternateRoute" }) => Promise<void>;
+      install: (payload: { network: "tor" }) => Promise<void>;
+      uninstall: (payload: { network: "tor" }) => Promise<void>;
+      setMode: (payload: { enabled: boolean; network: "tor" }) => Promise<void>;
       status: () => Promise<unknown>;
       checkUpdates: () => Promise<unknown>;
-      applyUpdate: (payload: { network: "tor" | "alternateRoute" }) => Promise<void>;
+      applyUpdate: (payload: { network: "tor" }) => Promise<void>;
       onProgress: (cb: (payload: unknown) => void) => () => void;
     };
     prefs?: {

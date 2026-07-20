@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { __testToalternateRouteCandidate, compareVersions } from "../checkUpdates";
+import { compareVersions } from "../checkUpdates";
 
 describe("compareVersions", () => {
   it("compares dotted versions", () => {
@@ -11,52 +11,5 @@ describe("compareVersions", () => {
   it("treats missing parts as zeros", () => {
     expect(compareVersions("1.2", "1.2.0")).toBe(0);
     expect(compareVersions("1.2.1", "1.2")).toBe(1);
-  });
-
-  it("extracts a alternateRoute candidate with pinned hash when asset matches", () => {
-    const candidate = __testToalternateRouteCandidate({
-      tag_name: "v0.9.11",
-      assets: [
-        {
-          name: "alternateRoute-0.9.11-win64.exe",
-          browser_download_url:
-            "https://github.com/oxen-io/alternateRoute/releases/download/v0.9.11/alternateRoute-0.9.11-win64.exe",
-        },
-      ],
-    });
-
-    if (process.platform === "win32" && process.arch === "x64") {
-      expect(candidate).toMatchObject({
-        version: "0.9.11",
-        asset: {
-          name: "alternateRoute-0.9.11-win64.exe",
-        },
-        sha256: "0a4a972e1f2d7d2af7f6aebcd15953d98f4ff53b5e823a7d7aa2953eeea2c8d2",
-      });
-    } else {
-      expect(candidate).toBeNull();
-    }
-  });
-
-  it("returns null when release has no current-platform asset", () => {
-    const candidate = __testToalternateRouteCandidate({
-      tag_name: "v0.9.14",
-      assets: [
-        {
-          name: "alternateRoute-linux-amd64-v0.9.14.tar.xz",
-          browser_download_url:
-            "https://github.com/oxen-io/alternateRoute/releases/download/v0.9.14/alternateRoute-linux-amd64-v0.9.14.tar.xz",
-        },
-      ],
-    });
-
-    if (process.platform === "linux" && process.arch === "x64") {
-      expect(candidate).toMatchObject({
-        version: "0.9.14",
-        asset: { name: "alternateRoute-linux-amd64-v0.9.14.tar.xz" },
-      });
-    } else {
-      expect(candidate).toBeNull();
-    }
   });
 });

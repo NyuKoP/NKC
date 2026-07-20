@@ -17,7 +17,6 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { OnionComponentState, OnionNetwork } from "./net/netConfig";
 import { installTor } from "./main/onion/install/installTor";
-import { installalternateRoute } from "./main/onion/install/installalternateRoute";
 import { removeWithRetry } from "./main/onion/install/removeWithRetry";
 import { removeTorInstallationArtifacts } from "./main/onion/install/cleanupTor";
 import { readCurrentPointer } from "./main/onion/install/swapperRollback";
@@ -33,7 +32,6 @@ import {
 import { NativeWorkerClient } from "./main/nativeWorkerClient";
 import { createNativeSocksTransport } from "./main/socksHttpClient";
 import { TorManager } from "./main/torManager";
-import { alternateRouteManager } from "./main/alternateRouteManager";
 import { readAppPrefs, setAppPrefs } from "./main/preferences";
 import {
   appendTestLogRecord,
@@ -123,7 +121,7 @@ const createIpcError = (error: string): IpcErrorResponse => ({
 });
 
 const requireOnionNetwork = (value: unknown): OnionNetwork => {
-  if (value === "tor" || value === "alternateRoute") return value;
+  if (value === "tor") return value;
   throw new Error("invalid-onion-network");
 };
 
@@ -735,32 +733,6 @@ const registerOnionControllerIpc = () => {
     assertTrustedIpcSender(event);
     return myOnionAddress ?? "";
   });
-  ipcMain.handle("nkc:getalternateRouteStatus", async (event) => {
-    assertTrustedIpcSender(event);
-    return alternateRouteManager?.getStatus() ?? { state: "unavailable" };
-  });
-  ipcMain.handle("nkc:configurealternateRouteExternal", async (event, payload: { proxyUrl: string; serviceAddress?: string }) => {
-    assertTrustedIpcSender(event);
-    if (!alternateRouteManager) return { ok: false };
-    await alternateRouteManager.configureExternal(payload);
-    return { ok: true };
-  });
-  ipcMain.handle("nkc:startalternateRoute", async (event) => {
-    assertTrustedIpcSender(event);
-    if (!alternateRouteManager) return { ok: false };
-    await alternateRouteManager.start();
-    return { ok: true };
-  });
-  ipcMain.handle("nkc:stopalternateRoute", async (event) => {
-    assertTrustedIpcSender(event);
-    if (!alternateRouteManager) return { ok: false };
-    await alternateRouteManager.stop();
-    return { ok: true };
-  });
-  ipcMain.handle("nkc:getMyalternateRouteAddress", async (event) => {
-    assertTrustedIpcSender(event);
-    return myalternateRouteAddress ?? "";
-  });
 };
 
 const isP2PFriendRouteArray = (payload: unknown): payload is P2PFriendRoute[] =>
@@ -1055,7 +1027,6 @@ const registerTestLogIpc = () => {
 type OnionStatusPayload = {
   components: {
     tor: OnionComponentState;
-    alternateRoute: OnionComponentState;
   };
   runtime: ReturnType<OnionRuntime["getStatus"]>;
 };
@@ -1063,14 +1034,11 @@ type OnionStatusPayload = {
 const onionRuntime = new OnionRuntime();
 const onionComponentCache: Record<OnionNetwork, OnionComponentState> = {
   tor: { installed: false, status: "idle" },
-  alternateRoute: { installed: false, status: "idle" },
 };
 let onionController: OnionControllerHandle | null = null;
 let onionControllerUrl = "";
 let torManager: TorManager | null = null;
 let myOnionAddress: string | null = null;
-let alternateRouteManager: alternateRouteManager | null = null;
-let myalternateRouteAddress: string | null = null;
 let p2pQueueManager: OfflineQueueManager | null = null;
 let nativeWorkerClient: NativeWorkerClient | null = null;
 let currentTorSocksProxy: string | null = null;
@@ -1084,7 +1052,6 @@ const shutdownBackgroundRuntimes = async () => {
     await Promise.allSettled([
       onionController?.close(),
       torManager?.stop(),
-      alternateRouteManager?.stop(),
     ]);
     await nativeWorkerClient?.stop();
     nativeWorkerClient = null;
@@ -1196,19 +1163,12 @@ const emitOnionProgress = (
   event.sender.send("onion:progress", { network, status });
 };
 
-const stopNetworkRuntimeForMutation = async (network: OnionNetwork) => {
+const stopNetworkRuntimeForMutation = async () => {
   await onionRuntime.stop();
-  if (network === "tor") {
-    await torManager?.stop();
-    currentTorSocksProxy = null;
-    p2pQueueManager?.updateProxyUrl(null);
-    await onionController?.setTorSocksProxy(null);
-  } else {
-    await alternateRouteManager?.stop();
-    myalternateRouteAddress = null;
-    onionController?.setalternateRouteAddress(null);
-    await onionController?.setalternateRouteSocksProxy(null);
-  }
+  await torManager?.stop();
+  currentTorSocksProxy = null;
+  p2pQueueManager?.updateProxyUrl(null);
+  await onionController?.setTorSocksProxy(null);
   emitOnionRuntimeBackgroundStatus();
 };
 
@@ -1219,7 +1179,6 @@ const registerOnionIpc = () => {
     return {
       components: {
         tor: await refreshComponentState(userDataDir, "tor"),
-        alternateRoute: await refreshComponentState(userDataDir, "alternateRoute"),
       },
       runtime: onionRuntime.getStatus(),
     } satisfies OnionStatusPayload;
@@ -1229,7 +1188,6 @@ const registerOnionIpc = () => {
     assertTrustedIpcSender(event);
     const userDataDir = app.getPath("userData");
     const torUpdate = await checkUpdates("tor");
-    const alternateRouteUpdate = await checkUpdates("alternateRoute");
     console.log("[onion] checkUpdates", {
       tor: {
         version: torUpdate.version,
@@ -1238,20 +1196,10 @@ const registerOnionIpc = () => {
         sha256: torUpdate.sha256 ? "<present>" : "<missing>",
         errorCode: torUpdate.errorCode,
       },
-      alternateRoute: {
-        version: alternateRouteUpdate.version,
-        assetName: alternateRouteUpdate.assetName,
-        downloadUrl: alternateRouteUpdate.downloadUrl,
-        sha256: alternateRouteUpdate.sha256 ? "<present>" : "<missing>",
-        errorCode: alternateRouteUpdate.errorCode,
-      },
     });
     const torState = await refreshComponentState(userDataDir, "tor");
-    const alternateRouteState = await refreshComponentState(userDataDir, "alternateRoute");
     const torHasVerifiedUpdate =
       Boolean(torUpdate.version && torUpdate.sha256 && torUpdate.downloadUrl);
-    const alternateRouteHasVerifiedUpdate =
-      Boolean(alternateRouteUpdate.version && alternateRouteUpdate.sha256 && alternateRouteUpdate.downloadUrl);
     onionComponentCache.tor = {
       ...torState,
       latest: torHasVerifiedUpdate ? torUpdate.version ?? undefined : undefined,
@@ -1268,26 +1216,9 @@ const registerOnionIpc = () => {
             ? `No compatible Tor asset for ${process.platform}/${process.arch}`
           : undefined,
     };
-    onionComponentCache.alternateRoute = {
-      ...alternateRouteState,
-      latest: alternateRouteHasVerifiedUpdate ? alternateRouteUpdate.version ?? undefined : undefined,
-      error:
-        alternateRouteUpdate.errorCode === "PINNED_HASH_MISSING"
-          ? "PINNED_HASH_MISSING"
-          : alternateRouteUpdate.errorCode === "ASSET_NOT_FOUND"
-            ? "ASSET_NOT_FOUND"
-            : undefined,
-      detail:
-        alternateRouteUpdate.errorCode === "PINNED_HASH_MISSING"
-          ? `Pinned hash missing for ${alternateRouteUpdate.assetName ?? alternateRouteUpdate.version ?? "unknown"}`
-          : alternateRouteUpdate.errorCode === "ASSET_NOT_FOUND"
-            ? `No compatible alternateRoute asset for ${process.platform}/${process.arch}`
-          : undefined,
-    };
     return {
       components: {
         tor: onionComponentCache.tor,
-        alternateRoute: onionComponentCache.alternateRoute,
       },
       runtime: onionRuntime.getStatus(),
     } satisfies OnionStatusPayload;
@@ -1334,35 +1265,8 @@ const registerOnionIpc = () => {
         progress: undefined,
       };
       emitOnionProgress(event, network, onionComponentCache[network]);
-      await stopNetworkRuntimeForMutation(network);
-      const install =
-        network === "tor"
-          ? installTor(
-              userDataDir,
-              updates.version,
-              (progress) => {
-                onionComponentCache[network] = {
-                  ...onionComponentCache[network],
-                  status: progress.step === "download" ? "downloading" : "installing",
-                  detail:
-                    (progress.message ?? "") +
-                    (progress.receivedBytes || progress.totalBytes
-                      ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})`
-                      : ""),
-                  progress:
-                    progress.receivedBytes || progress.totalBytes
-                      ? {
-                          receivedBytes: progress.receivedBytes ?? 0,
-                          totalBytes: progress.totalBytes ?? 0,
-                        }
-                      : undefined,
-                };
-                emitOnionProgress(event, network, onionComponentCache[network]);
-              },
-              updates.downloadUrl ?? undefined,
-              updates.assetName ?? undefined
-            )
-          : installalternateRoute(
+      await stopNetworkRuntimeForMutation();
+      const install = installTor(
               userDataDir,
               updates.version,
               (progress) => {
@@ -1470,35 +1374,8 @@ const registerOnionIpc = () => {
       const runtimeBeforeMutation = onionRuntime.getStatus();
       const shouldRestartRuntime =
         runtimeBeforeMutation.status === "running" && runtimeBeforeMutation.network === network;
-      await stopNetworkRuntimeForMutation(network);
-      const install =
-        network === "tor"
-          ? installTor(
-              userDataDir,
-              updateVersion,
-              (progress) => {
-                onionComponentCache[network] = {
-                  ...onionComponentCache[network],
-                  status: progress.step === "download" ? "downloading" : "installing",
-                  detail:
-                    (progress.message ?? "") +
-                    (progress.receivedBytes || progress.totalBytes
-                      ? ` (${formatProgress(progress.receivedBytes, progress.totalBytes)})`
-                      : ""),
-                  progress:
-                    progress.receivedBytes || progress.totalBytes
-                      ? {
-                          receivedBytes: progress.receivedBytes ?? 0,
-                          totalBytes: progress.totalBytes ?? 0,
-                        }
-                      : undefined,
-                };
-                emitOnionProgress(event, network, onionComponentCache[network]);
-              },
-              updateInfo.downloadUrl ?? undefined,
-              updateInfo.assetName ?? undefined
-            )
-          : installalternateRoute(
+      await stopNetworkRuntimeForMutation();
+      const install = installTor(
               userDataDir,
               updateVersion,
               (progress) => {
@@ -1580,7 +1457,7 @@ const registerOnionIpc = () => {
   ipcMain.handle("onion:uninstall", async (event, payload: { network: OnionNetwork }) => {
     assertTrustedIpcSender(event);
     const network = requireOnionNetwork(payload?.network);
-    await stopNetworkRuntimeForMutation(network);
+    await stopNetworkRuntimeForMutation();
     const userDataDir = app.getPath("userData");
     if (network === "tor") {
       await removeTorInstallationArtifacts(userDataDir);
@@ -1627,7 +1504,7 @@ const emitOnionRuntimeBackgroundStatus = () => {
   if (runtime.status === "running") {
     emitRuntimeBackgroundStatus({
       state: "connected",
-      route: runtime.network === "alternateRoute" ? "alternateRoute Network" : "Tor Network",
+      route: "Tor Network",
     });
     return;
   }
@@ -2092,7 +1969,6 @@ app.whenReady().then(async () => {
   registerTestLogIpc();
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
-    alternateRouteManager = new alternateRouteManager({ appDataDir: app.getPath("userData") });
     const legacyQueuePath = path.join(app.getPath("userData"), "p2p-offline-queue.json");
     try {
       const executableName = process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker";
@@ -2122,7 +1998,6 @@ app.whenReady().then(async () => {
         onionController = await startOnionController({
           port: 3210,
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
-          getalternateRouteStatus: () => alternateRouteManager?.getStatus() ?? { state: "unavailable" },
           userDataPath: app.getPath("userData"),
           queueOnFailure: true,
           socksTransport: nativeWorkerClient
@@ -2138,7 +2013,6 @@ app.whenReady().then(async () => {
         onionController = await startOnionController({
           port: 0,
           getTorStatus: () => torManager?.getStatus() ?? { state: "unavailable" },
-          getalternateRouteStatus: () => alternateRouteManager?.getStatus() ?? { state: "unavailable" },
           userDataPath: app.getPath("userData"),
           queueOnFailure: true,
           socksTransport: nativeWorkerClient
@@ -2163,22 +2037,6 @@ app.whenReady().then(async () => {
         emitRuntimeBackgroundStatus({
           state: "disconnected",
           route: status.state === "starting" ? "Tor starting" : "Tor offline",
-        });
-      }
-    });
-    alternateRouteManager.onStatus((status) => {
-      if (status.state === "running") {
-        myalternateRouteAddress = status.serviceAddress ?? null;
-        onionController?.setalternateRouteAddress(status.serviceAddress ?? null);
-        void onionController?.setalternateRouteSocksProxy(status.proxyUrl);
-        emitRuntimeBackgroundStatus({ state: "connected", route: "alternateRoute Network" });
-      } else {
-        myalternateRouteAddress = null;
-        onionController?.setalternateRouteAddress(null);
-        void onionController?.setalternateRouteSocksProxy(null);
-        emitRuntimeBackgroundStatus({
-          state: "disconnected",
-          route: status.state === "starting" ? "alternateRoute starting" : "alternateRoute offline",
         });
       }
     });
