@@ -232,14 +232,30 @@ const sameRuntimeNetworkSnapshot = (lhs: RuntimeNetworkSnapshot, rhs: RuntimeNet
   lhs.alternateRouteState === rhs.alternateRouteState &&
   lhs.alternateRouteDetail === rhs.alternateRouteDetail;
 
-const applyDocumentTheme = (theme: "dark" | "light") => {
-  if (typeof document === "undefined") return;
-  const root = document.documentElement;
-  root.classList.toggle("light", theme === "light");
-  root.classList.toggle("dark", theme === "dark");
-  root.dataset.theme = theme;
-  root.style.colorScheme = theme;
-  window.localStorage.setItem("nkc.theme", theme);
+type ViewTransitionDocument = Document & {
+  startViewTransition?: (update: () => void) => {
+    updateCallbackDone: Promise<unknown>;
+  };
+};
+
+const applyDocumentTheme = (theme: "dark" | "light", animate = false): Promise<void> => {
+  if (typeof document === "undefined") return Promise.resolve();
+  const updateTheme = () => {
+    const root = document.documentElement;
+    root.classList.toggle("light", theme === "light");
+    root.classList.toggle("dark", theme === "dark");
+    root.dataset.theme = theme;
+    root.style.colorScheme = theme;
+    window.localStorage.setItem("nkc.theme", theme);
+  };
+  const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const startViewTransition = (document as ViewTransitionDocument).startViewTransition;
+  if (animate && !reduceMotion && typeof startViewTransition === "function") {
+    const transition = startViewTransition.call(document, updateTheme);
+    return transition.updateCallbackDone.then(() => undefined);
+  }
+  updateTheme();
+  return Promise.resolve();
 };
 
 export default function App() {
@@ -256,6 +272,7 @@ export default function App() {
   const setListFilter = useAppStore((state) => state.setListFilter);
   const setSearch = useAppStore((state) => state.setSearch);
   const setSessionState = useAppStore((state) => state.setSession);
+  const setUserProfile = useAppStore((state) => state.setUserProfile);
   const setData = useAppStore((state) => state.setData);
   const addToast = useAppStore((state) => state.addToast);
   const confirm = useAppStore((state) => state.ui.confirm);
@@ -267,7 +284,7 @@ export default function App() {
   useEffect(() => {
     const storedTheme = window.localStorage.getItem("nkc.theme");
     const fallbackTheme = storedTheme === "dark" || storedTheme === "light" ? storedTheme : "light";
-    applyDocumentTheme(userProfile?.theme ?? fallbackTheme);
+    void applyDocumentTheme(userProfile?.theme ?? fallbackTheme);
   }, [userProfile?.theme]);
 
   const [pinEnabled, setPinEnabled] = useState(false);
@@ -1423,30 +1440,35 @@ export default function App() {
   const handleSaveProfile = async (payload: { displayName: string; status: string; theme: "dark" | "light" }) => {
     if (!userProfile) return;
 
+    const previousProfile = userProfile;
     const updated: UserProfile = {
       ...userProfile,
       ...payload,
       updatedAt: Date.now(),
     };
 
-    await saveProfile(updated);
-    await hydrateVault();
+    const themeChanged = updated.theme !== previousProfile.theme;
+    if (themeChanged) await applyDocumentTheme(updated.theme, true);
+    setUserProfile(updated);
+    try {
+      await saveProfile(updated);
+    } catch (error) {
+      if (useAppStore.getState().userProfile?.updatedAt === updated.updatedAt) {
+        setUserProfile(previousProfile);
+        if (themeChanged) await applyDocumentTheme(previousProfile.theme, true);
+      }
+      throw error;
+    }
   };
 
   const handleToggleTheme = async () => {
     if (!userProfile) return;
     const nextTheme = userProfile.theme === "dark" ? "light" : "dark";
-    applyDocumentTheme(nextTheme);
-    try {
-      await handleSaveProfile({
-        displayName: userProfile.displayName,
-        status: userProfile.status ?? "",
-        theme: nextTheme,
-      });
-    } catch (error) {
-      applyDocumentTheme(userProfile.theme);
-      throw error;
-    }
+    await handleSaveProfile({
+      displayName: userProfile.displayName,
+      status: userProfile.status ?? "",
+      theme: nextTheme,
+    });
   };
 
   const handleUploadPhoto = async (file: File) => {

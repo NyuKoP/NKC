@@ -258,6 +258,10 @@ export default function Sidebar({
           if (target?.closest?.('[data-stop-row-click="true"]')) return;
           handleFriendClick(friend.id);
         }}
+        onMouseDown={(event) => {
+          const target = event.target as HTMLElement | null;
+          if (!target?.closest?.('[data-stop-row-click="true"]')) event.preventDefault();
+        }}
         onDoubleClick={(event) => {
           const target = event.target as HTMLElement | null;
           if (target?.closest?.('[data-stop-row-click="true"]')) return;
@@ -271,7 +275,7 @@ export default function Sidebar({
             onFriendViewProfile(friend.id);
           }
         }}
-        className="group flex w-full cursor-pointer items-center gap-3 rounded-xl px-3 py-2.5 text-nkc-text transition-colors duration-100 hover:bg-nkc-hover"
+        className="group flex min-h-[72px] w-full cursor-pointer items-center gap-3 rounded-[10px] px-5 py-2 text-nkc-text transition-colors duration-100 hover:bg-nkc-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-nkc-listFocus"
       >
         <div className="shrink-0">
           <Avatar name={displayName} avatarRef={friend.avatarRef} size={40} />
@@ -463,7 +467,7 @@ export default function Sidebar({
 
       {listMode === "chats" ? (
         <div
-          className="space-y-2 border-b border-nkc-border px-4 py-2"
+          className="space-y-2 px-4 py-2"
           data-testid="conversation-filters"
         >
           <div className="flex items-center justify-between gap-2 text-xs font-semibold text-nkc-muted">
@@ -492,7 +496,7 @@ export default function Sidebar({
                 <div className="px-6">
                   <button
                     onClick={() => setPinnedChatsOpen((prev) => !prev)}
-                    className="flex w-full items-center justify-between px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-nkc-muted"
+                    className="flex w-full items-center justify-between px-2 py-1.5 text-[13px] font-bold tracking-normal text-nkc-muted"
                   >
                     <span>{t("고정된 채팅", "Pinned chats")} ({pinned.length})</span>
                     <span className="text-nkc-muted">
@@ -501,9 +505,9 @@ export default function Sidebar({
                   </button>
                 </div>
                 {pinnedChatsOpen && (
-                  <div className="divide-y border-t border-nkc-border">
+                  <div className="space-y-1">
                     {pinned.map((conv) => (
-                      <div key={conv.id} className="px-6">
+                      <div key={conv.id} className="px-[18px]">
                         <ConversationRow
                           conv={conv}
                           friend={resolveConvFriend(conv)}
@@ -527,12 +531,12 @@ export default function Sidebar({
             )}
 
             <div
-              className={`${pinned.length > 0 ? "mt-2 border-t border-nkc-border pt-1" : "pt-1"} -mx-4`}
+              className={`${pinned.length > 0 ? "mt-3 pt-1" : "pt-1"} -mx-4`}
             >
               <div className="px-6">
                 <button
                   onClick={() => setChatsOpen((prev) => !prev)}
-                  className="flex w-full items-center justify-between px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-nkc-muted"
+                  className="flex w-full items-center justify-between px-2 py-1.5 text-[13px] font-bold tracking-normal text-nkc-muted"
                 >
                   <span>{t("채팅", "Chats")} ({regular.length})</span>
                   <span className="text-nkc-muted">
@@ -542,9 +546,9 @@ export default function Sidebar({
               </div>
               {chatsOpen && (
                 regular.length > 0 ? (
-                  <div className="divide-y border-t border-nkc-border">
+                  <div className="space-y-1">
                     {regular.map((conv) => (
-                      <div key={conv.id} className="px-6">
+                      <div key={conv.id} className="px-[18px]">
                         <ConversationRow
                           conv={conv}
                           friend={resolveConvFriend(conv)}
@@ -585,7 +589,7 @@ export default function Sidebar({
                 <div className="px-6">
                   <button
                     onClick={() => setFavoritesOpen((prev) => !prev)}
-                    className="flex w-full items-center justify-between px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-nkc-muted"
+                    className="flex w-full items-center justify-between px-2 py-1.5 text-[13px] font-bold tracking-normal text-nkc-muted"
                   >
                     <span>{t("즐겨찾는 친구", "Favorite friends")} ({favoriteFriends.length})</span>
                     <span className="text-nkc-muted">
@@ -594,9 +598,9 @@ export default function Sidebar({
                   </button>
                 </div>
                 {favoritesOpen && (
-                  <div className="divide-y divide-nkc-border border-t border-nkc-border">
+                  <div className="space-y-1">
                     {favoriteFriends.map(({ friend, displayName }) => (
-                      <div key={friend.id} className="px-6">
+                      <div key={friend.id} className="px-[18px]">
                         {renderFriendRow(friend, displayName)}
                       </div>
                     ))}
@@ -605,13 +609,13 @@ export default function Sidebar({
               </div>
             )}
             <div
-              className={`-mx-4 ${favoriteFriends.length > 0 ? "border-t border-nkc-border" : ""}`}
+              className={`-mx-4 ${favoriteFriends.length > 0 ? "mt-3" : ""}`}
               data-testid="friends-section"
             >
               <div className="px-6">
                 <button
                   onClick={() => setFriendsOpen((prev) => !prev)}
-                  className="flex w-full items-center justify-between px-2 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-nkc-muted"
+                  className="flex w-full items-center justify-between px-2 py-1.5 text-[13px] font-bold tracking-normal text-nkc-muted"
                 >
                   <span>{t("친구", "Friends")} ({regularFriends.length})</span>
                   <span className="text-nkc-muted">
@@ -621,9 +625,9 @@ export default function Sidebar({
               </div>
               {friendsOpen && (
                 regularFriends.length > 0 ? (
-                  <div className="divide-y divide-nkc-border border-t border-nkc-border">
+                  <div className="space-y-1">
                     {regularFriends.map(({ friend, displayName }) => (
-                      <div key={friend.id} className="px-6">
+                      <div key={friend.id} className="px-[18px]">
                         {renderFriendRow(friend, displayName)}
                       </div>
                     ))}
@@ -753,8 +757,13 @@ function ConversationRow({
   return (
     <div
       role="button"
+      aria-pressed={active}
       tabIndex={0}
       onClick={handleSelect}
+      onMouseDown={(event) => {
+        const target = event.target as HTMLElement | null;
+        if (!target?.closest?.('[data-stop-row-click="true"]')) event.preventDefault();
+      }}
       onKeyDown={(e) => {
         const target = e.target as HTMLElement | null;
         if (target?.closest?.('[data-stop-row-click="true"]')) return;
@@ -763,9 +772,9 @@ function ConversationRow({
           onSelect();
         }
       }}
-      className={`group flex min-h-[64px] gap-3 rounded-xl px-3 py-2.5 transition-colors duration-100 ${
+      className={`group relative flex min-h-[72px] gap-3 rounded-[10px] px-5 py-2 transition-colors duration-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-nkc-listFocus ${
         active
-          ? "bg-nkc-selected"
+          ? "bg-nkc-listSelected"
           : "hover:bg-nkc-hover"
       }`}
       data-testid={`conversation-row-${conv.id}`}
@@ -786,7 +795,7 @@ function ConversationRow({
               ? conv.name
               : resolveFriendDisplayName(friend, friendAliasesById)}
           </span>
-          <span className="shrink-0 text-xs text-nkc-muted">
+          <span className="shrink-0 text-[11px] text-nkc-muted">
             {formatTime(conv.lastTs, locale)}
           </span>
           {conv.unread > 0 ? (
@@ -800,7 +809,7 @@ function ConversationRow({
           {conv.blocked && <span>{t("차단됨", "Blocked")}</span>}
         </div>
       </div>
-      <div className="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+      <div className="absolute right-2 top-1/2 -translate-y-1/2 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
         <OverflowMenu
           conversationId={conv.id}
           onHide={onHide}

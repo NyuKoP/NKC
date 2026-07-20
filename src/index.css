@@ -29,6 +29,8 @@
     --nkc-surface: #2D2D2D;
     --nkc-hover: #252525;
     --nkc-selected: #1F2D32;
+    --nkc-list-selected: #242B3B;
+    --nkc-list-focus: #789FF3;
     --nkc-bubble-sent: #2F6273;
     --nkc-bubble-sent-text: #FFFFFF;
     --nkc-bubble-recv: #2D2D2D;
@@ -60,6 +62,8 @@
     --nkc-surface: #FFFFFF;
     --nkc-hover: #ECECEC;
     --nkc-selected: #E5FAFF;
+    --nkc-list-selected: #E8EEFD;
+    --nkc-list-focus: #2F6273;
     --nkc-bubble-sent: #2F6273;
     --nkc-bubble-sent-text: #FFFFFF;
     --nkc-bubble-recv: #E5E5EA;
@@ -77,19 +81,31 @@
     @apply bg-nkc-bg text-nkc-text antialiased;
     font-family: "Inter", "Noto Sans KR", ui-sans-serif, system-ui, -apple-system,
       "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
-    transition: background-color 0.2s ease, color 0.2s ease;
   }
 
-  /* Smooth transitions for theme switching */
-  *, *::before, *::after {
-    transition-property: background-color, border-color, color, box-shadow;
-    transition-duration: 0.15s;
-    transition-timing-function: ease;
+  ::view-transition-old(root) {
+    animation: 260ms ease-in-out both nkc-theme-fade-out;
   }
 
-  /* Disable transitions for animations and transforms */
-  [class*="animate-"], [class*="transition-"] {
-    transition-property: all;
+  ::view-transition-new(root) {
+    animation: 260ms ease-in-out both nkc-theme-fade-in;
+  }
+
+  @keyframes nkc-theme-fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+
+  @keyframes nkc-theme-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+      animation-duration: 0.01ms;
+    }
   }
 }
 

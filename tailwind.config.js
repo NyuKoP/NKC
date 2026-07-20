@@ -24,6 +24,8 @@ module.exports = {
           surface: "var(--nkc-surface)",
           hover: "var(--nkc-hover)",
           selected: "var(--nkc-selected)",
+          listSelected: "var(--nkc-list-selected)",
+          listFocus: "var(--nkc-list-focus)",
           bubbleSent: "var(--nkc-bubble-sent)",
           bubbleSentText: "var(--nkc-bubble-sent-text)",
           bubbleRecv: "var(--nkc-bubble-recv)",
