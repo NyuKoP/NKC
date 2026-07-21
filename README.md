@@ -13,7 +13,6 @@ NKC is a serverless, end-to-end encrypted desktop chat application built with El
 - Encrypted local storage backed by IndexedDB
 - Friend codes, device pairing, and primary/secondary device roles
 - Onion-first routing, Tor hidden-service support, and optional direct fallback
-- alternateRoute integration and configurable route policy
 - Electron main/preload isolation with a narrow IPC bridge
 - Native Go worker for SOCKS5/HTTP transport, connection pooling, offline queue, scheduling, and file operations
 - Bounded-memory file transfer up to 500 MiB with 1 MiB encrypted chunks
