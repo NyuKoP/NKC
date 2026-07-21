@@ -197,6 +197,12 @@ type RuntimeNetworkSnapshot = {
   lokinetDetail: string | null;
 };
 
+type TorRuntimeCandidate = {
+  state: string | null;
+  detail: string | null;
+  socksUrl: string | null;
+};
+
 const EMPTY_RUNTIME_NETWORK_SNAPSHOT: RuntimeNetworkSnapshot = {
   torState: null,
   torDetail: null,
@@ -362,15 +368,20 @@ export default function App() {
     emitRouterInfoLog(detail);
   }, []);
   const resolveRuntimeNetworkSnapshot = useCallback(async (): Promise<RuntimeNetworkSnapshot> => {
+    let builtInCandidate: TorRuntimeCandidate | null = null;
     try {
       const onionStatus = await getOnionStatus();
       const runtime = onionStatus.runtime;
-      return {
-        torState: runtime.network === "tor" ? runtime.status : null,
-        torDetail: runtime.network === "tor" ? runtime.error ?? null : null,
-        lokinetState: null,
-        lokinetDetail: null,
-      };
+      if (runtime.network === "tor") {
+        builtInCandidate = {
+          state: runtime.status,
+          detail: runtime.error ?? null,
+          socksUrl:
+            runtime.status === "running" && typeof runtime.socksPort === "number"
+              ? `socks5://127.0.0.1:${runtime.socksPort}`
+              : null,
+        };
+      }
     } catch {
       // Browser-only tests and older preload surfaces may not expose the built-in Onion bridge.
     }
@@ -379,21 +390,55 @@ export default function App() {
       globalThis as {
         nkc?: {
           getTorStatus?: () => Promise<unknown>;
+          checkSocksProxyReachable?: (payload: {
+            socksUrl: string;
+            timeoutMs?: number;
+          }) => Promise<boolean>;
         };
       }
     ).nkc;
-    if (!nkc) {
-      return {
-        torState: null,
-        torDetail: null,
-        lokinetState: null,
-        lokinetDetail: null,
-      };
+    let legacyCandidate: TorRuntimeCandidate | null = null;
+    if (nkc?.getTorStatus) {
+      try {
+        const torRaw = await nkc.getTorStatus();
+        const socksProxyUrl =
+          torRaw && typeof torRaw === "object"
+            ? (torRaw as { socksProxyUrl?: unknown }).socksProxyUrl
+            : null;
+        legacyCandidate = {
+          state: toRuntimeState(torRaw),
+          detail: toRuntimeDetail(torRaw),
+          socksUrl: typeof socksProxyUrl === "string" ? socksProxyUrl : null,
+        };
+      } catch {
+        legacyCandidate = null;
+      }
     }
-    const torRaw = nkc.getTorStatus ? await nkc.getTorStatus() : null;
+
+    const candidate =
+      legacyCandidate?.state === "running" ? legacyCandidate : builtInCandidate ?? legacyCandidate;
+    let torState = candidate?.state ?? null;
+    let torDetail = candidate?.detail ?? null;
+    if (torState === "running") {
+      let proxyReachable = false;
+      if (candidate?.socksUrl && nkc?.checkSocksProxyReachable) {
+        try {
+          proxyReachable = await nkc.checkSocksProxyReachable({
+            socksUrl: candidate.socksUrl,
+            timeoutMs: 2_000,
+          });
+        } catch {
+          proxyReachable = false;
+        }
+      }
+      if (!proxyReachable) {
+        torState = "starting";
+        torDetail = "Tor SOCKS proxy is not reachable yet";
+      }
+    }
     return {
-      torState: toRuntimeState(torRaw),
-      torDetail: toRuntimeDetail(torRaw),
+      torState,
+      torDetail,
       lokinetState: null,
       lokinetDetail: null,
     };
@@ -411,8 +456,12 @@ export default function App() {
     const unsubscribe = onBackgroundStatus(() => {
       void refreshSidebarRuntimeSnapshot();
     });
+    const timer = window.setInterval(() => {
+      void refreshSidebarRuntimeSnapshot();
+    }, 4_000);
     return () => {
       unsubscribe();
+      window.clearInterval(timer);
     };
   }, [refreshSidebarRuntimeSnapshot]);
 
@@ -601,6 +650,18 @@ export default function App() {
 
   const refreshMyFriendCode = useCallback(async () => {
     if (!friendAddOpen || !userProfile) return;
+    const runtimeSnapshot = await resolveRuntimeNetworkSnapshot();
+    setFriendCodeRuntimeSnapshot((prev) =>
+      sameRuntimeNetworkSnapshot(prev, runtimeSnapshot) ? prev : runtimeSnapshot
+    );
+    const selectedRuntimeState =
+      netConfig.onionSelectedNetwork === "tor"
+        ? runtimeSnapshot.torState
+        : runtimeSnapshot.lokinetState;
+    if (onionRouteRequired && selectedRuntimeState !== "running") {
+      setMyFriendCode((prev) => (prev ? "" : prev));
+      return;
+    }
     const payload = await buildLocalFriendCodePayload();
     const hasRouteTarget = Boolean(payload.onionAddr || payload.lokinetAddr);
     if (onionRouteRequired && !hasRouteTarget) {
@@ -612,7 +673,14 @@ export default function App() {
       ...payload,
     });
     setMyFriendCode((prev) => (prev === nextCode ? prev : nextCode));
-  }, [buildLocalFriendCodePayload, friendAddOpen, onionRouteRequired, userProfile]);
+  }, [
+    buildLocalFriendCodePayload,
+    friendAddOpen,
+    netConfig.onionSelectedNetwork,
+    onionRouteRequired,
+    resolveRuntimeNetworkSnapshot,
+    userProfile,
+  ]);
 
   useEffect(() => {
     if (!friendAddOpen || !userProfile) return;

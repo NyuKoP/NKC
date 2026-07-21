@@ -2,7 +2,7 @@
 
 NKC is a serverless, end-to-end encrypted desktop chat application built with Electron, React, TypeScript, and a native Go worker. It stores encrypted event envelopes locally and routes peer-to-peer traffic through privacy-preserving transports, with onion routing preferred by policy.
 
-> **Project status:** active development. The current package version is `0.4.0`; interfaces, storage formats, and network behavior may still change.
+> **Project status:** active development. The current package version is `0.4.1`; interfaces, storage formats, and network behavior may still change.
 
 ## Features
 

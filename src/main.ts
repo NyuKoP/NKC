@@ -673,13 +673,13 @@ const registerOnionControllerIpc = () => {
   ipcMain.handle("nkc:startTor", async (event, payload?: StartTorPayload) => {
     assertTrustedIpcSender(event);
     if (!torManager) return { ok: false };
-    await torManager.start(payload);
+    await Promise.all([torManager.start(payload), torSecondaryManager?.start(payload)]);
     return { ok: true };
   });
   ipcMain.handle("nkc:stopTor", async (event) => {
     assertTrustedIpcSender(event);
     if (!torManager) return { ok: false };
-    await torManager.stop();
+    await Promise.all([torManager.stop(), torSecondaryManager?.stop()]);
     return { ok: true };
   });
   ipcMain.handle(
@@ -769,10 +769,12 @@ const onionComponentCache: Record<OnionNetwork, OnionComponentState> = {
 let onionController: OnionControllerHandle | null = null;
 let onionControllerUrl = "";
 let torManager: TorManager | null = null;
+let torSecondaryManager: TorManager | null = null;
 let myOnionAddress: string | null = null;
 let p2pQueueManager: OfflineQueueManager | null = null;
 let nativeWorkerClient: NativeWorkerClient | null = null;
 let currentTorSocksProxy: string | null = null;
+let secondaryTorSocksProxy: string | null = null;
 let shutdownInProgress: Promise<void> | null = null;
 let runtimeShutdownComplete = false;
 
@@ -783,10 +785,12 @@ const shutdownBackgroundRuntimes = async () => {
     await Promise.allSettled([
       onionController?.close(),
       torManager?.stop(),
+      torSecondaryManager?.stop(),
     ]);
     await nativeWorkerClient?.stop();
     nativeWorkerClient = null;
     currentTorSocksProxy = null;
+    secondaryTorSocksProxy = null;
     p2pQueueManager?.updateProxyUrl(null);
     runtimeShutdownComplete = true;
   })();
@@ -1707,6 +1711,10 @@ app.whenReady().then(async () => {
   registerTestLogIpc(assertTrustedIpcSender);
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
+    torSecondaryManager = new TorManager({
+      appDataDir: app.getPath("userData"),
+      instanceId: "lane-2",
+    });
     const legacyQueuePath = path.join(app.getPath("userData"), "p2p-offline-queue.json");
     try {
       const executableName = process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker";
@@ -1762,21 +1770,31 @@ app.whenReady().then(async () => {
       }
     }
     onionControllerUrl = onionController.baseUrl;
+    const syncTorProxyPool = () =>
+      onionController?.setTorSocksProxies(
+        [currentTorSocksProxy, secondaryTorSocksProxy].filter(
+          (value): value is string => Boolean(value)
+        )
+      );
     torManager.onStatus((status) => {
       if (status.state === "running") {
         currentTorSocksProxy = status.socksProxyUrl;
         p2pQueueManager?.updateProxyUrl(status.socksProxyUrl);
-        void onionController?.setTorSocksProxy(status.socksProxyUrl);
+        void syncTorProxyPool();
         emitRuntimeBackgroundStatus({ state: "connected", route: "Tor Network" });
       } else {
         currentTorSocksProxy = null;
         p2pQueueManager?.updateProxyUrl(null);
-        void onionController?.setTorSocksProxy(null);
+        void syncTorProxyPool();
         emitRuntimeBackgroundStatus({
           state: "disconnected",
           route: status.state === "starting" ? "Tor starting" : "Tor offline",
         });
       }
+    });
+    torSecondaryManager.onStatus((status) => {
+      secondaryTorSocksProxy = status.state === "running" ? status.socksProxyUrl : null;
+      void syncTorProxyPool();
     });
   })().catch((error) => {
     console.error("[main] onion controller start failed", error);

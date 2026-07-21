@@ -1,7 +1,7 @@
 {
   "name": "test",
   "private": true,
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "NKC serverless secure chat desktop app",
   "author": {
     "name": "NyuKoP",
@@ -27,7 +27,10 @@
     "test:tor:reinstall": "cross-env NKC_TOR_REINSTALL_LIVE=1 vitest run src/main/onion/install/__tests__/torReinstall.live.test.ts --reporter=verbose",
     "test:tor:large": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=1",
     "test:tor:large:10": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=10",
+    "test:tor:large:10:window2": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=10 --window=2",
     "test:tor:large:100": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=100",
+    "test:tor:large:100:lane2": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=100 --window=2",
+    "test:tor:large:100:lane3": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=100 --window=3",
     "test:tor:large:500": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=500",
     "bench:transfer": "vitest bench --run src/perf/transferEncoding.bench.ts",
     "bench:transfer:500mb": "cross-env NKC_LARGE_TRANSFER_BENCH=1 vitest run src/perf/largeTransferPipeline.test.ts --reporter=verbose",

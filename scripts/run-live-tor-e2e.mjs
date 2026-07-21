@@ -6,6 +6,10 @@ const args = new Set(process.argv.slice(2));
 const large = args.has("--large");
 const sizeArg = [...args].find((value) => value.startsWith("--size-mb="));
 const sizeMb = sizeArg?.slice("--size-mb=".length) ?? "1";
+const windowArg = [...args].find((value) => value.startsWith("--window="));
+const sendWindow = windowArg?.slice("--window=".length) ?? "1";
+const chunkArg = [...args].find((value) => value.startsWith("--chunk-kib="));
+const chunkKiB = chunkArg?.slice("--chunk-kib=".length) ?? "1024";
 
 const findBundledTor = () => {
   if (process.env.NKC_TOR_PATH && fs.existsSync(process.env.NKC_TOR_PATH)) {
@@ -46,6 +50,8 @@ const result = spawnSync(
       NKC_LIVE_TOR_LARGE_E2E: large ? "1" : "0",
       NKC_LIVE_TOR_ONLY_LARGE: large ? "1" : "0",
       NKC_LIVE_TOR_FILE_MB: sizeMb,
+      NKC_LIVE_TOR_SEND_WINDOW: sendWindow,
+      NKC_LIVE_TOR_CHUNK_KIB: chunkKiB,
     },
   }
 );

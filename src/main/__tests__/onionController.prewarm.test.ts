@@ -47,4 +47,29 @@ describe("onion controller Tor prewarm", () => {
       await controller.close();
     }
   });
+
+  it("prewarms every independent Tor lane", async () => {
+    const fetch = vi.fn(async () => ({ status: 200, headers: {}, body: Buffer.alloc(0) }));
+    const transport: SocksTransport = {
+      fetch,
+      forward: vi.fn(),
+      clearProxy: vi.fn(async () => undefined),
+    };
+    const controller = await startOnionController({ port: 0, socksTransport: transport });
+    try {
+      await controller.setTorSocksProxies([
+        "socks5h://127.0.0.1:19050",
+        "socks5h://127.0.0.1:19051",
+      ]);
+      expect((await controller.prewarmTorRoute(onion)).ok).toBe(true);
+      expect(fetch.mock.calls.map((call) =>
+        (call as unknown as [string, { socksProxyUrl: string }])[1].socksProxyUrl
+      )).toEqual([
+        "socks5h://127.0.0.1:19050",
+        "socks5h://127.0.0.1:19051",
+      ]);
+    } finally {
+      await controller.close();
+    }
+  });
 });

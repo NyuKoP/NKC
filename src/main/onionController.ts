@@ -23,6 +23,8 @@ type InboxState = {
 
 type ForwardingState = {
   proxyUrl: string | null;
+  proxyUrls: string[];
+  nextProxyIndex: number;
   ready: boolean;
 };
 
@@ -31,6 +33,7 @@ export type OnionControllerHandle = {
   port: number;
   authToken: string;
   setTorSocksProxy: (proxyUrl: string | null) => Promise<void>;
+  setTorSocksProxies: (proxyUrls: string[]) => Promise<void>;
   setTorOnionHost: (host: string | null) => void;
   prewarmTorRoute: (
     onionAddress: string,
@@ -187,6 +190,8 @@ export const startOnionController = async (options?: {
   let ingestWindowCount = 0;
   const torForwarding: ForwardingState = {
     proxyUrl: null,
+    proxyUrls: [],
+    nextProxyIndex: 0,
     ready: false,
   };
   const torPrewarmSuccess = new Map<string, number>();
@@ -223,21 +228,28 @@ export const startOnionController = async (options?: {
       }),
       clearProxy: async () => undefined,
     };
-  const setTorSocksProxy = async (proxyUrl: string | null) => {
-    const trimmed = proxyUrl?.trim() ?? "";
-    const previousProxy = torForwarding.proxyUrl;
-    if (previousProxy !== trimmed) {
+  const setTorSocksProxies = async (proxyUrls: string[]) => {
+    const normalized = [...new Set(proxyUrls.map((value) => value.trim()).filter(Boolean))];
+    const previous = torForwarding.proxyUrls;
+    if (previous.join("\n") !== normalized.join("\n")) {
       torPrewarmSuccess.clear();
       torPrewarmInFlight.clear();
     }
-    if (previousProxy && previousProxy !== trimmed) await socksTransport.clearProxy(previousProxy);
-    if (!trimmed) {
-      torForwarding.proxyUrl = null;
-      torForwarding.ready = false;
-      return;
+    for (const previousProxy of previous) {
+      if (!normalized.includes(previousProxy)) await socksTransport.clearProxy(previousProxy);
     }
-    torForwarding.proxyUrl = trimmed;
-    torForwarding.ready = true;
+    torForwarding.proxyUrls = normalized;
+    torForwarding.proxyUrl = normalized[0] ?? null;
+    torForwarding.nextProxyIndex = 0;
+    torForwarding.ready = normalized.length > 0;
+  };
+  const setTorSocksProxy = (proxyUrl: string | null) =>
+    setTorSocksProxies(proxyUrl?.trim() ? [proxyUrl] : []);
+  const selectTorProxy = () => {
+    if (torForwarding.proxyUrls.length === 0) return null;
+    const selected = torForwarding.proxyUrls[torForwarding.nextProxyIndex % torForwarding.proxyUrls.length];
+    torForwarding.nextProxyIndex = (torForwarding.nextProxyIndex + 1) % torForwarding.proxyUrls.length;
+    return selected ?? null;
   };
 
   const prewarmTorRoute = async (onionAddress: string, probeOptions?: { timeoutMs?: number }) => {
@@ -249,7 +261,7 @@ export const startOnionController = async (options?: {
     if (!torForwarding.ready || !torForwarding.proxyUrl) {
       return { ok: false, elapsedMs: Date.now() - startedAt, error: "tor-proxy-unavailable" };
     }
-    const proxyUrl = torForwarding.proxyUrl;
+    const proxyUrls = [...torForwarding.proxyUrls];
     const cachedAt = torPrewarmSuccess.get(normalized) ?? 0;
     if (Date.now() - cachedAt < TOR_PREWARM_CACHE_MS) {
       return { ok: true, elapsedMs: Date.now() - startedAt };
@@ -262,17 +274,25 @@ export const startOnionController = async (options?: {
           3_000,
           Math.min(FORWARD_TIMEOUT_MS, probeOptions?.timeoutMs ?? FORWARD_TIMEOUT_MS)
         );
-        const response = await socksTransport.fetch(`http://${normalized}/onion/health`, {
-          method: "GET",
-          socksProxyUrl: proxyUrl,
-          timeoutMs,
-        });
+        const responses = await Promise.all(
+          proxyUrls.map((proxyUrl) =>
+            socksTransport.fetch(`http://${normalized}/onion/health`, {
+              method: "GET",
+              socksProxyUrl: proxyUrl,
+              timeoutMs,
+            })
+          )
+        );
         const elapsedMs = Date.now() - startedAt;
-        if (response.status === 200) {
+        if (responses.every((response) => response.status === 200)) {
           torPrewarmSuccess.set(normalized, Date.now());
           return { ok: true, elapsedMs };
         }
-        return { ok: false, elapsedMs, error: `prewarm-http-${response.status}` };
+        return {
+          ok: false,
+          elapsedMs,
+          error: `prewarm-http-${responses.map((response) => response.status).join(",")}`,
+        };
       } catch (error) {
         return {
           ok: false,
@@ -416,7 +436,7 @@ export const startOnionController = async (options?: {
         storeLocal: (deviceId, item) => enqueue(deviceId, item),
         forwardRouted: (routedPayload) =>
           socksTransport.forward(routedPayload, {
-            torProxyUrl: torForwarding.proxyUrl,
+            torProxyUrl: selectTorProxy(),
             queueOnFailure: options?.queueOnFailure ?? true,
           }),
         emitTrace: emitControllerTrace,
@@ -543,11 +563,12 @@ export const startOnionController = async (options?: {
     port: assignedPort,
     authToken,
     setTorSocksProxy,
+    setTorSocksProxies,
     setTorOnionHost,
     prewarmTorRoute,
     close: async () => {
       clearInterval(cleanupTimer);
-      await socksTransport.clearProxy(torForwarding.proxyUrl);
+      await Promise.all(torForwarding.proxyUrls.map((proxyUrl) => socksTransport.clearProxy(proxyUrl)));
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },
   };

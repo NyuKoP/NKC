@@ -120,6 +120,14 @@ declare global {
         error?: string;
         result?: { index: number; bytes: number; data: string; sha256: string };
       }>;
+      receiveInit: (payload: {
+        transferId: string; fileName: string; fileSize: number; chunkSize: number;
+        totalChunks: number; sha256: string;
+      }) => Promise<{ ok: boolean; error?: string; result?: { receivedChunks: number; totalChunks: number; complete: boolean } }>;
+      receiveWrite: (payload: { transferId: string; index: number; data: string }) => Promise<{ ok: boolean; error?: string; result?: { duplicate: boolean; checkpointed: boolean } }>;
+      receiveCheckpoint: (transferId: string) => Promise<{ ok: boolean; error?: string; result?: unknown }>;
+      receiveFinalize: (transferId: string) => Promise<{ ok: boolean; error?: string; result?: { path: string; sha256: string } }>;
+      receiveAbort: (transferId: string) => Promise<{ ok: boolean; error?: string; result?: unknown }>;
       planDelivery: (payload: unknown) => Promise<{
         ok: boolean;
         error?: string;

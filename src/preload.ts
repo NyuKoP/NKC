@@ -129,6 +129,11 @@ contextBridge.exposeInMainWorld("nativeWorker", {
     if (!filePath) return Promise.resolve({ ok: false, error: "file-path-unavailable" });
     return ipcRenderer.invoke("nativeWorker:fileChunk", { path: filePath, index, chunkSize, token: preloadToken });
   },
+  receiveInit: (payload: unknown) => ipcRenderer.invoke("nativeWorker:receiveInit", { ...(payload as object), token: preloadToken }),
+  receiveWrite: (payload: unknown) => ipcRenderer.invoke("nativeWorker:receiveWrite", { ...(payload as object), token: preloadToken }),
+  receiveCheckpoint: (transferId: string) => ipcRenderer.invoke("nativeWorker:receive:checkpoint", { transferId, token: preloadToken }),
+  receiveFinalize: (transferId: string) => ipcRenderer.invoke("nativeWorker:receive:finalize", { transferId, token: preloadToken }),
+  receiveAbort: (transferId: string) => ipcRenderer.invoke("nativeWorker:receive:abort", { transferId, token: preloadToken }),
   planDelivery: (payload: unknown) => ipcRenderer.invoke("nativeWorker:schedule", payload),
 });
 
