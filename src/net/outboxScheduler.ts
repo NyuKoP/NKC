@@ -2,7 +2,7 @@ import { createDeliveryScheduler } from "../delivery/deliveryScheduler";
 import { sendOutboxRecord } from "./router";
 import { deleteFailedOutbox, ensureOutboxDefaults } from "../storage/outboxStore";
 import { useNetConfigStore } from "./netConfigStore";
-import type { NetMode } from "../delivery/retryPolicy";
+import type { NetMode } from "../delivery/deliveryScheduler";
 
 let scheduler: ReturnType<typeof createDeliveryScheduler> | null = null;
 
@@ -13,11 +13,18 @@ export const startOutboxScheduler = () => {
     if (config.mode === "directP2P") return "direct";
     if (config.mode === "selfOnion") return "onion";
     if (config.mode === "onionRouter" || config.onionEnabled) {
-      return config.onionSelectedNetwork === "lokinet" ? "lokinet" : "tor";
+      return "tor";
     }
     return "onion";
   };
-  scheduler = createDeliveryScheduler(sendOutboxRecord, { getNetMode });
+  scheduler = createDeliveryScheduler(sendOutboxRecord, {
+    getNetMode,
+    planDelivery: async (payload) => {
+      if (typeof window === "undefined" || !window.nativeWorker) return null;
+      const response = await window.nativeWorker.planDelivery(payload);
+      return response.ok && response.result ? response.result : null;
+    },
+  });
   void ensureOutboxDefaults()
     .then(() => deleteFailedOutbox(12))
     .then((deleted) => {

@@ -75,6 +75,19 @@ export const updateOutbox = async (id: string, patch: Partial<OutboxRecord>) => 
   void n;
 };
 
+export const markOutboxInFlightUnlessAcked = async (
+  id: string,
+  patch: Pick<OutboxRecord, "inFlightAtMs" | "ackDeadlineMs">
+) => {
+  await ensureDbOpen();
+  return db.transaction("rw", db.outbox, async () => {
+    const current = await db.outbox.get(id);
+    if (!current || current.status === "acked") return false;
+    await db.outbox.update(id, { ...patch, status: "in_flight" });
+    return true;
+  });
+};
+
 export const deleteExpiredOutbox = async (now = Date.now()) => {
   await ensureDbOpen();
   const expired = await db.outbox

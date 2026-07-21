@@ -1,6 +1,6 @@
-﻿import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
-import { Settings, UserPlus, UserX } from "lucide-react";
+import { Image as ImageIcon, Settings, UserPlus, UserX } from "lucide-react";
 import {
   listMessagesByConv,
   loadMessageMedia,
@@ -367,9 +367,9 @@ export default function RightPanel({
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = media.name || "media";
+    anchor.download = (media.name || "media").replace(/[^a-zA-Z0-9.\-_가-힣]/g, "_");
     anchor.click();
-    window.setTimeout(() => URL.revokeObjectURL(url), 250);
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
   };
 
   const handleDownloadGroup = async (group: MediaGroup) => {
@@ -403,7 +403,7 @@ export default function RightPanel({
   if (!open) return null;
 
   return (
-    <aside className="hidden h-full w-[320px] rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft lg:block">
+    <aside className="hidden h-full w-[320px] overflow-hidden border-l border-nkc-border bg-nkc-panel lg:block animate-signal-slide-in-right">
       <Tabs.Root
         value={tab}
         onValueChange={(value) => {
@@ -411,23 +411,34 @@ export default function RightPanel({
         }}
         className="flex h-full min-h-0 flex-col"
       >
-        <Tabs.List className="grid grid-cols-3 gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
-          {tabs.map((item) => (
-            <Tabs.Trigger
-              key={item.value}
-              value={item.value}
-              className="rounded-nkc px-2 py-2 font-semibold text-nkc-muted data-[state=active]:bg-nkc-panel data-[state=active]:text-nkc-text"
-            >
-              {item.label}
-            </Tabs.Trigger>
-          ))}
-        </Tabs.List>
+        <div className="p-4 pb-2">
+          <Tabs.List className="grid grid-cols-3 gap-1 rounded-lg bg-nkc-hover p-1 text-xs">
+            {tabs.map((item) => (
+              <Tabs.Trigger
+                key={item.value}
+                value={item.value}
+                className="rounded-md px-2 py-1.5 font-semibold text-nkc-muted transition-colors hover:text-nkc-text data-[state=active]:bg-nkc-panel data-[state=active]:text-nkc-text"
+              >
+                {item.label}
+              </Tabs.Trigger>
+            ))}
+          </Tabs.List>
+        </div>
 
-        <Tabs.Content value="about" className="mt-4 flex-1 overflow-y-auto space-y-4 pr-1 scrollbar-hidden">
+        <div className="mt-4 flex w-full min-h-0 flex-1 flex-col items-stretch justify-start px-4">
+        <Tabs.Content
+          value="about"
+          className="min-h-0 flex-1 overflow-y-auto scrollbar-hidden focus:outline-none data-[state=inactive]:hidden"
+        >
           {conversation ? (
-            <div className="space-y-4 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4">
+            <div className="w-full space-y-4 rounded-lg bg-nkc-hover p-4">
               <div className="flex items-center gap-3">
-                <Avatar name={aboutAvatarName} avatarRef={aboutAvatarRef} size={52} />
+                <Avatar
+                  name={aboutAvatarName}
+                  colorKey={isGroup ? conversation.id : friendProfile?.id ?? conversation.id}
+                  avatarRef={aboutAvatarRef}
+                  size={52}
+                />
                 <div>
                   <div className="text-sm font-semibold text-nkc-text">
                     {displayName || conversation.name}
@@ -447,7 +458,7 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => handleCopyValue(peerIdValue)}
-                      className="rounded-nkc border border-nkc-border px-2 py-0.5 text-[10px] text-nkc-muted hover:bg-nkc-panel"
+                      className="rounded-full bg-nkc-surface px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-hover"
                     >
                       복사
                     </button>
@@ -460,7 +471,7 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => handleCopyValue(identityKeyValue)}
-                      className="rounded-nkc border border-nkc-border px-2 py-0.5 text-[10px] text-nkc-muted hover:bg-nkc-panel"
+                      className="rounded-full bg-nkc-surface px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-hover"
                     >
                       복사
                     </button>
@@ -487,7 +498,7 @@ export default function RightPanel({
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
-                          className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel"
+                          className="rounded-full bg-nkc-surface px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-hover"
                         >
                           변경
                         </button>
@@ -495,7 +506,7 @@ export default function RightPanel({
                           <button
                             type="button"
                             onClick={() => onSetGroupAvatarOverride(conversation.id, null)}
-                            className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-muted hover:bg-nkc-panel"
+                            className="rounded-full bg-nkc-surface px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-hover"
                           >
                             해제
                           </button>
@@ -520,8 +531,8 @@ export default function RightPanel({
                     <div className="text-xs font-semibold text-nkc-muted">Members ({members.length})</div>
                     <div className="mt-2 space-y-1">
                       {members.map((member) => (
-                        <div key={member.id} className="flex items-center gap-2 rounded-nkc px-1 py-1.5">
-                          <Avatar name={member.name} avatarRef={member.avatarRef} size={28} />
+                        <div key={member.id} className="flex items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-nkc-hover">
+                          <Avatar name={member.name} colorKey={member.id} avatarRef={member.avatarRef} size={28} />
                           <div className="min-w-0">
                             <div className="text-xs font-semibold text-nkc-text line-clamp-1">
                               {member.name}
@@ -531,7 +542,7 @@ export default function RightPanel({
                             ) : null}
                           </div>
                           {member.isSelf ? (
-                            <span className="ml-auto rounded-full border border-nkc-border px-2 py-0.5 text-[10px] text-nkc-muted">
+                            <span className="ml-auto rounded-full bg-nkc-surface px-2 py-0.5 text-[10px] text-nkc-muted">
                               나
                             </span>
                           ) : null}
@@ -544,7 +555,7 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => onInviteToGroup(conversation.id)}
-                      className="flex flex-1 items-center justify-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
+                      className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg bg-nkc-accent px-3 text-xs font-semibold text-white hover:brightness-110"
                     >
                       <UserPlus size={14} />
                       Invite
@@ -552,7 +563,7 @@ export default function RightPanel({
                     <button
                       type="button"
                       onClick={() => onLeaveGroup(conversation.id)}
-                      className="flex flex-1 items-center justify-center gap-2 rounded-nkc border border-red-500/40 px-3 py-2 text-xs text-red-200 hover:bg-red-500/10"
+                      className="flex h-9 flex-1 items-center justify-center gap-2 rounded-lg bg-red-500/10 px-3 text-xs font-semibold text-red-400 hover:bg-red-500/20"
                     >
                       <UserX size={14} />
                       Leave
@@ -562,14 +573,17 @@ export default function RightPanel({
               ) : null}
             </div>
           ) : (
-            <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-sm text-nkc-muted">
+            <div className="w-full rounded-lg p-4 text-center text-sm text-nkc-muted">
               대화를 선택하면 상세 정보가 표시됩니다.
             </div>
           )}
         </Tabs.Content>
-        <Tabs.Content value="media" className="mt-4 flex min-h-0 flex-1 flex-col">
-          <div className="space-y-3">
-            <div className="flex items-center gap-2 rounded-nkc bg-nkc-panelMuted p-1 text-xs">
+        <Tabs.Content
+          value="media"
+          className="min-h-0 flex-1 flex-col overflow-y-auto scrollbar-hidden focus:outline-none data-[state=active]:flex data-[state=inactive]:hidden"
+        >
+          <div className="w-full flex flex-col gap-4">
+            <div className="flex items-center gap-1 rounded-lg bg-nkc-hover p-1 text-xs">
               {([
                 { value: "images", label: "Images" },
                 { value: "videos", label: "Videos" },
@@ -581,8 +595,8 @@ export default function RightPanel({
                   onClick={() => setMediaFilter(item.value)}
                   className={
                     mediaFilter === item.value
-                      ? "flex-1 rounded-nkc bg-nkc-panel px-2 py-1 font-semibold text-nkc-text"
-                      : "flex-1 rounded-nkc px-2 py-1 font-semibold text-nkc-muted hover:text-nkc-text"
+                      ? "flex h-8 flex-1 items-center justify-center rounded-md bg-nkc-panel px-3 text-[11px] font-semibold text-nkc-text"
+                      : "flex h-8 flex-1 items-center justify-center rounded-md px-3 text-[11px] font-semibold text-nkc-muted hover:text-nkc-text"
                   }
                 >
                   {item.label}
@@ -590,13 +604,13 @@ export default function RightPanel({
               ))}
             </div>
           </div>
-          <div className="mt-3 min-h-0 flex-1 overflow-y-auto pr-1 scrollbar-hidden">
+          <div className="min-h-0 flex-1">
             {mediaLoading ? (
-              <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
+              <div className="w-full rounded-lg p-4 text-xs text-nkc-muted">
                 미디어를 불러오는 중...
               </div>
             ) : mediaError ? (
-              <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
+              <div className="w-full rounded-lg p-4 text-xs text-nkc-muted">
                 {mediaError}
               </div>
             ) : groupedMedia.length ? (
@@ -614,7 +628,7 @@ export default function RightPanel({
                             key={group.id}
                             type="button"
                             onClick={() => openViewer(group, 0)}
-                            className="w-full overflow-hidden rounded-nkc border border-nkc-border bg-nkc-panelMuted p-3 text-left text-xs hover:bg-nkc-panel"
+                            className="w-full overflow-hidden rounded-lg bg-nkc-hover p-3 text-left text-xs hover:bg-nkc-surface"
                           >
                             <div className="mb-2 flex items-center justify-between">
                               <div className="font-semibold text-nkc-text">
@@ -632,18 +646,18 @@ export default function RightPanel({
                                 return (
                                   <div
                                     key={item.message.id}
-                                    className="min-w-0 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-1"
+                                    className="min-w-0 rounded-lg bg-nkc-surface p-1"
                                   >
                                     {previewUrl && isImage ? (
                                       <img
                                         src={previewUrl}
                                         alt={item.media.name || "preview"}
-                                        className="h-16 w-full rounded-nkc object-cover"
+                                        className="h-16 w-full rounded-lg object-cover"
                                       />
                                     ) : previewUrl && isVideo ? (
                                       <video
                                         src={previewUrl}
-                                        className="h-16 w-full rounded-nkc object-cover"
+                                        className="h-16 w-full rounded-lg object-cover"
                                         muted
                                         playsInline
                                       />
@@ -675,18 +689,19 @@ export default function RightPanel({
                 ))}
               </div>
             ) : (
-              <div className="rounded-nkc border border-dashed border-nkc-border p-4 text-xs text-nkc-muted">
-                표시할 미디어가 없습니다.
+              <div className="flex min-h-[240px] w-full flex-col items-center justify-center rounded-lg p-6 text-center text-xs text-nkc-muted">
+                <ImageIcon size={32} className="mb-3 opacity-40" />
+                <p>표시할 미디어가 없습니다.</p>
               </div>
             )}
           </div>
           {viewerGroup ? (
             <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-              <div className="relative w-full max-w-3xl rounded-nkc bg-nkc-panel p-4 shadow-soft">
+              <div className="relative w-full max-w-3xl rounded-xl bg-nkc-surface p-4">
                 <button
                   type="button"
                   onClick={closeViewer}
-                  className="absolute right-4 top-4 rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                  className="absolute right-4 top-4 rounded-md bg-nkc-hover px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel"
                 >
                   닫기
                 </button>
@@ -707,7 +722,7 @@ export default function RightPanel({
                         <img
                           src={previewUrl}
                           alt={item.media.name || "preview"}
-                          className="max-h-[60vh] w-full rounded-nkc object-contain"
+                          className="max-h-[60vh] w-full rounded-lg object-contain"
                         />
                       );
                     }
@@ -715,7 +730,7 @@ export default function RightPanel({
                       return (
                         <video
                           src={previewUrl}
-                          className="max-h-[60vh] w-full rounded-nkc object-contain"
+                          className="max-h-[60vh] w-full rounded-lg object-contain"
                           controls
                           playsInline
                         />
@@ -736,7 +751,7 @@ export default function RightPanel({
                         setViewerIndex((prev) => Math.max(0, prev - 1))
                       }
                       disabled={viewerIndex === 0}
-                      className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                      className="rounded-md bg-nkc-hover px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
                     >
                       이전
                     </button>
@@ -746,7 +761,7 @@ export default function RightPanel({
                         setViewerIndex((prev) => Math.min(viewerGroup.items.length - 1, prev + 1))
                       }
                       disabled={viewerIndex >= viewerGroup.items.length - 1}
-                      className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                      className="rounded-md bg-nkc-hover px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
                     >
                       다음
                     </button>
@@ -758,21 +773,21 @@ export default function RightPanel({
                         const item = viewerGroup.items[viewerIndex];
                         if (item) void handleDownloadItem(item);
                       }}
-                      className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                      className="rounded-md bg-nkc-hover px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel"
                     >
                       현재 장 다운로드
                     </button>
                     <button
                       type="button"
                       onClick={() => void handleDownloadGroup(viewerGroup)}
-                      className="rounded-nkc border border-nkc-border px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panelMuted"
+                      className="rounded-md bg-nkc-hover px-2 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel"
                     >
                       전체 다운로드
                     </button>
                   </div>
                 </div>
                 <div className="mt-2 flex justify-center">
-                  <span className="rounded-full border border-nkc-border bg-nkc-panelMuted px-3 py-1 text-[11px] text-nkc-muted">
+                  <span className="rounded-full bg-nkc-hover px-3 py-1 text-[11px] text-nkc-muted">
                     {viewerIndex + 1}/{viewerGroup.items.length}
                   </span>
                 </div>
@@ -786,7 +801,7 @@ export default function RightPanel({
                         key={item.message.id}
                         type="button"
                         onClick={() => setViewerIndex(idx)}
-                        className={`h-16 w-20 rounded-nkc border ${
+                        className={`h-16 w-20 rounded-md border ${
                           idx === viewerIndex ? "border-nkc-text" : "border-nkc-border"
                         }`}
                       >
@@ -794,12 +809,12 @@ export default function RightPanel({
                           <img
                             src={previewUrl}
                             alt={item.media.name || "thumb"}
-                            className="h-full w-full rounded-nkc object-cover"
+                            className="h-full w-full rounded-md object-cover"
                           />
                         ) : previewUrl && isVideo ? (
                           <video
                             src={previewUrl}
-                            className="h-full w-full rounded-nkc object-cover"
+                            className="h-full w-full rounded-md object-cover"
                             muted
                             playsInline
                           />
@@ -817,89 +832,96 @@ export default function RightPanel({
           ) : null}
         </Tabs.Content>
 
-        <Tabs.Content value="settings" className="mt-4 flex-1 overflow-y-auto space-y-3 pr-1 scrollbar-hidden">
-          <div className="space-y-3 rounded-nkc border border-nkc-border bg-nkc-panelMuted p-4 text-xs text-nkc-muted">
-            <div className="flex items-center justify-between">
-              <div>
-                <div className="font-semibold text-nkc-text">Notifications</div>
-                <div className="text-[11px]">{conversation?.muted ? "알림 꺼짐" : "알림 켜짐"}</div>
+        <Tabs.Content
+          value="settings"
+          className="min-h-0 flex-1 overflow-y-auto scrollbar-hidden focus:outline-none data-[state=inactive]:hidden"
+        >
+          {conversation ? (
+            <div className="w-full flex flex-col gap-4">
+              <div className="w-full divide-y divide-nkc-border/50 rounded-lg bg-nkc-hover px-4 py-1 text-xs text-nkc-muted">
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-xs font-semibold text-nkc-text">Notifications</div>
+                    <div className="mt-0.5 text-[11px]">
+                      {conversation.muted ? "알림 꺼짐" : "알림 켜짐"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onToggleMute(conversation.id)}
+                    className="rounded-full bg-nkc-surface px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-hover"
+                  >
+                    {conversation.muted ? "알림 켜기" : "알림 끄기"}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-xs font-semibold text-nkc-text">Pin</div>
+                    <div className="mt-0.5 text-[11px]">
+                      {conversation.pinned ? "고정됨" : "고정 안 됨"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onTogglePin(conversation.id)}
+                    className="rounded-full bg-nkc-surface px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-hover"
+                  >
+                    {conversation.pinned ? "고정 해제" : "고정"}
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-xs font-semibold text-nkc-text">Conversation</div>
+                    <div className="mt-0.5 text-[11px]">채팅방 관리</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onHideConversation(conversation.id)}
+                    className="rounded-full bg-nkc-surface px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-hover"
+                  >
+                    채팅 숨기기
+                  </button>
+                </div>
+
+                <div className="flex items-center justify-between py-3">
+                  <div>
+                    <div className="text-xs font-semibold text-nkc-text">Block</div>
+                    <div className="mt-0.5 text-[11px]">
+                      {conversation.blocked ? "차단됨" : "차단 안 됨"}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onToggleBlock(conversation.id)}
+                    className="rounded-full bg-nkc-surface px-3 py-1 text-[11px] font-medium text-nkc-text hover:bg-nkc-hover"
+                  >
+                    {conversation.blocked ? "차단 해제" : "차단"}
+                  </button>
+                </div>
               </div>
+
               <button
                 type="button"
-                onClick={() => conversation && onToggleMute(conversation.id)}
-                disabled={!conversation}
-                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
+                onClick={onOpenSettings}
+                className="flex w-full items-center justify-center gap-2 rounded-lg bg-nkc-surface px-3 py-2.5 text-xs font-semibold text-nkc-text hover:bg-nkc-hover"
               >
-                {conversation?.muted ? "알림 켜기" : "알림 끄기"}
+                <Settings size={14} />
+                전체 설정 열기
               </button>
             </div>
-            <div className="flex items-center justify-between border-t border-nkc-border pt-3">
-              <div>
-                <div className="font-semibold text-nkc-text">Pin</div>
-                <div className="text-[11px]">{conversation?.pinned ? "고정됨" : "고정 안 됨"}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => conversation && onTogglePin(conversation.id)}
-                disabled={!conversation}
-                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
-              >
-                {conversation?.pinned ? "고정 해제" : "고정"}
-              </button>
+          ) : (
+            <div className="w-full rounded-lg p-4 text-center text-sm text-nkc-muted">
+              대화를 선택하면 설정을 볼 수 있습니다.
             </div>
-            <div className="flex items-center justify-between border-t border-nkc-border pt-3">
-              <div className="font-semibold text-nkc-text">Conversation</div>
-              <button
-                type="button"
-                onClick={() => conversation && onHideConversation(conversation.id)}
-                disabled={!conversation}
-                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
-              >
-                채팅 숨기기
-              </button>
-            </div>
-            <div className="flex items-center justify-between border-t border-nkc-border pt-3">
-              <div>
-                <div className="font-semibold text-nkc-text">Block</div>
-                <div className="text-[11px]">{conversation?.blocked ? "차단됨" : "차단 안 됨"}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => conversation && onToggleBlock(conversation.id)}
-                disabled={!conversation}
-                className="rounded-nkc border border-nkc-border px-3 py-1 text-[11px] text-nkc-text hover:bg-nkc-panel disabled:opacity-50"
-              >
-                {conversation?.blocked ? "차단 해제" : "차단"}
-              </button>
-            </div>
-          </div>
-          <button
-            onClick={onOpenSettings}
-            className="flex w-full items-center justify-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted"
-          >
-            <Settings size={14} />
-            전체 설정 열기
-          </button>
+          )}
         </Tabs.Content>
+        </div>
       </Tabs.Root>
     </aside>
   );
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 

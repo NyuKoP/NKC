@@ -1,4 +1,10 @@
 import type { Transport, TransportPacket, TransportState } from "./types";
+import {
+  decodeBinaryTransportPacket,
+  encodeBinaryTransportPacket,
+  isBinaryTransportPacket,
+} from "./packetCodec";
+import { encodeBase64Url } from "../../security/base64url";
 
 type Handler<T> = (payload: T) => void;
 
@@ -6,6 +12,9 @@ type DirectSignalExt = {
   createOfferCode: () => Promise<string>;
   acceptSignalCode: (code: string) => Promise<void>;
   onSignalCode: (cb: (code: string) => void) => void;
+  sendFileFrame: (frame: Uint8Array) => Promise<void>;
+  recommendedFileFrameSize: () => number;
+  onFileFrame: (cb: (frame: Uint8Array) => void) => () => void;
 };
 
 type SignalMessage =
@@ -15,7 +24,13 @@ type SignalMessage =
 
 const SIGNAL_PREFIX = "NKC-RTC1.";
 const DATA_CHANNEL_LABEL = "nkc-direct-v1";
+const FILE_DATA_CHANNEL_LABEL = "nkc-file-v1";
+const CAPABILITIES_PACKET_ID = "__nkc_capabilities__";
+const BINARY_PACKET_CAPABILITY = "binary-packet-v1";
 const DEFAULT_STUN_URL = "stun:stun.l.google.com:19302";
+const RECOMMENDED_FILE_FRAME_BYTES = 64 * 1024;
+const DATA_CHANNEL_HIGH_WATER_BYTES = 2 * 1024 * 1024;
+const DATA_CHANNEL_DRAIN_TIMEOUT_MS = 10_000;
 
 const toBase64Url = (value: string) => {
   const b64 = btoa(value);
@@ -56,16 +71,43 @@ const mapIceState = (value: RTCIceConnectionState | undefined): TransportState =
   return "connecting";
 };
 
-export const createDirectP2PTransport = (): Transport => {
+export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
   let state: TransportState = "idle";
   const messageHandlers: Array<Handler<TransportPacket>> = [];
   const ackHandlers: Array<Handler<{ id: string; rttMs: number }>> = [];
   const stateHandlers: Array<Handler<TransportState>> = [];
   const signalHandlers: Array<Handler<string>> = [];
+  const fileFrameHandlers = new Set<Handler<Uint8Array>>();
   let peerConnection: RTCPeerConnection | null = null;
   let dataChannel: RTCDataChannel | null = null;
+  let fileDataChannel: RTCDataChannel | null = null;
   let started = false;
   let pendingIce: RTCIceCandidateInit[] = [];
+  let binaryPacketSupported = false;
+  let capabilitiesSent = false;
+
+  const waitForChannelCapacity = async (channel: RTCDataChannel) => {
+    const startedAt = Date.now();
+    while (channel.bufferedAmount > DATA_CHANNEL_HIGH_WATER_BYTES) {
+      if (channel.readyState !== "open") throw new Error("DIRECT_NOT_OPEN: Data channel closed while draining");
+      if (Date.now() - startedAt >= DATA_CHANNEL_DRAIN_TIMEOUT_MS) {
+        throw new Error("DIRECT_BACKPRESSURE_TIMEOUT: Data channel did not drain");
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  };
+
+  const sendCapabilities = () => {
+    if (!dataChannel || dataChannel.readyState !== "open" || capabilitiesSent) return;
+    dataChannel.send(
+      JSON.stringify({
+        id: CAPABILITIES_PACKET_ID,
+        payload: "",
+        capabilities: [BINARY_PACKET_CAPABILITY],
+      })
+    );
+    capabilitiesSent = true;
+  };
 
   const emitState = (next: TransportState) => {
     state = next;
@@ -78,6 +120,13 @@ export const createDirectP2PTransport = (): Transport => {
   };
 
   const handleDataMessage = (data: unknown) => {
+    if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
+      if (isBinaryTransportPacket(data)) {
+        const packet = decodeBinaryTransportPacket(data);
+        if (packet) messageHandlers.forEach((handler) => handler(packet));
+        return;
+      }
+    }
     let raw = "";
     if (typeof data === "string") {
       raw = data;
@@ -91,6 +140,14 @@ export const createDirectP2PTransport = (): Transport => {
     try {
       const parsed = JSON.parse(raw) as TransportPacket;
       if (!parsed || typeof parsed.id !== "string") return;
+      if (parsed.id === CAPABILITIES_PACKET_ID) {
+        const capabilities = (parsed as { capabilities?: unknown }).capabilities;
+        if (Array.isArray(capabilities) && capabilities.includes(BINARY_PACKET_CAPABILITY)) {
+          binaryPacketSupported = true;
+          sendCapabilities();
+        }
+        return;
+      }
       messageHandlers.forEach((handler) => handler(parsed));
     } catch {
       // ignore invalid packets
@@ -99,10 +156,31 @@ export const createDirectP2PTransport = (): Transport => {
 
   const setupDataChannel = (channel: RTCDataChannel) => {
     dataChannel = channel;
-    dataChannel.onopen = () => emitState("connected");
+    binaryPacketSupported = false;
+    capabilitiesSent = false;
+    dataChannel.onopen = () => {
+      emitState("connected");
+      sendCapabilities();
+    };
     dataChannel.onmessage = (event) => handleDataMessage(event.data);
     dataChannel.onclose = () => emitState("idle");
     dataChannel.onerror = () => emitState("failed");
+  };
+
+  const setupFileDataChannel = (channel: RTCDataChannel) => {
+    fileDataChannel = channel;
+    channel.binaryType = "arraybuffer";
+    channel.onmessage = (event) => {
+      const value = event.data;
+      const bytes = value instanceof ArrayBuffer
+        ? new Uint8Array(value)
+        : value instanceof Uint8Array
+          ? value
+          : null;
+      if (!bytes) return;
+      fileFrameHandlers.forEach((handler) => handler(bytes));
+    };
+    channel.onerror = () => emitState("degraded");
   };
 
   const ensurePeerConnection = () => {
@@ -127,7 +205,11 @@ export const createDirectP2PTransport = (): Transport => {
       emitState(mapIceState(pc.iceConnectionState));
     };
     pc.ondatachannel = (event) => {
-      setupDataChannel(event.channel);
+      if (event.channel.label === FILE_DATA_CHANNEL_LABEL) {
+        setupFileDataChannel(event.channel);
+      } else if (event.channel.label === DATA_CHANNEL_LABEL) {
+        setupDataChannel(event.channel);
+      }
     };
     peerConnection = pc;
     return pc;
@@ -146,7 +228,7 @@ export const createDirectP2PTransport = (): Transport => {
     }
   };
 
-  const transport = {
+  const transport: Transport & DirectSignalExt = {
     name: "directP2P",
     async start() {
       if (started) return;
@@ -157,6 +239,8 @@ export const createDirectP2PTransport = (): Transport => {
     async stop() {
       started = false;
       pendingIce = [];
+      binaryPacketSupported = false;
+      capabilitiesSent = false;
       if (dataChannel) {
         try {
           dataChannel.close();
@@ -164,6 +248,14 @@ export const createDirectP2PTransport = (): Transport => {
           // ignore close errors
         }
         dataChannel = null;
+      }
+      if (fileDataChannel) {
+        try {
+          fileDataChannel.close();
+        } catch {
+          // ignore close errors
+        }
+        fileDataChannel = null;
       }
       if (peerConnection) {
         try {
@@ -177,9 +269,23 @@ export const createDirectP2PTransport = (): Transport => {
     },
     async send(packet: TransportPacket) {
       if (!dataChannel || dataChannel.readyState !== "open") {
-        throw new Error("Direct P2P data channel is not open");
+        const error = new Error("DIRECT_NOT_OPEN: Direct P2P data channel is not open") as Error & {
+          code?: string;
+        };
+        error.code = "DIRECT_NOT_OPEN";
+        throw error;
       }
-      dataChannel.send(JSON.stringify(packet));
+      await waitForChannelCapacity(dataChannel);
+      const binary = binaryPacketSupported ? encodeBinaryTransportPacket(packet) : null;
+      if (binary) {
+        dataChannel.send(binary.slice().buffer as ArrayBuffer);
+      } else {
+        const legacyPacket =
+          packet.payload instanceof Uint8Array
+            ? { ...packet, payload: { b64: encodeBase64Url(packet.payload) } }
+            : packet;
+        dataChannel.send(JSON.stringify(legacyPacket));
+      }
       ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
     },
     async createOfferCode() {
@@ -188,6 +294,10 @@ export const createDirectP2PTransport = (): Transport => {
       if (!dataChannel) {
         const channel = pc.createDataChannel(DATA_CHANNEL_LABEL, { ordered: true });
         setupDataChannel(channel);
+      }
+      if (!fileDataChannel) {
+        const channel = pc.createDataChannel(FILE_DATA_CHANNEL_LABEL, { ordered: false });
+        setupFileDataChannel(channel);
       }
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
@@ -228,6 +338,27 @@ export const createDirectP2PTransport = (): Transport => {
     onSignalCode(cb: (code: string) => void) {
       signalHandlers.push(cb);
     },
+    async sendFileFrame(frame: Uint8Array) {
+      if (!fileDataChannel || fileDataChannel.readyState !== "open") {
+        throw new Error("DIRECT_FILE_NOT_OPEN: Direct P2P file data channel is not open");
+      }
+      const negotiatedMax = peerConnection?.sctp?.maxMessageSize;
+      if (negotiatedMax && frame.byteLength > negotiatedMax) {
+        throw new Error("DIRECT_FILE_FRAME_TOO_LARGE: Frame exceeds negotiated SCTP maximum");
+      }
+      await waitForChannelCapacity(fileDataChannel);
+      fileDataChannel.send(frame.slice().buffer as ArrayBuffer);
+    },
+    recommendedFileFrameSize() {
+      const negotiatedMax = peerConnection?.sctp?.maxMessageSize;
+      return negotiatedMax && Number.isFinite(negotiatedMax)
+        ? Math.min(RECOMMENDED_FILE_FRAME_BYTES, negotiatedMax)
+        : RECOMMENDED_FILE_FRAME_BYTES;
+    },
+    onFileFrame(cb: (frame: Uint8Array) => void) {
+      fileFrameHandlers.add(cb);
+      return () => fileFrameHandlers.delete(cb);
+    },
     onMessage(cb: (packet: TransportPacket) => void) {
       messageHandlers.push(cb);
     },
@@ -239,5 +370,5 @@ export const createDirectP2PTransport = (): Transport => {
       cb(state);
     },
   };
-  return transport as Transport & DirectSignalExt;
+  return transport;
 };

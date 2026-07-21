@@ -15,5 +15,5 @@ export const createId = () => {
       16
     )}-${hex.slice(16, 20)}-${hex.slice(20)}`;
   }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  throw new Error("Secure random generator is unavailable");
 };

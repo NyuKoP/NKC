@@ -1,6 +1,6 @@
 import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import type { TransportPacket, TransportState as AdapterState } from "../adapters/transports/types";
-import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
+import { decodeBase64Url } from "../security/base64url";
 import { createId } from "../utils/ids";
 import type { PeerHint, Transport, TransportStatus } from "./transport";
 
@@ -97,7 +97,7 @@ export const createDirectTransport = (): Transport => {
     async send(bytes: Uint8Array) {
       const packet: TransportPacket = {
         id: createId(),
-        payload: { b64: encodeBase64Url(bytes) },
+        payload: bytes,
       };
       await adapter.send(packet);
     },

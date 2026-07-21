@@ -1,5 +1,6 @@
 import type { AppPreferences, AppPreferencesPatch } from "../../../preferences";
 import SettingsBackHeader from "../SettingsBackHeader";
+import ToggleSwitch from "../ToggleSwitch";
 
 type Translate = (ko: string, en: string) => string;
 
@@ -34,13 +35,14 @@ export default function NotificationsSettings({
                 {t("새 메시지 알림을 표시합니다.", "Show new message notifications.")}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("알림 사용", "Notifications enabled")}
               checked={appPrefs.notifications.enabled}
               disabled={prefsDisabled}
-              onChange={(e) =>
+              testId="notifications-enabled-switch"
+              onChange={(checked) =>
                 void onUpdateAppPrefs({
-                  notifications: { enabled: e.target.checked },
+                  notifications: { enabled: checked },
                 })
               }
             />
@@ -55,13 +57,14 @@ export default function NotificationsSettings({
                 {t("\"새 메시지\"로만 표시합니다.", "Show only \"New message\".")}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("알림 내용 숨기기", "Hide notification content")}
               checked={appPrefs.notifications.hideContent}
               disabled={prefsDisabled || notificationsDisabled}
-              onChange={(e) =>
+              testId="notifications-hide-content-switch"
+              onChange={(checked) =>
                 void onUpdateAppPrefs({
-                  notifications: { hideContent: e.target.checked },
+                  notifications: { hideContent: checked },
                 })
               }
             />
@@ -71,4 +74,3 @@ export default function NotificationsSettings({
     </div>
   );
 }
-

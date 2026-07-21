@@ -29,11 +29,43 @@ const createLargePngBuffer = (sizeBytes: number) => {
   return Buffer.concat([header, padding]);
 };
 
+const clearProfileStore = async (page: Page) =>
+  page.evaluate(async () => {
+    const openRequest = indexedDB.open("nkc_vault");
+    const db = await new Promise<IDBDatabase>((resolve, reject) => {
+      openRequest.onsuccess = () => resolve(openRequest.result);
+      openRequest.onerror = () => reject(openRequest.error);
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const tx = db.transaction("profiles", "readwrite");
+        tx.objectStore("profiles").clear();
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    } finally {
+      db.close();
+    }
+  });
+
 test.describe("Settings and media E2E", () => {
   test.beforeEach(async ({ page }) => {
     await page.goto("/");
     await disableAnimations(page);
     await ensureOnboarded(page);
+  });
+
+  test("missing account profile returns to onboarding instead of a dead settings route", async ({
+    page,
+  }) => {
+    await clearProfileStore(page);
+
+    await page.reload();
+    await expect(page.getByTestId("onboarding-screen")).toBeVisible();
+    await page.goto("/settings");
+    await expect(page.getByTestId("onboarding-screen")).toBeVisible();
   });
 
   test("proxy URL without port shows inline error and is not applied", async ({ page }) => {
@@ -69,6 +101,130 @@ test.describe("Settings and media E2E", () => {
     await expect(effectiveMode).toHaveText(initialLabel);
   });
 
+  test("light and dark themes apply immediately after save", async ({ page }) => {
+    await page.getByTestId("open-settings").click();
+    await page.getByTestId("settings-theme-button").click();
+    await page.getByTestId("theme-option-dark").click();
+    await page.getByTestId("theme-save-button").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+
+    await page.getByTestId("settings-theme-button").click();
+    await page.getByTestId("theme-option-light").click();
+    await page.getByTestId("theme-save-button").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+  });
+
+  test("notification preferences use accessible sliding switches", async ({ page }) => {
+    await page.evaluate(() => {
+      type Prefs = {
+        login: { autoStartEnabled: boolean; startInTray: boolean; closeToTray: boolean; closeToExit: boolean };
+        background: { enabled: boolean; syncIntervalMinutes: 0 };
+        notifications: { enabled: boolean; hideContent: boolean };
+        deviceSync: { transportPolicy: "directOnly" };
+      };
+      type Patch = { [Key in keyof Prefs]?: Partial<Prefs[Key]> };
+      let prefs: Prefs = {
+        login: { autoStartEnabled: true, startInTray: false, closeToTray: true, closeToExit: false },
+        background: { enabled: true, syncIntervalMinutes: 0 },
+        notifications: { enabled: true, hideContent: true },
+        deviceSync: { transportPolicy: "directOnly" },
+      };
+      const root = globalThis as typeof globalThis & {
+        prefs?: { get: () => Promise<Prefs>; set: (patch: Patch) => Promise<Prefs> };
+      };
+      root.prefs = {
+        get: async () => prefs,
+        set: async (patch) => {
+          prefs = {
+            login: { ...prefs.login, ...(patch.login ?? {}) },
+            background: { ...prefs.background, ...(patch.background ?? {}) },
+            notifications: { ...prefs.notifications, ...(patch.notifications ?? {}) },
+            deviceSync: { ...prefs.deviceSync, ...(patch.deviceSync ?? {}) },
+          };
+          return prefs;
+        },
+      };
+    });
+    await page.getByTestId("open-settings").click();
+    await page.getByTestId("settings-notifications-button").click();
+
+    const enabled = page.getByTestId("notifications-enabled-switch");
+    const hideContent = page.getByTestId("notifications-hide-content-switch");
+    const enabledTrack = page.getByTestId("notifications-enabled-switch-track");
+    await expect(enabled).toHaveAttribute("role", "switch");
+    await expect(enabled).toBeChecked();
+    await expect(enabledTrack).toHaveCSS("background-color", "rgb(57, 127, 152)");
+
+    await page.getByTestId("notifications-enabled-switch-control").click();
+    await expect(enabled).not.toBeChecked();
+    await expect(enabledTrack).toHaveCSS("background-color", "rgb(180, 192, 217)");
+    await expect(hideContent).toBeDisabled();
+
+    await page.getByTestId("notifications-enabled-switch-control").click();
+    await expect(enabled).toBeChecked();
+  });
+
+  test("sidebar tabs and quick theme selection persist", async ({ page }) => {
+    await expect(page.getByTestId("sidebar-tabs")).toBeVisible();
+    await page.getByRole("button", { name: "탭 숨기기" }).click();
+    await expect(page.getByTestId("sidebar-tabs")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "탭 표시" })).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("nkc.sidebar.tabsVisible")))
+      .toBe("false");
+    await page.getByRole("button", { name: "탭 표시" }).click();
+    await expect(page.getByTestId("sidebar-tabs")).toBeVisible();
+    await expect
+      .poll(() => page.evaluate(() => localStorage.getItem("nkc.sidebar.tabsVisible")))
+      .toBe("true");
+
+    const initialTheme = (await page.locator("html").getAttribute("data-theme")) ?? "light";
+    const nextTheme = initialTheme === "dark" ? "light" : "dark";
+    await page.getByTestId("theme-quick-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", nextTheme);
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("nkc.theme"))).toBe(nextTheme);
+    await expect(page.getByTestId("theme-quick-toggle")).toHaveAttribute(
+      "aria-label",
+      nextTheme === "dark" ? "라이트 모드로 전환" : "다크 모드로 전환"
+    );
+
+    await page.getByTestId("theme-quick-toggle").click();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", initialTheme);
+  });
+
+  test("friend tab removes the conversation filter divider", async ({ page }) => {
+    await ensureChatsList(page);
+    await expect(page.getByTestId("conversation-filters")).toBeVisible();
+    await page.getByTestId("list-mode-friends").click();
+    await expect(page.getByTestId("conversation-filters")).toHaveCount(0);
+    await expect(page.getByTestId("sidebar-search-region")).toHaveCSS("border-bottom-width", "0px");
+    await expect(page.getByTestId("friends-section")).toHaveCSS("border-top-width", "0px");
+  });
+
+  test("conversation rows use Signal-style hover separation without dividers", async ({ page }) => {
+    await ensureChatsList(page);
+    const row = page.locator('[data-testid^="conversation-row-"][data-selected="false"]').first();
+    await expect(row).toBeVisible();
+    await expect(row).toHaveCSS("border-top-width", "0px");
+    await expect(row).toHaveCSS("border-bottom-width", "0px");
+    await expect(row).toHaveCSS("border-radius", "10px");
+    await expect(row).toHaveCSS("min-height", "72px");
+
+    const idleBackground = await row.evaluate((element) => getComputedStyle(element).backgroundColor);
+    await row.hover();
+    await expect
+      .poll(() => row.evaluate((element) => getComputedStyle(element).backgroundColor))
+      .not.toBe(idleBackground);
+
+    const rowTestId = await row.getAttribute("data-testid");
+    expect(rowTestId).toBeTruthy();
+    await row.click();
+    const selectedRow = page.getByTestId(rowTestId!);
+    await expect(selectedRow).toHaveAttribute("aria-pressed", "true");
+    await expect(selectedRow).toHaveCSS("background-color", "rgb(232, 238, 253)");
+    await expect(selectedRow).not.toBeFocused();
+  });
+
   test("large media send keeps UI responsive and reloads safely", async ({ page }) => {
     test.setTimeout(120_000);
 
@@ -91,9 +247,11 @@ test.describe("Settings and media E2E", () => {
       .getByTestId("chat-attach-input")
       .setInputFiles({ name: "large.png", mimeType: "image/png", buffer });
 
+    await expect(page.getByTestId("attachment-preview")).toHaveCount(1);
     await expect(messageInput).toBeEditable();
     await messageInput.fill("still responsive");
     await expect(messageInput).toHaveValue("still responsive");
+    await page.getByTestId("chat-send-button").click();
 
     await expect(mediaBubbles).toHaveCount(beforeCount + 1);
     await expect(mediaBubbles.nth(beforeCount)).toBeVisible();

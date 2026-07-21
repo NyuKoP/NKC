@@ -13,6 +13,10 @@ import { useInternalOnionRouteStore } from "../../../stores/internalOnionRouteSt
 describe("relayNetwork", () => {
   beforeEach(() => {
     __testResetRelayDeps();
+    __testSetRelayDeps({
+      signControlMessage: async (message) => ({ ...message, sig: "test-signature" }),
+      verifyControlMessage: async () => true,
+    });
     useInternalOnionRouteStore.getState().setRouteState({
       desiredHops: 2,
       establishedHops: 2,
@@ -55,7 +59,7 @@ describe("relayNetwork", () => {
       senderPeerId: "origin",
       chain: ["relay-1", "relay-2"],
       hopCursor: 0,
-      payload: { kind: "control" },
+      payload: { kind: "control", message: { sig: "test-signature" } },
     });
   });
 
@@ -192,5 +196,43 @@ describe("relayNetwork", () => {
     expect(ackResult.handled).toBe(true);
     expect(ackHandler).toHaveBeenCalledTimes(1);
   });
-});
 
+  it("drops control messages when peer identity verification fails", async () => {
+    const sent = vi.fn();
+    const ackHandler = vi.fn();
+    registerInternalOnionControlHandlers({
+      onAck: ackHandler,
+      onPong: vi.fn(),
+    });
+    __testSetRelayDeps({
+      getLocalPeerId: () => "relay-1",
+      sendRelayEnvelope: sent,
+      verifyControlMessage: async () => false,
+    });
+
+    const packet = __testToRelayPacket({
+      type: "internal_onion_relay",
+      v: 1,
+      ts: 5000,
+      circuitId: "circuit-4",
+      senderPeerId: "origin",
+      chain: ["relay-1"],
+      hopCursor: 0,
+      payload: {
+        kind: "control",
+        message: {
+          type: "HOP_HELLO",
+          circuitId: "circuit-4",
+          hopIndex: 1,
+          ts: 5000,
+          senderPeerId: "origin",
+          sig: "invalid",
+        },
+      },
+    });
+
+    await expect(handleIncomingRelayPacket(packet)).resolves.toEqual({ handled: true });
+    expect(sent).not.toHaveBeenCalled();
+    expect(ackHandler).not.toHaveBeenCalled();
+  });
+});

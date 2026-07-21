@@ -118,6 +118,7 @@ export default function GroupInviteDialog({
                     />
                     <Avatar
                       name={friend.displayName}
+                      colorKey={friend.id}
                       avatarRef={friend.avatarRef}
                       size={32}
                     />
@@ -149,7 +150,7 @@ export default function GroupInviteDialog({
             </Dialog.Close>
             <button
               onClick={handleInvite}
-              className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-bg disabled:cursor-not-allowed disabled:opacity-50"
+              className="rounded-nkc bg-nkc-accent px-4 py-2 text-sm font-semibold text-nkc-accentText disabled:cursor-not-allowed disabled:opacity-50"
               disabled={selected.size === 0 || busy}
             >
               Invite
@@ -160,4 +161,3 @@ export default function GroupInviteDialog({
     </Dialog.Root>
   );
 }
-

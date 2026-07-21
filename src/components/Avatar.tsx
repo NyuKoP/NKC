@@ -3,12 +3,14 @@ import type { AvatarRef } from "../db/repo";
 import { loadProfilePhoto } from "../db/repo";
 
 const palette = [
-  "bg-emerald-500",
-  "bg-sky-500",
-  "bg-amber-500",
-  "bg-rose-500",
-  "bg-indigo-500",
-  "bg-teal-500",
+  "bg-[#C13B3A]",
+  "bg-[#C77C2E]",
+  "bg-[#2DA564]",
+  "bg-[#336BA3]",
+  "bg-[#6C5FC7]",
+  "bg-[#C76DA2]",
+  "bg-[#5B8A72]",
+  "bg-[#D1753B]",
 ];
 
 const getInitials = (name: string) => {
@@ -29,15 +31,16 @@ const pickColor = (name: string) => {
 
 type AvatarProps = {
   name: string;
+  colorKey?: string;
   avatarRef?: AvatarRef;
   size?: number;
   className?: string;
 };
 
-export default function Avatar({ name, avatarRef, size = 40, className }: AvatarProps) {
+export default function Avatar({ name, colorKey, avatarRef, size = 40, className }: AvatarProps) {
   const [url, setUrl] = useState<string | null>(null);
   const initials = useMemo(() => getInitials(name), [name]);
-  const bgClass = useMemo(() => pickColor(name), [name]);
+  const bgClass = useMemo(() => pickColor(colorKey || name), [colorKey, name]);
 
   useEffect(() => {
     let active = true;

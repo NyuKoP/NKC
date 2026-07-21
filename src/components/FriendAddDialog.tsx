@@ -1,20 +1,28 @@
 ﻿import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import { Copy, UserPlus } from "lucide-react";
+import { Copy, Loader2, UserPlus } from "lucide-react";
 
 type FriendAddDialogProps = {
   open: boolean;
   myCode: string;
+  myCodeHint?: string | null;
+  myCodeLoading?: boolean;
+  routeResolveBusy?: boolean;
   onOpenChange: (open: boolean) => void;
   onCopyCode: () => Promise<void>;
+  onResolveRoute?: () => Promise<void>;
   onAdd: (payload: { code: string; psk?: string }) => Promise<{ ok: boolean; error?: string }>;
 };
 
 export default function FriendAddDialog({
   open,
   myCode,
+  myCodeHint,
+  myCodeLoading = false,
+  routeResolveBusy = false,
   onOpenChange,
   onCopyCode,
+  onResolveRoute,
   onAdd,
 }: FriendAddDialogProps) {
   const [code, setCode] = useState("");
@@ -62,8 +70,9 @@ export default function FriendAddDialog({
               내 코드
               <input
                 value={myCode}
+                data-testid="friend-add-my-code"
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 font-mono text-sm text-nkc-text"
-                placeholder="코드를 생성하는 중..."
+                placeholder={myCodeLoading ? "경로 주소를 기다리는 중..." : "코드를 생성하는 중..."}
                 readOnly
               />
             </label>
@@ -71,16 +80,43 @@ export default function FriendAddDialog({
               type="button"
               onClick={onCopyCode}
               className="inline-flex items-center gap-1 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
-              disabled={!myCode}
+              disabled={!myCode || myCodeLoading}
             >
-              <Copy size={14} />
-              복사
+              {myCodeLoading ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <Copy size={14} />
+              )}
+              {myCodeLoading ? "준비 중..." : "복사"}
             </button>
+            {myCodeHint ? (
+              <div className="space-y-2">
+                <div className="rounded-nkc border border-nkc-border/40 bg-nkc-panel/30 p-2.5 text-xs leading-relaxed text-nkc-muted">
+                  <div className="flex gap-2">
+                    {myCodeLoading ? (
+                      <span className="mt-1 inline-flex h-2 w-2 shrink-0 rounded-full bg-amber-400 animate-pulse" />
+                    ) : null}
+                    <p>{myCodeHint}</p>
+                  </div>
+                </div>
+                {onResolveRoute ? (
+                  <button
+                    type="button"
+                    onClick={() => void onResolveRoute()}
+                    className="inline-flex items-center gap-1 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={routeResolveBusy}
+                  >
+                    {routeResolveBusy ? "경로 찾는 중..." : "경로 찾기"}
+                  </button>
+                ) : null}
+              </div>
+            ) : null}
 
             <label className="text-sm text-nkc-muted">
               친구 코드
               <input
                 value={code}
+                data-testid="friend-add-code-input"
                 onChange={(event) => setCode(event.target.value)}
                 className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2"
                 placeholder="NKC1-... (선택: NKI1-...)"
@@ -96,7 +132,8 @@ export default function FriendAddDialog({
               <button
                 type="button"
                 onClick={() => void handleAdd()}
-                className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-bg disabled:opacity-50"
+                data-testid="friend-add-submit"
+                className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
                 disabled={!code.trim() || busy}
               >
                 {busy ? "추가 중..." : "친구 추가"}

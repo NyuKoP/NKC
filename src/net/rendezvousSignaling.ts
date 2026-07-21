@@ -1,9 +1,11 @@
 import { onionFetch } from "../adapters/transports/onionRouterTransport";
+import { fetchWithTimeout } from "./fetchWithTimeout";
 
 export type RendezvousConfig = {
   baseUrl: string;
   useOnionProxy: boolean;
   onionProxyUrl?: string | null;
+  onOnionProxyFallback?: (detail: { url: string; reason: string }) => void;
 };
 
 export type RendezvousItem = { id: string; ts: number; payload: string };
@@ -37,21 +39,43 @@ const hashFallback = async (value: string) => {
     globalThis.crypto.getRandomValues(bytes);
     return toBase64Url(bytes);
   }
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+  throw new Error("Secure random generator is unavailable");
 };
 
-const fetchWithTimeout = async (url: string, init: FetchInit, useOnionProxy: boolean) => {
+const toErrorMessage = (error: unknown) =>
+  error instanceof Error ? error.message : String(error ?? "unknown_error");
+
+const isOnionUnavailableError = (error: unknown) =>
+  toErrorMessage(error).toLowerCase().includes("onion fetch unavailable");
+
+const fetchRendezvous = async (
+  url: string,
+  init: FetchInit,
+  useOnionProxy: boolean,
+  onOnionProxyFallback?: (detail: { url: string; reason: string }) => void
+) => {
   if (useOnionProxy) {
-    return onionFetch(url, init);
+    try {
+      return await onionFetch(url, init);
+    } catch (error) {
+      if (!isOnionUnavailableError(error)) {
+        throw error;
+      }
+      onOnionProxyFallback?.({
+        url,
+        reason: toErrorMessage(error),
+      });
+    }
   }
-  const controller = new AbortController();
   const timeoutMs = init.timeoutMs ?? 10_000;
-  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } finally {
-    window.clearTimeout(timeout);
-  }
+  const { signal: parentSignal, ...fetchInit } = init;
+  delete fetchInit.timeoutMs;
+  return fetchWithTimeout(url, fetchInit, {
+    timeoutMs,
+    parentSignal: parentSignal ?? undefined,
+    opId: url,
+    traceSource: "rendezvous",
+  });
 };
 
 const getSeenSet = (syncCode: string) => {
@@ -85,7 +109,7 @@ export class RendezvousClient {
     items.forEach((item) => seen.add(item.id));
 
     const url = `${normalizeBaseUrl(this.config.baseUrl)}/rendezvous/${syncCode}/signals`;
-    const response = await fetchWithTimeout(
+    const response = await fetchRendezvous(
       url,
       {
         method: "PUT",
@@ -93,7 +117,8 @@ export class RendezvousClient {
         body: JSON.stringify({ deviceId, items }),
         timeoutMs: 10_000,
       },
-      this.config.useOnionProxy
+      this.config.useOnionProxy,
+      this.config.onOnionProxyFallback
     );
     if (!response.ok) {
       throw new Error(`Rendezvous publish failed (${response.status})`);
@@ -108,10 +133,11 @@ export class RendezvousClient {
     url.searchParams.set("limit", "50");
     url.searchParams.set("deviceId", deviceId);
 
-    const response = await fetchWithTimeout(
+    const response = await fetchRendezvous(
       url.toString(),
       { method: "GET", timeoutMs: 10_000 },
-      this.config.useOnionProxy
+      this.config.useOnionProxy,
+      this.config.onOnionProxyFallback
     );
     if (!response.ok) {
       throw new Error(`Rendezvous poll failed (${response.status})`);

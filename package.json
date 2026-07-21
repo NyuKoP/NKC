@@ -1,7 +1,7 @@
 {
   "name": "test",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.4.1",
   "description": "NKC serverless secure chat desktop app",
   "author": {
     "name": "NyuKoP",
@@ -12,19 +12,36 @@
   "scripts": {
     "dev": "cross-env VITE_DEV_SERVER_URL=http://localhost:5173 vite dev",
     "generate:onion-pins": "node scripts/generateOnionPins.mjs",
+    "generate:icons": "node scripts/generateAppIcon.mjs",
+    "edit:win-exe": "node scripts/editWindowsExecutable.mjs",
     "lint:encoding": "node scripts/check-utf8.mjs",
-    "build": "tsc -b && vite build",
+    "build:native": "node scripts/build-go-worker.mjs",
+    "test:native": "node scripts/test-go-worker.mjs",
+    "build": "npm run build:native && cross-env BROWSERSLIST_IGNORE_OLD_DATA=1 tsc -b && cross-env BROWSERSLIST_IGNORE_OLD_DATA=1 vite build",
     "dist": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --publish never",
-    "dist:win": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis --publish never",
+    "dist:win": "npm run generate:icons && npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win dir --publish never && npm run edit:win-exe && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --win nsis --prepackaged release/win-unpacked --publish never",
     "dist:mac": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --mac dmg zip --publish never",
     "dist:linux": "npm run build && cross-env CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --linux AppImage deb --publish never",
     "test": "vitest",
+    "test:tor:live": "npm run build:native && node scripts/run-live-tor-e2e.mjs",
+    "test:tor:reinstall": "cross-env NKC_TOR_REINSTALL_LIVE=1 vitest run src/main/onion/install/__tests__/torReinstall.live.test.ts --reporter=verbose",
+    "test:tor:large": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=1",
+    "test:tor:large:10": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=10",
+    "test:tor:large:10:window2": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=10 --window=2",
+    "test:tor:large:100": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=100",
+    "test:tor:large:100:lane2": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=100 --window=2",
+    "test:tor:large:100:lane3": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=100 --window=3",
+    "test:tor:large:500": "npm run build:native && node scripts/run-live-tor-e2e.mjs --large --size-mb=500",
+    "bench:transfer": "vitest bench --run src/perf/transferEncoding.bench.ts",
+    "bench:transfer:500mb": "cross-env NKC_LARGE_TRANSFER_BENCH=1 vitest run src/perf/largeTransferPipeline.test.ts --reporter=verbose",
+    "bench:ipc": "npm run build:native && node scripts/bench-go-ipc.mjs",
     "test:ui": "playwright test",
     "test:ui:headed": "playwright test --headed",
+    "test:packaged:first-run": "node scripts/verify-packaged-first-run.cjs",
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node scripts/start-electron.cjs",
-    "phase:lock:check": "node scripts/check-phase-lock.mjs"
+    "analyze:router-errors": "node scripts/analyze-router-errors.cjs"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.6",
@@ -37,6 +54,7 @@
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-router-dom": "^7.1.5",
+    "ws": "^8.21.0",
     "yjs": "^13.6.22",
     "zustand": "^5.0.3"
   },
@@ -49,7 +67,7 @@
     "@vitejs/plugin-react": "^5.1.1",
     "autoprefixer": "^10.4.20",
     "cross-env": "^10.1.0",
-    "electron": "^35.7.5",
+    "electron": "^43.0.0",
     "electron-builder": "^26.7.0",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
@@ -57,12 +75,13 @@
     "globals": "^16.5.0",
     "playwright": "^1.57.0",
     "postcss": "^8.4.49",
+    "resedit-cli": "^3.1.0",
     "tailwindcss": "^3.4.17",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
     "vite": "^7.2.4",
     "vite-plugin-electron": "^0.29.0",
-    "vitest": "^3.2.4"
+    "vitest": "3.2.6"
   },
   "build": {
     "appId": "com.nyukop.nkc",
@@ -77,10 +96,24 @@
       "dist-electron/**",
       "package.json"
     ],
+    "extraResources": [
+      {
+        "from": "native/bin",
+        "to": "native",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "build/icon.png",
+        "to": "icon.png"
+      }
+    ],
     "extraMetadata": {
       "main": "dist-electron/main.js"
     },
     "win": {
+      "icon": "icon.ico",
       "signAndEditExecutable": false,
       "target": [
         {
@@ -94,7 +127,10 @@
     "nsis": {
       "oneClick": false,
       "perMachine": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
     },
     "mac": {
       "target": [

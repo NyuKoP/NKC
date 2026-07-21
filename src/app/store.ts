@@ -53,6 +53,7 @@ export type AppState = {
   setSearch: (value: string) => void;
   setLanguage: (value: Language) => void;
   setSession: (value: Partial<AppState["session"]>) => void;
+  setUserProfile: (profile: UserProfile | null) => void;
   setData: (payload: {
     user: UserProfile | null;
     friends: UserProfile[];
@@ -115,6 +116,7 @@ export const useAppStore = create<AppState>((set) => ({
   },
   setSession: (value) =>
     set((state) => ({ session: { ...state.session, ...value } })),
+  setUserProfile: (userProfile) => set({ userProfile }),
   setData: ({ user, friends, convs, messagesByConv }) =>
     set({ userProfile: user, friends, convs, messagesByConv }),
   addToast: (toast) =>
