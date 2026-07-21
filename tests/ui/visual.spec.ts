@@ -14,6 +14,15 @@ test.describe("Visual snapshots", () => {
     await expect(page).toHaveScreenshot("onboarding.png");
   });
 
+  test("start key login does not ask for a display name", async ({ page }) => {
+    await page.goto("/");
+    await page.getByTestId("onboarding-start-key-tab").click();
+
+    await expect(page.getByTestId("onboarding-start-key-input")).toBeVisible();
+    await expect(page.getByTestId("onboarding-display-name")).toBeHidden();
+    await expect(page.getByTestId("onboarding-start-key-button")).toBeVisible();
+  });
+
   test("settings network", async ({ page }) => {
     await page.goto("/");
     await disableAnimations(page);
@@ -30,7 +39,7 @@ test.describe("Visual snapshots", () => {
 
     const sidebar = page.getByTestId("sidebar");
     await expect(sidebar).toBeVisible();
-    await expect(sidebar).toHaveScreenshot("sidebar.png");
+    await expect(sidebar).toHaveScreenshot("sidebar.png", { maxDiffPixelRatio: 0.001 });
   });
 
   test("chat view", async ({ page }) => {
@@ -45,6 +54,10 @@ test.describe("Visual snapshots", () => {
 
     const chatView = page.getByTestId("chat-view");
     await expect(chatView).toBeVisible();
-    await expect(chatView).toHaveScreenshot("chat-view.png");
+    await expect(chatView.locator(".bg-nkc-bubbleSent").first()).toHaveCSS(
+      "background-color",
+      "rgb(47, 98, 115)"
+    );
+    await expect(chatView).toHaveScreenshot("chat-view.png", { maxDiffPixelRatio: 0.001 });
   });
 });

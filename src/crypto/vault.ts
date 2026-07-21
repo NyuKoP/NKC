@@ -1,4 +1,7 @@
 import { getSodium } from "../security/sodium";
+import { createSafeConsole } from "../diagnostics/safeConsole";
+
+const console = createSafeConsole(globalThis.console);
 
 export type VaultHeader = {
   v: 2;

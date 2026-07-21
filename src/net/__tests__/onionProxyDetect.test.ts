@@ -32,7 +32,6 @@ const baseConfig: NetConfig = {
   onionEnabled: true,
   onionSelectedNetwork: "tor",
   tor: { installed: true, status: "ready", version: "1.0.0" },
-  lokinet: { installed: false, status: "idle" },
   lastUpdateCheckAtMs: undefined,
 };
 

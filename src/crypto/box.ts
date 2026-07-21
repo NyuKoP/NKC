@@ -22,6 +22,7 @@ export type Envelope = {
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+const conversationKeyDomain = textEncoder.encode("nkc-conv-v1");
 
 const concatBytes = (chunks: Array<Uint8Array | ArrayBuffer>) => {
   const total = chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
@@ -49,14 +50,34 @@ export const deriveConversationKey = async (
 ) => {
   const sodium = await getSodium();
   const shared = sodium.crypto_scalarmult(myDhPriv, theirDhPub);
-  const domain = textEncoder.encode("nkc-conv-v1");
   const material = concatBytes([
-    domain,
+    conversationKeyDomain,
     shared,
     pskBytes && pskBytes.length ? pskBytes : new Uint8Array(),
     contextBytes ?? new Uint8Array(),
   ]);
   return sodium.crypto_generichash(32, material);
+};
+
+export const deriveConversationKeyPair = async (
+  myDhPriv: Uint8Array,
+  theirDhPub: Uint8Array,
+  pskBytes: Uint8Array | null | undefined,
+  legacyContextBytes: Uint8Array,
+  ratchetContextBytes: Uint8Array
+) => {
+  const sodium = await getSodium();
+  const shared = sodium.crypto_scalarmult(myDhPriv, theirDhPub);
+  const derive = (contextBytes: Uint8Array) => sodium.crypto_generichash(32, concatBytes([
+    conversationKeyDomain,
+    shared,
+    pskBytes && pskBytes.length ? pskBytes : new Uint8Array(),
+    contextBytes,
+  ]));
+  return {
+    conversationKey: derive(legacyContextBytes),
+    ratchetBaseKey: derive(ratchetContextBytes),
+  };
 };
 
 export const encryptEnvelope = async (

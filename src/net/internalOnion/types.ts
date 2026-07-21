@@ -50,6 +50,7 @@ export type HopPingMessage = {
   circuitId: string;
   hopIndex: number;
   ts: number;
+  sig?: string;
 };
 
 export type HopPongMessage = {
@@ -57,6 +58,7 @@ export type HopPongMessage = {
   circuitId: string;
   hopIndex: number;
   ts: number;
+  sig?: string;
 };
 
 export type InternalOnionControlPlaneMessage =
@@ -64,4 +66,3 @@ export type InternalOnionControlPlaneMessage =
   | HopAckMessage
   | HopPingMessage
   | HopPongMessage;
-

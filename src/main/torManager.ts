@@ -5,6 +5,7 @@ import path from "node:path";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { readCurrentPointer } from "./onion/install/swapperRollback";
 import { getBinaryPath } from "./onion/componentRegistry";
+import { needsLyrebird, resolveBridgeSelection } from "./tor/torCircumvention";
 
 export type TorStatus =
   | { state: "unavailable"; details?: string }
@@ -12,16 +13,30 @@ export type TorStatus =
   | { state: "running"; socksProxyUrl: string; dataDir: string; details?: string }
   | { state: "failed"; details: string };
 
+export type TorDiagnostics = {
+  state: TorStatus["state"];
+  bootstrapProgress: number;
+  processRunning: boolean;
+  bridgeMode: "direct" | "bridged";
+};
+
 type HiddenServiceConfig = {
   localPort: number;
   virtPort: number;
 };
 
+type TorStartOptions = {
+  profileScopedDataDir?: boolean;
+};
+
 type StatusListener = (status: TorStatus) => void;
 
 const TOR_ENV_PATH = "NKC_TOR_PATH";
+const TOR_BRIDGES_ENV = "NKC_TOR_BRIDGES";
+const TOR_COUNTRY_ENV = "NKC_TOR_COUNTRY";
 const DEFAULT_SOCKS_PORT = 9050;
-const START_TIMEOUT_MS = 30000;
+const START_TIMEOUT_MS = 60_000;
+const BRIDGE_START_TIMEOUT_MS = 180_000;
 const HOSTNAME_TIMEOUT_MS = 15000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -57,9 +72,10 @@ const getAvailablePort = async () => {
   });
 };
 
-const waitForPort = async (port: number, timeoutMs: number) => {
+const waitForPort = async (port: number, timeoutMs: number, shouldAbort?: () => boolean) => {
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
+    if (shouldAbort?.()) return false;
     const ok = await new Promise<boolean>((resolve) => {
       const socket = net.connect(port, "127.0.0.1");
       socket.once("connect", () => {
@@ -72,6 +88,29 @@ const waitForPort = async (port: number, timeoutMs: number) => {
     await sleep(300);
   }
   return false;
+};
+
+export const parseTorBootstrapProgress = (value: string) => {
+  let progress = 0;
+  for (const match of value.matchAll(/Bootstrapped\s+(\d{1,3})%/gi)) {
+    const parsed = Number.parseInt(match[1] ?? "0", 10);
+    if (Number.isFinite(parsed)) progress = Math.max(progress, Math.min(100, parsed));
+  }
+  return progress;
+};
+
+const waitForBootstrap = async (
+  getProgress: () => number,
+  timeoutMs: number,
+  shouldAbort?: () => boolean
+) => {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    if (shouldAbort?.()) return false;
+    if (getProgress() >= 100) return true;
+    await sleep(100);
+  }
+  return getProgress() >= 100;
 };
 
 const waitForHostname = async (filePath: string, timeoutMs: number) => {
@@ -94,12 +133,22 @@ export class TorManager {
   private status: TorStatus = { state: "unavailable", details: "not-started" };
   private listeners = new Set<StatusListener>();
   private torPath: string | null = null;
+  private readonly baseDataDir: string;
   private dataDir: string;
   private hsConfig: HiddenServiceConfig | null = null;
   private logTail = "";
+  private bootstrapProgress = 0;
+  private startPromise: Promise<void> | null = null;
+  private stopPromise: Promise<void> | null = null;
+  private ensureHiddenServicePromise: Promise<{ onionHost: string }> | null = null;
+  private expectProcessExit = false;
+  private bridgeDetail: string | null = null;
+  private bridgeModeOverride: "force" | null = null;
 
-  constructor(opts: { appDataDir: string }) {
-    this.dataDir = path.join(opts.appDataDir, "nkc-tor");
+  constructor(opts: { appDataDir: string; instanceId?: string }) {
+    const suffix = opts.instanceId?.trim() ? `-${opts.instanceId.trim()}` : "";
+    this.baseDataDir = path.join(opts.appDataDir, `nkc-tor${suffix}`);
+    this.dataDir = this.baseDataDir;
   }
 
   private emit(next: TorStatus) {
@@ -137,6 +186,10 @@ export class TorManager {
     const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
     const next = `${this.logTail}${text}`.slice(-4096);
     this.logTail = next.trim();
+    this.bootstrapProgress = Math.max(
+      this.bootstrapProgress,
+      parseTorBootstrapProgress(next)
+    );
   }
 
   private resolveBundleRoot(torPath: string) {
@@ -161,11 +214,88 @@ export class TorManager {
     });
   }
 
-  private buildTorrc(socksPort: number, hsConfig?: HiddenServiceConfig | null) {
+  private resolveCountryCode() {
+    const envCountry = process.env[TOR_COUNTRY_ENV];
+    if (envCountry && /^[A-Za-z]{2}$/.test(envCountry.trim())) {
+      return envCountry.trim().toUpperCase();
+    }
+    try {
+      const locale = Intl.DateTimeFormat().resolvedOptions().locale;
+      const localeCtor = (Intl as unknown as { Locale?: new (input: string) => { region?: string } }).Locale;
+      if (localeCtor) {
+        const region = new localeCtor(locale).region;
+        if (region && /^[A-Z]{2}$/.test(region)) return region;
+      }
+      const match = locale.match(/[-_]([A-Za-z]{2})(?:[-_]|$)/);
+      if (match) return match[1].toUpperCase();
+    } catch {
+      // ignore locale parse failure
+    }
+    return "ZZ";
+  }
+
+  private resolveLyrebirdPath(torPath: string) {
+    const basename = process.platform === "win32" ? "lyrebird.exe" : "lyrebird";
+    const torDir = path.dirname(torPath);
+    const candidates = [
+      path.join(torDir, basename),
+      path.join(torDir, "pluggable_transports", basename),
+      path.join(path.dirname(torDir), "pluggable_transports", basename),
+    ];
+    return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+  }
+
+  private buildTorrc(
+    socksPort: number,
+    torPath: string,
+    hsConfig?: HiddenServiceConfig | null
+  ) {
     const lines = [
       `DataDirectory ${this.dataDir}`,
       `SocksPort 127.0.0.1:${socksPort}`,
+      "SafeSocks 1",
     ];
+
+    const bridgeSelection = resolveBridgeSelection({
+      countryCode: this.resolveCountryCode(),
+      mode: this.bridgeModeOverride ?? process.env[TOR_BRIDGES_ENV],
+    });
+    this.bridgeDetail = null;
+    if (bridgeSelection.enabled) {
+      const lyrebirdPath = this.resolveLyrebirdPath(torPath);
+      let bridgeLines = [...bridgeSelection.lines];
+      if (bridgeSelection.requiresLyrebird && !lyrebirdPath) {
+        bridgeLines = bridgeLines.filter((line) => !needsLyrebird(line));
+        this.bridgeDetail = `bridges-enabled-without-lyrebird(mode=${bridgeSelection.mode}, country=${bridgeSelection.countryCode})`;
+      }
+      if (bridgeLines.length > 0) {
+        lines.push("UseBridges 1");
+        if (bridgeLines.some((line) => needsLyrebird(line)) && lyrebirdPath) {
+          const bundleRoot = this.resolveBundleRoot(torPath);
+          const transportPath = bundleRoot
+            ? `./${path.relative(bundleRoot, lyrebirdPath).split(path.sep).join("/")}`
+            : lyrebirdPath;
+          lines.push(`ClientTransportPlugin obfs4 exec ${transportPath}`);
+          lines.push(`ClientTransportPlugin meek_lite exec ${transportPath}`);
+          lines.push(`ClientTransportPlugin snowflake exec ${transportPath}`);
+        }
+        lines.push(...bridgeLines);
+        if (!this.bridgeDetail) {
+          this.bridgeDetail = `bridges-enabled(mode=${bridgeSelection.mode}, country=${bridgeSelection.countryCode}, count=${bridgeLines.length})`;
+        }
+      } else {
+        lines.push("UseBridges 0");
+        this.bridgeDetail =
+          this.bridgeDetail ??
+          `bridges-skipped-no-compatible-lines(mode=${bridgeSelection.mode}, country=${bridgeSelection.countryCode})`;
+      }
+    } else {
+      lines.push("UseBridges 0");
+      if (bridgeSelection.reason) {
+        this.bridgeDetail = `bridges-disabled(reason=${bridgeSelection.reason}, mode=${bridgeSelection.mode}, country=${bridgeSelection.countryCode})`;
+      }
+    }
+
     if (hsConfig) {
       const hsDir = path.join(this.dataDir, "hs-onion");
       lines.push(`HiddenServiceDir ${hsDir}`);
@@ -174,21 +304,52 @@ export class TorManager {
     return lines.join("\n");
   }
 
-  async start() {
+  private resolveDataDir(opts?: TorStartOptions) {
+    if (!opts?.profileScopedDataDir) return this.baseDataDir;
+    const suffix = `profile-${process.pid}`;
+    return `${this.baseDataDir}-${suffix}`;
+  }
+
+  private isDataDirConflict(details: string | undefined) {
+    if (!details) return false;
+    return details.toLowerCase().includes("another tor process is running with the same data directory");
+  }
+
+  private isStartingStatus() {
+    return this.status.state === "starting";
+  }
+
+  async start(opts?: TorStartOptions) {
+    if (this.stopPromise) {
+      await this.stopPromise;
+    }
+    if (this.process) return;
+    if (this.startPromise) return this.startPromise;
+    this.startPromise = this.startInternal(opts).finally(() => {
+      this.startPromise = null;
+    });
+    return this.startPromise;
+  }
+
+  private async startInternal(opts?: TorStartOptions) {
     if (this.process) return;
     const torPath = await this.resolveTorPath();
     if (!torPath) {
       this.emit({ state: "unavailable", details: "tor-binary-not-found" });
       return;
     }
+    this.dataDir = this.resolveDataDir(opts);
     this.logTail = "";
+    this.bootstrapProgress = 0;
     this.emit({ state: "starting", details: "starting-tor" });
     await fsPromises.mkdir(this.dataDir, { recursive: true });
     const socksPort = await getAvailablePort();
     const torrcPath = path.join(this.dataDir, "torrc");
-    await fsPromises.writeFile(torrcPath, this.buildTorrc(socksPort, this.hsConfig), "utf8");
+    await fsPromises.writeFile(torrcPath, this.buildTorrc(socksPort, torPath, this.hsConfig), "utf8");
     await this.ensureExecutable(torPath);
     await this.clearMacQuarantine(torPath);
+    if (!this.isStartingStatus()) return;
+    this.expectProcessExit = false;
     this.process = spawn(torPath, ["-f", torrcPath], {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: this.resolveBundleRoot(torPath),
@@ -198,34 +359,103 @@ export class TorManager {
     this.process.once("error", (error) => {
       const detail = error instanceof Error ? error.message : String(error);
       this.process = null;
+      this.expectProcessExit = false;
       this.emit({ state: "failed", details: `tor-spawn-failed: ${detail}` });
     });
     this.process.once("exit", (code, signal) => {
+      const expectedExit = this.expectProcessExit;
       this.process = null;
+      this.expectProcessExit = false;
+      if (expectedExit) return;
       const tail = this.logTail ? ` | ${this.logTail}` : "";
       this.emit({
         state: "failed",
         details: `tor-exited(code=${code ?? "null"},signal=${signal ?? "none"})${tail}`,
       });
     });
-    const ready = await waitForPort(socksPort, START_TIMEOUT_MS);
-    if (!ready) {
-      this.emit({ state: "failed", details: "socks-not-ready" });
+    const bootstrapTimeoutMs = this.bridgeDetail?.startsWith("bridges-enabled")
+      ? BRIDGE_START_TIMEOUT_MS
+      : START_TIMEOUT_MS;
+    const [portReady, bootstrapReady] = await Promise.all([
+      waitForPort(socksPort, START_TIMEOUT_MS, () => !this.isStartingStatus()),
+      waitForBootstrap(
+        () => this.bootstrapProgress,
+        bootstrapTimeoutMs,
+        () => !this.isStartingStatus()
+      ),
+    ]);
+    if (!portReady || !bootstrapReady) {
+      if (this.status.state === "failed" && this.isDataDirConflict(this.status.details)) {
+        return;
+      }
+      if (this.status.state === "failed") {
+        return;
+      }
+      if (!this.isStartingStatus()) {
+        return;
+      }
+      const failedProgress = this.bootstrapProgress;
+      const failedLogTail = this.logTail;
+      const shouldRetryWithBridges =
+        portReady &&
+        !bootstrapReady &&
+        !process.env[TOR_BRIDGES_ENV] &&
+        this.bridgeModeOverride === null;
       await this.stop();
+      if (shouldRetryWithBridges) {
+        this.bridgeModeOverride = "force";
+        await this.startInternal(opts);
+        return;
+      }
+      const diagnosticTail = failedLogTail ? ` | ${failedLogTail}` : "";
+      this.emit({
+        state: "failed",
+        details: portReady
+          ? `bootstrap-not-ready:${failedProgress}%${diagnosticTail}`
+          : `socks-not-ready${diagnosticTail}`,
+      });
       return;
     }
     this.emit({
       state: "running",
       socksProxyUrl: `socks5://127.0.0.1:${socksPort}`,
       dataDir: this.dataDir,
+      details: this.bridgeDetail ?? undefined,
     });
   }
 
   async stop() {
-    if (this.process) {
-      this.process.kill();
-      this.process = null;
+    if (this.stopPromise) return this.stopPromise;
+    this.stopPromise = this.stopInternal().finally(() => {
+      this.stopPromise = null;
+    });
+    return this.stopPromise;
+  }
+
+  private async stopInternal() {
+    const proc = this.process;
+    if (!proc) {
+      this.expectProcessExit = false;
+      this.emit({ state: "unavailable", details: "stopped" });
+      return;
     }
+    this.expectProcessExit = true;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      proc.once("exit", finish);
+      try {
+        proc.kill();
+      } catch {
+        finish();
+      }
+      setTimeout(finish, 3000);
+    });
+    this.process = null;
     this.emit({ state: "unavailable", details: "stopped" });
   }
 
@@ -233,12 +463,40 @@ export class TorManager {
     return this.status;
   }
 
+  invalidateResolvedPath() {
+    this.torPath = null;
+  }
+
+  getDiagnostics(): TorDiagnostics {
+    return {
+      state: this.status.state,
+      bootstrapProgress: this.bootstrapProgress,
+      processRunning: Boolean(this.process),
+      bridgeMode: this.bridgeDetail?.startsWith("bridges-enabled") ? "bridged" : "direct",
+    };
+  }
+
   async ensureHiddenService(opts: { localPort: number; virtPort: number }) {
+    if (this.ensureHiddenServicePromise) return this.ensureHiddenServicePromise;
+    this.ensureHiddenServicePromise = this.ensureHiddenServiceInternal(opts).finally(() => {
+      this.ensureHiddenServicePromise = null;
+    });
+    return this.ensureHiddenServicePromise;
+  }
+
+  private async ensureHiddenServiceInternal(opts: { localPort: number; virtPort: number }) {
+    const hsChanged =
+      !this.hsConfig ||
+      this.hsConfig.localPort !== opts.localPort ||
+      this.hsConfig.virtPort !== opts.virtPort;
     this.hsConfig = opts;
-    if (this.process) {
+    if (hsChanged && this.process) {
       await this.stop();
     }
     await this.start();
+    if (this.status.state !== "running" && this.isDataDirConflict(this.status.details)) {
+      await this.start({ profileScopedDataDir: true });
+    }
     if (this.status.state !== "running") {
       throw new Error(this.status.state === "failed" ? this.status.details : "tor-unavailable");
     }

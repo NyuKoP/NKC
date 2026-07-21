@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { getPinnedSha256 } from "../../componentRegistry";
 import { PinnedHashMissingError } from "../../errors";
-import { installLokinet } from "../installLokinet";
 import { installTor } from "../installTor";
 
 describe("pinned hash checks", () => {
@@ -9,11 +8,11 @@ describe("pinned hash checks", () => {
     const hash = getPinnedSha256("tor", {
       platform: "win32",
       arch: "x64",
-      version: "15.0.5",
-      assetName: "tor-expert-bundle-windows-x86_64-15.0.5.tar.gz",
+      version: "15.0.18",
+      assetName: "tor-expert-bundle-windows-x86_64-15.0.18.tar.gz",
     });
     expect(hash).toBe(
-      "49aabfe2958c8084e9fba1f78d85049e16a657e1f679b75102bbf9518497607f"
+      "6ac067402c7b4a3dc37887ed3754b3914b67fdc220c966190683e9ccf91abf0f"
     );
   });
 
@@ -21,10 +20,6 @@ describe("pinned hash checks", () => {
     const tempDir = process.platform === "win32" ? "C:\\temp" : "/tmp";
     await expect(
       installTor(tempDir, "0.0.0", undefined, undefined, "missing.tar.gz")
-    ).rejects.toBeInstanceOf(PinnedHashMissingError);
-
-    await expect(
-      installLokinet(tempDir, "0.0.0", undefined, undefined, "missing.zip")
     ).rejects.toBeInstanceOf(PinnedHashMissingError);
   });
 });

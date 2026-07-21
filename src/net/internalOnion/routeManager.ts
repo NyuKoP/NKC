@@ -64,13 +64,10 @@ const toHex = (bytes: Uint8Array) =>
 
 const defaultRandomBytes = (size: number) => {
   const bytes = new Uint8Array(size);
-  if (globalThis.crypto?.getRandomValues) {
-    globalThis.crypto.getRandomValues(bytes);
-    return bytes;
+  if (!globalThis.crypto?.getRandomValues) {
+    throw new Error("Secure random generator is unavailable");
   }
-  for (let i = 0; i < size; i += 1) {
-    bytes[i] = Math.floor(Math.random() * 256);
-  }
+  globalThis.crypto.getRandomValues(bytes);
   return bytes;
 };
 
@@ -228,7 +225,7 @@ export class InternalOnionRouteManager {
   handleHelloAck(message: HopAckMessage) {
     if (message.type !== "HOP_ACK") return;
     if (!this.currentCircuitId || message.circuitId !== this.currentCircuitId) return;
-    // TODO: verify Ed25519 signature for relay identities when signing keys are available.
+    // relayNetwork verifies the Ed25519 signature before dispatching ACK messages here.
     const pending = this.pendingHelloAcks.get(message.hopIndex);
     if (!pending) return;
     this.clearTimeoutFn(pending.timeout);
@@ -398,7 +395,6 @@ export class InternalOnionRouteManager {
       hopIndex,
       ts: this.now(),
       senderPeerId: this.getLocalPeerId().trim() || "local",
-      // TODO: attach Ed25519 signature when local control-plane signing key is wired.
     };
 
     const ack = await new Promise<HopAckMessage>((resolve, reject) => {

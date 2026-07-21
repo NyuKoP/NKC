@@ -1,12 +1,74 @@
-@import url("https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap");
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  /* ── NKC Dark Theme (Default) ── */
   :root {
+    color-scheme: dark;
+
+    --nkc-brand-deep: #234854;
+    --nkc-brand-primary: #2F6273;
+    --nkc-brand-accent: #397F98;
+    --nkc-brand-secondary: #5B8AF0;
+    --nkc-brand-soft: #B4C0D9;
+    --nkc-brand-mist: #E5FAFF;
+
+    --nkc-bg: #1B1C1F;
+    --nkc-panel: #1A1A1A;
+    --nkc-panel-muted: #222222;
+    --nkc-card: #2D2D2D;
+    --nkc-text: #E8E8E8;
+    --nkc-muted: #8E8E8E;
+    --nkc-accent: #397F98;
+    --nkc-accent-text: #FFFFFF;
+    --nkc-danger: #E34040;
+    --nkc-border: #2A2A2A;
+    --nkc-surface: #2D2D2D;
+    --nkc-hover: #252525;
+    --nkc-selected: #1F2D32;
+    --nkc-list-selected: #242B3B;
+    --nkc-list-focus: #789FF3;
+    --nkc-bubble-sent: #2F6273;
+    --nkc-bubble-sent-text: #FFFFFF;
+    --nkc-bubble-recv: #2D2D2D;
+    --nkc-bubble-recv-text: #E8E8E8;
+    --nkc-focus-ring: rgba(91, 138, 240, 0.62);
+  }
+
+  /* ── NKC Light Theme ── */
+  .light {
     color-scheme: light;
+
+    --nkc-brand-deep: #234854;
+    --nkc-brand-primary: #2F6273;
+    --nkc-brand-accent: #397F98;
+    --nkc-brand-secondary: #5B8AF0;
+    --nkc-brand-soft: #B4C0D9;
+    --nkc-brand-mist: #E5FAFF;
+
+    --nkc-bg: #FFFFFF;
+    --nkc-panel: #F6F6F6;
+    --nkc-panel-muted: #ECECEC;
+    --nkc-card: #E5E5EA;
+    --nkc-text: #1A1A1A;
+    --nkc-muted: #5E5E5E;
+    --nkc-accent: #2F6273;
+    --nkc-accent-text: #FFFFFF;
+    --nkc-danger: #E34040;
+    --nkc-border: #E9E9E9;
+    --nkc-surface: #FFFFFF;
+    --nkc-hover: #ECECEC;
+    --nkc-selected: #E5FAFF;
+    --nkc-list-selected: #E8EEFD;
+    --nkc-list-focus: #2F6273;
+    --nkc-bubble-sent: #2F6273;
+    --nkc-bubble-sent-text: #FFFFFF;
+    --nkc-bubble-recv: #E5E5EA;
+    --nkc-bubble-recv-text: #1A1A1A;
+    --nkc-focus-ring: rgba(57, 127, 152, 0.45);
   }
 
   html,
@@ -17,15 +79,129 @@
 
   body {
     @apply bg-nkc-bg text-nkc-text antialiased;
-    font-family: "Noto Sans KR", ui-sans-serif, system-ui, -apple-system,
-      "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", "Nanum Gothic",
-      sans-serif;
+    font-family: "Inter", "Noto Sans KR", ui-sans-serif, system-ui, -apple-system,
+      "Segoe UI", "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+  }
+
+  ::view-transition-old(root) {
+    animation: 260ms ease-in-out both nkc-theme-fade-out;
+  }
+
+  ::view-transition-new(root) {
+    animation: 260ms ease-in-out both nkc-theme-fade-in;
+  }
+
+  @keyframes nkc-theme-fade-out {
+    from { opacity: 1; }
+    to { opacity: 0; }
+  }
+
+  @keyframes nkc-theme-fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    ::view-transition-old(root),
+    ::view-transition-new(root) {
+      animation-duration: 0.01ms;
+    }
   }
 }
 
 @layer utilities {
+  .nkc-auth-shell {
+    position: relative;
+    display: flex;
+    min-height: 100%;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    padding: 88px 24px 56px;
+    background:
+      radial-gradient(circle at 20% 20%, rgba(57, 127, 152, 0.24), transparent 34%),
+      radial-gradient(circle at 82% 78%, rgba(91, 138, 240, 0.18), transparent 30%),
+      var(--nkc-bg);
+  }
+
+  .nkc-auth-shell::before {
+    position: absolute;
+    inset: 0;
+    background-image:
+      linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+    background-size: 32px 32px;
+    content: "";
+    mask-image: linear-gradient(to bottom, black, transparent 82%);
+    pointer-events: none;
+  }
+
+  .nkc-auth-brand {
+    position: absolute;
+    inset-inline-start: 32px;
+    top: 28px;
+    z-index: 1;
+  }
+
+  .nkc-auth-card {
+    position: relative;
+    z-index: 1;
+    width: min(572px, calc(100vw - 32px));
+    max-height: calc(100vh - 144px);
+    overflow-y: auto;
+    border: 1px solid var(--nkc-border);
+    border-radius: 26px;
+    background: color-mix(in srgb, var(--nkc-panel) 96%, transparent);
+    padding: 28px;
+    box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
+  }
+
+  .nkc-auth-footer {
+    position: absolute;
+    bottom: 22px;
+    z-index: 1;
+    margin: 0;
+    color: var(--nkc-muted);
+    font-size: 11px;
+  }
+
+  .nkc-auth-input {
+    width: 100%;
+    border: 1px solid var(--nkc-border);
+    border-radius: 10px;
+    background: var(--nkc-bg);
+    padding: 11px 12px;
+    color: var(--nkc-text);
+    outline: none;
+  }
+
+  .nkc-auth-input:focus {
+    border-color: var(--nkc-accent);
+    box-shadow: 0 0 0 3px var(--nkc-focus-ring);
+  }
+
+  @media (max-height: 720px) {
+    .nkc-auth-shell {
+      align-items: flex-start;
+      padding-top: 72px;
+    }
+
+    .nkc-auth-card {
+      max-height: calc(100vh - 104px);
+    }
+
+    .nkc-auth-brand {
+      top: 18px;
+    }
+
+    .nkc-auth-footer {
+      display: none;
+    }
+  }
+
   .line-clamp-1 {
     display: -webkit-box;
+    line-clamp: 1;
     -webkit-line-clamp: 1;
     -webkit-box-orient: vertical;
     overflow: hidden;
@@ -33,20 +209,24 @@
 
   .line-clamp-2 {
     display: -webkit-box;
+    line-clamp: 2;
     -webkit-line-clamp: 2;
     -webkit-box-orient: vertical;
     overflow: hidden;
   }
 
   .scrollbar-thin::-webkit-scrollbar {
-    width: 10px;
+    width: 6px;
   }
 
   .scrollbar-thin::-webkit-scrollbar-thumb {
-    background: rgba(59, 130, 246, 0.35);
+    background: var(--nkc-muted);
     border-radius: 999px;
-    border: 2px solid transparent;
-    background-clip: content-box;
+    opacity: 0.4;
+  }
+
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background: var(--nkc-accent);
   }
 
   .scrollbar-thin::-webkit-scrollbar-track {
@@ -59,5 +239,62 @@
 
   .scrollbar-hidden::-webkit-scrollbar {
     display: none;
+  }
+
+  /* Signal-style message slide-in animation */
+  @keyframes signal-slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(8px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  .animate-signal-slide-up {
+    animation: signal-slide-up 0.15s ease-out;
+  }
+
+  /* Signal-style panel slide-in from right */
+  @keyframes signal-slide-in-right {
+    from {
+      opacity: 0;
+      transform: translateX(16px);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  .animate-signal-slide-in-right {
+    animation: signal-slide-in-right 0.2s ease-out;
+  }
+
+  /* Signal-style fade in for menus */
+  @keyframes signal-fade-scale {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  .animate-signal-fade-scale {
+    animation: signal-fade-scale 0.1s ease-out;
+  }
+
+  /* Respect reduced motion */
+  @media (prefers-reduced-motion: reduce) {
+    .animate-signal-slide-up,
+    .animate-signal-slide-in-right,
+    .animate-signal-fade-scale {
+      animation: none;
+    }
   }
 }
