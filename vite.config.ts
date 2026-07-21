@@ -98,6 +98,10 @@ export default defineConfig({
     include: ["libsodium-wrappers-sumo", "libsodium-sumo"],
   },
 
+  worker: {
+    format: "es",
+  },
+
   build: {
     target: "chrome150",
     chunkSizeWarningLimit: 1200,

@@ -1,5 +1,7 @@
 # Large File Transfer
 
+See [File Transfer Crypto Optimization](CRYPTO-TRANSFER-OPTIMIZATION.md) for the compatibility-preserving worker, key-lifetime, bounded pipeline, and Direct SCTP safeguards.
+
 This document describes the current bounded-memory file-transfer path and the tests used to validate it. NKC accepts inline files up to 500 MiB.
 
 ## Data flow
