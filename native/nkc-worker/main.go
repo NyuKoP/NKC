@@ -26,6 +26,7 @@ type worker struct {
 	queueMu   sync.RWMutex
 	queue     *queueStore
 	transport *transportEngine
+	receive   *receiveManager
 }
 
 func (w *worker) getQueue() *queueStore {
@@ -59,6 +60,36 @@ func (w *worker) handle(req request) (any, error) {
 			return nil, err
 		}
 		return readFileChunk(params)
+	case "file.receive.init":
+		params, err := decodeParams[receiveInitParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return w.receive.init(params)
+	case "file.receive.write":
+		params, err := decodeParams[receiveWriteParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return w.receive.write(params)
+	case "file.receive.checkpoint":
+		params, err := decodeParams[receiveIDParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return w.receive.checkpoint(params.TransferID)
+	case "file.receive.finalize":
+		params, err := decodeParams[receiveIDParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return w.receive.finalize(params.TransferID)
+	case "file.receive.abort":
+		params, err := decodeParams[receiveIDParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return w.receive.abort(params.TransferID)
 	case "scheduler.plan":
 		params, err := decodeParams[scheduleParams](req.Params)
 		if err != nil {
@@ -155,7 +186,7 @@ func main() {
 	scanner := bufio.NewScanner(os.Stdin)
 	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
 	encoder := json.NewEncoder(os.Stdout)
-	w := &worker{transport: newTransportEngine()}
+	w := &worker{transport: newTransportEngine(), receive: newReceiveManager()}
 	var outputMu sync.Mutex
 	var requests sync.WaitGroup
 	writeResponse := func(payload response) {

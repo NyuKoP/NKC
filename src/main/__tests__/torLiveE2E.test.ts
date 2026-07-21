@@ -30,11 +30,18 @@ import {
 const LIVE_TOR_ENABLED = process.env.NKC_LIVE_TOR_E2E === "1";
 const LIVE_TOR_LARGE_ENABLED = process.env.NKC_LIVE_TOR_LARGE_E2E === "1";
 const LIVE_TOR_ONLY_LARGE = process.env.NKC_LIVE_TOR_ONLY_LARGE === "1";
+const LIVE_TOR_CHAT_BYTES = process.env.NKC_LIVE_TOR_CHAT_MIB === "1" ? 1024 * 1024 : 0;
 const LIVE_TOR_FILE_MB = Math.min(
   500,
   Math.max(1, Number.parseInt(process.env.NKC_LIVE_TOR_FILE_MB ?? "10", 10) || 10)
 );
-const LIVE_FILE_CHUNK_BYTES = INLINE_MEDIA_CHUNK_SIZE;
+const LIVE_FILE_CHUNK_BYTES = Math.min(
+  INLINE_MEDIA_CHUNK_SIZE,
+  Math.max(
+    128 * 1024,
+    (Number.parseInt(process.env.NKC_LIVE_TOR_CHUNK_KIB ?? "1024", 10) || 1024) * 1024
+  )
+);
 const LIVE_TOR_ROUTE_READY_TIMEOUT_MS = LIVE_TOR_LARGE_ENABLED ? 480_000 : 240_000;
 const DEVICE_A = randomUUID();
 const DEVICE_B = randomUUID();
@@ -156,6 +163,8 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
   let rootA: string;
   let rootB: string;
   let torA: TorManager;
+  let torASecondary: TorManager | null = null;
+  let torATertiary: TorManager | null = null;
   let torB: TorManager;
   let nativeWorker: NativeWorkerClient;
   let controllerA: OnionControllerHandle;
@@ -169,6 +178,8 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
   let dhPrivA: Uint8Array;
   let dhPrivB: Uint8Array;
   let torProxyA: string;
+  let torProxyASecondary: string | null = null;
+  let torProxyATertiary: string | null = null;
 
   beforeAll(async () => {
     rootA = await fs.mkdtemp(path.join(os.tmpdir(), "nkc-live-tor-a-"));
@@ -208,7 +219,33 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
     if (statusA.state !== "running" || statusB.state !== "running") {
       throw new Error(`Tor did not start: ${JSON.stringify({ statusA, statusB })}`);
     }
-    await controllerA.setTorSocksProxy(statusA.socksProxyUrl);
+    const requestedLanes = Math.max(
+      1,
+      Math.min(3, Number.parseInt(process.env.NKC_LIVE_TOR_SEND_WINDOW ?? "1", 10) || 1)
+    );
+    if (requestedLanes >= 2) {
+      torASecondary = new TorManager({ appDataDir: rootA, instanceId: "lane-2" });
+      await torASecondary.start();
+      const secondaryStatus = torASecondary.getStatus();
+      if (secondaryStatus.state !== "running") {
+        throw new Error(`Secondary Tor lane did not start: ${JSON.stringify(secondaryStatus)}`);
+      }
+      torProxyASecondary = secondaryStatus.socksProxyUrl;
+    }
+    if (requestedLanes >= 3) {
+      torATertiary = new TorManager({ appDataDir: rootA, instanceId: "lane-3" });
+      await torATertiary.start();
+      const tertiaryStatus = torATertiary.getStatus();
+      if (tertiaryStatus.state !== "running") {
+        throw new Error(`Tertiary Tor lane did not start: ${JSON.stringify(tertiaryStatus)}`);
+      }
+      torProxyATertiary = tertiaryStatus.socksProxyUrl;
+    }
+    await controllerA.setTorSocksProxies(
+      [statusA.socksProxyUrl, torProxyASecondary, torProxyATertiary].filter(
+        (value): value is string => Boolean(value)
+      )
+    );
     await controllerB.setTorSocksProxy(statusB.socksProxyUrl);
     controllerA.setTorOnionHost(onionA);
     controllerB.setTorOnionHost(onionB);
@@ -278,6 +315,8 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       controllerA?.close(),
       controllerB?.close(),
       torA?.stop(),
+      torASecondary?.stop(),
+      torATertiary?.stop(),
       torB?.stop(),
       nativeWorker?.stop(),
     ]);
@@ -433,9 +472,13 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
           .digest("hex")
       ).toBe(fileSha256);
 
+      const chatText = LIVE_TOR_CHAT_BYTES > 0
+        ? "C".repeat(LIVE_TOR_CHAT_BYTES)
+        : `Tor live reply ${Date.now()}`;
+      const chatSha256 = createHash("sha256").update(chatText).digest("hex");
       const chatEnvelope = JSON.stringify({
         type: "chat",
-        text: `Tor live reply ${Date.now()}`,
+        text: chatText,
       });
       const prewarmBtoA = await controllerB.prewarmTorRoute(alice.onionAddr);
       console.info("Tor prewarm B->A", prewarmBtoA);
@@ -451,6 +494,8 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
 
       const inboxA = await readInbox(controllerA, alice.deviceId);
       expect(inboxA.items.at(-1)).toMatchObject({ from: bob.deviceId, envelope: chatEnvelope });
+      const receivedChat = JSON.parse(inboxA.items.at(-1)?.envelope ?? "null") as { text?: string };
+      expect(createHash("sha256").update(receivedChat.text ?? "").digest("hex")).toBe(chatSha256);
 
       console.info(
         JSON.stringify({
@@ -463,6 +508,8 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
           prewarmAtoBMs: prewarmAtoB.elapsedMs,
           fileTransferMs,
           chatBtoA: true,
+          chatBytes: Buffer.byteLength(chatText),
+          chatSha256,
           prewarmBtoAMs: prewarmBtoA.elapsedMs,
           chatTransferMs,
         })
@@ -501,9 +548,9 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
       const prewarm = await controllerA.prewarmTorRoute(bob.onionAddr);
       expect(prewarm.ok).toBe(true);
       const transferStartedAt = Date.now();
-      // A single Tor circuit becomes less reliable when several 128 KiB HTTP forwards compete
-      // for it. Keep the Tor lane serial and rely on binary streaming to bound memory usage.
-      const sendWindow = 1;
+      // Default to the reliable serial lane; explicit live benchmarks may compare two lanes.
+      const requestedSendWindow = Number.parseInt(process.env.NKC_LIVE_TOR_SEND_WINDOW ?? "1", 10);
+      const sendWindow = Math.max(1, Math.min(3, requestedSendWindow || 1));
       const progressEveryChunks = Math.max(
         1,
         Math.round((32 * 1024 * 1024) / LIVE_FILE_CHUNK_BYTES)
@@ -578,7 +625,11 @@ describe.runIf(LIVE_TOR_ENABLED)("live Tor bidirectional transfer", () => {
               controllerA.authToken
             );
             expect(pausedResult.body.forwarded).not.toBe(true);
-            await controllerA.setTorSocksProxy(torProxyA);
+            await controllerA.setTorSocksProxies(
+              [torProxyA, torProxyASecondary, torProxyATertiary].filter(
+                (value): value is string => Boolean(value)
+              )
+            );
             const resumedPrewarm = await controllerA.prewarmTorRoute(bob.onionAddr);
             expect(resumedPrewarm.ok).toBe(true);
             interruptionVerified = true;

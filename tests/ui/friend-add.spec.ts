@@ -213,6 +213,24 @@ const seedNetworkConfig = async (
   }
 ) => {
   await page.addInitScript(({ url, selectedNetwork, serviceAddress, mode }) => {
+    const secureStoragePrefix = "nkc-e2e-secure-storage:";
+    Object.defineProperty(window, "electron", {
+      configurable: true,
+      value: {
+        secureStorage: {
+          isAvailable: async () => true,
+          get: async (key: string) => localStorage.getItem(`${secureStoragePrefix}${key}`),
+          set: async (key: string, value: string) => {
+            localStorage.setItem(`${secureStoragePrefix}${key}`, value);
+            return true;
+          },
+          remove: async (key: string) => {
+            localStorage.removeItem(`${secureStoragePrefix}${key}`);
+            return true;
+          },
+        },
+      },
+    });
     const encodeBase64 = (value: string) => {
       const bytes = new TextEncoder().encode(value);
       let binary = "";

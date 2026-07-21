@@ -145,8 +145,9 @@ export class TorManager {
   private bridgeDetail: string | null = null;
   private bridgeModeOverride: "force" | null = null;
 
-  constructor(opts: { appDataDir: string }) {
-    this.baseDataDir = path.join(opts.appDataDir, "nkc-tor");
+  constructor(opts: { appDataDir: string; instanceId?: string }) {
+    const suffix = opts.instanceId?.trim() ? `-${opts.instanceId.trim()}` : "";
+    this.baseDataDir = path.join(opts.appDataDir, `nkc-tor${suffix}`);
     this.dataDir = this.baseDataDir;
   }
 

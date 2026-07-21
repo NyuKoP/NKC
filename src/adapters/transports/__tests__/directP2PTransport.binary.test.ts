@@ -3,7 +3,10 @@ import { decodeBinaryTransportPacket } from "../packetCodec";
 import { createDirectP2PTransport } from "../directP2PTransport";
 
 class FakeDataChannel {
+  readonly label: string;
+  constructor(label: string) { this.label = label; }
   readyState: RTCDataChannelState = "open";
+  binaryType: BinaryType = "blob";
   sent: Array<string | ArrayBuffer> = [];
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -20,7 +23,9 @@ class FakeDataChannel {
 }
 
 class FakePeerConnection {
-  readonly channel = new FakeDataChannel();
+  readonly channel = new FakeDataChannel("nkc-direct-v1");
+  readonly fileChannel = new FakeDataChannel("nkc-file-v1");
+  readonly channelOptions = new Map<string, RTCDataChannelInit>();
   iceConnectionState: RTCIceConnectionState = "new";
   localDescription: RTCSessionDescriptionInit | null = null;
   remoteDescription: RTCSessionDescription | null = null;
@@ -28,8 +33,9 @@ class FakePeerConnection {
   oniceconnectionstatechange: (() => void) | null = null;
   ondatachannel: ((event: RTCDataChannelEvent) => void) | null = null;
 
-  createDataChannel() {
-    return this.channel as unknown as RTCDataChannel;
+  createDataChannel(label: string, options?: RTCDataChannelInit) {
+    this.channelOptions.set(label, options ?? {});
+    return (label === "nkc-file-v1" ? this.fileChannel : this.channel) as unknown as RTCDataChannel;
   }
 
   async createOffer() {
@@ -83,5 +89,19 @@ describe("direct P2P binary capability negotiation", () => {
       id: "binary",
       payload: new Uint8Array([4, 5, 6]),
     });
+    expect(peerConnection.channelOptions.get("nkc-direct-v1")?.ordered).toBe(true);
+    expect(peerConnection.channelOptions.get("nkc-file-v1")?.ordered).toBe(false);
+  });
+
+  it("sends file frames through the unordered binary channel", async () => {
+    const peerConnection = new FakePeerConnection();
+    vi.stubGlobal("RTCPeerConnection", class {
+      constructor() { return peerConnection; }
+    });
+    const transport = createDirectP2PTransport();
+    await transport.createOfferCode();
+    const frame = Uint8Array.of(1, 2, 3, 4);
+    await transport.sendFileFrame(frame);
+    expect(new Uint8Array(peerConnection.fileChannel.sent[0] as ArrayBuffer)).toEqual(frame);
   });
 });

@@ -15,7 +15,10 @@ The encrypted envelope is larger than its plaintext chunk because the media body
 
 ## Reliability policy
 
-- Large Tor transfers use a serial send lane. Eight concurrent chunk forwards reproduced sustained `upstream_response_timeout` failures on a single circuit.
+- The logical plaintext chunk remains 1 MiB. A 512 KiB comparison reached 0.094 MiB/s, while observed 1 MiB runs reached 0.139-0.237 MiB/s; the larger chunk reduces HTTP, encryption, and acknowledgement round trips.
+- Independent Tor lanes use separate processes, data directories, and SOCKS ports. They are prewarmed independently and selected in round-robin order.
+- Two lanes are the validated maximum for large transfers. Three lanes increased contention and reduced measured throughput.
+- The release policy reserves two-lane transfer for photos and files of at least 200 MiB; smaller transfers retain the single-lane reliability path.
 - Tor route readiness is verified before transfer begins.
 - Transient forwarding failures re-prewarm the route and retry with bounded backoff in the live harness.
 - The soak test intentionally removes and restores the sender's Tor proxy halfway through the file.
@@ -38,6 +41,8 @@ npm run bench:transfer:500mb
 npm run test:tor:large
 npm run test:tor:large:10
 npm run test:tor:large:100
+npm run test:tor:large:100:lane2
+npm run test:tor:large:100:lane3
 npm run test:tor:large:500
 ```
 
@@ -52,8 +57,12 @@ Measurements below are from the Windows development host on 2026-07-19 and are n
 | Real Tor 10 MiB, before sizing change | 128 KiB | 468.838 s | 0.021 MiB/s | Interruption recovery and matching SHA-256 |
 | Real Tor 10 MiB, optimized | 1 MiB | 73.998 s | 0.135 MiB/s | Reverse chat 0.895 s, duplicates 0, matching SHA-256 |
 | Real Tor 500 MiB, optimized | 1 MiB | 3,768.472 s | 0.133 MiB/s | P50/P95 6.780/10.834 s, reverse chat 4.168 s, duplicates 0, matching SHA-256 |
+| Real Tor 100 MiB, one lane | 1 MiB | 484.834 s | 0.206 MiB/s | Interruption recovery, duplicates 0, matching SHA-256 |
+| Real Tor 100 MiB, two independent lanes | 1 MiB | 422.397 s | 0.237 MiB/s | Best measured lane count, duplicates 0, matching SHA-256 |
+| Real Tor 100 MiB, three independent lanes | 1 MiB | 941.120 s | 0.106 MiB/s | One duplicate rejected, matching SHA-256 |
+| Real Tor 10 MiB, two lanes | 512 KiB | 106.804 s | 0.094 MiB/s | 20 chunks, duplicates 0, matching SHA-256 |
 
-The one-MiB format improved the comparable 10 MiB live transfer by approximately 6.3 times by reducing Tor HTTP round trips from 80 to 10.
+The one-MiB format improved the comparable 10 MiB live transfer by approximately 6.3 times by reducing Tor HTTP round trips from 80 to 10. Two independent lanes improved the measured 100 MiB run by about 15 percent over one lane; three lanes were slower and are not recommended.
 
 ## Change checklist
 
