@@ -1,6 +1,12 @@
 import Dexie from "dexie";
 import { db, ensureDbOpen, resetDb } from "./schema";
-import type { EncryptedRecord, EventRecord, MediaChunkRecord, MessageRecord } from "./schema";
+import type {
+  EncryptedRecord,
+  EventRecord,
+  MediaChunkRecord,
+  MessageRecord,
+  OutboxRecord,
+} from "./schema";
 import type { Envelope } from "../crypto/box";
 import {
   chunkBuffer,
@@ -17,6 +23,7 @@ import { clearVaultKey, getVaultKey, setVaultKey } from "../crypto/sessionKeyrin
 import { createId } from "../utils/ids";
 import { mapLimit } from "../utils/async";
 import { parseAvatarRef, serializeAvatarRef } from "../utils/avatarRefs";
+import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 
 export type AvatarRef = {
   ownerType: "profile" | "group";
@@ -87,6 +94,7 @@ export type Conversation = {
   blocked: boolean;
   pendingAcceptance?: boolean;
   pendingOutgoing?: boolean;
+  pendingFriendResponse?: "accept" | "decline";
   lastTs: number;
   lastMessage: string;
   participants: string[];
@@ -116,6 +124,17 @@ export type StoredMessageRecord =
   | { kind: "envelope"; record: MessageEnvelopeRecord }
   | { kind: "legacy"; record: Message };
 
+export type OutboxPayload = { payloadB64u: string };
+export type OutboxItem = {
+  id: string;
+  convId: string;
+  createdAt: number;
+  ttlMs: number;
+  attempt: number;
+  nextAttemptAt: number;
+  lastError?: string;
+};
+
 const VAULT_META_KEY = "vault_header_v2";
 const VAULT_KEY_ID_KEY = "vault_key_id_v1";
 const TEXT_ENCODING_FIX_KEY = "text_encoding_fix_v1";
@@ -127,8 +146,61 @@ const MEDIA_YIELD_EVERY = 6;
 const MEDIA_DECRYPT_LARGE_CHUNKS = 32;
 const MEDIA_DECRYPT_LARGE_CONCURRENCY = 3;
 const MEDIA_DECRYPT_BATCH_MULTIPLIER = 4;
+const MEDIA_WRITE_BATCH_SIZE = 8;
+const OUTBOX_BACKOFF = [1000, 5000, 30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000] as const;
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+const startsWithBytes = (bytes: Uint8Array, signature: number[]) =>
+  bytes.length >= signature.length && signature.every((value, index) => bytes[index] === value);
+
+const readAsciiPrefix = (bytes: Uint8Array, length = 64) =>
+  new TextDecoder("utf-8", { fatal: false })
+    .decode(bytes.slice(0, length))
+    .replace(/\0/g, "")
+    .trimStart()
+    .toLowerCase();
+
+const hasExpectedMediaSignature = (mime: string, bytes: Uint8Array) => {
+  const normalizedMime = mime.toLowerCase();
+  if (normalizedMime === "image/png") return startsWithBytes(bytes, [0x89, 0x50, 0x4e, 0x47]);
+  if (normalizedMime === "image/jpeg") return startsWithBytes(bytes, [0xff, 0xd8, 0xff]);
+  if (normalizedMime === "image/gif") return startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38]);
+  if (normalizedMime === "image/webp")
+    return startsWithBytes(bytes, [0x52, 0x49, 0x46, 0x46]) &&
+      bytes.length >= 12 &&
+      bytes[8] === 0x57 &&
+      bytes[9] === 0x45 &&
+      bytes[10] === 0x42 &&
+      bytes[11] === 0x50;
+  if (normalizedMime === "video/mp4") return bytes.length >= 8 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70;
+  if (normalizedMime === "video/webm") return startsWithBytes(bytes, [0x1a, 0x45, 0xdf, 0xa3]);
+  if (normalizedMime === "video/ogg") return startsWithBytes(bytes, [0x4f, 0x67, 0x67, 0x53]);
+  return false;
+};
+
+const isSuspiciousMediaPayload = (mime: string, bytes: Uint8Array) => {
+  const normalizedMime = mime.toLowerCase();
+  if (!normalizedMime.startsWith("image/") && !normalizedMime.startsWith("video/")) return false;
+  if (hasExpectedMediaSignature(normalizedMime, bytes)) return false;
+
+  const asciiPrefix = readAsciiPrefix(bytes);
+  if (
+    startsWithBytes(bytes, [0x4d, 0x5a]) ||
+    startsWithBytes(bytes, [0x7f, 0x45, 0x4c, 0x46]) ||
+    startsWithBytes(bytes, [0x23, 0x21]) ||
+    startsWithBytes(bytes, [0x50, 0x4b, 0x03, 0x04]) ||
+    asciiPrefix.startsWith("<!doctype html") ||
+    asciiPrefix.startsWith("<html") ||
+    asciiPrefix.startsWith("<?xml") ||
+    asciiPrefix.startsWith("<svg") ||
+    asciiPrefix.startsWith("<script")
+  ) {
+    return true;
+  }
+
+  return normalizedMime === "image/svg+xml";
+};
 
 const shouldYieldMedia = (index: number, total: number) =>
   total >= MEDIA_YIELD_MIN_CHUNKS && (index + 1) % MEDIA_YIELD_EVERY === 0;
@@ -137,6 +209,9 @@ const resolveMediaDecryptConcurrency = (totalChunks: number) =>
   totalChunks >= MEDIA_DECRYPT_LARGE_CHUNKS
     ? Math.min(MEDIA_DECRYPT_LARGE_CONCURRENCY, MEDIA_DECRYPT_CONCURRENCY)
     : MEDIA_DECRYPT_CONCURRENCY;
+
+const nextOutboxAttemptAt = (attempt: number, now: number) =>
+  now + OUTBOX_BACKOFF[Math.min(OUTBOX_BACKOFF.length - 1, Math.max(0, attempt))];
 
 const decryptMediaChunks = async (vk: Uint8Array, chunks: MediaChunkRecord[]) => {
   const total = chunks.length;
@@ -156,6 +231,42 @@ const decryptMediaChunks = async (vk: Uint8Array, chunks: MediaChunkRecord[]) =>
   }
 
   return decrypted;
+};
+
+const decryptMediaToBlob = async (
+  vk: Uint8Array,
+  chunks: MediaChunkRecord[],
+  mime: string,
+  maxBytes: number
+) => {
+  const total = chunks.length;
+  const concurrency = resolveMediaDecryptConcurrency(total);
+  const batchSize = Math.max(concurrency * MEDIA_DECRYPT_BATCH_MULTIPLIER, concurrency);
+  const blobParts: Blob[] = [];
+  let totalBytes = 0;
+
+  for (let start = 0; start < total; start += batchSize) {
+    const batch = chunks.slice(start, start + batchSize);
+    const batchResult = await mapLimit(batch, concurrency, (chunk) =>
+      decodeBinaryEnvelope(vk, chunk.id, "mediaChunk", chunk.enc_b64)
+    );
+    if (start === 0) {
+      const firstChunk = batchResult[0];
+      if (!firstChunk || isSuspiciousMediaPayload(mime, firstChunk)) return null;
+    }
+    for (const bytes of batchResult) {
+      totalBytes += bytes.byteLength;
+      if (totalBytes > maxBytes) return null;
+    }
+    // Move decrypted batches into immutable Blob storage so the JS heap only retains
+    // one decryption batch instead of every chunk of a large attachment.
+    blobParts.push(new Blob(batchResult as unknown as BlobPart[]));
+    if (total >= MEDIA_YIELD_MIN_CHUNKS && start + batchSize < total) {
+      await yieldToEventLoop();
+    }
+  }
+
+  return { blob: new Blob(blobParts, { type: mime }), totalBytes };
 };
 
 const requireVaultKey = () => {
@@ -601,19 +712,27 @@ export const saveMessageMedia = async (
     .and((chunk) => chunk.ownerType === "message")
     .delete();
 
-  const buffer = await file.arrayBuffer();
-  const chunks = chunkBuffer(buffer, chunkSize);
-  const total = chunks.length;
+  if (!Number.isFinite(chunkSize) || chunkSize <= 0 || chunkSize > MEDIA_CHUNK_SIZE) {
+    throw new Error("Invalid media chunk size");
+  }
+  if (file.size <= 0 || file.size > MAX_MEDIA_BYTES) {
+    throw new Error("Invalid media size");
+  }
+  const total = Math.ceil(file.size / chunkSize);
   const now = Date.now();
   const records: MediaChunkRecord[] = [];
 
-  for (let idx = 0; idx < chunks.length; idx += 1) {
+  for (let idx = 0; idx < total; idx += 1) {
+    const start = idx * chunkSize;
+    const bytes = new Uint8Array(
+      await file.slice(start, Math.min(file.size, start + chunkSize)).arrayBuffer()
+    );
     const chunkId = `${messageId}:${idx}`;
     const enc_b64 = await encodeBinaryEnvelope(
       vk,
       chunkId,
       "mediaChunk",
-      chunks[idx]
+      bytes
     );
     records.push({
       id: chunkId,
@@ -625,12 +744,15 @@ export const saveMessageMedia = async (
       total,
       updatedAt: now,
     });
+    if (records.length >= MEDIA_WRITE_BATCH_SIZE) {
+      await db.mediaChunks.bulkPut(records.splice(0));
+    }
     if (shouldYieldMedia(idx, total)) {
       await yieldToEventLoop();
     }
   }
 
-  await db.mediaChunks.bulkPut(records);
+  if (records.length) await db.mediaChunks.bulkPut(records);
 
   const mediaRef: MediaRef = {
     ownerType: "message",
@@ -643,6 +765,55 @@ export const saveMessageMedia = async (
   };
 
   return mediaRef;
+};
+
+export const saveReceivedMessageMediaChunk = async (input: {
+  ownerId: string;
+  idx: number;
+  total: number;
+  chunkSize: number;
+  size: number;
+  mime: string;
+  bytes: Uint8Array;
+}) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const ownerId = input.ownerId.trim();
+  if (!ownerId || ownerId.length > 256) throw new Error("Invalid media owner");
+  if (!Number.isInteger(input.idx) || input.idx < 0) throw new Error("Invalid media chunk index");
+  if (!Number.isInteger(input.total) || input.total <= 0) throw new Error("Invalid media chunk total");
+  if (input.idx >= input.total) throw new Error("Invalid media chunk index");
+  if (!Number.isInteger(input.chunkSize) || input.chunkSize <= 0 || input.chunkSize > MEDIA_CHUNK_SIZE) {
+    throw new Error("Invalid media chunk size");
+  }
+  if (!Number.isFinite(input.size) || input.size <= 0 || input.size > MAX_MEDIA_BYTES) {
+    throw new Error("Invalid media size");
+  }
+  if (input.total * input.chunkSize > MAX_MEDIA_BYTES + input.chunkSize) {
+    throw new Error("Media exceeds size limit");
+  }
+  if (input.bytes.byteLength <= 0 || input.bytes.byteLength > input.chunkSize) {
+    throw new Error("Invalid media chunk payload");
+  }
+
+  const chunkId = `${ownerId}:${input.idx}`;
+  const enc_b64 = await encodeBinaryEnvelope(vk, chunkId, "mediaChunk", input.bytes);
+  await db.mediaChunks.put({
+    id: chunkId,
+    ownerType: "message",
+    ownerId,
+    idx: input.idx,
+    enc_b64,
+    mime: input.mime || "application/octet-stream",
+    total: input.total,
+    updatedAt: Date.now(),
+  });
+  const received = await db.mediaChunks
+    .where("ownerId")
+    .equals(ownerId)
+    .and((chunk) => chunk.ownerType === "message")
+    .count();
+  return { received, total: input.total, complete: received === input.total };
 };
 
 export const loadMessageMedia = async (mediaRef?: MediaRef) => {
@@ -663,12 +834,9 @@ export const loadMessageMedia = async (mediaRef?: MediaRef) => {
     if (mediaRef.total * mediaRef.chunkSize > MAX_MEDIA_BYTES) return null;
     if (mediaRef.size > MAX_MEDIA_BYTES) return null;
 
-    const decrypted = await decryptMediaChunks(vk, chunks);
-    if (decrypted.length !== chunks.length) return null;
-    const totalBytes = decrypted.reduce((sum, part) => sum + part.length, 0);
-    if (totalBytes > MAX_MEDIA_BYTES) return null;
-    const blob = new Blob(decrypted as unknown as BlobPart[], { type: mediaRef.mime });
-    return blob;
+    const decrypted = await decryptMediaToBlob(vk, chunks, mediaRef.mime, MAX_MEDIA_BYTES);
+    if (!decrypted) return null;
+    return decrypted.blob;
   } catch {
     return null;
   }
@@ -927,6 +1095,101 @@ export const getVaultUsage = async (): Promise<VaultUsage> => {
       breakdown.meta,
     breakdown,
   };
+};
+
+type DecryptedOutboxRecord = OutboxItem & { payload: OutboxPayload };
+
+export const enqueueOutbox = async (item: OutboxItem, payload: Uint8Array) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const payloadB64u = encodeBase64Url(payload);
+  const ciphertext = await encryptJsonRecord(vk, item.id, "outbox", {
+    ...item,
+    payload: { payloadB64u },
+  } satisfies DecryptedOutboxRecord);
+  const record: OutboxRecord = {
+    ...item,
+    lastError: item.lastError ?? "",
+    ciphertext,
+    createdAtMs: item.createdAt,
+    expiresAtMs: item.createdAt + item.ttlMs,
+    nextAttemptAtMs: item.nextAttemptAt,
+    attempts: item.attempt,
+    status: "pending",
+  };
+  await db.outbox.put(record);
+};
+
+export const listDueOutboxByConv = async (convId: string, now: number, limit = 10) => {
+  await ensureDbOpen();
+  const vk = requireVaultKey();
+  const records = await db.outbox
+    .where("[convId+nextAttemptAt]")
+    .between([convId, Dexie.minKey], [convId, now], true, true)
+    .limit(limit)
+    .toArray();
+
+  const decoded = await Promise.all(
+    records.map(async (record) => {
+      const item = await decryptJsonRecord<DecryptedOutboxRecord>(
+        vk,
+        record.id,
+        "outbox",
+        record.ciphertext
+      );
+      const meta: OutboxItem = {
+        id: record.id,
+        convId: record.convId,
+        createdAt: record.createdAt ?? item.createdAt,
+        ttlMs: record.ttlMs ?? item.ttlMs,
+        attempt: record.attempt ?? item.attempt,
+        nextAttemptAt: record.nextAttemptAt ?? item.nextAttemptAt,
+        lastError: record.lastError || undefined,
+      };
+      return {
+        meta,
+        payload: decodeBase64Url(item.payload.payloadB64u),
+      };
+    })
+  );
+
+  return decoded;
+};
+
+export const markOutboxRetry = async (id: string, err: string) => {
+  await ensureDbOpen();
+  const record = await db.outbox.get(id);
+  if (!record) return;
+  const now = Date.now();
+  const nextAttempt = (record.attempt ?? 0) + 1;
+  const nextAttemptAt = nextOutboxAttemptAt(nextAttempt, now);
+  await db.outbox.update(id, {
+    attempt: nextAttempt,
+    attempts: nextAttempt,
+    nextAttemptAt,
+    nextAttemptAtMs: nextAttemptAt,
+    lastError: err,
+    status: "pending",
+  });
+};
+
+export const removeOutbox = async (id: string) => {
+  await ensureDbOpen();
+  await db.outbox.delete(id);
+};
+
+export const dropExpiredOutboxByConv = async (convId: string, now: number) => {
+  await ensureDbOpen();
+  const records = await db.outbox.where("convId").equals(convId).toArray();
+  const expired = records.filter((record) => {
+    const createdAt = record.createdAt ?? record.createdAtMs ?? 0;
+    const ttlMs =
+      record.ttlMs ??
+      (typeof record.expiresAtMs === "number" ? Math.max(0, record.expiresAtMs - createdAt) : 0);
+    return createdAt + ttlMs <= now;
+  });
+  if (!expired.length) return;
+  await db.outbox.bulkDelete(expired.map((record) => record.id));
 };
 
 const randomBytes = (length: number) => {

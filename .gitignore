@@ -12,6 +12,8 @@ dist
 dist-ssr
 dist-electron
 release
+native/bin/
+.tmp-go-cache/
 *.local
 
 # Editor directories and files

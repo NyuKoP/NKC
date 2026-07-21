@@ -4,6 +4,7 @@ import type {
   SyncIntervalMinutes,
 } from "../../../preferences";
 import SettingsBackHeader from "../SettingsBackHeader";
+import ToggleSwitch from "../ToggleSwitch";
 
 type Translate = (ko: string, en: string) => string;
 
@@ -53,13 +54,13 @@ export default function LoginSettings({
                 )}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("Windows 자동 시작", "Start with Windows")}
               checked={appPrefs.login.autoStartEnabled}
               disabled={prefsDisabled}
-              onChange={(e) =>
+              onChange={(checked) =>
                 void onUpdateAppPrefs({
-                  login: { autoStartEnabled: e.target.checked },
+                  login: { autoStartEnabled: checked },
                 })
               }
             />
@@ -77,13 +78,13 @@ export default function LoginSettings({
                 )}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("자동 시작 시 트레이에서 시작", "Start in tray on auto-start")}
               checked={appPrefs.login.startInTray}
               disabled={prefsDisabled}
-              onChange={(e) =>
+              onChange={(checked) =>
                 void onUpdateAppPrefs({
-                  login: { startInTray: e.target.checked },
+                  login: { startInTray: checked },
                 })
               }
             />
@@ -98,13 +99,13 @@ export default function LoginSettings({
                 {t("창 닫기 시 앱을 종료하지 않습니다.", "Keep the app running in the tray.")}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("닫기(X) = 트레이로 숨김", "Close (X) = Hide to tray")}
               checked={appPrefs.login.closeToTray}
               disabled={prefsDisabled || closeToTrayDisabled}
-              onChange={(e) =>
+              onChange={(checked) =>
                 void onUpdateAppPrefs({
-                  login: { closeToTray: e.target.checked },
+                  login: { closeToTray: checked },
                 })
               }
             />
@@ -119,13 +120,13 @@ export default function LoginSettings({
                 {t("앱을 종료하고 백그라운드를 끕니다.", "Exit the app and disable background mode.")}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("닫기(X) = 종료", "Close (X) = Exit")}
               checked={appPrefs.login.closeToExit}
               disabled={prefsDisabled || closeToExitDisabled}
-              onChange={(e) =>
+              onChange={(checked) =>
                 void onUpdateAppPrefs({
-                  login: { closeToExit: e.target.checked },
+                  login: { closeToExit: checked },
                 })
               }
             />
@@ -143,13 +144,13 @@ export default function LoginSettings({
                 )}
               </div>
             </div>
-            <input
-              type="checkbox"
+            <ToggleSwitch
+              label={t("백그라운드 사용", "Background enabled")}
               checked={appPrefs.background.enabled}
               disabled={prefsDisabled || appPrefs.login.closeToExit}
-              onChange={(e) =>
+              onChange={(checked) =>
                 void onUpdateAppPrefs({
-                  background: { enabled: e.target.checked },
+                  background: { enabled: checked },
                 })
               }
             />
@@ -217,4 +218,3 @@ export default function LoginSettings({
     </div>
   );
 }
-

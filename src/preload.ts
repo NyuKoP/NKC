@@ -1,9 +1,11 @@
-import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import { contextBridge, ipcRenderer, webUtils, type IpcRendererEvent } from "electron";
 
 type ProxyHealth = {
   ok: boolean;
   message: string;
 };
+
+const P2P_CONNECTION_STATUS_CHANNEL = "p2p:connection-status";
 
 contextBridge.exposeInMainWorld("electron", {
   secureStorage: {
@@ -22,15 +24,15 @@ contextBridge.exposeInMainWorld("secureProxy", {
 });
 
 contextBridge.exposeInMainWorld("onion", {
-  install: (payload: { network: "tor" | "lokinet" }) =>
+  install: (payload: { network: "tor" }) =>
     ipcRenderer.invoke("onion:install", payload) as Promise<void>,
-  uninstall: (payload: { network: "tor" | "lokinet" }) =>
+  uninstall: (payload: { network: "tor" }) =>
     ipcRenderer.invoke("onion:uninstall", payload) as Promise<void>,
-  setMode: (payload: { enabled: boolean; network: "tor" | "lokinet" }) =>
+  setMode: (payload: { enabled: boolean; network: "tor" }) =>
     ipcRenderer.invoke("onion:setMode", payload) as Promise<void>,
   status: () => ipcRenderer.invoke("onion:status") as Promise<unknown>,
   checkUpdates: () => ipcRenderer.invoke("onion:checkUpdates") as Promise<unknown>,
-  applyUpdate: (payload: { network: "tor" | "lokinet" }) =>
+  applyUpdate: (payload: { network: "tor" }) =>
     ipcRenderer.invoke("onion:applyUpdate", payload) as Promise<void>,
   onProgress: (cb: (payload: unknown) => void) => {
     const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
@@ -60,17 +62,20 @@ contextBridge.exposeInMainWorld("nkc", {
     bodyBase64?: string;
     timeoutMs?: number;
   }) => ipcRenderer.invoke("nkc:onionControllerFetch", req) as Promise<unknown>,
+  prewarmOnionRoute: (payload: { onionAddress: string }) =>
+    ipcRenderer.invoke("nkc:prewarmOnionRoute", payload) as Promise<{
+      ok: boolean;
+      elapsedMs: number;
+      error?: string;
+    }>,
   getTorStatus: () => ipcRenderer.invoke("nkc:getTorStatus") as Promise<unknown>,
-  startTor: () => ipcRenderer.invoke("nkc:startTor") as Promise<unknown>,
+  startTor: (payload?: { profileScopedDataDir?: boolean }) =>
+    ipcRenderer.invoke("nkc:startTor", payload) as Promise<unknown>,
   stopTor: () => ipcRenderer.invoke("nkc:stopTor") as Promise<unknown>,
+  checkSocksProxyReachable: (payload: { socksUrl: string; timeoutMs?: number }) =>
+    ipcRenderer.invoke("nkc:checkSocksProxyReachable", payload) as Promise<boolean>,
   ensureHiddenService: () => ipcRenderer.invoke("nkc:ensureHiddenService") as Promise<unknown>,
   getMyOnionAddress: () => ipcRenderer.invoke("nkc:getMyOnionAddress") as Promise<string>,
-  getLokinetStatus: () => ipcRenderer.invoke("nkc:getLokinetStatus") as Promise<unknown>,
-  configureLokinetExternal: (payload: { proxyUrl: string; serviceAddress?: string }) =>
-    ipcRenderer.invoke("nkc:configureLokinetExternal", payload) as Promise<unknown>,
-  startLokinet: () => ipcRenderer.invoke("nkc:startLokinet") as Promise<unknown>,
-  stopLokinet: () => ipcRenderer.invoke("nkc:stopLokinet") as Promise<unknown>,
-  getMyLokinetAddress: () => ipcRenderer.invoke("nkc:getMyLokinetAddress") as Promise<string>,
 });
 
 contextBridge.exposeInMainWorld("prefs", {
@@ -101,4 +106,40 @@ contextBridge.exposeInMainWorld("appControls", {
     ipcRenderer.on("background:status", handler);
     return () => ipcRenderer.removeListener("background:status", handler);
   },
+});
+
+contextBridge.exposeInMainWorld("p2p", {
+  onConnectionStatus: (cb: (payload: unknown) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
+    ipcRenderer.on(P2P_CONNECTION_STATUS_CHANNEL, handler);
+    return () => ipcRenderer.removeListener(P2P_CONNECTION_STATUS_CHANNEL, handler);
+  },
+});
+
+const preloadToken = ipcRenderer.sendSync("security:get-preload-token") as string | null;
+
+contextBridge.exposeInMainWorld("nativeWorker", {
+  inspectFile: (file: File, chunkSize: number) => {
+    const filePath = webUtils.getPathForFile(file);
+    if (!filePath) return Promise.resolve({ ok: false, error: "file-path-unavailable" });
+    return ipcRenderer.invoke("nativeWorker:fileInspect", { path: filePath, chunkSize, token: preloadToken });
+  },
+  readFileChunk: (file: File, index: number, chunkSize: number) => {
+    const filePath = webUtils.getPathForFile(file);
+    if (!filePath) return Promise.resolve({ ok: false, error: "file-path-unavailable" });
+    return ipcRenderer.invoke("nativeWorker:fileChunk", { path: filePath, index, chunkSize, token: preloadToken });
+  },
+  receiveInit: (payload: unknown) => ipcRenderer.invoke("nativeWorker:receiveInit", { ...(payload as object), token: preloadToken }),
+  receiveWrite: (payload: unknown) => ipcRenderer.invoke("nativeWorker:receiveWrite", { ...(payload as object), token: preloadToken }),
+  receiveCheckpoint: (transferId: string) => ipcRenderer.invoke("nativeWorker:receive:checkpoint", { transferId, token: preloadToken }),
+  receiveFinalize: (transferId: string) => ipcRenderer.invoke("nativeWorker:receive:finalize", { transferId, token: preloadToken }),
+  receiveAbort: (transferId: string) => ipcRenderer.invoke("nativeWorker:receive:abort", { transferId, token: preloadToken }),
+  planDelivery: (payload: unknown) => ipcRenderer.invoke("nativeWorker:schedule", payload),
+});
+
+contextBridge.exposeInMainWorld("testLog", {
+  append: (payload: { channel: string; event: unknown; at?: string }) =>
+    ipcRenderer.invoke("testLog:append", payload) as Promise<{ ok: boolean; path: string }>,
+  getPath: () => ipcRenderer.invoke("testLog:path") as Promise<string>,
+  getFriendFlowPath: () => ipcRenderer.invoke("testLog:friendFlowPath") as Promise<string>,
 });

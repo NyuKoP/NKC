@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState, type ReactNode, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useState, type ReactNode, type MouseEvent as ReactMouseEvent } from "react";
 import { FileText } from "lucide-react";
 import type { MediaRef } from "../db/repo";
 import { loadMessageMedia } from "../db/repo";
@@ -33,13 +33,10 @@ const formatBytes = (bytes: number) => {
   return `${size.toFixed(digits)} ${units[unit]}`;
 };
 
-const getTextBubbleClass = (text: string) => {
-  const len = text.trim().length;
-  if (len <= 6) return "max-w-[140px]";
-  if (len <= 16) return "max-w-[220px]";
-  if (len <= 32) return "max-w-[320px]";
-  return "max-w-[420px]";
-};
+// Signal lets text wrap according to the available timeline width instead of
+// changing the bubble at arbitrary character-count thresholds.
+const textBubbleWidthClass =
+  "max-w-[min(306px,calc(100vw-96px))] md:max-w-[370px] xl:max-w-[50vw]";
 
 const getMediaBubbleClass = (count: number) => {
   if (count <= 2) return "max-w-[240px]";
@@ -95,7 +92,7 @@ const MediaThumb = ({ media, className }: MediaThumbProps) => {
     : "aspect-square w-full rounded-md object-cover";
 
   if (!isImage) {
-    return <div className={`${baseClass} bg-nkc-panelMuted`} />;
+    return <div className={`${baseClass} bg-nkc-surface`} />;
   }
 
   return previewUrl ? (
@@ -105,7 +102,7 @@ const MediaThumb = ({ media, className }: MediaThumbProps) => {
       className={baseClass}
     />
   ) : (
-    <div className={`${baseClass} bg-nkc-panelMuted`} />
+    <div className={`${baseClass} bg-nkc-surface`} />
   );
 };
 
@@ -135,12 +132,10 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
   const fileItems = mediaItems.filter((item) =>
     item.media ? !isPreviewableMedia(item.media) : false
   );
-  const textBlob = textItems.map((item) => item.text).join(" ");
   const bubbleWidthClass = mediaItems.length
     ? getMediaBubbleClass(mediaItems.length)
-    : getTextBubbleClass(textBlob);
-  const bubbleMinWidthClass = mediaItems.length ? "" : "min-w-[170px]";
-  const bubblePaddingClass = mediaItems.length ? "px-3 py-3" : "px-4 py-3";
+    : textBubbleWidthClass;
+
   const gridCols = imageItems.length >= 3 ? 3 : imageItems.length;
   const thumbAspect = imageItems.length <= 4 ? "aspect-square h-20" : "aspect-[4/3] h-16";
   const highlight = highlightQuery?.trim();
@@ -162,7 +157,7 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
         parts.push(text.slice(cursor, idx));
       }
       parts.push(
-        <span key={`${idx}-${cursor}`} className="rounded-sm bg-yellow-200/40 px-0.5 text-nkc-text">
+        <span key={`${idx}-${cursor}`} className="rounded-sm bg-yellow-300/30 px-0.5">
           {text.slice(idx, idx + lowerQuery.length)}
         </span>
       );
@@ -173,15 +168,16 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
 
   return (
     <div
+      data-testid={mediaItems.length ? "media-message-bubble" : undefined}
       onContextMenu={(event) => {
         if (!onRequestMenu) return;
         event.preventDefault();
         onRequestMenu(event);
       }}
-      className={`group relative w-fit rounded-nkc border text-sm leading-relaxed ${bubblePaddingClass} ${bubbleWidthClass} ${bubbleMinWidthClass} overflow-hidden ${
+      className={`group relative w-fit rounded-bubble text-sm leading-relaxed px-3 py-2 ${bubbleWidthClass} overflow-hidden animate-signal-slide-up ${
         isMine
-          ? "ml-auto border-nkc-accent/40 bg-nkc-panelMuted text-nkc-text"
-          : "border-nkc-border bg-nkc-panel text-nkc-text"
+          ? "ml-auto bg-nkc-bubbleSent text-nkc-bubbleSentText"
+          : "bg-nkc-bubbleRecv text-nkc-bubbleRecvText"
       }`}
     >
       {textItems.length ? (
@@ -221,11 +217,10 @@ export default function MessageGroupBubble<T extends ChatMessageLike>({
       ) : null}
 
       {footer ? (
-        <div className="mt-2 flex flex-nowrap items-center gap-1 text-[11px] text-nkc-muted whitespace-nowrap">
+        <div className={`mt-1.5 flex flex-nowrap items-center gap-1 text-[11px] whitespace-nowrap ${isMine ? 'text-white' : 'text-nkc-muted'}`}>
           {footer}
         </div>
       ) : null}
     </div>
   );
 }
-

@@ -21,6 +21,10 @@ import {
 import { db, ensureDbOpen } from "../db/schema";
 import { putReadCursor, putReceipt } from "../storage/receiptStore";
 import { applyGroupEvent, isGroupEventPayload } from "../sync/groupSync";
+import { createSafeConsole } from "../diagnostics/safeConsole";
+import { createId } from "../utils/ids";
+
+const console = createSafeConsole(globalThis.console);
 
 const logDecrypt = (label: string, meta: { convId: string; eventId: string; mode: string }) => {
   console.debug(`[msg] ${label}`, meta);
@@ -133,9 +137,7 @@ export const loadConversationMessages = async (
     messageIds.add(message.id);
     messages.push(message);
   };
-  const replayConvId = `${conv.id}:replay:${Date.now().toString(36)}:${Math.random()
-    .toString(36)
-    .slice(2)}`;
+  const replayConvId = `${conv.id}:replay:${createId()}`;
   const existingDhState = await getDhRatchetState(conv.id);
 
   const handleBody = async (
