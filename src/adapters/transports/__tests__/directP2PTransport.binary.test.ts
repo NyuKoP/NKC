@@ -7,6 +7,7 @@ class FakeDataChannel {
   constructor(label: string) { this.label = label; }
   readyState: RTCDataChannelState = "open";
   binaryType: BinaryType = "blob";
+  bufferedAmount = 0;
   sent: Array<string | ArrayBuffer> = [];
   onopen: (() => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
@@ -32,6 +33,7 @@ class FakePeerConnection {
   onicecandidate: ((event: RTCPeerConnectionIceEvent) => void) | null = null;
   oniceconnectionstatechange: (() => void) | null = null;
   ondatachannel: ((event: RTCDataChannelEvent) => void) | null = null;
+  sctp = { maxMessageSize: 48 * 1024 };
 
   createDataChannel(label: string, options?: RTCDataChannelInit) {
     this.channelOptions.set(label, options ?? {});
@@ -91,6 +93,7 @@ describe("direct P2P binary capability negotiation", () => {
     });
     expect(peerConnection.channelOptions.get("nkc-direct-v1")?.ordered).toBe(true);
     expect(peerConnection.channelOptions.get("nkc-file-v1")?.ordered).toBe(false);
+    expect(transport.recommendedFileFrameSize()).toBe(48 * 1024);
   });
 
   it("sends file frames through the unordered binary channel", async () => {
@@ -103,5 +106,17 @@ describe("direct P2P binary capability negotiation", () => {
     const frame = Uint8Array.of(1, 2, 3, 4);
     await transport.sendFileFrame(frame);
     expect(new Uint8Array(peerConnection.fileChannel.sent[0] as ArrayBuffer)).toEqual(frame);
+  });
+
+  it("rejects file frames above the negotiated SCTP message size", async () => {
+    const peerConnection = new FakePeerConnection();
+    vi.stubGlobal("RTCPeerConnection", class {
+      constructor() { return peerConnection; }
+    });
+    const transport = createDirectP2PTransport();
+    await transport.createOfferCode();
+    await expect(transport.sendFileFrame(new Uint8Array(48 * 1024 + 1))).rejects.toThrow(
+      "DIRECT_FILE_FRAME_TOO_LARGE"
+    );
   });
 });

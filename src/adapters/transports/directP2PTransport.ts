@@ -13,6 +13,7 @@ type DirectSignalExt = {
   acceptSignalCode: (code: string) => Promise<void>;
   onSignalCode: (cb: (code: string) => void) => void;
   sendFileFrame: (frame: Uint8Array) => Promise<void>;
+  recommendedFileFrameSize: () => number;
   onFileFrame: (cb: (frame: Uint8Array) => void) => () => void;
 };
 
@@ -27,6 +28,9 @@ const FILE_DATA_CHANNEL_LABEL = "nkc-file-v1";
 const CAPABILITIES_PACKET_ID = "__nkc_capabilities__";
 const BINARY_PACKET_CAPABILITY = "binary-packet-v1";
 const DEFAULT_STUN_URL = "stun:stun.l.google.com:19302";
+const RECOMMENDED_FILE_FRAME_BYTES = 64 * 1024;
+const DATA_CHANNEL_HIGH_WATER_BYTES = 2 * 1024 * 1024;
+const DATA_CHANNEL_DRAIN_TIMEOUT_MS = 10_000;
 
 const toBase64Url = (value: string) => {
   const b64 = btoa(value);
@@ -81,6 +85,17 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
   let pendingIce: RTCIceCandidateInit[] = [];
   let binaryPacketSupported = false;
   let capabilitiesSent = false;
+
+  const waitForChannelCapacity = async (channel: RTCDataChannel) => {
+    const startedAt = Date.now();
+    while (channel.bufferedAmount > DATA_CHANNEL_HIGH_WATER_BYTES) {
+      if (channel.readyState !== "open") throw new Error("DIRECT_NOT_OPEN: Data channel closed while draining");
+      if (Date.now() - startedAt >= DATA_CHANNEL_DRAIN_TIMEOUT_MS) {
+        throw new Error("DIRECT_BACKPRESSURE_TIMEOUT: Data channel did not drain");
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+  };
 
   const sendCapabilities = () => {
     if (!dataChannel || dataChannel.readyState !== "open" || capabilitiesSent) return;
@@ -260,6 +275,7 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
         error.code = "DIRECT_NOT_OPEN";
         throw error;
       }
+      await waitForChannelCapacity(dataChannel);
       const binary = binaryPacketSupported ? encodeBinaryTransportPacket(packet) : null;
       if (binary) {
         dataChannel.send(binary.slice().buffer as ArrayBuffer);
@@ -326,7 +342,18 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
       if (!fileDataChannel || fileDataChannel.readyState !== "open") {
         throw new Error("DIRECT_FILE_NOT_OPEN: Direct P2P file data channel is not open");
       }
+      const negotiatedMax = peerConnection?.sctp?.maxMessageSize;
+      if (negotiatedMax && frame.byteLength > negotiatedMax) {
+        throw new Error("DIRECT_FILE_FRAME_TOO_LARGE: Frame exceeds negotiated SCTP maximum");
+      }
+      await waitForChannelCapacity(fileDataChannel);
       fileDataChannel.send(frame.slice().buffer as ArrayBuffer);
+    },
+    recommendedFileFrameSize() {
+      const negotiatedMax = peerConnection?.sctp?.maxMessageSize;
+      return negotiatedMax && Number.isFinite(negotiatedMax)
+        ? Math.min(RECOMMENDED_FILE_FRAME_BYTES, negotiatedMax)
+        : RECOMMENDED_FILE_FRAME_BYTES;
     },
     onFileFrame(cb: (frame: Uint8Array) => void) {
       fileFrameHandlers.add(cb);

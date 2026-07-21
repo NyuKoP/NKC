@@ -156,6 +156,7 @@ Start with the [documentation index](docs/README.md). Important references inclu
 
 - [Transport and Routing Architecture](docs/ARCH-transport-and-routing.md)
 - [Large File Transfer](docs/LARGE-FILE-TRANSFER.md)
+- [File Transfer Crypto Optimization](docs/CRYPTO-TRANSFER-OPTIMIZATION.md)
 - [Transport Security Invariants](docs/SECURITY-transport-invariants.md)
 - [Two-Device Manual Checklist](docs/manual-two-device-checklist.md)
 - [Phase 4.6 Operations](docs/phase46-operations.md)

@@ -74,7 +74,9 @@ import {
   getOrCreateIdentityKeypair,
 } from "../security/identityKeys";
 import { getOrCreateDeviceId } from "../security/deviceRole";
-import { computeEnvelopeHash, deriveConversationKey, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
+import { computeEnvelopeHash, deriveConversationKeyPair, encryptEnvelope, type EnvelopeHeader } from "../crypto/box";
+import { EnvelopeCryptoPool } from "../crypto/envelopeCryptoPool";
+import { getSodium } from "../security/sodium";
 import { nextSendDhKey, nextSendKey } from "../crypto/ratchet";
 import { prewarmRouter, sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
@@ -1634,13 +1636,24 @@ export default function App() {
       partner: UserProfile,
       body: unknown,
       priority: "high" | "normal" = "high",
-      options?: { eventId?: string; persistEvent?: boolean }
+      options?: {
+        eventId?: string;
+        persistEvent?: boolean;
+        cryptoContext?: {
+          conversationKey: Uint8Array;
+          ratchetBaseKey: Uint8Array;
+          identityPrivateKey: Uint8Array;
+        };
+        encryptor?: typeof encryptEnvelope;
+        releaseBeforeRoute?: boolean;
+      }
     ) => {
       if (!partner.dhPub || !partner.identityPub) {
         throw new Error("Missing peer keys");
       }
       const previous = directEnvelopeSendChainsRef.current.get(conv.id) ?? Promise.resolve();
       let release!: () => void;
+      let released = false;
       const gate = new Promise<void>((resolve) => {
         release = resolve;
       });
@@ -1661,15 +1674,23 @@ export default function App() {
       };
       header.prev = await getLastEventHash(conv.id);
 
-      const dhPriv = await getDhPrivateKey();
-      const theirDhPub = decodeBase64Url(partner.dhPub);
-      const pskBytes = await getFriendPsk(friendKeyId);
-      const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
-      const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
-      const conversationKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, legacyContextBytes);
-      const ratchetBaseKey = await deriveConversationKey(dhPriv, theirDhPub, pskBytes, ratchetContextBytes);
-
-      const myIdentityPriv = await getIdentityPrivateKey();
+      let cryptoContext = options?.cryptoContext;
+      if (!cryptoContext) {
+        const dhPriv = await getDhPrivateKey();
+        const theirDhPub = decodeBase64Url(partner.dhPub);
+        const pskBytes = await getFriendPsk(friendKeyId);
+        const legacyContextBytes = new TextEncoder().encode(`direct:${friendKeyId}`);
+        const ratchetContextBytes = new TextEncoder().encode(`conv:${conv.id}`);
+        const keys = await deriveConversationKeyPair(
+          dhPriv,
+          theirDhPub,
+          pskBytes,
+          legacyContextBytes,
+          ratchetContextBytes
+        );
+        cryptoContext = { ...keys, identityPrivateKey: await getIdentityPrivateKey() };
+      }
+      const { conversationKey, ratchetBaseKey, identityPrivateKey } = cryptoContext;
       let keyForEnvelope = conversationKey;
       try {
         const ratchet = await nextSendDhKey(conv.id, ratchetBaseKey);
@@ -1685,7 +1706,12 @@ export default function App() {
         }
       }
 
-      const envelope = await encryptEnvelope(keyForEnvelope, header, body, myIdentityPriv);
+      const envelope = await (options?.encryptor ?? encryptEnvelope)(
+        keyForEnvelope,
+        header,
+        body,
+        identityPrivateKey
+      );
       const envelopeJson = JSON.stringify(envelope);
 
       if (options?.persistEvent !== false) {
@@ -1702,6 +1728,11 @@ export default function App() {
         });
       }
 
+      if (options?.releaseBeforeRoute) {
+        released = true;
+        release();
+      }
+
       const routed = await sendCiphertext({
         convId: conv.id,
         messageId: header.eventId,
@@ -1715,7 +1746,7 @@ export default function App() {
 
       return { header, envelopeJson };
       } finally {
-        release();
+        if (!released) release();
         if (directEnvelopeSendChainsRef.current.get(conv.id) === tail) {
           directEnvelopeSendChainsRef.current.delete(conv.id);
         }
@@ -2322,6 +2353,7 @@ export default function App() {
         const partner = partnerId ? friends.find((friend) => friend.id === partnerId) || null : null;
 
         if (partner?.dhPub && partner.identityPub) {
+          const partnerDhPub = partner.dhPub;
           const now = Date.now();
           const messageId = createId();
           const media = await saveMessageMedia(messageId, file, INLINE_MEDIA_CHUNK_SIZE);
@@ -2348,57 +2380,103 @@ export default function App() {
           await hydrateVault();
 
           const sendTransfer = async () => {
-            const nativeInspection = await window.nativeWorker
-              ?.inspectFile(file, INLINE_MEDIA_CHUNK_SIZE)
-              .catch(() => null);
-            if (nativeInspection?.ok && nativeInspection.result) {
-              if (
-                nativeInspection.result.size !== file.size ||
-                nativeInspection.result.total !== media.total
-              ) {
-                throw new Error("Native file inspection mismatch");
+            await getSodium();
+            const friendKeyId = partner.friendId ?? partner.id;
+            const dhPriv = await getDhPrivateKey();
+            const pskBytes = await getFriendPsk(friendKeyId);
+            const keys = await deriveConversationKeyPair(
+              dhPriv,
+              decodeBase64Url(partnerDhPub),
+              pskBytes,
+              new TextEncoder().encode(`direct:${friendKeyId}`),
+              new TextEncoder().encode(`conv:${conv.id}`)
+            ).finally(() => {
+              dhPriv.fill(0);
+              pskBytes?.fill(0);
+            });
+            const cryptoContext = {
+              ...keys,
+              identityPrivateKey: await getIdentityPrivateKey(),
+            };
+            let cryptoPool: EnvelopeCryptoPool | null = null;
+            let encryptor: typeof encryptEnvelope = encryptEnvelope;
+            const transferWindow = file.size >= 200 * 1024 * 1024 ? 2 : 1;
+            const inFlight = new Set<Promise<void>>();
+            try {
+              try {
+                cryptoPool = new EnvelopeCryptoPool(file.size >= 200 * 1024 * 1024 ? 2 : 1);
+                await cryptoPool.prewarm();
+                encryptor = (...args) => cryptoPool!.encrypt(...args);
+              } catch (error) {
+                cryptoPool?.close();
+                cryptoPool = null;
+                console.warn("[crypto] worker unavailable; using renderer fallback", error);
               }
-            }
-            await sendDirectEnvelope(
-              conv,
-              partner,
-              { type: "msg", text: label, media, clientBatchId },
-              "high",
-              { eventId: messageId }
-            );
-            for (let idx = 0; idx < media.total; idx += 1) {
-              const nativeChunk = await window.nativeWorker
-                ?.readFileChunk(file, idx, INLINE_MEDIA_CHUNK_SIZE)
+              const nativeInspection = await window.nativeWorker
+                ?.inspectFile(file, INLINE_MEDIA_CHUNK_SIZE)
                 .catch(() => null);
-              let chunkBase64 = nativeChunk?.ok ? nativeChunk.result?.data : undefined;
-              if (!chunkBase64) {
-                const start = idx * INLINE_MEDIA_CHUNK_SIZE;
-                const bytes = new Uint8Array(
-                  await file
-                    .slice(start, Math.min(file.size, start + INLINE_MEDIA_CHUNK_SIZE))
-                    .arrayBuffer()
-                );
-                chunkBase64 = encodeBase64Url(bytes);
+              if (nativeInspection?.ok && nativeInspection.result) {
+                if (
+                  nativeInspection.result.size !== file.size ||
+                  nativeInspection.result.total !== media.total
+                ) {
+                  throw new Error("Native file inspection mismatch");
+                }
               }
-              const chunkBody = {
-                type: "media",
-                phase: "chunk",
-                ownerId: messageId,
-                idx,
-                total: media.total,
-                chunkSize: INLINE_MEDIA_CHUNK_SIZE,
-                mime: media.mime,
-                name: media.name,
-                size: media.size,
-                b64: chunkBase64,
-                clientBatchId,
-              };
-              await sendDirectEnvelope(conv, partner, chunkBody, "normal", {
-                persistEvent: false,
-              });
-              if (idx > 0 && idx % 8 === 0) {
-                await new Promise<void>((resolve) => setTimeout(resolve, 0));
+              await sendDirectEnvelope(
+                conv,
+                partner,
+                { type: "msg", text: label, media, clientBatchId },
+                "high",
+                { eventId: messageId, cryptoContext, encryptor }
+              );
+              for (let idx = 0; idx < media.total; idx += 1) {
+                const nativeChunk = await window.nativeWorker
+                  ?.readFileChunk(file, idx, INLINE_MEDIA_CHUNK_SIZE)
+                  .catch(() => null);
+                let chunkBase64 = nativeChunk?.ok ? nativeChunk.result?.data : undefined;
+                if (!chunkBase64) {
+                  const start = idx * INLINE_MEDIA_CHUNK_SIZE;
+                  const bytes = new Uint8Array(
+                    await file
+                      .slice(start, Math.min(file.size, start + INLINE_MEDIA_CHUNK_SIZE))
+                      .arrayBuffer()
+                  );
+                  chunkBase64 = encodeBase64Url(bytes);
+                }
+                const chunkBody = {
+                  type: "media",
+                  phase: "chunk",
+                  ownerId: messageId,
+                  idx,
+                  total: media.total,
+                  chunkSize: INLINE_MEDIA_CHUNK_SIZE,
+                  mime: media.mime,
+                  name: media.name,
+                  size: media.size,
+                  b64: chunkBase64,
+                  clientBatchId,
+                };
+                const task = sendDirectEnvelope(conv, partner, chunkBody, "normal", {
+                  persistEvent: false,
+                  cryptoContext,
+                  encryptor,
+                  releaseBeforeRoute: transferWindow > 1,
+                }).then(() => undefined);
+                inFlight.add(task);
+                void task.finally(() => inFlight.delete(task)).catch(() => {});
+                if (inFlight.size >= transferWindow) await Promise.race(inFlight);
+                if (idx > 0 && idx % 8 === 0) {
+                  await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                }
               }
+              await Promise.all(inFlight);
+            } finally {
+              await Promise.allSettled(inFlight);
+              cryptoPool?.close();
+              cryptoContext.conversationKey.fill(0);
+              cryptoContext.ratchetBaseKey.fill(0);
+              cryptoContext.identityPrivateKey.fill(0);
             }
           };
           const previousTransfer = mediaTransferChainsRef.current.get(conv.id) ?? Promise.resolve();
