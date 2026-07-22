@@ -104,6 +104,7 @@ export class OnionRuntime {
 
   private async startTorWithFallback(binaryPath: string, port: number, dataDir: string) {
     const attempts: string[] = [];
+    let lastFailure = "";
     const systemTorBinary =
       process.platform === "darwin" ? this.resolveSystemTorBinaryPath() : null;
     const tryStart = async (
@@ -119,6 +120,7 @@ export class OnionRuntime {
         const state = this.torManager.getState();
         const detail = state.logTail ? ` | ${state.logTail}` : "";
         const message = error instanceof Error ? error.message : String(error);
+        lastFailure = `${message}${detail}`;
         attempts.push(`${label}: ${message}${detail}`);
         await this.torManager.stop();
         return false;
@@ -131,19 +133,26 @@ export class OnionRuntime {
     };
 
     if (await tryStart("bundled-torrc", binaryPath, "torrc")) return;
-    // On macOS, SIGKILL often means the bundled binary was blocked by policy/runtime checks.
-    // If that happens, prefer immediate fallback to a system Tor binary.
-    if (
-      process.platform === "darwin" &&
-      (this.torManager.getState().error ?? "").includes("signal=SIGKILL") &&
-      (await trySystemTor())
-    ) {
-      return;
+    // stop() clears manager state, so preserve the attempt failure before stopping and inspect that.
+    if (process.platform === "darwin" && lastFailure.includes("signal=SIGKILL")) {
+      try {
+        await this.torManager.repairMacCodeSignature(binaryPath);
+        if (await tryStart("bundled-resigned-cli", binaryPath, "cli")) return;
+      } catch (error) {
+        attempts.push(
+          `macos-codesign-repair: ${error instanceof Error ? error.message : String(error)}`
+        );
+      }
+      if (await trySystemTor()) return;
     }
     if (await tryStart("bundled-cli", binaryPath, "cli")) return;
     if (await trySystemTor()) return;
 
-    throw new Error(`Tor SOCKS startup failed after retry: ${attempts.join(" || ")}`);
+    const prefix =
+      process.platform === "darwin" && attempts.some((attempt) => attempt.includes("signal=SIGKILL"))
+        ? "[MACOS_TOR_BLOCKED] macOS stopped the bundled Tor process"
+        : "Tor SOCKS startup failed after retry";
+    throw new Error(`${prefix}: ${attempts.join(" || ")}`);
   }
 
   async start(userDataDir: string, network: OnionNetwork) {

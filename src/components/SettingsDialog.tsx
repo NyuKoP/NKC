@@ -802,7 +802,15 @@ export default function SettingsDialog({
     runtime && runtime.status === "running" && runtime.network === "tor" && runtime.socksPort
       ? ` · SOCKS 127.0.0.1:${runtime.socksPort}`
       : "";
-  const runtimeErrorLabel = runtime?.error ? `${t("실패", "Failed")}: ${runtime.error}` : "";
+  const runtimeErrorDetail = runtime?.error ?? "";
+  const runtimeErrorLabel = runtimeErrorDetail
+    ? runtimeErrorDetail.includes("MACOS_TOR_BLOCKED")
+      ? t(
+          "macOS가 Tor 실행을 차단했습니다. 자동 서명 복구 후에도 실패하면 시스템 Tor를 설치해 주세요.",
+          "macOS blocked Tor. If automatic signature repair still fails, install system Tor."
+        )
+      : t("Tor 연결을 시작하지 못했습니다.", "Tor could not be started.")
+    : "";
   const runtimeStatusTooltip =
     runtime?.status === "running"
       ? t("Onion 상태: 실행 중", "Onion status: running")
@@ -1206,6 +1214,7 @@ export default function SettingsDialog({
               runtimeStateLabel={runtimeStateLabel}
               runtimeNetworkLabel={runtimeNetworkLabel}
               runtimeErrorLabel={runtimeErrorLabel}
+              runtimeErrorDetail={runtimeErrorDetail}
               torUpdateStatus={torUpdateStatus}
               torErrorLabel={torErrorLabel}
               torInstallBusy={torInstallBusy}

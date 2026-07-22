@@ -30,6 +30,7 @@ type NetworkSettingsProps = {
   runtimeStateLabel: string;
   runtimeNetworkLabel: string;
   runtimeErrorLabel: string;
+  runtimeErrorDetail: string;
   torUpdateStatus: string;
   torErrorLabel: string | null;
   torInstallBusy: boolean;
@@ -87,6 +88,7 @@ export default function NetworkSettings({
   runtimeStateLabel,
   runtimeNetworkLabel,
   runtimeErrorLabel,
+  runtimeErrorDetail,
   torUpdateStatus,
   torErrorLabel,
   torInstallBusy,
@@ -207,8 +209,8 @@ export default function NetworkSettings({
             </div>
             {connectionChoice === "torOnion" ? (
               <div className="mt-3 border-t border-nkc-border pt-3">
-                <div className="flex items-start justify-between gap-4 text-xs text-nkc-muted">
-                  <div className="flex items-center gap-1">
+                <div className="grid gap-2 text-xs text-nkc-muted sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                  <div className="flex min-w-0 items-start gap-1.5">
                     <span
                       title={runtimeStatusTooltip}
                       className="inline-flex items-center cursor-pointer"
@@ -216,18 +218,32 @@ export default function NetworkSettings({
                     >
                       {runtimeStatusIcon}
                     </span>
-                    <span>
+                    <span className="min-w-0 break-words leading-5">
                       {activeRouteLabel}
                       {runtimeSocksLabel}
                     </span>
                   </div>
-                  <div className="text-right">
-                    <div>
+                  <div className="leading-5 sm:text-right">
+                    <div className="whitespace-nowrap">
                       {runtimeStateLabel} {runtimeNetworkLabel}
                     </div>
-                    {runtimeErrorLabel ? <div className="text-red-300">{runtimeErrorLabel}</div> : null}
                   </div>
                 </div>
+                {runtimeErrorLabel ? (
+                  <div className="mt-3 rounded-nkc border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                    <div className="break-words font-medium leading-5">{runtimeErrorLabel}</div>
+                    {runtimeErrorDetail ? (
+                      <details className="mt-2 text-[11px] text-nkc-muted">
+                        <summary className="cursor-pointer select-none text-nkc-text">
+                          {t("기술 상세 보기", "Show technical details")}
+                        </summary>
+                        <div className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono leading-5">
+                          {runtimeErrorDetail}
+                        </div>
+                      </details>
+                    ) : null}
+                  </div>
+                ) : null}
                 {torAddress ? (
                   <div className="mt-2 flex items-center justify-between gap-2 text-xs text-nkc-muted">
                     <span className="font-mono break-all">{torAddress}</span>

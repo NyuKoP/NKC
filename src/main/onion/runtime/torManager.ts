@@ -53,6 +53,34 @@ export class TorManager {
     });
   }
 
+  async repairMacCodeSignature(binaryPath: string) {
+    if (process.platform !== "darwin") return;
+    const torDir = path.dirname(binaryPath);
+    const candidates = [
+      path.join(torDir, "libevent-2.1.7.dylib"),
+      path.join(torDir, "pluggable_transports", "conjure-client"),
+      path.join(torDir, "pluggable_transports", "lyrebird"),
+      binaryPath,
+    ].filter((candidate) => fsSync.existsSync(candidate));
+
+    for (const candidate of candidates) {
+      await new Promise<void>((resolve, reject) => {
+        execFile("/usr/bin/codesign", ["--force", "--sign", "-", candidate], (error, _stdout, stderr) => {
+          if (!error) {
+            resolve();
+            return;
+          }
+          reject(
+            new Error(
+              `codesign failed for ${path.basename(candidate)}: ${stderr?.trim() || error.message}`
+            )
+          );
+        });
+      });
+    }
+    await this.clearMacQuarantine(path.dirname(torDir));
+  }
+
   async start(
     binaryPath: string,
     socksPort: number,
