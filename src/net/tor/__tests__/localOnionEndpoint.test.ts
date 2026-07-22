@@ -11,6 +11,7 @@ vi.mock("../TorRuntime", () => ({
 
 import {
   __testResetPublishedLocalOnionEndpoint,
+  ensureLocalOnionEndpoint,
   ensurePublishedLocalOnionEndpoint,
 } from "../localOnionEndpoint";
 
@@ -35,6 +36,20 @@ describe("ensurePublishedLocalOnionEndpoint", () => {
 
     await expect(ensurePublishedLocalOnionEndpoint()).resolves.toBe(onionAddress);
     expect(prewarmOnionRoute).toHaveBeenCalledWith({ onionAddress });
+  });
+
+  it("returns a valid local address without waiting for publication probing", async () => {
+    const prewarmOnionRoute = vi.fn(async () => ({ ok: true }));
+    Object.assign(globalThis, {
+      nkc: {
+        ensureHiddenService: vi.fn(async () => ({ ok: true })),
+        getMyOnionAddress: vi.fn(async () => onionAddress),
+        prewarmOnionRoute,
+      },
+    });
+
+    await expect(ensureLocalOnionEndpoint()).resolves.toBe(onionAddress);
+    expect(prewarmOnionRoute).not.toHaveBeenCalled();
   });
 
   it("keeps the friend endpoint unavailable when publication probing fails", async () => {

@@ -92,7 +92,10 @@ import {
   selectTorRuntimeCandidate,
   type TorRuntimeCandidate,
 } from "../net/tor/runtimeCandidate";
-import { ensurePublishedLocalOnionEndpoint } from "../net/tor/localOnionEndpoint";
+import {
+  ensureLocalOnionEndpoint,
+  ensurePublishedLocalOnionEndpoint,
+} from "../net/tor/localOnionEndpoint";
 import { sanitizeRoutingHints } from "../net/privacy";
 import {
   buildGroupInviteEvent,
@@ -574,7 +577,7 @@ export default function App() {
     setSelectedConv(null);
   }, [clearConnectionToastGuard, setData, setSelectedConv, setSessionState]);
 
-  const resolveLocalRoutingHintsForFriendCode = useCallback(async (requirePublished = true) => {
+  const resolveLocalRoutingHintsForFriendCode = useCallback(async () => {
     const localDeviceId = getOrCreateDeviceId();
     const fallback = sanitizeRoutingHints({
       deviceId: localDeviceId,
@@ -597,13 +600,7 @@ export default function App() {
 
     if (netConfig.onionSelectedNetwork === "tor") {
       try {
-        let value = "";
-        if (requirePublished) {
-          value = (await ensurePublishedLocalOnionEndpoint())?.trim() ?? "";
-        } else {
-          await nkc.ensureHiddenService?.();
-          value = (await nkc.getMyOnionAddress?.())?.trim() ?? "";
-        }
+        const value = (await ensureLocalOnionEndpoint())?.trim() ?? "";
         if (value) onionAddr = value;
       } catch {
         onionAddr = undefined;
@@ -631,13 +628,11 @@ export default function App() {
     userProfile?.routingHints?.onionAddr,
   ]);
 
-  const buildLocalFriendCodePayload = useCallback(async (
-    options?: { requirePublished?: boolean }
-  ): Promise<Omit<FriendCodeV1, "v">> => {
+  const buildLocalFriendCodePayload = useCallback(async (): Promise<Omit<FriendCodeV1, "v">> => {
     const [identityPub, dhPub, localHints] = await Promise.all([
       getIdentityPublicKey(),
       getDhPublicKey(),
-      resolveLocalRoutingHintsForFriendCode(options?.requirePublished ?? true),
+      resolveLocalRoutingHintsForFriendCode(),
     ]);
     return {
       identityPub: encodeBase64Url(identityPub),
@@ -986,7 +981,7 @@ export default function App() {
       }
     }, {
       getLocalFriendCode: async () => {
-        const payload = await buildLocalFriendCodePayload({ requirePublished: false });
+        const payload = await buildLocalFriendCodePayload();
         return encodeFriendCodeV1({ v: 1, ...payload });
       },
     });
