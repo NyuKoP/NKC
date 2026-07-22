@@ -222,7 +222,8 @@ const decodeEnvelopeStrict = (
 
 const shouldLogVaultDebug = (() => {
   try {
-    return Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+    const env = (import.meta as { env?: { DEV?: boolean; VITE_VAULT_DEBUG?: string } }).env;
+    return Boolean(env?.DEV && env.VITE_VAULT_DEBUG === "1");
   } catch {
     return false;
   }

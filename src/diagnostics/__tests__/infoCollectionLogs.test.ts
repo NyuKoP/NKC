@@ -44,6 +44,11 @@ describe("info collection log privacy", () => {
       "failed convId=conversation-secret",
       Object.assign(new Error("C:\\Users\\person\\secret"), { code: "EFAIL" })
     );
-    expect(calls).toEqual([["failed convId=[redacted]", { name: "Error", code: "EFAIL" }]]);
+    expect(calls).toEqual([
+      [
+        "failed convId=[redacted]",
+        JSON.stringify({ name: "Error", message: "[path-redacted]", code: "EFAIL" }),
+      ],
+    ]);
   });
 });

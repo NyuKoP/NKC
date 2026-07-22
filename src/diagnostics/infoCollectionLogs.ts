@@ -162,7 +162,9 @@ const sanitizeLogString = (value: string) =>
     .replace(
       /\b((?:conv|event|record|friend|device|profile|message|packet|op)?id=)(?!\[redacted\])[^\s,}\]&]+/gi,
       "$1[redacted]"
-    );
+    )
+    .replace(/\b[A-Za-z]:\\[^\r\n]*/g, "[path-redacted]")
+    .replace(/\/(?:Users|home|tmp)\/[^\r\n]*/g, "[path-redacted]");
 
 export const sanitizeInfoLogPayload = <T>(value: T, depth = 0): T => {
   if (typeof value === "string") return sanitizeLogString(value) as T;
@@ -171,6 +173,7 @@ export const sanitizeInfoLogPayload = <T>(value: T, depth = 0): T => {
     const coded = value as Error & { code?: unknown };
     return {
       name: value.name || "Error",
+      message: sanitizeLogString(value.message || "Unknown error"),
       ...(typeof coded.code === "string" ? { code: sanitizeLogString(coded.code) } : {}),
     } as T;
   }

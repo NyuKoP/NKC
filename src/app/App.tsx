@@ -1219,7 +1219,10 @@ export default function App() {
         updatedAt: now,
       };
 
-      await withTimeout(seedVaultData(user), "seedVaultData");
+      // IndexedDB writes cannot be cancelled safely. The initial sample data contains
+      // many encrypted records, so racing it against the generic 15 second timeout can
+      // report failure while writes are still running on slower machines.
+      await seedVaultData(user);
       await withTimeout(setStoredSession(vk), "setStoredSession");
       await withTimeout(hydrateVault(), "hydrateVault");
     } catch (error) {
