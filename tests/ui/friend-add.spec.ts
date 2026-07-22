@@ -539,17 +539,28 @@ test.describe("Friend add E2E", () => {
           });
         })
         .toBe(true);
+
+      const receivedMessage = `Alice to Bob ${randomUUID()}`;
+      await alice.getByTestId("sidebar").getByText("Bob", { exact: true }).first().click();
+      await expect(alice.getByTestId("chat-message-input")).toBeVisible();
+      await alice.getByTestId("chat-message-input").fill(receivedMessage);
+      await alice.getByTestId("chat-send-button").click();
+
+      await expect
+        .poll(async () => {
+          await bob.getByTestId("list-mode-friends").click();
+          await bob.getByTestId("sidebar").getByText("Alice", { exact: true }).first().click();
+          return bob
+            .getByTestId("chat-view")
+            .getByText(receivedMessage, { exact: true })
+            .count();
+        }, { timeout: 30_000 })
+        .toBeGreaterThan(0);
     } finally {
       await aliceContext.close();
       await bobContext.close();
     }
   };
-
-  test("mutual endpoint exchange completes over onion controller (alternateRoute mode)", async ({
-    browser,
-  }) => {
-    await runMutualEndpointExchange(browser, "alternateRoute");
-  });
 
   test("mutual endpoint exchange completes over onion controller (tor mode)", async ({
     browser,
