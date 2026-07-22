@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, type IpcMainInvokeEvent } from "electron";
-import { autoUpdater, type UpdateInfo } from "electron-updater";
+import { createRequire } from "node:module";
+import type { AppUpdater, UpdateInfo } from "electron-updater";
 
 export type AppUpdateStatus = {
   state: "idle" | "checking" | "available" | "downloading" | "downloaded" | "current" | "error" | "unsupported";
@@ -21,6 +22,14 @@ let status: AppUpdateStatus = {
   releaseNotes: CURRENT_RELEASE_NOTES,
 };
 let initialized = false;
+let autoUpdater: AppUpdater | null = null;
+
+const loadAutoUpdater = () => {
+  if (autoUpdater) return autoUpdater;
+  const requireFromMain = createRequire(__filename);
+  autoUpdater = (requireFromMain("electron-updater") as typeof import("electron-updater")).autoUpdater;
+  return autoUpdater;
+};
 
 const isSupported = () =>
   app.isPackaged &&
@@ -50,12 +59,13 @@ const releaseNotesFrom = (info: UpdateInfo) => {
 };
 
 const initialize = () => {
-  if (initialized) return;
+  if (initialized || !isSupported()) return;
   initialized = true;
-  autoUpdater.autoDownload = false;
-  autoUpdater.autoInstallOnAppQuit = true;
-  autoUpdater.on("checking-for-update", () => publishStatus({ state: "checking", error: undefined }));
-  autoUpdater.on("update-available", (info) =>
+  const updater = loadAutoUpdater();
+  updater.autoDownload = false;
+  updater.autoInstallOnAppQuit = true;
+  updater.on("checking-for-update", () => publishStatus({ state: "checking", error: undefined }));
+  updater.on("update-available", (info) =>
     publishStatus({
       state: "available",
       latestVersion: versionFrom(info),
@@ -63,7 +73,7 @@ const initialize = () => {
       error: undefined,
     })
   );
-  autoUpdater.on("update-not-available", (info) =>
+  updater.on("update-not-available", (info) =>
     publishStatus({
       state: "current",
       latestVersion: versionFrom(info),
@@ -72,13 +82,13 @@ const initialize = () => {
       error: undefined,
     })
   );
-  autoUpdater.on("download-progress", (progress) =>
+  updater.on("download-progress", (progress) =>
     publishStatus({ state: "downloading", percent: Math.max(0, Math.min(100, progress.percent)) })
   );
-  autoUpdater.on("update-downloaded", (info) =>
+  updater.on("update-downloaded", (info) =>
     publishStatus({ state: "downloaded", latestVersion: versionFrom(info), percent: 100, error: undefined })
   );
-  autoUpdater.on("error", (error) =>
+  updater.on("error", (error) =>
     publishStatus({ state: "error", error: error.message || "update-failed" })
   );
 };
@@ -109,27 +119,30 @@ export const registerAppUpdaterIpc = (
   ipcMain.handle("appUpdate:check", async (event) => {
     assertTrustedIpcSender(event);
     requireSupported();
-    await autoUpdater.checkForUpdates();
+    initialize();
+    await loadAutoUpdater().checkForUpdates();
     return status;
   });
   ipcMain.handle("appUpdate:download", async (event) => {
     assertTrustedIpcSender(event);
     requireSupported();
-    await autoUpdater.downloadUpdate();
+    initialize();
+    await loadAutoUpdater().downloadUpdate();
     return status;
   });
   ipcMain.handle("appUpdate:install", async (event) => {
     assertTrustedIpcSender(event);
     if (status.state !== "downloaded") throw new Error("update-not-downloaded");
-    setImmediate(() => autoUpdater.quitAndInstall(false, true));
+    setImmediate(() => loadAutoUpdater().quitAndInstall(false, true));
   });
 };
 
 export const scheduleInitialAppUpdateCheck = () => {
   if (!isSupported()) return;
+  initialize();
   const check = () => {
     if (status.state === "checking" || status.state === "downloading" || status.state === "downloaded") return;
-    void autoUpdater.checkForUpdates().catch(() => undefined);
+    void loadAutoUpdater().checkForUpdates().catch(() => undefined);
   };
   setTimeout(check, 15_000);
   setInterval(check, 6 * 60 * 60 * 1_000);
