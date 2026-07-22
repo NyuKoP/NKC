@@ -88,6 +88,10 @@ import {
   TOR_AUTO_UPDATE_INTERVAL_MS,
 } from "../net/torAutoUpdate";
 import { TorRuntime } from "../net/tor/TorRuntime";
+import {
+  selectTorRuntimeCandidate,
+  type TorRuntimeCandidate,
+} from "../net/tor/runtimeCandidate";
 import { sanitizeRoutingHints } from "../net/privacy";
 import {
   buildGroupInviteEvent,
@@ -198,12 +202,6 @@ type RuntimeNetworkSnapshot = {
   torDetail: string | null;
   alternateRouteState: string | null;
   alternateRouteDetail: string | null;
-};
-
-type TorRuntimeCandidate = {
-  state: string | null;
-  detail: string | null;
-  socksUrl: string | null;
 };
 
 const EMPTY_RUNTIME_NETWORK_SNAPSHOT: RuntimeNetworkSnapshot = {
@@ -381,16 +379,16 @@ export default function App() {
     try {
       const onionStatus = await getOnionStatus();
       const runtime = onionStatus.runtime;
-      if (runtime.network === "tor") {
-        builtInCandidate = {
-          state: runtime.status,
-          detail: runtime.error ?? null,
-          socksUrl:
-            runtime.status === "running" && typeof runtime.socksPort === "number"
-              ? `socks5://127.0.0.1:${runtime.socksPort}`
-              : null,
-        };
-      }
+      builtInCandidate = {
+        state: runtime.status,
+        detail: runtime.error ?? null,
+        socksUrl:
+          runtime.status === "running" &&
+          runtime.network === "tor" &&
+          typeof runtime.socksPort === "number"
+            ? `socks5://127.0.0.1:${runtime.socksPort}`
+            : null,
+      };
     } catch {
       // Browser-only tests and older preload surfaces may not expose the built-in Onion bridge.
     }
@@ -424,8 +422,7 @@ export default function App() {
       }
     }
 
-    const candidate =
-      legacyCandidate?.state === "running" ? legacyCandidate : builtInCandidate ?? legacyCandidate;
+    const candidate = selectTorRuntimeCandidate(builtInCandidate, legacyCandidate);
     let torState = candidate?.state ?? null;
     let torDetail = candidate?.detail ?? null;
     if (torState === "running") {
