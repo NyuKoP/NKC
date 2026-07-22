@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -28,33 +27,28 @@ func testForwardWorker(t *testing.T, fetch func(transportFetchParams) (transport
 
 func forwardParams(mode string) transportForwardParams {
 	params := transportForwardParams{
-		TorProxyURL:     "socks5h://127.0.0.1:9050",
-		alternateRouteProxyURL: "socks5h://127.0.0.1:22000",
-		QueueOnFailure:  true,
+		TorProxyURL:    "socks5h://127.0.0.1:9050",
+		QueueOnFailure: true,
 	}
 	params.Payload.ToDeviceID = "peer-1"
 	params.Payload.FromDeviceID = "sender-1"
 	params.Payload.Envelope = "ciphertext"
 	params.Payload.Route.Mode = mode
 	params.Payload.Route.TorOnion = testTorOnion
-	params.Payload.Route.alternateRoute = "peer.loki"
 	return params
 }
 
-func TestForwardAutoFallsBackFromalternateRouteToTor(t *testing.T) {
+func TestForwardAutoUsesTor(t *testing.T) {
 	var targets []string
 	w := testForwardWorker(t, func(params transportFetchParams) (transportFetchResult, error) {
 		targets = append(targets, params.URL)
-		if strings.Contains(params.URL, "peer.loki") {
-			return transportFetchResult{}, fmt.Errorf("connection refused")
-		}
 		return transportFetchResult{Status: http.StatusOK}, nil
 	}, false)
 	result, err := w.forwardOnion(forwardParams("auto"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != http.StatusOK || result.Body["via"] != "tor" || len(targets) != 2 {
+	if result.Status != http.StatusOK || result.Body["via"] != "tor" || len(targets) != 1 {
 		t.Fatalf("unexpected result: %#v targets=%v", result, targets)
 	}
 }
@@ -83,7 +77,6 @@ func TestForwardRejectsInjectedTarget(t *testing.T) {
 		return transportFetchResult{}, nil
 	}, false)
 	params := forwardParams("manual")
-	params.Payload.Route.alternateRoute = ""
 	params.Payload.Route.TorOnion = "http://127.0.0.1:8080"
 	result, err := w.forwardOnion(params)
 	if err != nil {
@@ -116,7 +109,7 @@ func TestForwardSendsExpectedIngestEnvelope(t *testing.T) {
 		}
 		return transportFetchResult{Status: http.StatusOK}, nil
 	}, false)
-	params := forwardParams("preferalternateRoute")
+	params := forwardParams("preferTor")
 	result, err := w.forwardOnion(params)
 	if err != nil || result.Status != http.StatusOK {
 		t.Fatalf("unexpected result: %#v err=%v", result, err)

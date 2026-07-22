@@ -41,9 +41,25 @@ describe("onion controller security boundary", () => {
     const ingestResponse = await request("/onion/ingest", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ toDeviceId: "device-a", from: "peer-a", envelope: "ciphertext" }),
+      body: JSON.stringify({
+        id: "same-delivery-id",
+        toDeviceId: "device-a",
+        from: "peer-a",
+        envelope: "ciphertext",
+      }),
     });
     expect(ingestResponse.status).toBe(200);
+    const replayResponse = await request("/onion/ingest", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        id: "same-delivery-id",
+        toDeviceId: "device-a",
+        from: "peer-a",
+        envelope: "ciphertext",
+      }),
+    });
+    expect(replayResponse.status).toBe(200);
 
     const firstPoll = await request("/onion/inbox?deviceId=device-a", {
       headers: authorizedHeaders(),

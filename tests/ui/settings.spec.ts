@@ -52,6 +52,26 @@ const clearProfileStore = async (page: Page) =>
 
 test.describe("Settings and media E2E", () => {
   test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      const prefix = "nkc-settings-e2e-secure-storage:";
+      Object.defineProperty(window, "electron", {
+        configurable: true,
+        value: {
+          secureStorage: {
+            isAvailable: async () => true,
+            get: async (key: string) => localStorage.getItem(`${prefix}${key}`),
+            set: async (key: string, value: string) => {
+              localStorage.setItem(`${prefix}${key}`, value);
+              return true;
+            },
+            remove: async (key: string) => {
+              localStorage.removeItem(`${prefix}${key}`);
+              return true;
+            },
+          },
+        },
+      });
+    });
     await page.goto("/");
     await disableAnimations(page);
     await ensureOnboarded(page);
@@ -81,6 +101,32 @@ test.describe("Settings and media E2E", () => {
     await expect(page.getByTestId("proxy-url-error")).toBeVisible();
     const afterUrl = await getStoredProxyUrl(page);
     expect(afterUrl).toBe(beforeUrl);
+  });
+
+  test("shows Tor first as the recommended connection mode without changing the selection", async ({
+    page,
+  }) => {
+    await openNetworkSettings(page);
+
+    const tor = page.getByTestId("network-mode-torOnion");
+    const direct = page.getByTestId("network-mode-directP2P");
+    const torBox = await tor.boundingBox();
+    const directBox = await direct.boundingBox();
+
+    expect(torBox).not.toBeNull();
+    expect(directBox).not.toBeNull();
+    expect(torBox?.y ?? Number.POSITIVE_INFINITY).toBeLessThan(
+      directBox?.y ?? Number.NEGATIVE_INFINITY
+    );
+    await expect(page.getByTestId("network-mode-tor-recommended")).toHaveText(/권장|Recommended/);
+    await expect(page.getByTestId("network-mode-selfOnion")).toBeChecked();
+    await expect(page.getByTestId("tor-auto-prepare")).toBeDisabled();
+
+    await tor.check();
+    await expect(page.getByTestId("tor-auto-prepare")).toBeEnabled();
+    await expect(page.getByTestId("tor-auto-prepare")).toBeChecked();
+    await page.getByTestId("tor-auto-prepare-control").click();
+    await expect(page.getByTestId("tor-auto-prepare")).not.toBeChecked();
   });
 
   test("direct P2P switches only after save", async ({ page }) => {
@@ -201,7 +247,7 @@ test.describe("Settings and media E2E", () => {
     await expect(page.getByTestId("friends-section")).toHaveCSS("border-top-width", "0px");
   });
 
-  test("conversation rows use NKC-style hover separation without dividers", async ({ page }) => {
+  test("conversation rows use NKC hover separation without dividers", async ({ page }) => {
     await ensureChatsList(page);
     const row = page.locator('[data-testid^="conversation-row-"][data-selected="false"]').first();
     await expect(row).toBeVisible();

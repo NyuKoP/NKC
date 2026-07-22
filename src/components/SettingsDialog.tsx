@@ -136,6 +136,7 @@ export default function SettingsDialog({
     setProxy,
     setOnionEnabled,
     setOnionNetwork,
+    setTorAutoPrepareOnAppStart,
     setComponentState,
     setLastUpdateCheckAt,
     setSelfOnionMinRelays,
@@ -164,6 +165,9 @@ export default function SettingsDialog({
   // network
   const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
   const [onionNetworkDraft, setOnionNetworkDraft] = useState(netConfig.onionSelectedNetwork);
+  const [torAutoPrepareDraft, setTorAutoPrepareDraft] = useState(
+    netConfig.torAutoPrepareOnAppStart !== false
+  );
   const [connectionChoiceDraft, setConnectionChoiceDraft] = useState<ConnectionChoice>(
     getConnectionChoiceFromConfig(netConfig.mode)
   );
@@ -252,6 +256,7 @@ export default function SettingsDialog({
       setView("main");
       setOnionEnabledDraft(netConfig.onionEnabled);
       setOnionNetworkDraft(netConfig.onionSelectedNetwork);
+      setTorAutoPrepareDraft(netConfig.torAutoPrepareOnAppStart !== false);
       setConnectionChoiceDraft(
         getConnectionChoiceFromConfig(netConfig.mode)
       );
@@ -276,6 +281,7 @@ export default function SettingsDialog({
     open,
     netConfig.onionEnabled,
     netConfig.onionSelectedNetwork,
+    netConfig.torAutoPrepareOnAppStart,
     netConfig.onionProxyUrl,
     netConfig.mode,
   ]);
@@ -487,6 +493,7 @@ export default function SettingsDialog({
     try {
       setMode(nextMode);
       setOnionNetwork(nextOnionNetwork);
+      setTorAutoPrepareOnAppStart(torAutoPrepareDraft);
       setOnionEnabled(nextOnionEnabled);
       await setOnionMode(nextOnionEnabled, nextOnionNetwork);
       setSaveMessage(t("저장됨", "Saved"));
@@ -985,7 +992,7 @@ export default function SettingsDialog({
                             {t("사진 업로드", "Upload photo")}
                             <input
                               type="file"
-                              accept="image/*"
+                              accept="image/png,image/jpeg,image/gif,image/webp"
                               className="hidden"
                               onChange={async (e) => {
                                 const file = e.target.files?.[0];
@@ -1245,6 +1252,8 @@ export default function SettingsDialog({
               onCopyAddress={handleCopyAddress}
               onionEnabledDraft={onionEnabledDraft}
               setOnionEnabledDraft={setOnionEnabledDraft}
+              torAutoPrepareOnAppStart={torAutoPrepareDraft}
+              setTorAutoPrepareOnAppStart={setTorAutoPrepareDraft}
               proxyAuto={proxyAuto}
               proxyUrlDraft={proxyUrlDraft}
               proxyUrlError={proxyUrlError}

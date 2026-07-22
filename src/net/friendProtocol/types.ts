@@ -22,7 +22,6 @@ export type FriendCodePayload = {
   dhPub: string;
   deviceId?: string;
   onionAddr?: string;
-  alternateRouteAddr?: string;
 };
 
 export type externalHandshakeRecord = {

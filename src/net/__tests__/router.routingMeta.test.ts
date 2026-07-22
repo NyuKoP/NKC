@@ -149,7 +149,6 @@ describe("router routing metadata", () => {
       dhPub,
       deviceId: "987e6543-e21b-42d3-a456-426614174999",
       onionAddr: "peer-recovered.onion",
-      alternateRouteAddr: "peer-recovered.loki",
     });
     useAppStore.getState().setData({
       user: {
@@ -215,19 +214,17 @@ describe("router routing metadata", () => {
       expect.objectContaining({
         toDeviceId: "987e6543-e21b-42d3-a456-426614174999",
         torOnion: "peer-recovered.onion",
-        alternateRoute: "peer-recovered.loki",
       })
     );
     const sentPacket = (
       onionRouterTransport.send as unknown as { mock?: { calls?: unknown[][] } }
     ).mock?.calls?.[0]?.[0] as {
       toDeviceId?: string;
-      route?: { torOnion?: string; alternateRoute?: string };
+      route?: { torOnion?: string };
     } | undefined;
     expect(sentPacket?.toDeviceId).toBe("987e6543-e21b-42d3-a456-426614174999");
     expect(sentPacket?.route).toEqual({
       torOnion: "peer-recovered.onion",
-      alternateRoute: "peer-recovered.loki",
     });
   });
 });

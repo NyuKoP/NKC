@@ -61,6 +61,8 @@ type NetworkSettingsProps = {
   onCopyAddress: (value: string, label: string) => void | Promise<void>;
   onionEnabledDraft: boolean;
   setOnionEnabledDraft: (value: boolean) => void;
+  torAutoPrepareOnAppStart: boolean;
+  setTorAutoPrepareOnAppStart: (value: boolean) => void;
   proxyAuto: boolean;
   proxyUrlDraft: string;
   proxyUrlError: string;
@@ -119,6 +121,8 @@ export default function NetworkSettings({
   onCopyAddress,
   onionEnabledDraft,
   setOnionEnabledDraft,
+  torAutoPrepareOnAppStart,
+  setTorAutoPrepareOnAppStart,
   proxyAuto,
   proxyUrlDraft,
   proxyUrlError,
@@ -154,7 +158,7 @@ export default function NetworkSettings({
       <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
         <div className="text-sm font-semibold text-nkc-text">{t("연결 방식", "Connection mode")}</div>
         <div className="mt-3 grid gap-2">
-          <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
+          <div className="order-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
             <div className="flex items-start gap-3">
               <input
                 id="network-mode-directP2P"
@@ -174,7 +178,7 @@ export default function NetworkSettings({
             </div>
           </div>
 
-          <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
+          <div className="order-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
                 <input
@@ -193,6 +197,12 @@ export default function NetworkSettings({
                   >
                     <span>Tor Onion</span>
                     <span
+                      className="rounded-full border border-nkc-accent/40 bg-nkc-accent/10 px-2 py-0.5 text-[10px] font-semibold text-nkc-text"
+                      data-testid="network-mode-tor-recommended"
+                    >
+                      {t("권장", "Recommended")}
+                    </span>
+                    <span
                       title={t("Tor 상태", "Tor status")}
                       className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
                         getDotState("tor", onionStatus)
@@ -206,6 +216,36 @@ export default function NetworkSettings({
                 </div>
               </div>
               <div className="text-xs text-nkc-muted">{buildComponentLabel(netConfig.tor)}</div>
+            </div>
+            <div
+              className={`mt-3 flex items-center justify-between gap-4 rounded-nkc border border-nkc-border px-3 py-2.5 transition-opacity ${
+                connectionChoice === "torOnion"
+                  ? "bg-nkc-panelMuted"
+                  : "bg-nkc-panelMuted opacity-45"
+              }`}
+              data-testid="tor-auto-prepare-option"
+            >
+              <div>
+                <div className="text-xs font-medium text-nkc-text">
+                  {t("앱 실행 시 Tor 자동 준비", "Prepare Tor automatically on app start")}
+                </div>
+                <div className="mt-0.5 text-[11px] leading-4 text-nkc-muted">
+                  {t(
+                    "로그인 후 앱 화면에 들어오면 Tor 연결과 Onion 주소를 미리 준비합니다.",
+                    "Prepares the Tor connection and Onion address after you enter the app."
+                  )}
+                </div>
+              </div>
+              <ToggleSwitch
+                label={t(
+                  "앱 실행 시 Tor 자동 준비",
+                  "Prepare Tor automatically on app start"
+                )}
+                checked={torAutoPrepareOnAppStart}
+                disabled={connectionChoice !== "torOnion"}
+                testId="tor-auto-prepare"
+                onChange={setTorAutoPrepareOnAppStart}
+              />
             </div>
             {connectionChoice === "torOnion" ? (
               <div className="mt-3 border-t border-nkc-border pt-3">
@@ -348,7 +388,7 @@ export default function NetworkSettings({
             ) : null}
           </div>
 
-          <div className="rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
+          <div className="order-3 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
             <div className="flex items-start gap-3">
               <input
                 id="network-mode-selfOnion"

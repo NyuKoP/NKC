@@ -40,6 +40,7 @@ This directory contains current architectural references, operational guidance, 
 | [NKC v0.3.2](releases/v0.3.2.md) | Tor 15.0.18, login safety, friend acceptance, and 500 MiB transfer follow-up |
 | [NKC v0.4.0](releases/v0.4.0.md) | New UI, persistent encrypted sessions, and Tor-only routing |
 | [NKC v0.4.1](releases/v0.4.1.md) | Verified network readiness, durable file-transfer foundations, and independent Tor lanes |
+| [NKC v0.4.3](releases/v0.4.3.md) | Faster friend exchange, Tor startup controls, secure media validation, and binary worker IPC |
 
 ## Implementation History
 
@@ -49,8 +50,7 @@ The phase documents describe how network capabilities were introduced. They are 
 2. [Phase 3: Onion Transport](phase3-onion-transport.md)
 3. [Phase 3.5: Local Onion Controller](phase35-onion-controller.md)
 4. [Phase 4: Tor Hidden Service Transport](phase4-tor-hidden-service.md)
-5. [Phase 4.5: alternateRoute and Route Policy](phase45-alternateRoute-and-routing.md)
-6. [Phase 4.6: Operations](phase46-operations.md)
+5. [Phase 4.6: Operations](phase46-operations.md)
 
 ## Documentation Rules
 

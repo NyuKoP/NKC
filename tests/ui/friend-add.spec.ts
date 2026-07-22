@@ -207,12 +207,11 @@ const seedNetworkConfig = async (
   page: import("@playwright/test").Page,
   onionControllerUrl: string,
   options?: {
-    selectedNetwork?: "tor" | "alternateRoute";
     serviceAddress?: string;
     mode?: "onionRouter" | "selfOnion";
   }
 ) => {
-  await page.addInitScript(({ url, selectedNetwork, serviceAddress, mode }) => {
+  await page.addInitScript(({ url, serviceAddress, mode }) => {
     const secureStoragePrefix = "nkc-e2e-secure-storage:";
     Object.defineProperty(window, "electron", {
       configurable: true,
@@ -270,8 +269,7 @@ const seedNetworkConfig = async (
           };
         },
         ensureHiddenService: async () => ({ ok: true }),
-        getMyOnionAddress: async () => (selectedNetwork === "tor" ? serviceAddress ?? "" : ""),
-        getMyalternateRouteAddress: async () => (selectedNetwork === "alternateRoute" ? serviceAddress ?? "" : ""),
+        getMyOnionAddress: async () => serviceAddress ?? "",
         prewarmOnionRoute: async () => ({ ok: true, elapsedMs: 1 }),
         startTor: async () => ({ ok: true }),
         stopTor: async () => ({ ok: true }),
@@ -292,18 +290,13 @@ const seedNetworkConfig = async (
         selfOnionMinRelays: 3,
         allowRemoteProxy: false,
         onionEnabled: mode === "onionRouter",
-        onionSelectedNetwork: selectedNetwork,
-        tor: { installed: selectedNetwork === "tor", status: selectedNetwork === "tor" ? "ready" : "idle" },
-        alternateRoute: {
-          installed: selectedNetwork === "alternateRoute",
-          status: selectedNetwork === "alternateRoute" ? "ready" : "idle",
-        },
+        onionSelectedNetwork: "tor",
+        tor: { installed: true, status: "ready" },
       })
     );
     localStorage.setItem("onion_controller_url_v1", url);
   }, {
     url: onionControllerUrl,
-    selectedNetwork: options?.selectedNetwork ?? "tor",
     serviceAddress: options?.serviceAddress ?? "",
     mode: options?.mode ?? "onionRouter",
   });
@@ -349,7 +342,6 @@ const decodeFriendCodePayload = (code: string) => {
   return JSON.parse(decoded.slice(0, -4).toString("utf8")) as {
     deviceId?: string;
     onionAddr?: string;
-    alternateRouteAddr?: string;
   };
 };
 
@@ -422,28 +414,19 @@ test.describe("Friend add E2E", () => {
 
   const runMutualEndpointExchange = async (
     browser: import("@playwright/test").Browser,
-    network: "tor" | "alternateRoute",
     mode: "onionRouter" | "selfOnion" = "onionRouter"
   ) => {
     const aliceContext = await browser.newContext();
     const bobContext = await browser.newContext();
     const alice = await aliceContext.newPage();
     const bob = await bobContext.newPage();
-    const aliceServiceAddress =
-      network === "tor"
-        ? `${"a".repeat(56)}.onion`
-        : "alice.loki";
-    const bobServiceAddress =
-      network === "tor"
-        ? `${"b".repeat(56)}.onion`
-        : "bob.loki";
+    const aliceServiceAddress = `${"a".repeat(56)}.onion`;
+    const bobServiceAddress = `${"b".repeat(56)}.onion`;
     await seedNetworkConfig(alice, onionServer.baseUrl, {
-      selectedNetwork: network,
       serviceAddress: aliceServiceAddress,
       mode,
     });
     await seedNetworkConfig(bob, onionServer.baseUrl, {
-      selectedNetwork: network,
       serviceAddress: bobServiceAddress,
       mode,
     });
@@ -463,19 +446,12 @@ test.describe("Friend add E2E", () => {
       const aliceCode = await readOwnFriendCode(alice);
       const bobCode = await readOwnFriendCode(bob);
       const alicePayload = decodeFriendCodePayload(aliceCode);
-      if (network === "tor") {
-        expect(alicePayload.onionAddr).toBe(aliceServiceAddress);
-      } else {
-        expect(alicePayload.alternateRouteAddr).toBe(aliceServiceAddress);
-      }
+      expect(alicePayload.onionAddr).toBe(aliceServiceAddress);
       const bobPayload = decodeFriendCodePayload(bobCode);
-      if (network === "tor") {
-        expect(bobPayload.onionAddr).toBe(bobServiceAddress);
-      } else {
-        expect(bobPayload.alternateRouteAddr).toBe(bobServiceAddress);
-      }
+      expect(bobPayload.onionAddr).toBe(bobServiceAddress);
       expect(bobPayload.deviceId).toBeTruthy();
 
+      const friendRequestStartedAt = Date.now();
       await addFriendCode(alice, bobCode);
       await expect
         .poll(() => onionServer.getInboxCount(bobPayload.deviceId ?? ""), { timeout: 10_000 })
@@ -486,6 +462,7 @@ test.describe("Friend add E2E", () => {
           return bob.getByTestId("sidebar").getByText("Alice", { exact: true }).count();
         }, { timeout: 30_000 })
         .toBeGreaterThan(0);
+      expect(Date.now() - friendRequestStartedAt).toBeLessThan(10_000);
 
       await bob.getByTestId("sidebar").getByText("Alice", { exact: true }).first().click();
       const requestProfile = bob.getByTestId("message-request-profile");
@@ -496,6 +473,7 @@ test.describe("Friend add E2E", () => {
       await expect(bob.getByRole("button", { name: "차단", exact: true })).toBeVisible();
       await expect(bob.getByRole("button", { name: "신고", exact: true })).toHaveCount(0);
       await expect(bob.getByTestId("chat-message-input")).toHaveCount(0);
+      const friendAcceptStartedAt = Date.now();
       await expect(bob.getByRole("button", { name: "수락", exact: true })).toBeVisible();
       await bob.getByRole("button", { name: "수락", exact: true }).click();
       await expect
@@ -519,6 +497,7 @@ test.describe("Friend add E2E", () => {
           });
         }, { timeout: 30_000 })
         .toBe(true);
+      expect(Date.now() - friendAcceptStartedAt).toBeLessThan(10_000);
 
       await expect
         .poll(async () => {
@@ -566,12 +545,12 @@ test.describe("Friend add E2E", () => {
   test("mutual endpoint exchange completes over onion controller (tor mode)", async ({
     browser,
   }) => {
-    await runMutualEndpointExchange(browser, "tor");
+    await runMutualEndpointExchange(browser);
   });
 
   test("first friend exchange bootstraps over Tor from default selfOnion mode", async ({
     browser,
   }) => {
-    await runMutualEndpointExchange(browser, "tor", "selfOnion");
+    await runMutualEndpointExchange(browser, "selfOnion");
   });
 });

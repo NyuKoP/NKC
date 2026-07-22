@@ -33,7 +33,6 @@ export type OutboxRecord = {
   // Legacy metadata kept for compatibility with existing delivery modules.
   toDeviceId?: string;
   torOnion?: string;
-  alternateRoute?: string;
   createdAtMs: number;
   expiresAtMs: number;
   lastAttemptAtMs?: number;
@@ -42,6 +41,10 @@ export type OutboxRecord = {
   status: "pending" | "in_flight" | "acked" | "expired";
   inFlightAtMs?: number;
   ackDeadlineMs?: number;
+  retention?: "standard" | "transient";
+  transferId?: string;
+  chunkIndex?: number;
+  binaryTransport?: boolean;
 };
 export type MediaChunkRecord = {
   id: string;
@@ -90,6 +93,11 @@ export type FriendAliasRecord = {
   alias: string;
   updatedAt: number;
 };
+export type MediaTransferRecord = {
+  transferId: string;
+  enc_b64: string;
+  updatedAt: number;
+};
 
 const OUTBOX_DEFAULT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -106,6 +114,7 @@ export class NKCVaultDB extends Dexie {
   receipts!: Table<ReceiptRecord, string>;
   tombstones!: Table<TombstoneRecord, string>;
   friendAliases!: Table<FriendAliasRecord, string>;
+  mediaTransfers!: Table<MediaTransferRecord, string>;
 
   constructor() {
     super("nkc_vault");
@@ -278,6 +287,23 @@ export class NKCVaultDB extends Dexie {
             }
           })
       );
+    this.version(12).stores({
+      meta: "key",
+      profiles: "id, updatedAt",
+      conversations: "id, updatedAt",
+      messages: "id, convId, ts",
+      events: "eventId, convId, ts, lamport, authorDeviceId, [convId+lamport], [convId+ts]",
+      outbox:
+        "id, convId, nextAttemptAt, [convId+nextAttemptAt], status, expiresAtMs, nextAttemptAtMs, ackDeadlineMs, [status+nextAttemptAtMs], [status+ackDeadlineMs]",
+      mediaChunks: "id, ownerType, ownerId, idx, updatedAt",
+      mediaIndex: "mediaId, convId, createdAt, complete",
+      mediaPayloadChunks: "[mediaId+idx], mediaId, idx, updatedAt",
+      receipts:
+        "id, msgId, convId, kind, actorId, cursorTs, ts, [convId+kind], [convId+actorId+kind], [convId+msgId], [msgId+kind]",
+      tombstones: "id, type, deletedAt",
+      friendAliases: "friendId, updatedAt",
+      mediaTransfers: "transferId, updatedAt",
+    });
   }
 }
 

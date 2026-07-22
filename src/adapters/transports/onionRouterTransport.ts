@@ -13,6 +13,7 @@ import type { RouteMode } from "../../main/routePolicy";
 import { TorRuntime } from "../../net/tor/TorRuntime";
 import { createTransportError } from "../../net/transportErrors";
 import type { Transport, TransportPacket, TransportState } from "./types";
+import { decodeBinaryTransportPacket, encodeBinaryTransportPacket } from "./packetCodec";
 
 type Handler<T> = (payload: T) => void;
 
@@ -228,6 +229,8 @@ export const createOnionRouterTransport = ({
   const decodeEnvelope = (envelope: string): TransportPacket | null => {
     try {
       const bytes = decodeBase64Url(envelope);
+      const binary = decodeBinaryTransportPacket(bytes);
+      if (binary) return binary;
       const json = new TextDecoder().decode(bytes);
       const parsed = JSON.parse(json) as TransportPacket;
       if (!parsed || typeof parsed !== "object") return null;
@@ -387,8 +390,9 @@ export const createOnionRouterTransport = ({
         throw new Error("Onion controller is not ready");
       }
       const activeClient = client;
+      const binaryPacket = encodeBinaryTransportPacket(packet);
       const envelope = encodeBase64Url(
-        new TextEncoder().encode(JSON.stringify(packet))
+        binaryPacket ?? new TextEncoder().encode(JSON.stringify(packet))
       );
       const sendOnce = () =>
         activeClient.send(toDeviceId, envelope, DEFAULT_TTL_MS, route, signal, packet.id);

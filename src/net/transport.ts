@@ -12,7 +12,6 @@ export type TransportStatus = {
 export type PeerHint = {
   kind?: "friend" | "device";
   onionAddr?: string;
-  alternateRouteAddr?: string;
   directAddr?: string;
   deviceSyncTransportPolicy?: DeviceSyncTransportPolicy;
 };

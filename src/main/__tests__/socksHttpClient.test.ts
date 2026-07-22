@@ -68,4 +68,40 @@ describe("native SOCKS transport adapter", () => {
       95_000
     );
   });
+
+  it("moves large routed payloads into the binary IPC body", async () => {
+    const request = vi.fn();
+    const requestBinary = vi.fn<(
+      method: string,
+      params: unknown,
+      body: Buffer,
+      timeoutMs: number
+    ) => Promise<{ result: { status: number; body: Record<string, unknown> }; body: Buffer }>>()
+      .mockResolvedValue({
+      result: { status: 200, body: { ok: true, forwarded: true } },
+      body: Buffer.alloc(0),
+      });
+    const transport = createNativeSocksTransport({ request, requestBinary } as never);
+    const payload = { toDeviceId: "peer-1", envelope: "x".repeat(1024 * 1024) };
+
+    await expect(transport.forward(payload, {
+      torProxyUrl: "socks5h://127.0.0.1:9050",
+      queueOnFailure: false,
+    })).resolves.toMatchObject({ status: 200 });
+
+    expect(request).not.toHaveBeenCalled();
+    expect(requestBinary).toHaveBeenCalledTimes(1);
+    const [method, params, body, timeoutMs] = requestBinary.mock.calls[0];
+    expect(method).toBe("transport.forward.binary");
+    expect(params).toEqual({
+      torProxyUrl: "socks5h://127.0.0.1:9050",
+      queueOnFailure: false,
+    });
+    expect(Buffer.isBuffer(body)).toBe(true);
+    expect(body.byteLength).toBeGreaterThan(1024 * 1024);
+    const decoded = JSON.parse(body.toString("utf8")) as typeof payload;
+    expect(decoded.toDeviceId).toBe(payload.toDeviceId);
+    expect(decoded.envelope.length).toBe(payload.envelope.length);
+    expect(timeoutMs).toBe(95_000);
+  });
 });

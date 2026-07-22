@@ -40,8 +40,7 @@ export const getRouteInfo = (
 
   return {
     mode,
-    description: "외부 온니언(Tor/alternateRoute) 경로로 연결합니다.",
+    description: "외부 Tor Onion 경로로 연결합니다.",
     pathLabel: "나 → hop1 → hop2 → ... → 상대 (N hops)",
   };
 };
-

@@ -3,34 +3,32 @@
 ## Transport options
 - Direct: WebRTC data channel for same-network/direct signaling.
 - Onion: Tor hidden service via local controller store-and-forward.
-- alternateRoute: outbound proxy routing via SOCKS proxy.
 - Future: optional libp2p for discovery/relay (not in Phase 4.6).
 
 ## Route policy and failover
-- Modes: auto, preferalternateRoute, preferTor, manual.
-- auto: try alternateRoute then Tor when both targets exist.
-- preferalternateRoute/preferTor: single-path, no fallback.
+- Modes: auto, preferTor, manual.
+- auto/preferTor: use the peer's Tor Onion target.
 - manual: explicit single target only.
 
 ## Legacy vs network routing
 - Legacy local-only: `/onion/send` without route targets stores locally only.
-- Network route: `/onion/send` with tor/alternateRoute targets forwards through proxies.
+- Network route: `/onion/send` with a Tor Onion target forwards through the Tor SOCKS proxy.
 
 ## Controller contract
-- `GET /onion/health`: status summary for Tor/alternateRoute proxies.
+- `GET /onion/health`: status summary for the Tor proxy.
 - `POST /onion/send`: legacy local-only or routed forwarding.
 - `POST /onion/ingest`: receive envelope into inbox.
 - `GET /onion/inbox`: poll inbox items.
-- `GET /onion/address`: return published Tor/alternateRoute addresses.
+- `GET /onion/address`: return the published Tor Onion address.
 
 The authenticated loopback controller accepts request bodies up to 2 MiB. The Go transport and offline queue enforce the same ceiling, and the renderer drops oversized incoming frames before dispatch. Per-device and global inbox byte/item limits remain separate safeguards.
 
 ## Native transport boundary
 - Electron keeps the authenticated loopback HTTP boundary, local inbox, IPC, and diagnostic event publication.
-- The Go worker owns route validation, alternateRoute/Tor failover, SOCKS5 negotiation, optional username/password authentication, HTTP/HTTPS requests, bounded concurrency, retries, response-size enforcement, reusable connection pools, and failure queueing.
-- Electron communicates with the worker through `transport.fetch` and `transport.clearProxy`; payload bytes are Base64-encoded only at this control boundary.
+- The Go worker owns Tor route validation, SOCKS5 negotiation, optional username/password authentication, HTTP requests, bounded concurrency, retries, response-size enforcement, reusable connection pools, and failure queueing.
+- Electron communicates with the worker through a length-prefixed binary stdio protocol; bulk payload bytes are not Base64-expanded.
 - Routed `/onion/send` requests use `transport.forward`; successful and failed route events are returned to Electron for the existing diagnostic sinks.
-- The worker never follows HTTP redirects automatically, preventing an onion or alternateRoute destination from redirecting a request to an unintended network target.
+- The worker never follows HTTP redirects automatically, preventing an Onion destination from redirecting a request to an unintended network target.
 - Offline queue delivery and interactive forwarding share the same Go SOCKS dialer so protocol validation remains consistent.
 
 ## Large file data path

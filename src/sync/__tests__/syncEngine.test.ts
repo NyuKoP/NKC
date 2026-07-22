@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   __testApplyEnvelopeEvents,
   __testCreateSyncResponseFrames,
+  __testGetPeerContext,
+  __testHandleAck,
+  __testHandleHello,
   __testResetSyncState,
   __testSetPeerContext,
   handleIncomingFriendFrame,
@@ -279,7 +282,66 @@ describe("syncEngine signature verification", () => {
     expect(vi.mocked(repo.saveConversation)).not.toHaveBeenCalled();
   });
 
-  it("drops friend frames when external protocol verification fails", async () => {
+  it("drops a signed-shape ACK that was not requested by a local HELLO", async () => {
+    await __testHandleAck("c1", {
+      type: "ACK",
+      identityPub: encodeBase64Url(new Uint8Array(32).fill(8)),
+      deviceId: "peer-device",
+      nonce: "abcdefghijklmnop",
+      sig: "not-verified-because-no-pending-hello",
+    });
+
+    expect(__testGetPeerContext("c1")).toBeUndefined();
+  });
+
+  it("does not let a HELLO replace the identity pinned to a conversation", async () => {
+    const pinnedIdentity = encodeBase64Url(new Uint8Array(32).fill(1));
+    __testSetPeerContext("c1", { identityPub: pinnedIdentity });
+
+    await __testHandleHello("c1", {
+      type: "HELLO",
+      identityPub: encodeBase64Url(new Uint8Array(32).fill(9)),
+      deviceId: "attacker-device",
+      nonce: "abcdefghijklmnop",
+      sig: "irrelevant-after-identity-mismatch",
+    });
+
+    expect(__testGetPeerContext("c1")?.identityPub).toBe(pinnedIdentity);
+  });
+
+  it("drops a replayed friend response before it can change profile state", async () => {
+    const identityPub = encodeBase64Url(new Uint8Array(32).fill(7));
+    const dhPub = encodeBase64Url(new Uint8Array(32).fill(6));
+    const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
+    vi.mocked(repo.listProfiles).mockResolvedValue([
+      {
+        id: "peer",
+        displayName: "Peer",
+        status: "",
+        theme: "dark",
+        kind: "friend",
+        friendStatus: "normal",
+        identityPub,
+        dhPub,
+        friendControlTs: 200,
+      },
+    ]);
+
+    const handled = await handleIncomingFriendFrame(
+      {
+        type: "friend_decline",
+        convId: "c1",
+        from: { identityPub, dhPub },
+        ts: 100,
+      },
+      { trustedEnvelope: true }
+    );
+
+    expect(handled).toBe(false);
+    expect(vi.mocked(repo.saveProfile)).not.toHaveBeenCalled();
+  });
+
+  it("drops friend frames when protocol verification fails", async () => {
     const identityPub = encodeBase64Url(new Uint8Array(32).fill(1));
     const dhPub = encodeBase64Url(new Uint8Array(32).fill(2));
     const handled = await handleIncomingFriendFrame(
@@ -377,6 +439,7 @@ describe("syncEngine signature verification", () => {
   });
 
   it("completes friendship when an incoming request matches an outgoing request", async () => {
+    const newOnionAddr = `${"a".repeat(56)}.onion`;
     const identityPub = encodeBase64Url(new Uint8Array(32).fill(1));
     const dhPub = encodeBase64Url(new Uint8Array(32).fill(2));
     const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
@@ -432,8 +495,7 @@ describe("syncEngine signature verification", () => {
       identityPub,
       dhPub,
       deviceId: "22222222-2222-4222-8222-222222222222",
-      onionAddr: "newpeer.onion",
-      alternateRouteAddr: "newpeer.loki",
+      onionAddr: newOnionAddr,
     });
 
     await handleIncomingFriendFrame(
@@ -460,8 +522,7 @@ describe("syncEngine signature verification", () => {
         primaryDeviceId: "22222222-2222-4222-8222-222222222222",
         routingHints: {
           deviceId: "22222222-2222-4222-8222-222222222222",
-          onionAddr: "newpeer.onion",
-          alternateRouteAddr: "newpeer.loki",
+          onionAddr: newOnionAddr,
         },
       })
     );
@@ -475,6 +536,7 @@ describe("syncEngine signature verification", () => {
   });
 
   it("updates routing hints from an incoming accept friend code", async () => {
+    const acceptOnionAddr = `${"b".repeat(56)}.onion`;
     const identityPub = encodeBase64Url(new Uint8Array(32).fill(4));
     const dhPub = encodeBase64Url(new Uint8Array(32).fill(5));
     const repo = await vi.importMock<typeof import("../../db/repo")>("../../db/repo");
@@ -512,8 +574,7 @@ describe("syncEngine signature verification", () => {
       identityPub,
       dhPub,
       deviceId: "33333333-3333-4333-8333-333333333333",
-      onionAddr: "acceptpeer.onion",
-      alternateRouteAddr: "acceptpeer.loki",
+      onionAddr: acceptOnionAddr,
     });
 
     await handleIncomingFriendFrame(
@@ -543,8 +604,7 @@ describe("syncEngine signature verification", () => {
         primaryDeviceId: "33333333-3333-4333-8333-333333333333",
         routingHints: {
           deviceId: "33333333-3333-4333-8333-333333333333",
-          onionAddr: "acceptpeer.onion",
-          alternateRouteAddr: "acceptpeer.loki",
+          onionAddr: acceptOnionAddr,
         },
         profileVcard: expect.objectContaining({ friendCode }),
       })

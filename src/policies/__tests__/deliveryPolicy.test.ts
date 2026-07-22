@@ -12,6 +12,7 @@ type OutboxRecord = {
   status: "pending" | "in_flight" | "acked" | "expired";
   inFlightAtMs?: number;
   ackDeadlineMs?: number;
+  retention?: "standard" | "transient";
 };
 
 const store = new Map<string, OutboxRecord>();
@@ -26,6 +27,9 @@ vi.mock("../../storage/outboxStore", () => {
       const existing = store.get(id);
       if (!existing) return;
       store.set(id, { ...existing, ...patch });
+    }),
+    deleteOutbox: vi.fn(async (id: string) => {
+      store.delete(id);
     }),
     deleteExpiredOutbox: async (now = Date.now()) => {
       let count = 0;
@@ -85,6 +89,26 @@ describe("deliveryPolicy", () => {
     const updated = store.get("m1");
     expect(updated?.status).toBe("acked");
     expect(vi.mocked(outboxStore.updateOutbox)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(receiptStore.putReceipt)).toHaveBeenCalledTimes(1);
+  });
+
+  it("deletes transient media outbox records after ACK", async () => {
+    store.set("media-1", {
+      id: "media-1",
+      convId: "c1",
+      ciphertext: "large-encrypted-chunk",
+      createdAtMs: 1,
+      expiresAtMs: 100,
+      nextAttemptAtMs: 1,
+      attempts: 0,
+      status: "in_flight",
+      retention: "transient",
+    });
+
+    await onAckReceived("media-1");
+
+    expect(store.has("media-1")).toBe(false);
+    expect(vi.mocked(outboxStore.deleteOutbox)).toHaveBeenCalledWith("media-1");
     expect(vi.mocked(receiptStore.putReceipt)).toHaveBeenCalledTimes(1);
   });
 

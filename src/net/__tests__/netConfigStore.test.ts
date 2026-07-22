@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach } from "vitest";
-import { DEFAULT_NET_CONFIG } from "../netConfig";
+import { DEFAULT_NET_CONFIG, shouldAutoPrepareTor } from "../netConfig";
 import { enforceRules, useNetConfigStore } from "../netConfigStore";
 
 const createStorage = () => {
@@ -57,5 +57,36 @@ describe("netConfigStore", () => {
     const parsed = JSON.parse(raw as string) as typeof DEFAULT_NET_CONFIG;
     expect(parsed.mode).toBe("directP2P");
     expect(parsed.onionEnabled).toBe(false);
+  });
+
+  it("persists the Tor auto-prepare preference independently", () => {
+    useNetConfigStore.getState().setTorAutoPrepareOnAppStart(false);
+    const raw = storage.getItem("netConfig.v1");
+    const parsed = JSON.parse(raw as string) as typeof DEFAULT_NET_CONFIG;
+    expect(parsed.torAutoPrepareOnAppStart).toBe(false);
+  });
+
+  it("auto-prepares Tor only for an active Tor route with the preference enabled", () => {
+    expect(
+      shouldAutoPrepareTor({
+        mode: "onionRouter",
+        onionEnabled: true,
+        torAutoPrepareOnAppStart: true,
+      })
+    ).toBe(true);
+    expect(
+      shouldAutoPrepareTor({
+        mode: "onionRouter",
+        onionEnabled: true,
+        torAutoPrepareOnAppStart: false,
+      })
+    ).toBe(false);
+    expect(
+      shouldAutoPrepareTor({
+        mode: "selfOnion",
+        onionEnabled: false,
+        torAutoPrepareOnAppStart: true,
+      })
+    ).toBe(false);
   });
 });

@@ -191,37 +191,41 @@ func bitmapRanges(bitmap []byte, total int64) [][2]int64 {
 }
 
 func (m *receiveManager) write(p receiveWriteParams) (any, error) {
-	t, err := m.get(p.TransferID)
+	data, err := base64.RawURLEncoding.DecodeString(p.Data)
+	if err != nil {
+		return nil, fmt.Errorf("invalid_chunk_data")
+	}
+	return m.writeBinary(p.TransferID, p.Index, data)
+}
+
+func (m *receiveManager) writeBinary(transferID string, index int64, data []byte) (any, error) {
+	t, err := m.get(transferID)
 	if err != nil {
 		return nil, err
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if p.Index < 0 || p.Index >= t.journal.TotalChunks {
+	if index < 0 || index >= t.journal.TotalChunks {
 		return nil, fmt.Errorf("chunk_out_of_range")
 	}
-	data, err := base64.RawURLEncoding.DecodeString(p.Data)
-	if err != nil {
-		return nil, fmt.Errorf("invalid_chunk_data")
-	}
 	expected := t.journal.ChunkSize
-	if remaining := t.journal.FileSize - p.Index*t.journal.ChunkSize; remaining < expected {
+	if remaining := t.journal.FileSize - index*t.journal.ChunkSize; remaining < expected {
 		expected = remaining
 	}
 	if int64(len(data)) != expected {
 		return nil, fmt.Errorf("invalid_chunk_length")
 	}
-	if bitSet(t.journal.Bitmap, p.Index) {
+	if bitSet(t.journal.Bitmap, index) {
 		return map[string]any{"duplicate": true, "checkpointed": true}, nil
 	}
-	n, err := t.file.WriteAt(data, p.Index*t.journal.ChunkSize)
+	n, err := t.file.WriteAt(data, index*t.journal.ChunkSize)
 	if err != nil || n != len(data) {
 		if err == nil {
 			err = io.ErrShortWrite
 		}
 		return nil, err
 	}
-	setBit(t.journal.Bitmap, p.Index)
+	setBit(t.journal.Bitmap, index)
 	t.dirtyBytes += int64(n)
 	due := t.dirtyBytes >= checkpointBytes || time.Since(t.lastCheckpoint) >= checkpointMaxInterval
 	if due {
@@ -233,6 +237,11 @@ func (m *receiveManager) write(p receiveWriteParams) (any, error) {
 }
 
 func (t *receiveTransfer) checkpointLocked() error {
+	if t.dirtyBytes == 0 {
+		if _, err := os.Stat(t.journalPath); err == nil {
+			return nil
+		}
+	}
 	// Durable ACK boundary: file data first, journal second, ACK only after this returns.
 	if err := t.file.Sync(); err != nil {
 		return err
@@ -304,9 +313,6 @@ func (m *receiveManager) finalize(id string) (any, error) {
 	}
 	if hex.EncodeToString(h.Sum(nil)) != t.journal.SHA256 {
 		return nil, fmt.Errorf("file_hash_mismatch")
-	}
-	if err := t.file.Sync(); err != nil {
-		return nil, err
 	}
 	if err := t.file.Close(); err != nil {
 		return nil, err

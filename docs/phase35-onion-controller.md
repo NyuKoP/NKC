@@ -5,7 +5,7 @@ It binds to 127.0.0.1 only and stores envelopes in memory (store-and-forward).
 
 ## Endpoints
 - GET `/onion/health`
-  - `{ ok:true, network:"none"|"tor"|"alternateRoute", details?, socksProxy? }`
+  - `{ ok:true, network:"none"|"tor", details?, socksProxy? }`
 - POST `/onion/send`
   - `{ to, from?, envelope, ttlMs? }`
 - GET `/onion/inbox?deviceId=<id>&after=<cursor>&limit=<n>`
@@ -25,5 +25,5 @@ It binds to 127.0.0.1 only and stores envelopes in memory (store-and-forward).
 - Forwarding target is `${to}/onion/ingest` when `to` is a URL.
 
 ## Next steps
-- Replace the local controller with a real Tor hidden service or alternateRoute router.
+- Keep the controller behind the local Tor hidden service and authenticated renderer bridge.
 - Persist inbox storage for offline restarts.

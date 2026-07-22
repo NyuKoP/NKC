@@ -18,7 +18,7 @@ type AttemptState = {
   lastAttemptAt: number;
 };
 
-const BACKOFF_STEPS_MS = [30_000, 120_000, 600_000, 3_600_000];
+const BACKOFF_STEPS_MS = [5_000, 15_000, 60_000, 300_000];
 
 const nextBackoffMs = (attempts: number) =>
   BACKOFF_STEPS_MS[Math.min(attempts, BACKOFF_STEPS_MS.length - 1)];
@@ -26,7 +26,7 @@ const nextBackoffMs = (attempts: number) =>
 export const startFriendResponseScheduler = ({
   getTargets,
   onAttempt,
-  intervalMs = 30_000,
+  intervalMs = 5_000,
 }: SchedulerDeps) => {
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;

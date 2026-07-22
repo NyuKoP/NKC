@@ -170,7 +170,6 @@ export const decodeInviteCodeV1 = (
       dhPub: friend.dhPub,
       deviceId,
       onionAddr: typeof friend.onionAddr === "string" ? friend.onionAddr : undefined,
-      alternateRouteAddr: typeof friend.alternateRouteAddr === "string" ? friend.alternateRouteAddr : undefined,
     },
     psk: payload.psk,
     exp: payload.exp,

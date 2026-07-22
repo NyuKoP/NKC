@@ -36,11 +36,11 @@ describe("friendResponseScheduler", () => {
     await vi.advanceTimersByTimeAsync(25);
     expect(onAttempt).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(5_000);
     expect(onAttempt).toHaveBeenCalledTimes(2);
 
     shouldSucceed = true;
-    await vi.advanceTimersByTimeAsync(120_000);
+    await vi.advanceTimersByTimeAsync(15_000);
     expect(onAttempt).toHaveBeenCalledTimes(3);
 
     await vi.advanceTimersByTimeAsync(60_000);

@@ -48,7 +48,7 @@ describe("onion controller Tor prewarm", () => {
     }
   });
 
-  it("prewarms every independent Tor lane", async () => {
+  it("starts bounded Tor lanes and proceeds with the first successful lane", async () => {
     const fetch = vi.fn(async () => ({ status: 200, headers: {}, body: Buffer.alloc(0) }));
     const transport: SocksTransport = {
       fetch,
@@ -68,6 +68,36 @@ describe("onion controller Tor prewarm", () => {
         "socks5h://127.0.0.1:19050",
         "socks5h://127.0.0.1:19051",
       ]);
+    } finally {
+      await controller.close();
+    }
+  });
+
+  it("does not wait for a stalled lane after another lane succeeds", async () => {
+    let stalledLaneStarted = false;
+    const fetch = vi.fn((_url: string, options: { socksProxyUrl?: string }) => {
+      if (options.socksProxyUrl?.endsWith(":19050")) {
+        stalledLaneStarted = true;
+        return new Promise<{ status: number; headers: Record<string, string>; body: Buffer }>(
+          () => undefined
+        );
+      }
+      return Promise.resolve({ status: 200, headers: {}, body: Buffer.alloc(0) });
+    });
+    const transport: SocksTransport = {
+      fetch,
+      forward: vi.fn(),
+      clearProxy: vi.fn(async () => undefined),
+    };
+    const controller = await startOnionController({ port: 0, socksTransport: transport });
+    try {
+      await controller.setTorSocksProxies([
+        "socks5h://127.0.0.1:19050",
+        "socks5h://127.0.0.1:19051",
+      ]);
+      const result = await controller.prewarmTorRoute(onion);
+      expect(stalledLaneStarted).toBe(true);
+      expect(result.ok).toBe(true);
     } finally {
       await controller.close();
     }

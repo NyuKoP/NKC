@@ -28,6 +28,7 @@ export interface NetConfig {
   allowRemoteProxy: boolean;
   onionEnabled: boolean;
   onionSelectedNetwork: OnionNetwork;
+  torAutoPrepareOnAppStart?: boolean;
   tor: OnionComponentState;
   lastUpdateCheckAtMs?: number;
 }
@@ -44,6 +45,13 @@ export const DEFAULT_NET_CONFIG: NetConfig = {
   allowRemoteProxy: false,
   onionEnabled: false,
   onionSelectedNetwork: "tor",
+  torAutoPrepareOnAppStart: true,
   tor: { installed: false, status: "idle" },
   lastUpdateCheckAtMs: undefined,
 };
+
+export const shouldAutoPrepareTor = (
+  config: Pick<NetConfig, "mode" | "onionEnabled" | "torAutoPrepareOnAppStart">
+) =>
+  config.torAutoPrepareOnAppStart !== false &&
+  (config.mode === "onionRouter" || config.onionEnabled);

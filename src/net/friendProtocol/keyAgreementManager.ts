@@ -30,7 +30,6 @@ type KeyAgreementBuildOptions = {
   remoteDhPub?: string;
   remoteDeviceId?: string;
   remoteOnionAddr?: string;
-  remotealternateRouteAddr?: string;
 };
 
 type KeyAgreementVerifyOptions = {
@@ -43,7 +42,6 @@ type ResolvedPeer = {
   dhPub: string;
   deviceId?: string;
   onionAddr?: string;
-  alternateRouteAddr?: string;
 };
 
 const concatBytes = (chunks: Uint8Array[]) => {
@@ -103,7 +101,6 @@ const toPeerFromFriendCode = (code?: string): Partial<ResolvedPeer> => {
     dhPub: decoded.dhPub,
     deviceId: decoded.deviceId,
     onionAddr: decoded.onionAddr,
-    alternateRouteAddr: decoded.alternateRouteAddr,
   };
 };
 
@@ -116,7 +113,6 @@ const resolveLocalPeer = async (localFriendCode?: string): Promise<ResolvedPeer>
     dhPub,
     deviceId: fromCode.deviceId ?? getOrCreateDeviceId(),
     onionAddr: fromCode.onionAddr,
-    alternateRouteAddr: fromCode.alternateRouteAddr,
   };
 };
 
@@ -130,7 +126,6 @@ const resolveRemotePeer = (options?: KeyAgreementBuildOptions): ResolvedPeer | n
     dhPub,
     deviceId: options?.remoteDeviceId ?? fromCode.deviceId,
     onionAddr: options?.remoteOnionAddr ?? fromCode.onionAddr,
-    alternateRouteAddr: options?.remotealternateRouteAddr ?? fromCode.alternateRouteAddr,
   };
 };
 
@@ -162,7 +157,6 @@ const createPayload = async (peer: ResolvedPeer): Promise<FriendCodePayload> => 
     dhPub: peer.dhPub,
     deviceId: peer.deviceId,
     onionAddr: peer.onionAddr,
-    alternateRouteAddr: peer.alternateRouteAddr,
   };
 };
 
@@ -183,7 +177,6 @@ export const parseFriendCodePayload = (encoded: string): FriendCodePayload | nul
       dhPub: parsed.dhPub,
       deviceId: typeof parsed.deviceId === "string" ? parsed.deviceId : undefined,
       onionAddr: typeof parsed.onionAddr === "string" ? parsed.onionAddr : undefined,
-      alternateRouteAddr: typeof parsed.alternateRouteAddr === "string" ? parsed.alternateRouteAddr : undefined,
     };
   } catch {
     return null;

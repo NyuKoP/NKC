@@ -6,6 +6,11 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { readCurrentPointer } from "./onion/install/swapperRollback";
 import { getBinaryPath } from "./onion/componentRegistry";
 import { needsLyrebird, resolveBridgeSelection } from "./tor/torCircumvention";
+import {
+  TorPluginLifecycle,
+  TorPollingBackoff,
+  type TorPluginState,
+} from "./tor/torPluginLifecycle";
 
 export type TorStatus =
   | { state: "unavailable"; details?: string }
@@ -18,6 +23,8 @@ export type TorDiagnostics = {
   bootstrapProgress: number;
   processRunning: boolean;
   bridgeMode: "direct" | "bridged";
+  pluginState: TorPluginState;
+  reasonsDisabled: number;
 };
 
 type HiddenServiceConfig = {
@@ -115,6 +122,7 @@ const waitForBootstrap = async (
 
 const waitForHostname = async (filePath: string, timeoutMs: number) => {
   const startedAt = Date.now();
+  const backoff = new TorPollingBackoff(50, 500, 1.2);
   while (Date.now() - startedAt < timeoutMs) {
     try {
       const raw = await fsPromises.readFile(filePath, "utf8");
@@ -123,7 +131,8 @@ const waitForHostname = async (filePath: string, timeoutMs: number) => {
     } catch {
       // ignore
     }
-    await sleep(500);
+    await sleep(backoff.getPollingInterval());
+    backoff.increment();
   }
   throw new Error("hidden_service_hostname_unavailable");
 };
@@ -146,6 +155,7 @@ export class TorManager {
   private bridgeModeOverride: "force" | null = null;
   private macSignatureRepairAttempted = false;
   private macSystemTorFallbackAttempted = false;
+  private readonly lifecycle = new TorPluginLifecycle();
 
   constructor(opts: { appDataDir: string; instanceId?: string }) {
     const suffix = opts.instanceId?.trim() ? `-${opts.instanceId.trim()}` : "";
@@ -379,12 +389,15 @@ export class TorManager {
     if (this.process) return;
     const torPath = await this.resolveTorPath();
     if (!torPath) {
+      this.lifecycle.setWrapperState("stopped");
       this.emit({ state: "unavailable", details: "tor-binary-not-found" });
       return;
     }
     this.dataDir = this.resolveDataDir(opts);
     this.logTail = "";
     this.bootstrapProgress = 0;
+    this.lifecycle.setReasonsDisabled(0);
+    this.lifecycle.setWrapperState("starting");
     this.emit({ state: "starting", details: "starting-tor" });
     await fsPromises.mkdir(this.dataDir, { recursive: true });
     const socksPort = await getAvailablePort();
@@ -404,6 +417,7 @@ export class TorManager {
       const detail = error instanceof Error ? error.message : String(error);
       this.process = null;
       this.expectProcessExit = false;
+      this.lifecycle.setWrapperState("stopped");
       this.emit({ state: "failed", details: `tor-spawn-failed: ${detail}` });
     });
     this.process.once("exit", (code, signal) => {
@@ -412,11 +426,13 @@ export class TorManager {
       this.expectProcessExit = false;
       if (expectedExit) return;
       const tail = this.logTail ? ` | ${this.logTail}` : "";
+      this.lifecycle.setWrapperState("stopped");
       this.emit({
         state: "failed",
         details: `tor-exited(code=${code ?? "null"},signal=${signal ?? "none"})${tail}`,
       });
     });
+    this.lifecycle.setWrapperState("connecting");
     const bootstrapTimeoutMs = this.bridgeDetail?.startsWith("bridges-enabled")
       ? BRIDGE_START_TIMEOUT_MS
       : START_TIMEOUT_MS;
@@ -489,6 +505,7 @@ export class TorManager {
       });
       return;
     }
+    this.lifecycle.setWrapperState("connected");
     this.emit({
       state: "running",
       socksProxyUrl: `socks5://127.0.0.1:${socksPort}`,
@@ -509,10 +526,12 @@ export class TorManager {
     const proc = this.process;
     if (!proc) {
       this.expectProcessExit = false;
+      this.lifecycle.setWrapperState("stopped");
       this.emit({ state: "unavailable", details: "stopped" });
       return;
     }
     this.expectProcessExit = true;
+    this.lifecycle.setWrapperState("stopping");
     await new Promise<void>((resolve) => {
       let done = false;
       const finish = () => {
@@ -529,6 +548,7 @@ export class TorManager {
       setTimeout(finish, 3000);
     });
     this.process = null;
+    this.lifecycle.setWrapperState("stopped");
     this.emit({ state: "unavailable", details: "stopped" });
   }
 
@@ -548,7 +568,19 @@ export class TorManager {
       bootstrapProgress: this.bootstrapProgress,
       processRunning: Boolean(this.process),
       bridgeMode: this.bridgeDetail?.startsWith("bridges-enabled") ? "bridged" : "direct",
+      pluginState: this.lifecycle.getState(),
+      reasonsDisabled: this.lifecycle.getReasonsDisabled(),
     };
+  }
+
+  configureHiddenService(opts: { localPort: number; virtPort: number }) {
+    if (this.process) {
+      const unchanged =
+        this.hsConfig?.localPort === opts.localPort && this.hsConfig?.virtPort === opts.virtPort;
+      if (!unchanged) throw new Error("tor-hidden-service-already-running");
+      return;
+    }
+    this.hsConfig = { ...opts };
   }
 
   async ensureHiddenService(opts: { localPort: number; virtPort: number }) {

@@ -2,6 +2,10 @@ const ipv4Pattern =
   /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
 const ipv6Pattern = /\b(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b/g;
 const icePattern = /(candidate:|a=candidate)/gi;
+const ipv4TestPattern = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/;
+const ipv6TestPattern = /\b(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}\b/;
+const iceTestPattern = /(candidate:|a=candidate)/i;
+const onionV3Pattern = /^[a-z2-7]{56}\.onion$/;
 
 export const redactIPs = (value: string) => {
   if (!value) return value;
@@ -12,18 +16,16 @@ export const redactIPs = (value: string) => {
 };
 
 export const looksLikeIpOrIce = (value: string) =>
-  ipv4Pattern.test(value) || ipv6Pattern.test(value) || icePattern.test(value);
+  ipv4TestPattern.test(value) || ipv6TestPattern.test(value) || iceTestPattern.test(value);
 
 export const sanitizeRoutingHints = (
-  hints?: { onionAddr?: string; alternateRouteAddr?: string; deviceId?: string }
+  hints?: { onionAddr?: string; deviceId?: string }
 ) => {
   if (!hints) return undefined;
-  const next: { onionAddr?: string; alternateRouteAddr?: string; deviceId?: string } = {};
-  if (hints.onionAddr && !looksLikeIpOrIce(hints.onionAddr)) {
-    next.onionAddr = hints.onionAddr;
-  }
-  if (hints.alternateRouteAddr && !looksLikeIpOrIce(hints.alternateRouteAddr)) {
-    next.alternateRouteAddr = hints.alternateRouteAddr;
+  const next: { onionAddr?: string; deviceId?: string } = {};
+  const onionAddr = hints.onionAddr?.trim().toLowerCase();
+  if (onionAddr && onionV3Pattern.test(onionAddr) && !looksLikeIpOrIce(onionAddr)) {
+    next.onionAddr = onionAddr;
   }
   if (typeof hints.deviceId === "string") {
     const uuidPattern =

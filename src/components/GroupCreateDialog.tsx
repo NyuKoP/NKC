@@ -149,7 +149,7 @@ export default function GroupCreateDialog({
                 </span>
                 <input
                   type="file"
-                  accept="image/*"
+                  accept="image/png,image/jpeg,image/gif,image/webp"
                   className="sr-only"
                   onChange={handleAvatarChange}
                 />

@@ -157,6 +157,11 @@ const isAllowedLocalSocksUrl = (value: string) => {
     return (
       (parsed.protocol === "socks5:" || parsed.protocol === "socks5h:") &&
       (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1") &&
+      !parsed.username &&
+      !parsed.password &&
+      (parsed.pathname === "" || parsed.pathname === "/") &&
+      !parsed.search &&
+      !parsed.hash &&
       Number.isInteger(port) &&
       port >= 1 &&
       port <= 65535
@@ -642,6 +647,9 @@ const registerOnionControllerIpc = () => {
     assertTrustedIpcSender(event);
     if (!onionController) {
       return createIpcError(ONION_CONTROLLER_NOT_READY_MESSAGE);
+    }
+    if (proxyUrl !== null && (!proxyUrl.trim() || !isAllowedLocalSocksUrl(proxyUrl))) {
+      return createIpcError("Blocked non-local SOCKS proxy URL");
     }
     await onionController.setTorSocksProxy(proxyUrl);
     currentTorSocksProxy = proxyUrl?.trim() ? proxyUrl : null;
@@ -1772,6 +1780,9 @@ app.whenReady().then(async () => {
       }
     }
     onionControllerUrl = onionController.baseUrl;
+    // Prepare the onion service before the first Tor start. This avoids a full
+    // stop/bootstrap cycle when the renderer asks for its friend-code address.
+    torManager.configureHiddenService({ localPort: onionController.port, virtPort: 80 });
     const syncTorProxyPool = () =>
       onionController?.setTorSocksProxies(
         [currentTorSocksProxy, secondaryTorSocksProxy].filter(

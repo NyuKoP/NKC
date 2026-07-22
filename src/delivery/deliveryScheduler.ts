@@ -1,6 +1,6 @@
 import { sweepExpired } from "../policies/deliveryPolicy";
 import type { OutboxRecord } from "../db/schema";
-export type NetMode = "direct" | "tor" | "alternateRoute" | "onion";
+export type NetMode = "direct" | "tor" | "onion";
 import {
   listRetryableOutbox,
   listInFlightTimedOut,

@@ -24,6 +24,7 @@ import {
   type Message,
   type UserProfile,
 } from "../db/repo";
+import { parseIncomingMediaRef } from "../security/mediaPolicy";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 import { getDhPrivateKey, getIdentityPrivateKey, getIdentityPublicKey } from "../security/identityKeys";
 import { getFriendPsk } from "../security/pskStore";
@@ -49,6 +50,7 @@ import { applyGroupEvent, isGroupEventPayload } from "./groupSync";
 import { getSodium } from "../security/sodium";
 import {
   isFriendControlFrame,
+  isFriendControlFrameFresh,
   verifyFriendControlFrameSignature,
   verifyFriendControlFrameProtocol,
   type FriendControlFrame,
@@ -95,7 +97,7 @@ const LOCAL_CAPS: PeerCaps = {
   proto: 1,
   sync: { v: 2 },
   ratchet: { v: 2 },
-  media: { chunks: true, v: 1 },
+  media: { chunks: true, v: 2 },
   devices: { roles: true, v: 1 },
 };
 
@@ -194,6 +196,9 @@ const normalizePeerCaps = (caps?: PeerCaps): NormalizedPeerCaps => ({
 const getPeerCaps = (convId: string): NormalizedPeerCaps =>
   peerContexts.get(convId)?.peerCaps ?? LEGACY_PEER_CAPS;
 
+export const canUseBinaryMediaTransport = (convId: string) =>
+  getPeerCaps(convId).media.chunks && getPeerCaps(convId).media.v >= 2;
+
 const hasKnownPeerCaps = (convId: string) => Boolean(peerContexts.get(convId)?.peerCaps);
 
 const getPeerCapsForEvent = (convKeyId: string, eventConvId: string) => {
@@ -285,6 +290,10 @@ const isDeviceSyncAllowed = async (convId: string, reason: string) => {
 const perAuthorLamportSeen = new Map<string, number>();
 const perConvLamportSeen = new Map<string, Map<string, number>>();
 const peerContexts = new Map<string, PeerContext>();
+const pendingHelloNonces = new Map<string, { nonce: string; createdAt: number }>();
+const seenHelloNonces = new Map<string, number>();
+const HANDSHAKE_NONCE_TTL_MS = 5 * 60 * 1000;
+const MAX_SEEN_HELLO_NONCES = 2048;
 const deferredRoleEvents = new Map<string, Map<string, RoleChangeEvent>>();
 const convSubscriptions = new Map<string, () => void>();
 type OutgoingFlowSession = {
@@ -488,7 +497,6 @@ const upsertFriendFromRequest = async (
       ? sanitizeRoutingHints({
           deviceId: decodedFriendCode.deviceId,
           onionAddr: decodedFriendCode.onionAddr,
-          alternateRouteAddr: decodedFriendCode.alternateRouteAddr,
         })
       : undefined;
   const resolvedDeviceId =
@@ -498,7 +506,6 @@ const upsertFriendFromRequest = async (
   const routingHints = sanitizeRoutingHints({
     deviceId: resolvedDeviceId,
     onionAddr: codeHints?.onionAddr ?? existing?.routingHints?.onionAddr,
-    alternateRouteAddr: codeHints?.alternateRouteAddr ?? existing?.routingHints?.alternateRouteAddr,
   });
   const reachability = resolvedDeviceId
     ? { status: "ok" as const }
@@ -548,6 +555,7 @@ const upsertFriendFromRequest = async (
     theme: existing?.theme ?? "dark",
     kind: "friend",
     friendStatus: nextFriendStatus,
+    friendControlTs: Math.max(existing?.friendControlTs ?? 0, incomingTs),
     isFavorite: existing?.isFavorite ?? false,
     identityPub: payload.from.identityPub,
     dhPub: payload.from.dhPub,
@@ -572,7 +580,6 @@ const upsertFriendFromRequest = async (
     shouldMarkPending,
     primaryDeviceId: resolvedDeviceId ?? null,
     hasOnionAddr: Boolean(routingHints?.onionAddr),
-    hasalternateRouteAddr: Boolean(routingHints?.alternateRouteAddr),
   });
 
   const requestConvId = payload.convId ?? convId;
@@ -684,7 +691,6 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
       ? sanitizeRoutingHints({
           deviceId: decodedFriendCode.deviceId,
           onionAddr: decodedFriendCode.onionAddr,
-          alternateRouteAddr: decodedFriendCode.alternateRouteAddr,
         })
       : undefined;
   const resolvedDeviceId =
@@ -697,11 +703,11 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
     status: payload.profile?.status ?? existing.status,
     avatarRef: payload.profile?.avatarRef ?? existing.avatarRef,
     friendStatus,
+    friendControlTs: Math.max(existing.friendControlTs ?? 0, payload.ts ?? now),
     primaryDeviceId: resolvedDeviceId,
     routingHints: sanitizeRoutingHints({
       deviceId: resolvedDeviceId,
       onionAddr: codeHints?.onionAddr ?? existing.routingHints?.onionAddr,
-      alternateRouteAddr: codeHints?.alternateRouteAddr ?? existing.routingHints?.alternateRouteAddr,
     }),
     profileVcard: payload.profile
       ? {
@@ -724,7 +730,6 @@ const applyFriendResponse = async (convId: string, payload: FriendResponseFrame)
     friendStatus,
     primaryDeviceId: resolvedDeviceId ?? null,
     hasOnionAddr: Boolean(codeHints?.onionAddr ?? existing.routingHints?.onionAddr),
-    hasalternateRouteAddr: Boolean(codeHints?.alternateRouteAddr ?? existing.routingHints?.alternateRouteAddr),
   });
 
   const convs = await listConversations();
@@ -763,6 +768,16 @@ export const handleIncomingFriendFrame = async (
 ) => {
   if (!isFriendControlFrame(payload)) return false;
   if (!options.trustedEnvelope) {
+    if (!isFriendControlFrameFresh(payload)) {
+      console.warn("[friend] dropped control frame: stale timestamp", { type: payload.type });
+      emitFriendLifecycleTrace("friendLifecycle:dropped", {
+        traceId: payload.traceId,
+        frameType: payload.type,
+        convId: payload.convId,
+        stage: "handleIncomingFriendFrame:stale-timestamp",
+      });
+      return false;
+    }
     const verified = await verifyFriendControlFrameSignature(payload);
     if (!verified) {
       console.warn("[friend] dropped control frame: invalid signature", { type: payload.type });
@@ -789,6 +804,21 @@ export const handleIncomingFriendFrame = async (
       convId: payload.convId,
       stage: "handleIncomingFriendFrame:invalid-protocol",
       reason: protocolCheck.reason ?? null,
+    });
+    return false;
+  }
+  const existing = await resolveFriendByIdentity(payload.from.identityPub);
+  if (
+    Number.isFinite(payload.ts) &&
+    Number.isFinite(existing?.friendControlTs) &&
+    Number(existing?.friendControlTs) >= Number(payload.ts)
+  ) {
+    console.warn("[friend] dropped control frame: replayed timestamp", { type: payload.type });
+    emitFriendLifecycleTrace("friendLifecycle:dropped", {
+      traceId: payload.traceId,
+      frameType: payload.type,
+      convId: payload.convId,
+      stage: "handleIncomingFriendFrame:replayed-timestamp",
     });
     return false;
   }
@@ -1019,11 +1049,29 @@ const applyDecryptedBody = async (
     return;
   }
   if (typed.type === "friend_req") {
-    await handleIncomingFriendFrame(body as FriendControlFrame, { trustedEnvelope: true });
+    const authenticatedPeerIdentity = peerContexts.get(peerConvId)?.identityPub;
+    const claimedIdentity = (body as FriendControlFrame).from?.identityPub;
+    if (!authenticatedPeerIdentity || claimedIdentity !== authenticatedPeerIdentity) {
+      console.warn("[friend] dropped control frame: envelope identity mismatch", { peerConvId });
+      return;
+    }
+    await handleIncomingFriendFrame(
+      { ...(body as FriendControlFrame), ts: typed.ts ?? envelope.header.ts },
+      { trustedEnvelope: true }
+    );
     return;
   }
   if (typed.type === "friend_accept" || typed.type === "friend_decline") {
-    await handleIncomingFriendFrame(body as FriendControlFrame, { trustedEnvelope: true });
+    const authenticatedPeerIdentity = peerContexts.get(peerConvId)?.identityPub;
+    const claimedIdentity = (body as FriendControlFrame).from?.identityPub;
+    if (!authenticatedPeerIdentity || claimedIdentity !== authenticatedPeerIdentity) {
+      console.warn("[friend] dropped control frame: envelope identity mismatch", { peerConvId });
+      return;
+    }
+    await handleIncomingFriendFrame(
+      { ...(body as FriendControlFrame), ts: typed.ts ?? envelope.header.ts },
+      { trustedEnvelope: true }
+    );
     return;
   }
   if (typed.type === "contact") {
@@ -1071,7 +1119,9 @@ const applyMessageEvent = async (
     lastMessage,
     lastTs: envelope.header.ts,
   };
-  const media = body.media as Message["media"] | undefined;
+  const media = body.media === undefined
+    ? undefined
+    : parseIncomingMediaRef(body.media, envelope.header.eventId) ?? undefined;
   const message: Message = {
     id: envelope.header.eventId,
     convId: conv.id,
@@ -1238,7 +1288,6 @@ const ensurePeerContextFromConversation = async (convId: string) => {
     identityPub: existing?.identityPub ?? partner.identityPub,
     dhPub: existing?.dhPub ?? partner.dhPub,
     onionAddr: existing?.onionAddr ?? partner.routingHints?.onionAddr,
-    alternateRouteAddr: existing?.alternateRouteAddr ?? partner.routingHints?.alternateRouteAddr,
     peerDeviceId:
       existing?.peerDeviceId ??
       partner.routingHints?.deviceId ??
@@ -1707,7 +1756,6 @@ const applyVerification = async (identityPub: string, deviceId?: string, profile
     primaryDeviceId: deviceId ?? friend.primaryDeviceId,
     routingHints: sanitizeRoutingHints({
       onionAddr: friend.routingHints?.onionAddr,
-      alternateRouteAddr: friend.routingHints?.alternateRouteAddr,
       deviceId: deviceId ?? friend.routingHints?.deviceId,
     }),
     verification: {
@@ -1731,6 +1779,15 @@ const applyVerification = async (identityPub: string, deviceId?: string, profile
 };
 
 const handleHello = async (convId: string, frame: HelloFrame) => {
+  if (!/^[A-Za-z0-9_-]{16,256}$/.test(frame.nonce)) {
+    console.warn("[sync] invalid HELLO nonce", { convId });
+    return;
+  }
+  const pinnedPeerIdentity = peerContexts.get(convId)?.identityPub;
+  if (pinnedPeerIdentity && pinnedPeerIdentity !== frame.identityPub) {
+    console.warn("[sync] dropped HELLO with pinned identity mismatch", { convId });
+    return;
+  }
   const payload = {
     type: "HELLO",
     identityPub: frame.identityPub,
@@ -1755,6 +1812,20 @@ const handleHello = async (convId: string, frame: HelloFrame) => {
     console.warn("[sync] invalid HELLO signature", { convId });
     return;
   }
+  const now = Date.now();
+  for (const [key, seenAt] of seenHelloNonces) {
+    if (now - seenAt > HANDSHAKE_NONCE_TTL_MS) seenHelloNonces.delete(key);
+  }
+  const replayKey = `${frame.identityPub}:${frame.nonce}`;
+  if (seenHelloNonces.has(replayKey)) {
+    console.warn("[sync] dropped replayed HELLO", { convId });
+    return;
+  }
+  seenHelloNonces.set(replayKey, now);
+  if (seenHelloNonces.size > MAX_SEEN_HELLO_NONCES) {
+    const oldestKey = seenHelloNonces.keys().next().value as string | undefined;
+    if (oldestKey) seenHelloNonces.delete(oldestKey);
+  }
   const peerCaps = normalizePeerCaps(frame.caps);
   const existing = peerContexts.get(convId) ?? {};
   peerContexts.set(convId, {
@@ -1778,6 +1849,20 @@ const handleHello = async (convId: string, frame: HelloFrame) => {
 };
 
 const handleAck = async (convId: string, frame: AckFrame) => {
+  const pending = pendingHelloNonces.get(convId);
+  if (
+    !pending ||
+    pending.nonce !== frame.nonce ||
+    Date.now() - pending.createdAt > HANDSHAKE_NONCE_TTL_MS
+  ) {
+    console.warn("[sync] dropped unsolicited or stale ACK", { convId });
+    return;
+  }
+  const pinnedPeerIdentity = peerContexts.get(convId)?.identityPub;
+  if (pinnedPeerIdentity && pinnedPeerIdentity !== frame.identityPub) {
+    console.warn("[sync] dropped ACK with pinned identity mismatch", { convId });
+    return;
+  }
   const payload = {
     type: "ACK",
     identityPub: frame.identityPub,
@@ -1802,6 +1887,7 @@ const handleAck = async (convId: string, frame: AckFrame) => {
     console.warn("[sync] invalid ACK signature", { convId });
     return;
   }
+  pendingHelloNonces.delete(convId);
   const peerCaps = normalizePeerCaps(frame.caps);
   const existing = peerContexts.get(convId) ?? {};
   peerContexts.set(convId, {
@@ -1869,6 +1955,7 @@ export const connectConversation = async (convId: string, peerHint: PeerContext)
     nonce: createNonce(),
     caps: LOCAL_CAPS,
   } as const;
+  pendingHelloNonces.set(convId, { nonce: helloPayload.nonce, createdAt: Date.now() });
   const sig = await signHandshake(helloPayload);
   const localUserId = await resolveLocalUserId();
   let profile: HelloFrame["profile"] | undefined;
@@ -1886,6 +1973,7 @@ export const connectConversation = async (convId: string, peerHint: PeerContext)
 };
 
 export const disconnectConversation = async (convId: string) => {
+  pendingHelloNonces.delete(convId);
   const unsubscribe = convSubscriptions.get(convId);
   if (unsubscribe) {
     unsubscribe();
@@ -2210,6 +2298,9 @@ export const syncConversationsNow = async () => {
 };
 
 export const __testApplyEnvelopeEvents = applyEnvelopeEvents;
+export const __testHandleAck = handleAck;
+export const __testHandleHello = handleHello;
+export const __testGetPeerContext = (convId: string) => peerContexts.get(convId);
 export const __testSetPeerContext = (convId: string, peer: PeerContext) => {
   peerContexts.set(convId, peer);
 };
@@ -2234,6 +2325,8 @@ export const __testResetSyncState = () => {
   perAuthorLamportSeen.clear();
   perConvLamportSeen.clear();
   peerContexts.clear();
+  pendingHelloNonces.clear();
+  seenHelloNonces.clear();
   deferredRoleEvents.clear();
   Array.from(outgoingFlowSessions.keys()).forEach(clearFlowSession);
   syncTransportOverride = null;

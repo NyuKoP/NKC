@@ -31,6 +31,7 @@ import {
   saveConversation,
   saveEvent,
   saveMessage,
+  createMessageMediaRef,
   saveMessageMedia,
   saveProfile,
   saveProfilePhoto,
@@ -61,6 +62,7 @@ import {
   getSession as getStoredSession,
   setSession as setStoredSession,
 } from "../security/session";
+import { inspectOutgoingMediaFile } from "../security/mediaPolicy";
 import { clearPin, clearPinRecord, getPinStatus, isPinUnavailableError, setPin as savePin, verifyPin, wipePinState } from "../security/pin";
 import { loadConversationMessages } from "../security/messageStore";
 import { clearFriendPsk, getFriendPsk, setFriendPsk } from "../security/pskStore";
@@ -82,6 +84,7 @@ import { prewarmRouter, sendCiphertext } from "../net/router";
 import { startOutboxScheduler } from "../net/outboxScheduler";
 import { onConnectionStatus } from "../net/connectionStatus";
 import { useNetConfigStore } from "../net/netConfigStore";
+import { shouldAutoPrepareTor } from "../net/netConfig";
 import { getOnionStatus } from "../net/onionControl";
 import {
   runVerifiedTorAutoUpdate,
@@ -109,6 +112,7 @@ import {
   syncContactsNow,
   syncConversation,
   syncConversationsNow,
+  canUseBinaryMediaTransport,
 } from "../sync/syncEngine";
 import {
   getTransportStatus,
@@ -153,10 +157,15 @@ import { useProfileDecorations } from "./hooks/useProfileDecorations";
 import { useTrustState } from "./hooks/useTrustState";
 import { onBackgroundStatus, onSyncRun, reportSyncResult } from "../appControl";
 import {
+  createMediaTransferProgress,
+  markMediaTransferStored,
+} from "../storage/mediaTransferStore";
+import {
   INLINE_MEDIA_CHUNK_SIZE,
   INLINE_MEDIA_MAX_BYTES,
 } from "../net/mediaTransferLimits";
 import { createSafeConsole } from "../diagnostics/safeConsole";
+import { AdaptiveTransferWindow } from "../net/adaptiveTransferWindow";
 
 const console = createSafeConsole(globalThis.console);
 
@@ -204,15 +213,11 @@ const waitMs = (ms: number) =>
 type RuntimeNetworkSnapshot = {
   torState: string | null;
   torDetail: string | null;
-  alternateRouteState: string | null;
-  alternateRouteDetail: string | null;
 };
 
 const EMPTY_RUNTIME_NETWORK_SNAPSHOT: RuntimeNetworkSnapshot = {
   torState: null,
   torDetail: null,
-  alternateRouteState: null,
-  alternateRouteDetail: null,
 };
 
 const toRuntimeState = (value: unknown) => {
@@ -230,18 +235,15 @@ const toRuntimeDetail = (value: unknown) => {
 };
 
 const sameRoutingHints = (
-  lhs?: { onionAddr?: string; alternateRouteAddr?: string; deviceId?: string },
-  rhs?: { onionAddr?: string; alternateRouteAddr?: string; deviceId?: string }
+  lhs?: { onionAddr?: string; deviceId?: string },
+  rhs?: { onionAddr?: string; deviceId?: string }
 ) =>
   (lhs?.deviceId ?? "") === (rhs?.deviceId ?? "") &&
-  (lhs?.onionAddr ?? "") === (rhs?.onionAddr ?? "") &&
-  (lhs?.alternateRouteAddr ?? "") === (rhs?.alternateRouteAddr ?? "");
+  (lhs?.onionAddr ?? "") === (rhs?.onionAddr ?? "");
 
 const sameRuntimeNetworkSnapshot = (lhs: RuntimeNetworkSnapshot, rhs: RuntimeNetworkSnapshot) =>
   lhs.torState === rhs.torState &&
-  lhs.torDetail === rhs.torDetail &&
-  lhs.alternateRouteState === rhs.alternateRouteState &&
-  lhs.alternateRouteDetail === rhs.alternateRouteDetail;
+  lhs.torDetail === rhs.torDetail;
 
 type ViewTransitionDocument = Document & {
   startViewTransition?: (update: () => void) => {
@@ -449,8 +451,6 @@ export default function App() {
     return {
       torState,
       torDetail,
-      alternateRouteState: null,
-      alternateRouteDetail: null,
     };
   }, []);
 
@@ -477,14 +477,13 @@ export default function App() {
 
   const sidebarNetworkStatus = useMemo(() => {
     const torState = sidebarRuntimeSnapshot.torState ?? "";
-    const alternateRouteState = sidebarRuntimeSnapshot.alternateRouteState ?? "";
-    if (torState === "running" || alternateRouteState === "running") {
+    if (torState === "running") {
       return { state: "connected" as const, label: "연결됨" };
     }
-    if (torState === "starting" || alternateRouteState === "starting") {
+    if (torState === "starting") {
       return { state: "connecting" as const, label: "연결 중" };
     }
-    if (torState === "error" || alternateRouteState === "error") {
+    if (torState === "error") {
       return { state: "error" as const, label: "오류" };
     }
     return { state: "disconnected" as const, label: "연결 안됨" };
@@ -512,7 +511,7 @@ export default function App() {
       return {
         key: "onion-proxy-not-ready",
         text:
-          "Tor/alternateRoute 프록시가 아직 준비되지 않았습니다. Onion 적용 후 연결되면 자동 재시도됩니다.",
+          "Tor 프록시가 아직 준비되지 않았습니다. Onion 적용 후 연결되면 자동 재시도됩니다.",
       };
     }
     if (failureClass === "direct-channel-not-open") {
@@ -533,7 +532,7 @@ export default function App() {
       return {
         key: "route-target-missing",
         text:
-          "상대의 최신 라우팅 정보(onion/alternateRoute 또는 최신 기기 ID)가 없어 전송할 수 없습니다. 상대에게 최신 친구 코드를 다시 받아주세요.",
+          "상대의 최신 라우팅 정보(onion 주소 또는 최신 기기 ID)가 없어 전송할 수 없습니다. 상대에게 최신 친구 코드를 다시 받아주세요.",
       };
     }
     if (failureClass === "transport-aborted") {
@@ -582,21 +581,18 @@ export default function App() {
     const fallback = sanitizeRoutingHints({
       deviceId: localDeviceId,
       onionAddr: userProfile?.routingHints?.onionAddr,
-      alternateRouteAddr: userProfile?.routingHints?.alternateRouteAddr,
     });
     const nkc = (
       globalThis as {
         nkc?: {
           ensureHiddenService?: () => Promise<unknown>;
           getMyOnionAddress?: () => Promise<string>;
-          getMyalternateRouteAddress?: () => Promise<string>;
         };
       }
     ).nkc;
     if (!nkc) return fallback;
 
     let onionAddr: string | undefined;
-    let alternateRouteAddr: string | undefined;
 
     if (netConfig.onionSelectedNetwork === "tor") {
       try {
@@ -606,25 +602,14 @@ export default function App() {
         onionAddr = undefined;
       }
     }
-    if (nkc.getMyalternateRouteAddress) {
-      try {
-        const value = (await nkc.getMyalternateRouteAddress()).trim();
-        if (value) alternateRouteAddr = value;
-      } catch {
-        // Best-effort only.
-      }
-    }
-
     const liveHints = sanitizeRoutingHints({
       deviceId: localDeviceId,
       onionAddr,
-      alternateRouteAddr,
     });
     if (liveHints) return liveHints;
     return sanitizeRoutingHints({ deviceId: localDeviceId }) ?? fallback;
   }, [
     netConfig.onionSelectedNetwork,
-    userProfile?.routingHints?.alternateRouteAddr,
     userProfile?.routingHints?.onionAddr,
   ]);
 
@@ -639,7 +624,6 @@ export default function App() {
       dhPub: encodeBase64Url(dhPub),
       deviceId: getOrCreateDeviceId(),
       onionAddr: localHints?.onionAddr,
-      alternateRouteAddr: localHints?.alternateRouteAddr,
     };
   }, [resolveLocalRoutingHintsForFriendCode]);
 
@@ -1024,7 +1008,12 @@ export default function App() {
     const onionEnabled = netConfig.onionEnabled;
     const onionSelectedNetwork = netConfig.onionSelectedNetwork;
     const onionActive = mode === "onionRouter" || onionEnabled;
-    const runKey = `${ui.mode}:${String(onionActive)}:${onionSelectedNetwork}`;
+    const autoPrepareTor = shouldAutoPrepareTor({
+      mode,
+      onionEnabled,
+      torAutoPrepareOnAppStart: netConfig.torAutoPrepareOnAppStart,
+    });
+    const runKey = `${ui.mode}:${String(onionActive)}:${onionSelectedNetwork}:${String(autoPrepareTor)}`;
     if (routerBootstrapRunKeyRef.current === runKey) return;
     routerBootstrapRunKeyRef.current = runKey;
     let cancelled = false;
@@ -1037,6 +1026,7 @@ export default function App() {
         mode,
         onionEnabled,
         onionSelectedNetwork,
+        autoPrepareTor,
       };
       emitRouterTestLog({
         status: "attempt",
@@ -1050,7 +1040,19 @@ export default function App() {
         },
       });
       try {
-        if (onionActive) {
+        if (onionActive && !autoPrepareTor) {
+          emitRouterTestLog({
+            status: "ready",
+            stage: "app-bootstrap:skipped",
+            source: "app:routerBootstrap",
+            operationId,
+            elapsedMs: elapsedMs(),
+            message: "Tor automatic preparation is disabled",
+            context: baseContext,
+          });
+          return;
+        }
+        if (autoPrepareTor) {
           const torRuntime = TorRuntime.getInstance();
           try {
             await torRuntime.start({ timeoutMs: 15_000 });
@@ -1090,14 +1092,8 @@ export default function App() {
             runtimeBootstrap,
             runtimeSnapshot,
           });
-          const selectedRuntimeState =
-            onionSelectedNetwork === "tor"
-              ? runtimeSnapshot.torState
-              : runtimeSnapshot.alternateRouteState;
-          const selectedRuntimeDetail =
-            onionSelectedNetwork === "tor"
-              ? runtimeSnapshot.torDetail
-              : runtimeSnapshot.alternateRouteDetail;
+          const selectedRuntimeState = runtimeSnapshot.torState;
+          const selectedRuntimeDetail = runtimeSnapshot.torDetail;
           const routerOpened = warmup.started.includes("onionRouter");
           const warmupComplete = !onionActive || (selectedRuntimeState === "running" && routerOpened);
           emitRouterTestLog({
@@ -1129,7 +1125,7 @@ export default function App() {
               onionBootstrapToastAtRef.current = now;
               addToast({
                 message: routerOpened
-                  ? "Onion 네트워크가 아직 준비되지 않았습니다. 설정에서 Tor/alternateRoute 상태를 확인해 주세요."
+                  ? "Onion 네트워크가 아직 준비되지 않았습니다. 설정에서 Tor 상태를 확인해 주세요."
                   : "Onion 라우터 초기화에 실패했습니다. 잠시 후 다시 시도하거나 네트워크 설정을 확인해 주세요.",
               });
             }
@@ -1164,6 +1160,7 @@ export default function App() {
     netConfig.mode,
     netConfig.onionEnabled,
     netConfig.onionSelectedNetwork,
+    netConfig.torAutoPrepareOnAppStart,
     resolveRuntimeNetworkSnapshot,
     ui.mode,
   ]);
@@ -1573,7 +1570,6 @@ export default function App() {
     return sanitizeRoutingHints({
       deviceId: decoded.deviceId,
       onionAddr: decoded.onionAddr,
-      alternateRouteAddr: decoded.alternateRouteAddr,
     });
   }, []);
 
@@ -1586,10 +1582,9 @@ export default function App() {
         profile.deviceId ??
         recovered?.deviceId;
       const torOnion = profile.routingHints?.onionAddr ?? recovered?.onionAddr;
-      const alternateRoute = profile.routingHints?.alternateRouteAddr ?? recovered?.alternateRouteAddr;
       return {
         toDeviceId,
-        route: torOnion || alternateRoute ? { torOnion, alternateRoute } : undefined,
+        route: torOnion ? { torOnion } : undefined,
       };
     },
     [recoverRoutingHintsFromFriendCode]
@@ -1602,7 +1597,6 @@ export default function App() {
       const mergedHints = sanitizeRoutingHints({
         deviceId: friend.routingHints?.deviceId ?? recovered.deviceId,
         onionAddr: friend.routingHints?.onionAddr ?? recovered.onionAddr,
-        alternateRouteAddr: friend.routingHints?.alternateRouteAddr ?? recovered.alternateRouteAddr,
       });
       const mergedPrimaryDeviceId = friend.primaryDeviceId ?? friend.deviceId ?? recovered.deviceId;
       const nextRoutingHints = mergedHints ?? friend.routingHints;
@@ -1662,6 +1656,10 @@ export default function App() {
         };
         encryptor?: typeof encryptEnvelope;
         releaseBeforeRoute?: boolean;
+        outboxRetention?: "standard" | "transient";
+        transferId?: string;
+        chunkIndex?: number;
+        binaryTransport?: boolean;
       }
     ) => {
       if (!partner.dhPub || !partner.identityPub) {
@@ -1754,6 +1752,10 @@ export default function App() {
         messageId: header.eventId,
         ciphertext: envelopeJson,
         priority,
+        outboxRetention: options?.outboxRetention,
+        transferId: options?.transferId,
+        chunkIndex: options?.chunkIndex,
+        binaryTransport: options?.binaryTransport,
         ...buildRoutingMeta(partner),
       });
       if (!routed.ok) {
@@ -1854,7 +1856,6 @@ export default function App() {
             remoteDhPub: partner.dhPub,
             remoteDeviceId: partner.routingHints?.deviceId ?? partner.primaryDeviceId,
             remoteOnionAddr: partner.routingHints?.onionAddr,
-            remotealternateRouteAddr: partner.routingHints?.alternateRouteAddr,
           }
         );
         signedPayload = {
@@ -1885,7 +1886,7 @@ export default function App() {
       const payloadByteLength = new TextEncoder().encode(payloadJson).byteLength;
       const netConfig = useNetConfigStore.getState().config;
       const hasExplicitOnionRoute = Boolean(
-        routingMeta.route?.torOnion || routingMeta.route?.alternateRoute
+        routingMeta.route?.torOnion
       );
       // Friend-control frames establish the relationship itself, so they cannot depend on an
       // already-established self-onion relay path. Route them directly to the endpoint embedded
@@ -1909,7 +1910,6 @@ export default function App() {
             partnerProfileId: partner.id,
             onionSelectedNetwork: routingConfig.onionSelectedNetwork,
             hasTorOnion: Boolean(routingMeta.route?.torOnion),
-            hasalternateRoute: Boolean(routingMeta.route?.alternateRoute),
           },
         });
         try {
@@ -1971,13 +1971,11 @@ export default function App() {
         partnerReachabilityStatus: partner.reachability?.status ?? null,
         hasToDeviceId: Boolean(routingMeta.toDeviceId),
         hasTorOnion: Boolean(routingMeta.route?.torOnion),
-        hasalternateRoute: Boolean(routingMeta.route?.alternateRoute),
         hasRoutingHintDeviceId: Boolean(partner.routingHints?.deviceId || routingMeta.toDeviceId),
         hasPrimaryDeviceId: Boolean(partner.primaryDeviceId),
         hasLegacyDeviceId: Boolean(partner.deviceId),
         toDeviceIdSource,
         hasRoutingHintOnion: Boolean(partner.routingHints?.onionAddr || routingMeta.route?.torOnion),
-        hasRoutingHintalternateRoute: Boolean(partner.routingHints?.alternateRouteAddr || routingMeta.route?.alternateRoute),
         convPendingOutgoing: Boolean(conv.pendingOutgoing),
         convPendingAcceptance: Boolean(conv.pendingAcceptance),
         convPendingFriendResponse: conv.pendingFriendResponse ?? null,
@@ -1999,11 +1997,8 @@ export default function App() {
         webrtcRelayOnly: netConfig.webrtcRelayOnly,
         disableLinkPreview: netConfig.disableLinkPreview,
         torStatus: netConfig.tor?.status ?? null,
-        alternateRouteStatus: null,
         torRuntimeState: runtimeSnapshot.torState,
         torRuntimeDetail: runtimeSnapshot.torDetail,
-        alternateRouteRuntimeState: runtimeSnapshot.alternateRouteState,
-        alternateRouteRuntimeDetail: runtimeSnapshot.alternateRouteDetail,
       };
       let result:
         | Awaited<ReturnType<typeof sendCiphertext>>
@@ -2021,7 +2016,6 @@ export default function App() {
         senderDeviceId,
         toDeviceId: routingMeta.toDeviceId,
         torOnion: routingMeta.route?.torOnion,
-        alternateRoute: routingMeta.route?.alternateRoute,
         context: {
           ...commonContext,
           checkpoint: "sendCiphertext:start",
@@ -2060,7 +2054,6 @@ export default function App() {
           senderDeviceId,
           toDeviceId: routingMeta.toDeviceId,
           torOnion: routingMeta.route?.torOnion,
-          alternateRoute: routingMeta.route?.alternateRoute,
           error: `sendCiphertext threw: ${thrownMessage}`,
           errorDetail: toInfoLogErrorDetail(error),
           context: {
@@ -2094,7 +2087,6 @@ export default function App() {
           senderDeviceId,
           toDeviceId: routingMeta.toDeviceId,
           torOnion: routingMeta.route?.torOnion,
-          alternateRoute: routingMeta.route?.alternateRoute,
           error: errorMessage,
           context: {
             ...commonContext,
@@ -2128,7 +2120,6 @@ export default function App() {
         senderDeviceId,
         toDeviceId: routingMeta.toDeviceId,
         torOnion: routingMeta.route?.torOnion,
-        alternateRoute: routingMeta.route?.alternateRoute,
         context: {
           ...commonContext,
           checkpoint: "sendCiphertext:result-ok",
@@ -2167,7 +2158,7 @@ export default function App() {
         }
         const netConfig = useNetConfigStore.getState().config;
         const routeRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
-        const hasRouteTarget = Boolean(routingMeta.route?.torOnion || routingMeta.route?.alternateRoute);
+        const hasRouteTarget = Boolean(routingMeta.route?.torOnion);
         if (routeRequired && !hasRouteTarget) {
           return false;
         }
@@ -2201,12 +2192,11 @@ export default function App() {
       if (friend.friendStatus !== "request_out") continue;
       const routingMeta = buildResolvedRoutingMeta(friend);
       const hasDeviceId = Boolean(routingMeta.toDeviceId);
-      const hasRouteTarget = Boolean(routingMeta.route?.torOnion || routingMeta.route?.alternateRoute);
+      const hasRouteTarget = Boolean(routingMeta.route?.torOnion);
       if (!hasDeviceId || (onionRouteRequired && !hasRouteTarget)) continue;
       const signature = [
         routingMeta.toDeviceId ?? "",
         routingMeta.route?.torOnion ?? "",
-        routingMeta.route?.alternateRoute ?? "",
         friend.profileVcard?.friendCode ?? "",
       ].join("|");
       nextSeen[friend.id] = signature;
@@ -2372,7 +2362,13 @@ export default function App() {
           const partnerDhPub = partner.dhPub;
           const now = Date.now();
           const messageId = createId();
-          const media = await saveMessageMedia(messageId, file, INLINE_MEDIA_CHUNK_SIZE);
+          const preparedMedia = await inspectOutgoingMediaFile(file);
+          const media = createMessageMediaRef(
+            messageId,
+            file,
+            INLINE_MEDIA_CHUNK_SIZE,
+            preparedMedia
+          );
           const label = media.mime.startsWith("image/") ? "Photo" : media.name || "File";
 
           await saveMessage({
@@ -2416,9 +2412,11 @@ export default function App() {
             };
             let cryptoPool: EnvelopeCryptoPool | null = null;
             let encryptor: typeof encryptEnvelope = encryptEnvelope;
-            const transferWindow = file.size >= 200 * 1024 * 1024 ? 2 : 1;
+            const transferWindow = new AdaptiveTransferWindow(media.total >= 8 ? 2 : 1);
             const inFlight = new Set<Promise<void>>();
+            let transferError: unknown = null;
             try {
+              await createMediaTransferProgress(messageId, conv.id, media.total);
               try {
                 cryptoPool = new EnvelopeCryptoPool(file.size >= 200 * 1024 * 1024 ? 2 : 1);
                 await cryptoPool.prewarm();
@@ -2428,17 +2426,6 @@ export default function App() {
                 cryptoPool = null;
                 console.warn("[crypto] worker unavailable; using renderer fallback", error);
               }
-              const nativeInspection = await window.nativeWorker
-                ?.inspectFile(file, INLINE_MEDIA_CHUNK_SIZE)
-                .catch(() => null);
-              if (nativeInspection?.ok && nativeInspection.result) {
-                if (
-                  nativeInspection.result.size !== file.size ||
-                  nativeInspection.result.total !== media.total
-                ) {
-                  throw new Error("Native file inspection mismatch");
-                }
-              }
               await sendDirectEnvelope(
                 conv,
                 partner,
@@ -2446,47 +2433,55 @@ export default function App() {
                 "high",
                 { eventId: messageId, cryptoContext, encryptor }
               );
-              for (let idx = 0; idx < media.total; idx += 1) {
-                const nativeChunk = await window.nativeWorker
-                  ?.readFileChunk(file, idx, INLINE_MEDIA_CHUNK_SIZE)
-                  .catch(() => null);
-                let chunkBase64 = nativeChunk?.ok ? nativeChunk.result?.data : undefined;
-                if (!chunkBase64) {
-                  const start = idx * INLINE_MEDIA_CHUNK_SIZE;
-                  const bytes = new Uint8Array(
-                    await file
-                      .slice(start, Math.min(file.size, start + INLINE_MEDIA_CHUNK_SIZE))
-                      .arrayBuffer()
-                  );
-                  chunkBase64 = encodeBase64Url(bytes);
-                }
-                const chunkBody = {
-                  type: "media",
-                  phase: "chunk",
-                  ownerId: messageId,
-                  idx,
-                  total: media.total,
-                  chunkSize: INLINE_MEDIA_CHUNK_SIZE,
-                  mime: media.mime,
-                  name: media.name,
-                  size: media.size,
-                  b64: chunkBase64,
-                  clientBatchId,
-                };
-                const task = sendDirectEnvelope(conv, partner, chunkBody, "normal", {
-                  persistEvent: false,
-                  cryptoContext,
-                  encryptor,
-                  releaseBeforeRoute: transferWindow > 1,
-                }).then(() => undefined);
-                inFlight.add(task);
-                void task.finally(() => inFlight.delete(task)).catch(() => {});
-                if (inFlight.size >= transferWindow) await Promise.race(inFlight);
-                if (idx > 0 && idx % 8 === 0) {
-                  await new Promise<void>((resolve) => setTimeout(resolve, 0));
-                }
-              }
+              await saveMessageMedia(
+                messageId,
+                file,
+                INLINE_MEDIA_CHUNK_SIZE,
+                async ({ idx, bytes }) => {
+                  await markMediaTransferStored(messageId, idx);
+                  if (transferError) return;
+                  const chunkBase64 = encodeBase64Url(bytes);
+                  const chunkBody = {
+                    type: "media",
+                    phase: "chunk",
+                    ownerId: messageId,
+                    idx,
+                    total: media.total,
+                    chunkSize: INLINE_MEDIA_CHUNK_SIZE,
+                    mime: media.mime,
+                    name: media.name,
+                    size: media.size,
+                    b64: chunkBase64,
+                    clientBatchId,
+                  };
+                  const task = sendDirectEnvelope(conv, partner, chunkBody, "normal", {
+                    persistEvent: false,
+                    cryptoContext,
+                    encryptor,
+                    releaseBeforeRoute: transferWindow.current > 1,
+                    outboxRetention: "transient",
+                    transferId: messageId,
+                    chunkIndex: idx,
+                    binaryTransport: canUseBinaryMediaTransport(conv.id),
+                  })
+                    .then(() => {
+                      transferWindow.onSuccess();
+                    })
+                    .catch((error) => {
+                      transferWindow.onFailure();
+                      transferError ??= error;
+                    });
+                  inFlight.add(task);
+                  void task.finally(() => inFlight.delete(task)).catch(() => {});
+                  if (inFlight.size >= transferWindow.current) await Promise.race(inFlight);
+                  if (idx > 0 && idx % 8 === 0) {
+                    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+                  }
+                },
+                preparedMedia
+              );
               await Promise.all(inFlight);
+              if (transferError) throw transferError;
             } finally {
               await Promise.allSettled(inFlight);
               cryptoPool?.close();
@@ -3182,12 +3177,11 @@ export default function App() {
       }
       await navigator.clipboard.writeText(myFriendCode);
       const decoded = decodeFriendCodeV1(myFriendCode);
-      const hasRouteTarget =
-        !("error" in decoded) && Boolean(decoded.onionAddr || decoded.alternateRouteAddr);
+      const hasRouteTarget = !("error" in decoded) && Boolean(decoded.onionAddr);
       addToast({
         message: hasRouteTarget
           ? "친구 코드가 복사되었습니다."
-          : "친구 코드는 복사되었지만 onion/alternateRoute 주소가 없어 상대가 먼저 연결하지 못할 수 있습니다. 네트워크 연결 후 다시 복사해 주세요.",
+          : "친구 코드는 복사되었지만 onion 주소가 없어 상대가 먼저 연결하지 못할 수 있습니다. Tor 연결 후 다시 복사해 주세요.",
       });
     } catch (error) {
       console.error("Failed to copy friend code", error);
@@ -3204,7 +3198,6 @@ export default function App() {
       onionEnabled: netConfig.onionEnabled,
       onionSelectedNetwork: netConfig.onionSelectedNetwork,
       torStatus: netConfig.tor.status,
-      alternateRouteStatus: null,
     };
     const runtimeBootstrap: Record<string, unknown> = {};
     emitRouterTestLog({
@@ -3751,7 +3744,6 @@ export default function App() {
       context: {
         hasDeviceId: Boolean(decoded.deviceId),
         hasOnionAddr: Boolean(decoded.onionAddr),
-        hasalternateRouteAddr: Boolean(decoded.alternateRouteAddr),
       },
     });
     const finalKey = prefixProbe.startsWith("NKI1") ? attemptKey : `friend:${friendId}`;
@@ -3882,16 +3874,15 @@ export default function App() {
         }
 
         const routingHints = sanitizeRoutingHints(
-          decoded.onionAddr || decoded.alternateRouteAddr || decoded.deviceId
+          decoded.onionAddr || decoded.deviceId
             ? {
                 onionAddr: decoded.onionAddr,
-                alternateRouteAddr: decoded.alternateRouteAddr,
                 deviceId: decoded.deviceId,
               }
             : undefined
         );
         const hasDeviceId = Boolean(decoded.deviceId);
-        const hasRouteTarget = Boolean(decoded.onionAddr || decoded.alternateRouteAddr);
+        const hasRouteTarget = Boolean(decoded.onionAddr);
         const netConfig = useNetConfigStore.getState().config;
         const routeRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
         if (!decoded.deviceId) {
@@ -3917,7 +3908,7 @@ export default function App() {
           return {
             status: "unreachable" as const,
             lastError: hasDeviceId
-              ? "Missing onion/alternateRoute route target in friend code"
+              ? "Missing onion route target in friend code"
               : "Missing deviceId in friend code",
             attempts: existing?.reachability?.attempts ?? 0,
             lastAttemptAt: Date.now(),
@@ -3978,7 +3969,7 @@ export default function App() {
           context: {
             friendStatus: friend.friendStatus,
             hasDeviceId: Boolean(friend.routingHints?.deviceId || friend.primaryDeviceId || friend.deviceId),
-            hasRouteTarget: Boolean(friend.routingHints?.onionAddr || friend.routingHints?.alternateRouteAddr),
+            hasRouteTarget: Boolean(friend.routingHints?.onionAddr),
           },
         });
 
@@ -4062,7 +4053,7 @@ export default function App() {
           if (routeRequired && !hasRouteTarget) {
             addToast({
               message:
-                "친구는 추가되었지만 코드에 onion/alternateRoute 주소가 없어 요청을 보낼 수 없습니다. 상대에게 최신 친구 코드를 요청하거나, 내 코드를 보내 상대가 먼저 추가하도록 안내해 주세요.",
+                "친구는 추가되었지만 코드에 onion 주소가 없어 요청을 보낼 수 없습니다. 상대에게 최신 친구 코드를 요청하거나, 내 코드를 보내 상대가 먼저 추가하도록 안내해 주세요.",
             });
             emitFriendAddWithMeta({
               result: "added",
@@ -4237,7 +4228,6 @@ export default function App() {
       identityPub: partner.identityPub,
       dhPub: partner.dhPub,
       onionAddr: partner.routingHints?.onionAddr,
-      alternateRouteAddr: partner.routingHints?.alternateRouteAddr,
     });
     const onionAddress = partner.routingHints?.onionAddr?.trim().toLowerCase();
     const lastPrewarmedAt = onionAddress
@@ -4399,14 +4389,14 @@ export default function App() {
           return state.friends;
         }
         return state.friends.filter((friend) => {
-          if (friend.routingHints?.onionAddr || friend.routingHints?.alternateRouteAddr) {
+          if (friend.routingHints?.onionAddr) {
             return true;
           }
           const code = friend.profileVcard?.friendCode?.trim();
           if (!code) return false;
           const decoded = decodeFriendCodeV1(code);
           if ("error" in decoded) return false;
-          return Boolean(decoded.onionAddr || decoded.alternateRouteAddr);
+          return Boolean(decoded.onionAddr);
         });
       },
       onAttempt: async (friend) => {

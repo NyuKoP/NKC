@@ -42,7 +42,7 @@ describe.skipIf(!hasWorkerBinary)("Go Worker IPC Functional & Integrity Tests", 
 
   it("verifies health RPC response and features", async () => {
     const res = await client.request<{ version: number; features: string[] }>("health", {});
-    expect(res.version).toBe(1);
+    expect(res.version).toBe(2);
     expect(res.features).toContain("file");
     expect(res.features).toContain("queue");
   });
@@ -59,27 +59,39 @@ describe.skipIf(!hasWorkerBinary)("Go Worker IPC Functional & Integrity Tests", 
     expect(res.sha256).toBe(expectedSha256);
   });
 
-  it("verifies file.chunk payload data integrity and sha256 hash match", async () => {
+  it("verifies binary file.chunk payload data integrity and sha256 hash match", async () => {
     const chunkSize = 512 * 1024;
-    const res = await client.request<{ index: number; bytes: number; data: string; sha256: string }>(
-      "file.chunk",
+    const response = await client.requestBinary<{ index: number; bytes: number }>(
+      "file.chunk.binary",
       { path: tempFilePath, index: 0, chunkSize }
     );
+    const res = response.result;
 
     expect(res.index).toBe(0);
     expect(res.bytes).toBe(chunkSize);
 
-    // Decode RawURLEncoding Base64
-    const b64Standard = res.data.replace(/-/g, "+").replace(/_/g, "/");
-    const decodedBuffer = Buffer.from(b64Standard, "base64");
-    expect(decodedBuffer.byteLength).toBe(chunkSize);
+    expect(response.body.byteLength).toBe(chunkSize);
 
     // Byte-level integrity check against original source buffer
     const expectedChunkBuffer = sampleBuffer.subarray(0, chunkSize);
-    expect(decodedBuffer.equals(expectedChunkBuffer)).toBe(true);
+    expect(response.body.equals(expectedChunkBuffer)).toBe(true);
 
-    // SHA256 checksum check
-    const chunkSha256 = crypto.createHash("sha256").update(decodedBuffer).digest("hex");
-    expect(res.sha256).toBe(chunkSha256);
+  });
+
+  it("passes a 1 MiB onion envelope in the binary frame body instead of the JSON header", async () => {
+    const payload = {
+      toDeviceId: "device-b",
+      fromDeviceId: "device-a",
+      toOnion: `${"a".repeat(56)}.onion`,
+      envelope: "x".repeat(1024 * 1024),
+      route: { mode: "manual", torOnion: `${"a".repeat(56)}.onion` },
+    };
+    const response = await client.requestBinary<{ status: number; body: { error?: string } }>(
+      "transport.forward.binary",
+      { torProxyUrl: "", queueOnFailure: false },
+      Buffer.from(JSON.stringify(payload), "utf8")
+    );
+    expect(response.result.status).toBe(400);
+    expect(response.result.body.error).toBe("forward_failed:no_route");
   });
 });

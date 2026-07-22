@@ -14,9 +14,6 @@ const RENDEZVOUS_USE_ONION_KEY = "rendezvous_use_onion_v1";
 const ONION_CONTROLLER_URL_KEY = "onion_controller_url_v1";
 const ROUTE_POLICY_KEY = "default_route_mode_v1";
 const LEGACY_ROUTE_POLICY_KEY = "route_policy_v1";
-const alternateRoute_PROXY_URL_KEY = "alternateRoute_proxy_url_v1";
-const alternateRoute_SERVICE_ADDR_KEY = "alternateRoute_service_addr_v1";
-const LEGACY_alternateRoute_SERVICE_ADDRESS_KEY = "alternateRoute_service_address_v1";
 const GROUP_AVATAR_OVERRIDE_PREFIX = "nkc_group_avatar_override_v1:";
 export const PRIVACY_PREFS_CHANGED_EVENT = "nkc:privacy-prefs-changed";
 
@@ -102,7 +99,7 @@ export const getRoutePolicy = async () => {
   const store = getPublicStore();
   const raw = (await store.get(ROUTE_POLICY_KEY)) ?? (await store.get(LEGACY_ROUTE_POLICY_KEY));
   if (!raw) return "auto";
-  if (raw === "auto" || raw === "preferalternateRoute" || raw === "preferTor" || raw === "manual") {
+  if (raw === "auto" || raw === "preferTor" || raw === "manual") {
     return raw;
   }
   return "auto";
@@ -112,42 +109,6 @@ export const setRoutePolicy = async (value: string) => {
   const store = getPublicStore();
   await store.set(ROUTE_POLICY_KEY, value);
   await store.remove(LEGACY_ROUTE_POLICY_KEY);
-};
-
-export const getalternateRouteExternalProxyUrl = async () => {
-  const store = getPublicStore();
-  return (await store.get(alternateRoute_PROXY_URL_KEY)) ?? "";
-};
-
-export const setalternateRouteExternalProxyUrl = async (value: string) => {
-  const store = getPublicStore();
-  const trimmed = value.trim();
-  if (!trimmed) {
-    await store.remove(alternateRoute_PROXY_URL_KEY);
-    return;
-  }
-  await store.set(alternateRoute_PROXY_URL_KEY, trimmed);
-};
-
-export const getalternateRouteServiceAddress = async () => {
-  const store = getPublicStore();
-  return (
-    (await store.get(alternateRoute_SERVICE_ADDR_KEY)) ??
-    (await store.get(LEGACY_alternateRoute_SERVICE_ADDRESS_KEY)) ??
-    ""
-  );
-};
-
-export const setalternateRouteServiceAddress = async (value: string) => {
-  const store = getPublicStore();
-  const trimmed = value.trim();
-  if (!trimmed) {
-    await store.remove(alternateRoute_SERVICE_ADDR_KEY);
-    await store.remove(LEGACY_alternateRoute_SERVICE_ADDRESS_KEY);
-    return;
-  }
-  await store.set(alternateRoute_SERVICE_ADDR_KEY, trimmed);
-  await store.remove(LEGACY_alternateRoute_SERVICE_ADDRESS_KEY);
 };
 
 export const getGroupAvatarOverride = async (convId: string) => {

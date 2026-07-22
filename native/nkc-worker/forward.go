@@ -12,8 +12,7 @@ import (
 )
 
 var (
-	torTargetPattern     = regexp.MustCompile(`^[a-z2-7]{56}\.onion$`)
-	alternateRouteTargetPattern = regexp.MustCompile(`^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+loki$`)
+	torTargetPattern = regexp.MustCompile(`^[a-z2-7]{56}\.onion$`)
 )
 
 type onionRoutePayload struct {
@@ -26,15 +25,13 @@ type onionRoutePayload struct {
 	Route        struct {
 		Mode     string `json:"mode"`
 		TorOnion string `json:"torOnion"`
-		alternateRoute  string `json:"alternateRoute"`
 	} `json:"route"`
 }
 
 type transportForwardParams struct {
-	Payload         onionRoutePayload `json:"payload"`
-	TorProxyURL     string            `json:"torProxyUrl"`
-	alternateRouteProxyURL string            `json:"alternateRouteProxyUrl"`
-	QueueOnFailure  bool              `json:"queueOnFailure"`
+	Payload        onionRoutePayload `json:"payload"`
+	TorProxyURL    string            `json:"torProxyUrl"`
+	QueueOnFailure bool              `json:"queueOnFailure"`
 }
 
 type transportForwardResult struct {
@@ -65,45 +62,25 @@ func normalizeRouteTarget(kind, value string) string {
 	if kind == "tor" && !torTargetPattern.MatchString(hostname) {
 		return ""
 	}
-	if kind == "alternateRoute" && !alternateRouteTargetPattern.MatchString(hostname) {
-		return ""
-	}
 	return "http://" + parsed.Host
 }
 
-func buildRouteCandidates(mode, torTarget, alternateRouteTarget, torProxy, alternateRouteProxy string) []routeCandidate {
+func buildRouteCandidates(mode, torTarget, torProxy string) []routeCandidate {
 	tor := routeCandidate{kind: "tor", target: torTarget, proxy: strings.TrimSpace(torProxy)}
-	alternateRoute := routeCandidate{kind: "alternateRoute", target: alternateRouteTarget, proxy: strings.TrimSpace(alternateRouteProxy)}
 	hasTor := tor.target != "" && tor.proxy != ""
-	hasalternateRoute := alternateRoute.target != "" && alternateRoute.proxy != ""
 	switch mode {
 	case "preferTor":
 		if hasTor {
 			return []routeCandidate{tor}
 		}
-	case "preferalternateRoute":
-		if hasalternateRoute {
-			return []routeCandidate{alternateRoute}
-		}
 	case "manual":
-		if torTarget != "" && alternateRouteTarget != "" {
-			return nil
-		}
 		if hasTor {
 			return []routeCandidate{tor}
 		}
-		if hasalternateRoute {
-			return []routeCandidate{alternateRoute}
-		}
 	case "auto":
-		result := make([]routeCandidate, 0, 2)
-		if hasalternateRoute {
-			result = append(result, alternateRoute)
-		}
 		if hasTor {
-			result = append(result, tor)
+			return []routeCandidate{tor}
 		}
-		return result
 	}
 	return nil
 }
@@ -178,7 +155,7 @@ func (w *worker) forwardOnion(params transportForwardParams) (transportForwardRe
 	if mode == "" {
 		mode = "manual"
 	}
-	if mode != "auto" && mode != "preferalternateRoute" && mode != "preferTor" && mode != "manual" {
+	if mode != "auto" && mode != "preferTor" && mode != "manual" {
 		return forwardFailure(http.StatusBadRequest, msgID, "invalid-route-mode", nil), nil
 	}
 	torValue := payload.ToOnion
@@ -189,12 +166,11 @@ func (w *worker) forwardOnion(params transportForwardParams) (transportForwardRe
 		torValue = payload.To
 	}
 	torTarget := normalizeRouteTarget("tor", torValue)
-	alternateRouteTarget := normalizeRouteTarget("alternateRoute", payload.Route.alternateRoute)
-	if (torValue != "" && torTarget == "") || (payload.Route.alternateRoute != "" && alternateRouteTarget == "") {
+	if torValue != "" && torTarget == "" {
 		return forwardFailure(http.StatusBadRequest, msgID, "invalid-route-target", nil), nil
 	}
 
-	candidates := buildRouteCandidates(mode, torTarget, alternateRouteTarget, params.TorProxyURL, params.alternateRouteProxyURL)
+	candidates := buildRouteCandidates(mode, torTarget, params.TorProxyURL)
 	traces := make([]map[string]any, 0, len(candidates)*2)
 	terminalCode := "forward_failed:no_route"
 	terminalStatus := http.StatusBadRequest
@@ -246,7 +222,7 @@ func (w *worker) forwardOnion(params transportForwardParams) (transportForwardRe
 		}
 	}
 
-	shouldQueue := params.QueueOnFailure && torTarget != "" && mode != "preferalternateRoute"
+	shouldQueue := params.QueueOnFailure && torTarget != ""
 	if shouldQueue {
 		queue := w.getQueue()
 		if queue != nil {

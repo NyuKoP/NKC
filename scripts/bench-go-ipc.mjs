@@ -2,7 +2,6 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
-import readline from "node:readline";
 
 const root = process.cwd();
 const executableName = process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker";
@@ -23,6 +22,7 @@ class BenchmarkWorkerClient {
     this.binPath = binPath;
     this.process = null;
     this.pending = new Map();
+    this.stdoutBuffer = Buffer.alloc(0);
   }
 
   async start() {
@@ -31,29 +31,7 @@ class BenchmarkWorkerClient {
       windowsHide: true,
     });
     this.process = child;
-    const lines = readline.createInterface({ input: child.stdout });
-    lines.on("line", (line) => {
-      try {
-        const payload = JSON.parse(line);
-        if (payload.id && this.pending.has(payload.id)) {
-          const req = this.pending.get(payload.id);
-          this.pending.delete(payload.id);
-          clearTimeout(req.timeout);
-          const responseWireBytes = Buffer.byteLength(`${line}\n`, "utf8");
-          if (payload.ok) {
-            req.resolve({
-              result: payload.result,
-              requestWireBytes: req.requestWireBytes,
-              responseWireBytes,
-              totalWireBytes: req.requestWireBytes + responseWireBytes,
-            });
-          }
-          else req.reject(new Error(payload.error || "worker_error"));
-        }
-      } catch (err) {
-        console.error("[bench-worker] JSON parse error:", err);
-      }
-    });
+    child.stdout.on("data", (chunk) => this.handleData(chunk));
     child.stderr.on("data", (chunk) => {
       const message = chunk.toString("utf8").trim();
       if (message) console.warn("[bench-worker]", message);
@@ -67,11 +45,23 @@ class BenchmarkWorkerClient {
   }
 
   async request(method, params, timeoutMs = REQUEST_TIMEOUT_MS) {
+    return this.requestFrame(method, params, Buffer.alloc(0), timeoutMs);
+  }
+
+  async requestBinary(method, params, timeoutMs = REQUEST_TIMEOUT_MS) {
+    return this.requestFrame(method, params, Buffer.alloc(0), timeoutMs);
+  }
+
+  async requestFrame(method, params, body, timeoutMs) {
     const child = this.process;
     if (!child || child.stdin.destroyed) throw new Error("worker_unavailable");
     return new Promise((resolve, reject) => {
       const id = crypto.randomUUID();
-      const reqStr = JSON.stringify({ id, method, params }) + "\n";
+      const header = Buffer.from(JSON.stringify({ id, method, params }), "utf8");
+      const prefix = Buffer.allocUnsafe(8);
+      prefix.writeUInt32BE(header.byteLength, 0);
+      prefix.writeUInt32BE(body.byteLength, 4);
+      const frame = Buffer.concat([prefix, header, body]);
       const timeout = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`worker_timeout:${method}`));
@@ -80,9 +70,9 @@ class BenchmarkWorkerClient {
         resolve,
         reject,
         timeout,
-        requestWireBytes: Buffer.byteLength(reqStr, "utf8"),
+        requestWireBytes: frame.byteLength,
       });
-      child.stdin.write(reqStr, (error) => {
+      child.stdin.write(frame, (error) => {
         if (!error) return;
         const pending = this.pending.get(id);
         if (!pending) return;
@@ -91,6 +81,40 @@ class BenchmarkWorkerClient {
         pending.reject(error);
       });
     });
+  }
+
+  handleData(chunk) {
+    this.stdoutBuffer = this.stdoutBuffer.length
+      ? Buffer.concat([this.stdoutBuffer, chunk])
+      : chunk;
+    while (this.stdoutBuffer.length >= 8) {
+      const headerLength = this.stdoutBuffer.readUInt32BE(0);
+      const bodyLength = this.stdoutBuffer.readUInt32BE(4);
+      const frameLength = 8 + headerLength + bodyLength;
+      if (this.stdoutBuffer.length < frameLength) return;
+      const header = this.stdoutBuffer.subarray(8, 8 + headerLength);
+      const body = Buffer.from(this.stdoutBuffer.subarray(8 + headerLength, frameLength));
+      this.stdoutBuffer = this.stdoutBuffer.subarray(frameLength);
+      try {
+        const payload = JSON.parse(header.toString("utf8"));
+        if (!payload.id || !this.pending.has(payload.id)) continue;
+        const req = this.pending.get(payload.id);
+        this.pending.delete(payload.id);
+        clearTimeout(req.timeout);
+        const responseWireBytes = frameLength;
+        if (payload.ok) {
+          req.resolve({
+            result: payload.result,
+            body,
+            requestWireBytes: req.requestWireBytes,
+            responseWireBytes,
+            totalWireBytes: req.requestWireBytes + responseWireBytes,
+          });
+        } else req.reject(new Error(payload.error || "worker_error"));
+      } catch (err) {
+        console.error("[bench-worker] frame parse error:", err);
+      }
+    }
   }
 
   async stop() {
@@ -147,12 +171,14 @@ function formatWireStats(total, iterations) {
   };
 }
 
-async function measureRequests(client, iterations, method, params) {
+async function measureRequests(client, iterations, method, params, binary = false) {
   const latencies = [];
   const wire = { request: 0, response: 0, combined: 0 };
   for (let i = 0; i < iterations; i++) {
     const startedAt = performance.now();
-    const response = await client.request(method, params);
+    const response = binary
+      ? await client.requestBinary(method, params)
+      : await client.request(method, params);
     latencies.push(performance.now() - startedAt);
     wire.request += response.requestWireBytes;
     wire.response += response.responseWireBytes;
@@ -178,8 +204,8 @@ async function runBenchmark() {
     console.log(`[bench-go-ipc] Warming up (${WARMUP_ITERATIONS} iterations)...`);
     for (let i = 0; i < WARMUP_ITERATIONS; i++) {
       await client.request("health", {});
-      await client.request("file.chunk", { path: tempPath, index: 0, chunkSize: 512 * 1024 });
-      await client.request("file.chunk", { path: tempPath, index: 0, chunkSize: 1024 * 1024 });
+      await client.requestBinary("file.chunk.binary", { path: tempPath, index: 0, chunkSize: 512 * 1024 });
+      await client.requestBinary("file.chunk.binary", { path: tempPath, index: 0, chunkSize: 1024 * 1024 });
     }
 
     console.log(`\n--- Benchmark 1: Health RPC Latency (${HEALTH_ITERATIONS} iterations) ---`);
@@ -191,11 +217,11 @@ async function runBenchmark() {
 
     console.log(`\n--- Benchmark 2: 512KiB Chunk IPC Throughput (${CHUNK_ITERATIONS} iterations) ---`);
     const chunkSize512 = 512 * 1024;
-    const chunk512 = await measureRequests(client, CHUNK_ITERATIONS, "file.chunk", {
+    const chunk512 = await measureRequests(client, CHUNK_ITERATIONS, "file.chunk.binary", {
       path: tempPath,
       index: 0,
       chunkSize: chunkSize512,
-    });
+    }, true);
     const c512Stats = calculatePercentiles(chunk512.latencies);
     const totalMiB512 = (chunkSize512 * CHUNK_ITERATIONS) / (1024 * 1024);
     const totalTimeSec512 = chunk512.latencies.reduce((a, b) => a + b, 0) / 1000;
@@ -207,11 +233,11 @@ async function runBenchmark() {
 
     console.log(`\n--- Benchmark 3: 1MiB Chunk IPC Throughput (${CHUNK_ITERATIONS} iterations) ---`);
     const chunkSize1024 = 1024 * 1024;
-    const chunk1024 = await measureRequests(client, CHUNK_ITERATIONS, "file.chunk", {
+    const chunk1024 = await measureRequests(client, CHUNK_ITERATIONS, "file.chunk.binary", {
       path: tempPath,
       index: 0,
       chunkSize: chunkSize1024,
-    });
+    }, true);
     const c1024Stats = calculatePercentiles(chunk1024.latencies);
     const totalMiB1024 = (chunkSize1024 * CHUNK_ITERATIONS) / (1024 * 1024);
     const totalTimeSec1024 = chunk1024.latencies.reduce((a, b) => a + b, 0) / 1000;

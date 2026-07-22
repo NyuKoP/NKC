@@ -28,6 +28,21 @@ describe("TorManager diagnostics", () => {
       bootstrapProgress: 0,
       processRunning: false,
       bridgeMode: "direct",
+      pluginState: "starting_stopping",
+      reasonsDisabled: 0,
     });
+  });
+
+  it("reuses a preconfigured hidden service after Tor has started", () => {
+    const manager = new TorManager({ appDataDir: "unused" });
+    manager.configureHiddenService({ localPort: 19080, virtPort: 80 });
+    (manager as unknown as { process: object | null }).process = {};
+
+    expect(() =>
+      manager.configureHiddenService({ localPort: 19080, virtPort: 80 })
+    ).not.toThrow();
+    expect(() =>
+      manager.configureHiddenService({ localPort: 19081, virtPort: 80 })
+    ).toThrow("tor-hidden-service-already-running");
   });
 });

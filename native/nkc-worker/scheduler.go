@@ -30,10 +30,9 @@ type retryPolicy struct {
 }
 
 var retryPolicies = map[string]retryPolicy{
-	"direct":  {6, 700, 10_000, .15},
-	"tor":     {12, 2_000, 90_000, .25},
-	"alternateRoute": {12, 2_000, 90_000, .25},
-	"onion":   {15, 3_000, 120_000, .30},
+	"direct": {6, 700, 10_000, .15},
+	"tor":    {12, 2_000, 90_000, .25},
+	"onion":  {15, 3_000, 120_000, .30},
 }
 
 func deterministicUnit(id string, attempts int) float64 {

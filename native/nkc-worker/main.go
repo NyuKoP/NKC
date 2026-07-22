@@ -2,8 +2,10 @@ package main
 
 import (
 	"bufio"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"sync"
@@ -13,7 +15,16 @@ type request struct {
 	ID     string          `json:"id"`
 	Method string          `json:"method"`
 	Params json.RawMessage `json:"params"`
+	Body   []byte          `json:"-"`
 }
+
+type binaryResponse struct {
+	Result any
+	Body   []byte
+}
+
+const maxFrameHeaderBytes = 1024 * 1024
+const maxFrameBodyBytes = 32 * 1024 * 1024
 
 type response struct {
 	ID     string `json:"id"`
@@ -47,7 +58,7 @@ func decodeParams[T any](raw json.RawMessage) (T, error) {
 func (w *worker) handle(req request) (any, error) {
 	switch req.Method {
 	case "health":
-		return map[string]any{"version": 1, "features": []string{"file", "queue", "scheduler", "transport"}}, nil
+		return map[string]any{"version": 2, "features": []string{"file", "queue", "scheduler", "transport", "binary-ipc"}}, nil
 	case "file.inspect":
 		params, err := decodeParams[fileInspectParams](req.Params)
 		if err != nil {
@@ -60,6 +71,16 @@ func (w *worker) handle(req request) (any, error) {
 			return nil, err
 		}
 		return readFileChunk(params)
+	case "file.chunk.binary":
+		params, err := decodeParams[fileChunkParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		metadata, body, err := readFileChunkBinary(params)
+		if err != nil {
+			return nil, err
+		}
+		return binaryResponse{Result: metadata, Body: body}, nil
 	case "file.receive.init":
 		params, err := decodeParams[receiveInitParams](req.Params)
 		if err != nil {
@@ -72,6 +93,12 @@ func (w *worker) handle(req request) (any, error) {
 			return nil, err
 		}
 		return w.receive.write(params)
+	case "file.receive.write.binary":
+		params, err := decodeParams[receiveWriteParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return w.receive.writeBinary(params.TransferID, params.Index, req.Body)
 	case "file.receive.checkpoint":
 		params, err := decodeParams[receiveIDParams](req.Params)
 		if err != nil {
@@ -115,6 +142,18 @@ func (w *worker) handle(req request) (any, error) {
 		params, err := decodeParams[transportForwardParams](req.Params)
 		if err != nil {
 			return nil, err
+		}
+		return w.forwardOnion(params)
+	case "transport.forward.binary":
+		params, err := decodeParams[transportForwardParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		if len(req.Body) == 0 {
+			return nil, fmt.Errorf("missing_forward_payload")
+		}
+		if err := json.Unmarshal(req.Body, &params.Payload); err != nil {
+			return nil, fmt.Errorf("invalid_forward_payload:%w", err)
 		}
 		return w.forwardOnion(params)
 	case "queue.init":
@@ -183,24 +222,42 @@ func (w *worker) handle(req request) (any, error) {
 }
 
 func main() {
-	scanner := bufio.NewScanner(os.Stdin)
-	scanner.Buffer(make([]byte, 64*1024), 32*1024*1024)
-	encoder := json.NewEncoder(os.Stdout)
+	reader := bufio.NewReaderSize(os.Stdin, 64*1024)
+	writer := bufio.NewWriterSize(os.Stdout, 64*1024)
 	w := &worker{transport: newTransportEngine(), receive: newReceiveManager()}
 	var outputMu sync.Mutex
 	var requests sync.WaitGroup
-	writeResponse := func(payload response) {
+	writeResponse := func(payload response, body []byte) {
 		outputMu.Lock()
 		defer outputMu.Unlock()
-		_ = encoder.Encode(payload)
+		header, err := json.Marshal(payload)
+		if err != nil || len(header) > maxFrameHeaderBytes || len(body) > maxFrameBodyBytes {
+			return
+		}
+		var prefix [8]byte
+		binary.BigEndian.PutUint32(prefix[0:4], uint32(len(header)))
+		binary.BigEndian.PutUint32(prefix[4:8], uint32(len(body)))
+		if _, err = writer.Write(prefix[:]); err == nil {
+			_, err = writer.Write(header)
+		}
+		if err == nil && len(body) > 0 {
+			_, err = writer.Write(body)
+		}
+		if err == nil {
+			_ = writer.Flush()
+		}
 	}
 	handleRequest := func(req request) {
 		result, err := w.handle(req)
 		if err != nil {
-			writeResponse(response{ID: req.ID, OK: false, Error: err.Error()})
+			writeResponse(response{ID: req.ID, OK: false, Error: err.Error()}, nil)
 			return
 		}
-		writeResponse(response{ID: req.ID, OK: true, Result: result})
+		if binaryResult, ok := result.(binaryResponse); ok {
+			writeResponse(response{ID: req.ID, OK: true, Result: binaryResult.Result}, binaryResult.Body)
+			return
+		}
+		writeResponse(response{ID: req.ID, OK: true, Result: result}, nil)
 	}
 	queueRequests := make(chan request)
 	requests.Add(1)
@@ -210,10 +267,30 @@ func main() {
 			handleRequest(req)
 		}
 	}()
-	for scanner.Scan() {
+	for {
+		var prefix [8]byte
+		if _, err := io.ReadFull(reader, prefix[:]); err != nil {
+			break
+		}
+		headerLength := int(binary.BigEndian.Uint32(prefix[0:4]))
+		bodyLength := int(binary.BigEndian.Uint32(prefix[4:8]))
+		if headerLength < 1 || headerLength > maxFrameHeaderBytes || bodyLength < 0 || bodyLength > maxFrameBodyBytes {
+			writeResponse(response{OK: false, Error: "invalid_frame"}, nil)
+			break
+		}
+		header := make([]byte, headerLength)
+		if _, err := io.ReadFull(reader, header); err != nil {
+			break
+		}
 		var req request
-		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
-			writeResponse(response{OK: false, Error: "invalid_request"})
+		if bodyLength > 0 {
+			req.Body = make([]byte, bodyLength)
+			if _, err := io.ReadFull(reader, req.Body); err != nil {
+				break
+			}
+		}
+		if err := json.Unmarshal(header, &req); err != nil {
+			writeResponse(response{OK: false, Error: "invalid_request"}, nil)
 			continue
 		}
 		if strings.HasPrefix(req.Method, "queue.") {

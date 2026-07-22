@@ -241,7 +241,7 @@
     display: none;
   }
 
-  /* NKC-style message slide-in animation */
+  /* NKC message slide-in animation */
   @keyframes signal-slide-up {
     from {
       opacity: 0;
@@ -257,7 +257,7 @@
     animation: signal-slide-up 0.15s ease-out;
   }
 
-  /* NKC-style panel slide-in from right */
+  /* NKC panel slide-in from right */
   @keyframes signal-slide-in-right {
     from {
       opacity: 0;
@@ -273,7 +273,7 @@
     animation: signal-slide-in-right 0.2s ease-out;
   }
 
-  /* NKC-style fade in for menus */
+  /* NKC fade in for menus */
   @keyframes signal-fade-scale {
     from {
       opacity: 0;

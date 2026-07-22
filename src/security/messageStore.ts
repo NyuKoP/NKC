@@ -23,6 +23,18 @@ import { putReadCursor, putReceipt } from "../storage/receiptStore";
 import { applyGroupEvent, isGroupEventPayload } from "../sync/groupSync";
 import { createSafeConsole } from "../diagnostics/safeConsole";
 import { createId } from "../utils/ids";
+import {
+  hasValidPreviewSignature,
+  isPreviewMediaClaim,
+  isSafePreviewMime,
+  isValidMediaOwnerId,
+  normalizeMediaMime,
+  parseIncomingMediaRef,
+} from "./mediaPolicy";
+
+const LEGACY_MEDIA_MAX_CHUNKS = 500;
+const LEGACY_MEDIA_MAX_CHUNK_BYTES = 1024 * 1024;
+const LEGACY_MEDIA_MAX_B64_LENGTH = Math.ceil(LEGACY_MEDIA_MAX_CHUNK_BYTES * 4 / 3) + 4;
 
 const console = createSafeConsole(globalThis.console);
 
@@ -74,17 +86,39 @@ const storeMediaChunk = async (payload: {
 }) => {
   const vk = getVaultKey();
   if (!vk) return;
-  if (!Number.isFinite(payload.idx) || !Number.isFinite(payload.total)) return;
-  if (payload.idx < 0 || payload.total <= 0) return;
+  if (!isValidMediaOwnerId(payload.ownerId)) return;
+  if (!Number.isInteger(payload.idx) || !Number.isInteger(payload.total)) return;
+  if (
+    payload.idx < 0 ||
+    payload.total <= 0 ||
+    payload.idx >= payload.total ||
+    payload.total > LEGACY_MEDIA_MAX_CHUNKS ||
+    typeof payload.b64 !== "string" ||
+    payload.b64.length > LEGACY_MEDIA_MAX_B64_LENGTH
+  ) return;
   const ownerType = payload.ownerType === "group" ? "group" : "message";
+  const mime = normalizeMediaMime(payload.mime);
+  if (isPreviewMediaClaim(payload.mime) && !isSafePreviewMime(mime)) return;
   let bytes: Uint8Array;
   try {
     bytes = decodeBase64Url(payload.b64);
   } catch {
     return;
   }
+  if (bytes.byteLength <= 0 || bytes.byteLength > LEGACY_MEDIA_MAX_CHUNK_BYTES) return;
+  if (payload.idx === 0 && isSafePreviewMime(mime) && !hasValidPreviewSignature(mime, bytes)) {
+    return;
+  }
   const chunkId = `${ownerType}:${payload.ownerId}:${payload.idx}`;
   await ensureDbOpen();
+  const existing = await db.mediaChunks
+    .where("ownerId")
+    .equals(payload.ownerId)
+    .and((chunk) => chunk.ownerType === ownerType)
+    .first();
+  if (existing && (existing.total !== payload.total || normalizeMediaMime(existing.mime) !== mime)) {
+    return;
+  }
   const enc_b64 = await encodeBinaryEnvelope(vk, chunkId, "mediaChunk", bytes);
   await db.mediaChunks.put({
     id: chunkId,
@@ -92,7 +126,7 @@ const storeMediaChunk = async (payload: {
     ownerId: payload.ownerId,
     idx: payload.idx,
     enc_b64,
-    mime: payload.mime,
+    mime,
     total: payload.total,
     updatedAt: Date.now(),
   });
@@ -173,13 +207,16 @@ export const loadConversationMessages = async (
     }
 
     if (typed.type === "msg") {
+      const media = typed.media === undefined
+        ? undefined
+        : parseIncomingMediaRef(typed.media, messageId) ?? undefined;
       return {
         id: messageId,
         convId: conv.id,
         senderId,
         text: typed.text ?? "",
         ts,
-        media: typed.media,
+        media,
         clientBatchId: typed.clientBatchId,
       };
     }

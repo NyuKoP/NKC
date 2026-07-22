@@ -24,6 +24,18 @@ import { createId } from "../utils/ids";
 import { mapLimit } from "../utils/async";
 import { parseAvatarRef, serializeAvatarRef } from "../utils/avatarRefs";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
+import {
+  hasValidPreviewSignature,
+  inspectAvatarImageFile,
+  inspectOutgoingMediaFile,
+  isPreviewMediaClaim,
+  isSafePreviewMime,
+  isValidMediaOwnerId,
+  normalizeMediaMime,
+  parseIncomingMediaRef,
+  sanitizeMediaFilename,
+  type PreparedMediaMetadata,
+} from "../security/mediaPolicy";
 
 export type AvatarRef = {
   ownerType: "profile" | "group";
@@ -43,6 +55,35 @@ export type MediaRef = {
   size: number;
 };
 
+export type MessageMediaChunk = {
+  idx: number;
+  total: number;
+  bytes: Uint8Array;
+};
+
+export const createMessageMediaRef = (
+  messageId: string,
+  file: File,
+  chunkSize = MEDIA_CHUNK_SIZE,
+  metadata?: PreparedMediaMetadata
+): MediaRef => {
+  if (!Number.isFinite(chunkSize) || chunkSize <= 0 || chunkSize > MAX_MEDIA_CHUNK_SIZE) {
+    throw new Error("Invalid media chunk size");
+  }
+  if (file.size <= 0 || file.size > MAX_MEDIA_BYTES) {
+    throw new Error("Invalid media size");
+  }
+  return {
+    ownerType: "message",
+    ownerId: messageId,
+    mime: metadata?.mime ?? normalizeMediaMime(file.type),
+    total: Math.ceil(file.size / chunkSize),
+    chunkSize,
+    name: metadata?.name ?? sanitizeMediaFilename(file.name),
+    size: file.size,
+  };
+};
+
 export type UserProfile = {
   id: string;
   displayName: string;
@@ -55,7 +96,7 @@ export type UserProfile = {
   primaryDeviceId?: string;
   identityPub?: string;
   dhPub?: string;
-  routingHints?: { onionAddr?: string; alternateRouteAddr?: string; deviceId?: string };
+  routingHints?: { onionAddr?: string; deviceId?: string };
   trust?: { pinnedAt: number; status: "trusted" | "blocked" | "changed"; reason?: string };
   verification?: {
     status: "unverified" | "verified" | "key_changed" | "blocked";
@@ -78,6 +119,7 @@ export type UserProfile = {
   };
   pskHint?: boolean;
   friendStatus?: "request_in" | "request_out" | "normal" | "hidden" | "blocked";
+  friendControlTs?: number;
   isFavorite?: boolean;
   createdAt?: number;
   updatedAt?: number;
@@ -139,6 +181,7 @@ const VAULT_META_KEY = "vault_header_v2";
 const VAULT_KEY_ID_KEY = "vault_key_id_v1";
 const TEXT_ENCODING_FIX_KEY = "text_encoding_fix_v1";
 const MEDIA_CHUNK_SIZE = 192 * 1024;
+const MAX_MEDIA_CHUNK_SIZE = 1024 * 1024;
 const MEDIA_DECRYPT_CONCURRENCY = 6;
 const MAX_MEDIA_BYTES = 500 * 1024 * 1024;
 const MEDIA_YIELD_MIN_CHUNKS = 24;
@@ -150,57 +193,6 @@ const MEDIA_WRITE_BATCH_SIZE = 8;
 const OUTBOX_BACKOFF = [1000, 5000, 30_000, 2 * 60_000, 10 * 60_000, 60 * 60_000] as const;
 
 const yieldToEventLoop = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
-
-const startsWithBytes = (bytes: Uint8Array, signature: number[]) =>
-  bytes.length >= signature.length && signature.every((value, index) => bytes[index] === value);
-
-const readAsciiPrefix = (bytes: Uint8Array, length = 64) =>
-  new TextDecoder("utf-8", { fatal: false })
-    .decode(bytes.slice(0, length))
-    .replace(/\0/g, "")
-    .trimStart()
-    .toLowerCase();
-
-const hasExpectedMediaSignature = (mime: string, bytes: Uint8Array) => {
-  const normalizedMime = mime.toLowerCase();
-  if (normalizedMime === "image/png") return startsWithBytes(bytes, [0x89, 0x50, 0x4e, 0x47]);
-  if (normalizedMime === "image/jpeg") return startsWithBytes(bytes, [0xff, 0xd8, 0xff]);
-  if (normalizedMime === "image/gif") return startsWithBytes(bytes, [0x47, 0x49, 0x46, 0x38]);
-  if (normalizedMime === "image/webp")
-    return startsWithBytes(bytes, [0x52, 0x49, 0x46, 0x46]) &&
-      bytes.length >= 12 &&
-      bytes[8] === 0x57 &&
-      bytes[9] === 0x45 &&
-      bytes[10] === 0x42 &&
-      bytes[11] === 0x50;
-  if (normalizedMime === "video/mp4") return bytes.length >= 8 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70;
-  if (normalizedMime === "video/webm") return startsWithBytes(bytes, [0x1a, 0x45, 0xdf, 0xa3]);
-  if (normalizedMime === "video/ogg") return startsWithBytes(bytes, [0x4f, 0x67, 0x67, 0x53]);
-  return false;
-};
-
-const isSuspiciousMediaPayload = (mime: string, bytes: Uint8Array) => {
-  const normalizedMime = mime.toLowerCase();
-  if (!normalizedMime.startsWith("image/") && !normalizedMime.startsWith("video/")) return false;
-  if (hasExpectedMediaSignature(normalizedMime, bytes)) return false;
-
-  const asciiPrefix = readAsciiPrefix(bytes);
-  if (
-    startsWithBytes(bytes, [0x4d, 0x5a]) ||
-    startsWithBytes(bytes, [0x7f, 0x45, 0x4c, 0x46]) ||
-    startsWithBytes(bytes, [0x23, 0x21]) ||
-    startsWithBytes(bytes, [0x50, 0x4b, 0x03, 0x04]) ||
-    asciiPrefix.startsWith("<!doctype html") ||
-    asciiPrefix.startsWith("<html") ||
-    asciiPrefix.startsWith("<?xml") ||
-    asciiPrefix.startsWith("<svg") ||
-    asciiPrefix.startsWith("<script")
-  ) {
-    return true;
-  }
-
-  return normalizedMime === "image/svg+xml";
-};
 
 const shouldYieldMedia = (index: number, total: number) =>
   total >= MEDIA_YIELD_MIN_CHUNKS && (index + 1) % MEDIA_YIELD_EVERY === 0;
@@ -252,7 +244,10 @@ const decryptMediaToBlob = async (
     );
     if (start === 0) {
       const firstChunk = batchResult[0];
-      if (!firstChunk || isSuspiciousMediaPayload(mime, firstChunk)) return null;
+      if (
+        !firstChunk ||
+        (isPreviewMediaClaim(mime) && !hasValidPreviewSignature(mime, firstChunk))
+      ) return null;
     }
     for (const bytes of batchResult) {
       totalBytes += bytes.byteLength;
@@ -565,6 +560,7 @@ export const getLastEventHash = async (convId: string) => {
 export const saveProfilePhoto = async (ownerId: string, file: File) => {
   await ensureDbOpen();
   const vk = requireVaultKey();
+  const metadata = await inspectAvatarImageFile(file);
   await db.mediaChunks
     .where("ownerId")
     .equals(ownerId)
@@ -591,7 +587,7 @@ export const saveProfilePhoto = async (ownerId: string, file: File) => {
       ownerId,
       idx,
       enc_b64,
-      mime: file.type || "application/octet-stream",
+      mime: metadata.mime,
       total,
       updatedAt: now,
     });
@@ -605,7 +601,7 @@ export const saveProfilePhoto = async (ownerId: string, file: File) => {
   const avatarRef: AvatarRef = {
     ownerType: "profile",
     ownerId,
-    mime: file.type || "application/octet-stream",
+    mime: metadata.mime,
     total,
     chunkSize: MEDIA_CHUNK_SIZE,
   };
@@ -616,6 +612,7 @@ export const saveProfilePhoto = async (ownerId: string, file: File) => {
 const saveAvatarPhoto = async (ownerType: AvatarRef["ownerType"], ownerId: string, file: File) => {
   await ensureDbOpen();
   const vk = requireVaultKey();
+  const metadata = await inspectAvatarImageFile(file);
   await db.mediaChunks
     .where("ownerId")
     .equals(ownerId)
@@ -637,7 +634,7 @@ const saveAvatarPhoto = async (ownerType: AvatarRef["ownerType"], ownerId: strin
       ownerId,
       idx,
       enc_b64,
-      mime: file.type || "application/octet-stream",
+      mime: metadata.mime,
       total,
       updatedAt: now,
     });
@@ -651,7 +648,7 @@ const saveAvatarPhoto = async (ownerType: AvatarRef["ownerType"], ownerId: strin
   const avatarRef: AvatarRef = {
     ownerType,
     ownerId,
-    mime: file.type || "application/octet-stream",
+    mime: metadata.mime,
     total,
     chunkSize: MEDIA_CHUNK_SIZE,
   };
@@ -702,25 +699,41 @@ export const loadAvatarFromRef = async (ref?: string | null) => {
 export const saveMessageMedia = async (
   messageId: string,
   file: File,
-  chunkSize = MEDIA_CHUNK_SIZE
+  chunkSize = MEDIA_CHUNK_SIZE,
+  onStoredChunk?: (chunk: MessageMediaChunk) => Promise<void>,
+  preparedMetadata?: PreparedMediaMetadata
 ) => {
   await ensureDbOpen();
   const vk = requireVaultKey();
-  await db.mediaChunks
-    .where("ownerId")
-    .equals(messageId)
-    .and((chunk) => chunk.ownerType === "message")
-    .delete();
-
-  if (!Number.isFinite(chunkSize) || chunkSize <= 0 || chunkSize > MEDIA_CHUNK_SIZE) {
+  if (!Number.isFinite(chunkSize) || chunkSize <= 0 || chunkSize > MAX_MEDIA_CHUNK_SIZE) {
     throw new Error("Invalid media chunk size");
   }
   if (file.size <= 0 || file.size > MAX_MEDIA_BYTES) {
     throw new Error("Invalid media size");
   }
-  const total = Math.ceil(file.size / chunkSize);
+  const metadata = preparedMetadata ?? await inspectOutgoingMediaFile(file);
+  const mediaRef = createMessageMediaRef(messageId, file, chunkSize, metadata);
+  await db.mediaChunks
+    .where("ownerId")
+    .equals(messageId)
+    .and((chunk) => chunk.ownerType === "message")
+    .delete();
+  const total = mediaRef.total;
   const now = Date.now();
   const records: MediaChunkRecord[] = [];
+  const pendingChunks: MessageMediaChunk[] = [];
+
+  const flushRecords = async () => {
+    if (!records.length) return;
+    await db.mediaChunks.bulkPut(records.splice(0));
+    if (!onStoredChunk) {
+      pendingChunks.length = 0;
+      return;
+    }
+    for (const chunk of pendingChunks.splice(0)) {
+      await onStoredChunk(chunk);
+    }
+  };
 
   for (let idx = 0; idx < total; idx += 1) {
     const start = idx * chunkSize;
@@ -740,29 +753,20 @@ export const saveMessageMedia = async (
       ownerId: messageId,
       idx,
       enc_b64,
-      mime: file.type || "application/octet-stream",
+      mime: mediaRef.mime,
       total,
       updatedAt: now,
     });
+    pendingChunks.push({ idx, total, bytes });
     if (records.length >= MEDIA_WRITE_BATCH_SIZE) {
-      await db.mediaChunks.bulkPut(records.splice(0));
+      await flushRecords();
     }
     if (shouldYieldMedia(idx, total)) {
       await yieldToEventLoop();
     }
   }
 
-  if (records.length) await db.mediaChunks.bulkPut(records);
-
-  const mediaRef: MediaRef = {
-    ownerType: "message",
-    ownerId: messageId,
-    mime: file.type || "application/octet-stream",
-    total,
-    chunkSize,
-    name: file.name,
-    size: file.size,
-  };
+  await flushRecords();
 
   return mediaRef;
 };
@@ -779,11 +783,11 @@ export const saveReceivedMessageMediaChunk = async (input: {
   await ensureDbOpen();
   const vk = requireVaultKey();
   const ownerId = input.ownerId.trim();
-  if (!ownerId || ownerId.length > 256) throw new Error("Invalid media owner");
+  if (!isValidMediaOwnerId(ownerId)) throw new Error("Invalid media owner");
   if (!Number.isInteger(input.idx) || input.idx < 0) throw new Error("Invalid media chunk index");
   if (!Number.isInteger(input.total) || input.total <= 0) throw new Error("Invalid media chunk total");
   if (input.idx >= input.total) throw new Error("Invalid media chunk index");
-  if (!Number.isInteger(input.chunkSize) || input.chunkSize <= 0 || input.chunkSize > MEDIA_CHUNK_SIZE) {
+  if (!Number.isInteger(input.chunkSize) || input.chunkSize <= 0 || input.chunkSize > MAX_MEDIA_CHUNK_SIZE) {
     throw new Error("Invalid media chunk size");
   }
   if (!Number.isFinite(input.size) || input.size <= 0 || input.size > MAX_MEDIA_BYTES) {
@@ -795,6 +799,50 @@ export const saveReceivedMessageMediaChunk = async (input: {
   if (input.bytes.byteLength <= 0 || input.bytes.byteLength > input.chunkSize) {
     throw new Error("Invalid media chunk payload");
   }
+  if (input.total !== Math.ceil(input.size / input.chunkSize)) {
+    throw new Error("Invalid media chunk total");
+  }
+  const expectedChunkBytes = input.idx === input.total - 1
+    ? input.size - input.chunkSize * (input.total - 1)
+    : input.chunkSize;
+  if (input.bytes.byteLength !== expectedChunkBytes) {
+    throw new Error("Invalid media chunk payload length");
+  }
+  const mime = normalizeMediaMime(input.mime);
+  if (isPreviewMediaClaim(input.mime) && !isSafePreviewMime(mime)) {
+    throw new Error("Unsupported media preview type");
+  }
+  if (input.idx === 0 && isSafePreviewMime(mime) && !hasValidPreviewSignature(mime, input.bytes)) {
+    throw new Error("Media content does not match its declared type");
+  }
+
+  const messageRecord = await db.messages.get(ownerId);
+  if (!messageRecord) throw new Error("Media manifest is missing");
+  const message = await decryptJsonRecord<Message>(
+    vk,
+    messageRecord.id,
+    "message",
+    messageRecord.enc_b64
+  );
+  const manifest = parseIncomingMediaRef(message.media, ownerId);
+  if (
+    !manifest ||
+    manifest.total !== input.total ||
+    manifest.chunkSize !== input.chunkSize ||
+    manifest.size !== input.size ||
+    manifest.mime !== mime
+  ) {
+    throw new Error("Media chunk does not match its authenticated manifest");
+  }
+
+  const existing = await db.mediaChunks
+    .where("ownerId")
+    .equals(ownerId)
+    .and((chunk) => chunk.ownerType === "message")
+    .first();
+  if (existing && (existing.total !== input.total || normalizeMediaMime(existing.mime) !== mime)) {
+    throw new Error("Inconsistent media metadata");
+  }
 
   const chunkId = `${ownerId}:${input.idx}`;
   const enc_b64 = await encodeBinaryEnvelope(vk, chunkId, "mediaChunk", input.bytes);
@@ -804,7 +852,7 @@ export const saveReceivedMessageMediaChunk = async (input: {
     ownerId,
     idx: input.idx,
     enc_b64,
-    mime: input.mime || "application/octet-stream",
+    mime,
     total: input.total,
     updatedAt: Date.now(),
   });
@@ -820,6 +868,8 @@ export const loadMessageMedia = async (mediaRef?: MediaRef) => {
   try {
     await ensureDbOpen();
     if (!mediaRef) return null;
+    const validatedRef = parseIncomingMediaRef(mediaRef, mediaRef.ownerId);
+    if (!validatedRef) return null;
     const vk = requireVaultKey();
     const chunks = await db.mediaChunks
       .where("ownerId")
@@ -828,14 +878,16 @@ export const loadMessageMedia = async (mediaRef?: MediaRef) => {
       .sortBy("idx");
 
     if (!chunks.length) return null;
-    if (!Number.isFinite(mediaRef.total) || mediaRef.total <= 0) return null;
-    if (!Number.isFinite(mediaRef.chunkSize) || mediaRef.chunkSize <= 0) return null;
-    if (chunks.length !== mediaRef.total) return null;
-    if (mediaRef.total * mediaRef.chunkSize > MAX_MEDIA_BYTES) return null;
-    if (mediaRef.size > MAX_MEDIA_BYTES) return null;
+    if (chunks.length !== validatedRef.total) return null;
+    if (chunks.some((chunk, index) =>
+      chunk.idx !== index ||
+      chunk.total !== validatedRef.total ||
+      normalizeMediaMime(chunk.mime) !== validatedRef.mime
+    )) return null;
 
-    const decrypted = await decryptMediaToBlob(vk, chunks, mediaRef.mime, MAX_MEDIA_BYTES);
+    const decrypted = await decryptMediaToBlob(vk, chunks, validatedRef.mime, MAX_MEDIA_BYTES);
     if (!decrypted) return null;
+    if (decrypted.totalBytes !== validatedRef.size) return null;
     return decrypted.blob;
   } catch {
     return null;

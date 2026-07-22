@@ -516,7 +516,7 @@ export default function RightPanel({
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/*"
+                      accept="image/png,image/jpeg,image/gif,image/webp"
                       className="hidden"
                       onChange={handleOverrideChange}
                     />
@@ -660,6 +660,7 @@ export default function RightPanel({
                                         className="h-16 w-full rounded-lg object-cover"
                                         muted
                                         playsInline
+                                        preload="metadata"
                                       />
                                     ) : (
                                       <div className="flex h-16 items-center justify-center text-[10px] text-nkc-muted">
@@ -733,6 +734,7 @@ export default function RightPanel({
                           className="max-h-[60vh] w-full rounded-lg object-contain"
                           controls
                           playsInline
+                          preload="metadata"
                         />
                       );
                     }
@@ -817,6 +819,7 @@ export default function RightPanel({
                             className="h-full w-full rounded-md object-cover"
                             muted
                             playsInline
+                            preload="metadata"
                           />
                         ) : (
                           <div className="flex h-full w-full items-center justify-center text-[10px] text-nkc-muted">
@@ -922,6 +925,5 @@ export default function RightPanel({
     </aside>
   );
 }
-
 
 

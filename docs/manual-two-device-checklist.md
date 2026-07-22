@@ -54,7 +54,7 @@ Expected:
 - The initial request reaches B even when A starts in the default self-onion mode.
 - B can accept without an already-established friendship route.
 - A receives `friend_accept` and shows B's supplied display name and status.
-- Both profiles retain the current friend code and Tor/alternateRoute routing hints.
+- Both profiles retain the current friend code and Tor Onion routing hints.
 - Invalidly signed or protocol-invalid control frames are logged as dropped and do not change profiles or conversations.
 
 ## 6) Large file and concurrent chat

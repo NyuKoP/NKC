@@ -68,6 +68,7 @@ type NetConfigState = {
   setSelfOnionMinRelays: (value: number) => void;
   setOnionEnabled: (value: boolean) => void;
   setOnionNetwork: (value: NetConfig["onionSelectedNetwork"]) => void;
+  setTorAutoPrepareOnAppStart: (value: boolean) => void;
   setComponentState: (
     network: NetConfig["onionSelectedNetwork"],
     state: Partial<NetConfig["tor"]>
@@ -135,6 +136,11 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
     const next = enforceRules({ ...get().config, onionSelectedNetwork: value });
     persistConfig(next);
     syncInternalOnionRouteRuntimeWithConfig(next);
+    set({ config: next });
+  },
+  setTorAutoPrepareOnAppStart: (value) => {
+    const next = enforceRules({ ...get().config, torAutoPrepareOnAppStart: value });
+    persistConfig(next);
     set({ config: next });
   },
   setComponentState: (network, state) => {

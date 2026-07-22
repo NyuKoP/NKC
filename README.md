@@ -2,7 +2,7 @@
 
 NKC is a serverless, end-to-end encrypted desktop chat application built with Electron, React, TypeScript, and a native Go worker. It stores encrypted event envelopes locally and routes peer-to-peer traffic through privacy-preserving transports, with onion routing preferred by policy.
 
-> **Project status:** active development. The current package version is `0.4.1`; interfaces, storage formats, and network behavior may still change.
+> **Project status:** active development. The current package version is `0.4.3`; interfaces, storage formats, and network behavior may still change.
 
 ## Features
 
@@ -24,7 +24,7 @@ For the security rules that implementations must preserve, see [Transport Securi
 - Node.js and npm compatible with the versions used by the lockfile
 - Go `1.26` or newer for the native worker
 - A supported Electron desktop platform: Windows, macOS, or Linux
-- Tor or alternateRoute only when exercising their corresponding live transport paths
+- Tor only when exercising the live Onion transport path
 
 ## Getting Started
 
@@ -122,7 +122,6 @@ Common development and runtime environment variables include:
 | `NKC_TOR_PATH` | Path to a Tor executable used by the managed Tor runtime and live tests |
 | `NKC_TOR_BRIDGES` | Tor bridge/circumvention mode override |
 | `NKC_TOR_COUNTRY` | Tor country setting used by the runtime |
-| `NKC_alternateRoute_PATH` | Path to a alternateRoute executable |
 | `NKC_GO_WORKER_PATH` | Path to a prebuilt native worker |
 | `NKC_SYSTEM_TOR_BIN` | System Tor binary considered by the onion runtime |
 | `VITE_RENDEZVOUS_BASE_URL` | Rendezvous signaling endpoint override |
@@ -167,4 +166,5 @@ NKC handles cryptographic keys and private communications. Treat changes to cryp
 
 ## License
 
-No license file is currently included. Unless a license is added, normal copyright restrictions apply.
+NKC is licensed under GPL version 3 only.
+See [LICENSE](LICENSE).

@@ -5,6 +5,7 @@ import { buildKeyAgreementRecord, verifyKeyAgreementRecord } from "../net/friend
 import type { externalFriendProtocol } from "../net/friendProtocol/types";
 import type { UserProfile } from "../db/repo";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
+import { decodeFriendCodeV1 } from "../security/friendCode";
 import { getSodium } from "../security/sodium";
 
 export type FriendControlFrameType = "friend_req" | "friend_accept" | "friend_decline";
@@ -47,6 +48,14 @@ export type FriendResponseFrame = {
 export type FriendControlFrame = FriendRequestFrame | FriendResponseFrame;
 
 export type UnsignedFriendControlFrame = Omit<FriendControlFrame, "sig">;
+
+export const FRIEND_CONTROL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+export const FRIEND_CONTROL_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
+export const isFriendControlFrameFresh = (frame: FriendControlFrame, now = Date.now()) =>
+  Number.isFinite(frame.ts) &&
+  Number(frame.ts) >= now - FRIEND_CONTROL_MAX_AGE_MS &&
+  Number(frame.ts) <= now + FRIEND_CONTROL_MAX_FUTURE_SKEW_MS;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) && typeof value === "object";
@@ -95,7 +104,6 @@ export const enrichFriendControlFrameWithProtocol = async (
     remoteDhPub?: string;
     remoteDeviceId?: string;
     remoteOnionAddr?: string;
-    remotealternateRouteAddr?: string;
   }
 ): Promise<UnsignedFriendControlFrame> => {
   if ((frame as FriendControlFrame).protocol) return frame;
@@ -110,7 +118,6 @@ export const enrichFriendControlFrameWithProtocol = async (
     remoteDhPub: options?.remoteDhPub,
     remoteDeviceId: options?.remoteDeviceId,
     remoteOnionAddr: options?.remoteOnionAddr,
-    remotealternateRouteAddr: options?.remotealternateRouteAddr,
   });
   return {
     ...frame,
@@ -127,6 +134,21 @@ export const verifyFriendControlFrameProtocol = async (
   frame: FriendControlFrame,
   options?: { localFriendCode?: string; localDhPriv?: Uint8Array }
 ) => {
+  if (frame.from.friendCode) {
+    const decoded = decodeFriendCodeV1(frame.from.friendCode);
+    if ("error" in decoded) {
+      return { ok: false, verified: true as const, reason: "friend-code-invalid" };
+    }
+    if (decoded.identityPub !== frame.from.identityPub) {
+      return { ok: false, verified: true as const, reason: "friend-code-identity-mismatch" };
+    }
+    if (decoded.dhPub !== frame.from.dhPub) {
+      return { ok: false, verified: true as const, reason: "friend-code-dh-mismatch" };
+    }
+    if (decoded.deviceId && frame.from.deviceId && decoded.deviceId !== frame.from.deviceId) {
+      return { ok: false, verified: true as const, reason: "friend-code-device-mismatch" };
+    }
+  }
   const protocol = frame.protocol;
   if (!protocol) return { ok: true, verified: false as const };
   if (protocol.v !== 1) {

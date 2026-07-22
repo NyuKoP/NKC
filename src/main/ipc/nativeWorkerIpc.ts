@@ -73,12 +73,16 @@ export const registerNativeWorkerIpc = (options: RegisterNativeWorkerIpcOptions)
       ) {
         return { ok: false, error: "invalid-file-request" };
       }
-      const result = await client.request(
-        "file.chunk",
+      const response = await client.requestBinary<{ index: number; bytes: number }>(
+        "file.chunk.binary",
         { path: payload.path, index: payload.index, chunkSize: payload.chunkSize },
+        undefined,
         30_000
       );
-      return { ok: true, result };
+      return {
+        ok: true,
+        result: { ...response.result, data: new Uint8Array(response.body) },
+      };
     }
   );
 
@@ -108,12 +112,14 @@ export const registerNativeWorkerIpc = (options: RegisterNativeWorkerIpcOptions)
     return { ok: true, result };
   });
 
-  ipcMain.handle("nativeWorker:receiveWrite", async (event, payload: { token?: string; transferId?: string; index?: number; data?: string }) => {
+  ipcMain.handle("nativeWorker:receiveWrite", async (event, payload: { token?: string; transferId?: string; index?: number; data?: string | Uint8Array }) => {
     options.assertTrustedIpcSender(event);
     const client = requireClient(payload?.token);
     if (!client) return { ok: false, error: "native-worker-unavailable" };
-    if (!payload.transferId || !Number.isInteger(payload.index) || typeof payload.data !== "string") return { ok: false, error: "invalid-receive-request" };
-    const result = await client.request("file.receive.write", { transferId: payload.transferId, index: payload.index, data: payload.data }, 30_000);
+    if (!payload.transferId || !Number.isInteger(payload.index) || !(typeof payload.data === "string" || payload.data instanceof Uint8Array)) return { ok: false, error: "invalid-receive-request" };
+    const result = payload.data instanceof Uint8Array
+      ? (await client.requestBinary("file.receive.write.binary", { transferId: payload.transferId, index: payload.index }, payload.data, 30_000)).result
+      : await client.request("file.receive.write", { transferId: payload.transferId, index: payload.index, data: payload.data }, 30_000);
     return { ok: true, result };
   });
 

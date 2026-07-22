@@ -31,10 +31,13 @@ type SendPayload = {
   messageId: string;
   ciphertext: string;
   priority?: "high" | "normal";
+  outboxRetention?: "standard" | "transient";
+  transferId?: string;
+  chunkIndex?: number;
+  binaryTransport?: boolean;
   toDeviceId?: string;
   route?: {
     torOnion?: string;
-    alternateRoute?: string;
   };
 };
 
@@ -64,7 +67,7 @@ const debugLog = (label: string, payload: Record<string, unknown>) => {
 
 type DerivedRoutingMeta = {
   toDeviceId?: string;
-  route?: { torOnion?: string; alternateRoute?: string };
+  route?: { torOnion?: string };
   staleDeviceAliases?: string[];
 };
 
@@ -91,7 +94,6 @@ const deriveRoutingMetaFromStores = (
       ? {
           toDeviceId: decodedFriendCode.deviceId,
           torOnion: decodedFriendCode.onionAddr,
-          alternateRoute: decodedFriendCode.alternateRouteAddr,
         }
       : undefined;
   const toDeviceId =
@@ -100,10 +102,9 @@ const deriveRoutingMetaFromStores = (
     partner.deviceId ??
     recovered?.toDeviceId;
   const torOnion = partner.routingHints?.onionAddr ?? recovered?.torOnion;
-  const alternateRoute = partner.routingHints?.alternateRouteAddr ?? recovered?.alternateRoute;
   return {
     toDeviceId,
-    route: torOnion || alternateRoute ? { torOnion, alternateRoute } : undefined,
+    route: torOnion ? { torOnion } : undefined,
     staleDeviceAliases: [partner.friendId, partner.id].filter(
       (value): value is string => Boolean(value && value.trim())
     ),
@@ -268,7 +269,6 @@ type RouteGateSnapshot = {
   torBootstrapped: boolean | null;
   torControlReady: null;
   directOpen: boolean;
-  alternateRouteReady: boolean | null;
   wakuReady: null;
   hasRouteTarget: boolean;
 };
@@ -291,7 +291,7 @@ type GateDecision =
 
 const toRouteGateSnapshot = (
   config: NetConfig,
-  route?: { torOnion?: string; alternateRoute?: string }
+  route?: { torOnion?: string }
 ): RouteGateSnapshot => {
   const routeState = useInternalOnionRouteStore.getState().route;
   const connection = getConnectionStatus();
@@ -316,9 +316,8 @@ const toRouteGateSnapshot = (
     torBootstrapped: config.onionSelectedNetwork === "tor" ? routerConnected : null,
     torControlReady: null,
     directOpen,
-    alternateRouteReady: null,
     wakuReady: null,
-    hasRouteTarget: Boolean(route?.torOnion || route?.alternateRoute),
+    hasRouteTarget: Boolean(route?.torOnion),
   };
 };
 
@@ -340,7 +339,7 @@ const enforceRouteGate = (args: {
   wanted: TransportKind;
   config: NetConfig;
   toDeviceId?: string;
-  route?: { torOnion?: string; alternateRoute?: string };
+  route?: { torOnion?: string };
 }): GateDecision => {
   const snapshot = toRouteGateSnapshot(args.config, args.route);
   emitRouteGateCheck(args.opId, args.wanted, snapshot);
@@ -471,10 +470,10 @@ const ensureInboundListener = async () => {
 
 const resolveTransportForExplicitRoute = (
   chosen: TransportKind,
-  route?: { torOnion?: string; alternateRoute?: string }
+  route?: { torOnion?: string }
 ) => {
   if (chosen !== "selfOnion") return chosen;
-  if (!route?.torOnion && !route?.alternateRoute) return chosen;
+  if (!route?.torOnion) return chosen;
   const routeState = useInternalOnionRouteStore.getState().route;
   return routeState.status === "ready" ? chosen : "onionRouter";
 };
@@ -500,13 +499,16 @@ export const sendCiphertext = async (
     priority: payload.priority ?? "normal",
     toDeviceId,
     torOnion: route?.torOnion,
-    alternateRoute: route?.alternateRoute,
     createdAtMs,
     expiresAtMs: computeExpiresAt(createdAtMs),
     lastAttemptAtMs: createdAtMs,
     nextAttemptAtMs: createdAtMs,
     attempts: 0,
     status: "pending",
+    retention: payload.outboxRetention ?? "standard",
+    transferId: payload.transferId,
+    chunkIndex: payload.chunkIndex,
+    binaryTransport: payload.binaryTransport,
   };
 
   warnOnionRouterGuards(config);
@@ -564,7 +566,6 @@ export const sendCiphertext = async (
           deferredReason: gateDecision.reason,
           hasToDeviceId: Boolean(toDeviceId),
           hasTorOnion: Boolean(route?.torOnion),
-          hasalternateRoute: Boolean(route?.alternateRoute),
           mode: config.mode,
           onionEnabled: config.onionEnabled,
           onionSelectedNetwork: config.onionSelectedNetwork,
@@ -603,7 +604,6 @@ export const sendCiphertext = async (
         attempts: attemptTrace,
         hasToDeviceId: Boolean(toDeviceId),
         hasTorOnion: Boolean(route?.torOnion),
-        hasalternateRoute: Boolean(route?.alternateRoute),
         mode: config.mode,
         onionEnabled: config.onionEnabled,
         onionSelectedNetwork: config.onionSelectedNetwork,
@@ -629,7 +629,7 @@ export const sendCiphertext = async (
     onionEnabled: config.onionEnabled,
     onionSelectedNetwork: config.onionSelectedNetwork,
     hasToDeviceId: Boolean(toDeviceId),
-    hasRoute: Boolean(route?.torOnion || route?.alternateRoute),
+    hasRoute: Boolean(route?.torOnion),
   });
 
   await enqueueOutgoing(record);
@@ -679,7 +679,9 @@ export const sendCiphertext = async (
     await putOutbox(record);
     const packet: TransportPacket = {
       id: payload.messageId,
-      payload: payload.ciphertext,
+      payload: payload.binaryTransport
+        ? new TextEncoder().encode(payload.ciphertext)
+        : payload.ciphertext,
       toDeviceId,
       route,
     } as TransportPacket;
@@ -734,7 +736,6 @@ export const sendCiphertext = async (
         attempts: attemptTrace,
         hasToDeviceId: Boolean(toDeviceId),
         hasTorOnion: Boolean(route?.torOnion),
-        hasalternateRoute: Boolean(route?.alternateRoute),
         mode: config.mode,
         onionEnabled: config.onionEnabled,
         onionSelectedNetwork: config.onionSelectedNetwork,
@@ -791,7 +792,6 @@ export const sendCiphertext = async (
           attempts: attemptTrace,
           hasToDeviceId: Boolean(toDeviceId),
           hasTorOnion: Boolean(route?.torOnion),
-          hasalternateRoute: Boolean(route?.alternateRoute),
           mode: config.mode,
           onionEnabled: config.onionEnabled,
           onionSelectedNetwork: config.onionSelectedNetwork,
@@ -835,7 +835,6 @@ export const sendCiphertext = async (
           deferredReason,
           hasToDeviceId: Boolean(toDeviceId),
           hasTorOnion: Boolean(route?.torOnion),
-          hasalternateRoute: Boolean(route?.alternateRoute),
           mode: config.mode,
           onionEnabled: config.onionEnabled,
           onionSelectedNetwork: config.onionSelectedNetwork,
@@ -896,7 +895,6 @@ export const sendCiphertext = async (
               fallbackKinds,
               hasToDeviceId: Boolean(toDeviceId),
               hasTorOnion: Boolean(route?.torOnion),
-              hasalternateRoute: Boolean(route?.alternateRoute),
               mode: config.mode,
               onionEnabled: config.onionEnabled,
               onionSelectedNetwork: config.onionSelectedNetwork,
@@ -958,7 +956,6 @@ export const sendCiphertext = async (
                 deferredReason,
                 hasToDeviceId: Boolean(toDeviceId),
                 hasTorOnion: Boolean(route?.torOnion),
-                hasalternateRoute: Boolean(route?.alternateRoute),
                 mode: config.mode,
                 onionEnabled: config.onionEnabled,
                 onionSelectedNetwork: config.onionSelectedNetwork,
@@ -1018,7 +1015,6 @@ export const sendCiphertext = async (
         fallbackKinds,
         hasToDeviceId: Boolean(toDeviceId),
         hasTorOnion: Boolean(route?.torOnion),
-        hasalternateRoute: Boolean(route?.alternateRoute),
         mode: config.mode,
         onionEnabled: config.onionEnabled,
         onionSelectedNetwork: config.onionSelectedNetwork,
@@ -1041,14 +1037,12 @@ export const sendOutboxRecord = async (
     : false;
   const toDeviceId = (hasStaleAlias ? derived.toDeviceId : record.toDeviceId ?? derived.toDeviceId)?.trim();
   const torOnion = record.torOnion ?? derived.route?.torOnion;
-  const alternateRoute = record.alternateRoute ?? derived.route?.alternateRoute;
   const policy = config.mode === "onionRouter" || config.onionEnabled ? "STRICT" : "ALLOW_FALLBACK";
 
-  if ((!record.toDeviceId || hasStaleAlias) && (toDeviceId || torOnion || alternateRoute)) {
+  if ((!record.toDeviceId || hasStaleAlias) && (toDeviceId || torOnion)) {
     const patch: Partial<OutboxRecord> = {};
     if (toDeviceId) patch.toDeviceId = toDeviceId;
     if (torOnion) patch.torOnion = torOnion;
-    if (alternateRoute) patch.alternateRoute = alternateRoute;
     if (Object.keys(patch).length) {
       await updateOutbox(record.id, patch);
     }
@@ -1058,14 +1052,14 @@ export const sendOutboxRecord = async (
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolveTransportForExplicitRoute(
     resolve(config, controller),
-    torOnion || alternateRoute ? { torOnion, alternateRoute } : undefined
+    torOnion ? { torOnion } : undefined
   );
   const gateDecision = enforceRouteGate({
     opId: record.id,
     wanted: chosen,
     config,
     toDeviceId,
-    route: torOnion || alternateRoute ? { torOnion, alternateRoute } : undefined,
+    route: torOnion ? { torOnion } : undefined,
   });
 
   if (!gateDecision.ok) {
@@ -1144,7 +1138,7 @@ export const sendOutboxRecord = async (
     onionEnabled: config.onionEnabled,
     onionSelectedNetwork: config.onionSelectedNetwork,
     hasToDeviceId: Boolean(toDeviceId),
-    hasRoute: Boolean(torOnion || alternateRoute),
+    hasRoute: Boolean(torOnion),
   });
 
   if (config.onionEnabled && chosen === "selfOnion") {
@@ -1208,10 +1202,11 @@ export const sendOutboxRecord = async (
     await ensureStarted(transport);
     const packet: TransportPacket = {
       id: record.id,
-      payload: record.ciphertext,
+      payload: record.binaryTransport
+        ? new TextEncoder().encode(record.ciphertext)
+        : record.ciphertext,
       toDeviceId,
-      route:
-        torOnion || alternateRoute ? { torOnion, alternateRoute } : undefined,
+      route: torOnion ? { torOnion } : undefined,
     } as TransportPacket;
     const startedAt = Date.now();
     emitFlowTraceLog({

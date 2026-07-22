@@ -214,6 +214,6 @@ export const createSecureOutboxStore = (keyring = defaultSecureStorageKeyring) =
       "lastAttemptAtMs",
       "inFlightAtMs",
     ],
-    sensitiveFields: ["ciphertext", "lastError", "toDeviceId", "torOnion", "alternateRoute"],
+    sensitiveFields: ["ciphertext", "lastError", "toDeviceId", "torOnion"],
     keyring,
   });

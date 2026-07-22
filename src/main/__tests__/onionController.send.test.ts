@@ -81,4 +81,21 @@ describe("handleOnionSend Go routing boundary", () => {
       body: { ok: false, error: "forward_failed:native_transport_unavailable" },
     });
   });
+
+  it("returns a bounded error response when native forwarding rejects", async () => {
+    const deps = baseDeps();
+    deps.forwardRouted.mockRejectedValueOnce(new Error("native_worker_header_too_large"));
+    const result = await handleOnionSend(
+      {
+        toDeviceId: "peer-1",
+        envelope: "ciphertext",
+        route: { mode: "manual", torOnion: `${"a".repeat(56)}.onion` },
+      },
+      deps
+    );
+    expect(result).toEqual({
+      status: 502,
+      body: { ok: false, error: "forward_failed:native_transport_error" },
+    });
+  });
 });

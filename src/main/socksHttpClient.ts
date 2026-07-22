@@ -61,7 +61,7 @@ type NativeFetchResult = {
 };
 
 export const createNativeSocksTransport = (
-  client: Pick<NativeWorkerClient, "request">
+  client: Pick<NativeWorkerClient, "request"> & Partial<Pick<NativeWorkerClient, "requestBinary">>
 ): SocksTransport => ({
   fetch: async (url, options) => {
     const maxAttempts = Math.max(1, Math.min(3, options.retry?.attempts ?? 1));
@@ -102,16 +102,30 @@ export const createNativeSocksTransport = (
       throw error;
     }
   },
-  forward: async (payload, options) =>
-    client.request(
+  forward: async (payload, options) => {
+    const params = {
+      torProxyUrl: options.torProxyUrl?.trim() ?? "",
+      queueOnFailure: options.queueOnFailure ?? true,
+    };
+    if (client.requestBinary) {
+      const response = await client.requestBinary<{
+        status: number;
+        body: Record<string, unknown>;
+        traces?: Array<Record<string, unknown> & { event: string }>;
+      }>(
+        "transport.forward.binary",
+        params,
+        Buffer.from(JSON.stringify(payload), "utf8"),
+        95_000
+      );
+      return response.result;
+    }
+    return client.request(
       "transport.forward",
-      {
-        payload,
-        torProxyUrl: options.torProxyUrl?.trim() ?? "",
-        queueOnFailure: options.queueOnFailure ?? true,
-      },
+      { payload, ...params },
       95_000
-    ),
+    );
+  },
   clearProxy: async (proxyUrl) => {
     await client.request("transport.clearProxy", { proxyUrl: proxyUrl?.trim() ?? "" }, 5_000);
   },

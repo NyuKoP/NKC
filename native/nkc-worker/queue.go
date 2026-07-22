@@ -547,6 +547,9 @@ func (q *queueStore) patchStatus(ids map[string]bool, status, lastError string) 
 			q.state.Messages[index].NextAttemptAt = 0
 			q.state.Messages[index].LastError = ""
 			q.state.Messages[index].DeliveredAt = now
+			// Delivery receipts retain metadata; the encrypted payload is no longer
+			// needed for retry and should not be rewritten on every later update.
+			q.state.Messages[index].Payload = ""
 		}
 	}
 	return q.persist()

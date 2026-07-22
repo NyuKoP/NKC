@@ -148,9 +148,21 @@ export const handleOnionSend = async (payload: OnionSendPayload, deps: OnionSend
         body: { ok: false, error: "forward_failed:native_transport_unavailable" },
       };
     }
-    const result = await deps.forwardRouted(payload);
-    result.traces?.forEach((trace) => emitTrace(trace));
-    return { status: result.status, body: result.body };
+    try {
+      const result = await deps.forwardRouted(payload);
+      result.traces?.forEach((trace) => emitTrace(trace));
+      return { status: result.status, body: result.body };
+    } catch (error) {
+      emitTrace({
+        event: "onionController:forward:error",
+        level: "error",
+        reason: error instanceof Error ? error.message : String(error),
+      });
+      return {
+        status: 502,
+        body: { ok: false, error: "forward_failed:native_transport_error" },
+      };
+    }
   }
 
   // Legacy/local fallback is only safe for explicit loopback sends.
@@ -274,25 +286,28 @@ export const startOnionController = async (options?: {
           3_000,
           Math.min(FORWARD_TIMEOUT_MS, probeOptions?.timeoutMs ?? FORWARD_TIMEOUT_MS)
         );
-        const responses = await Promise.all(
-          proxyUrls.map((proxyUrl) =>
-            socksTransport.fetch(`http://${normalized}/onion/health`, {
+        const probes = proxyUrls.map(async (proxyUrl) => {
+          const response = await socksTransport.fetch(`http://${normalized}/onion/health`, {
               method: "GET",
               socksProxyUrl: proxyUrl,
               timeoutMs,
-            })
-          )
-        );
+            });
+          if (response.status !== 200) throw new Error(`prewarm-http-${response.status}`);
+          return proxyUrl;
+        });
+        const winningProxy = await Promise.any(probes);
         const elapsedMs = Date.now() - startedAt;
-        if (responses.every((response) => response.status === 200)) {
-          torPrewarmSuccess.set(normalized, Date.now());
-          return { ok: true, elapsedMs };
+        torPrewarmSuccess.set(normalized, Date.now());
+        const winningIndex = torForwarding.proxyUrls.indexOf(winningProxy);
+        if (winningIndex > 0) {
+          torForwarding.proxyUrls = [
+            winningProxy,
+            ...torForwarding.proxyUrls.filter((proxyUrl) => proxyUrl !== winningProxy),
+          ];
         }
-        return {
-          ok: false,
-          elapsedMs,
-          error: `prewarm-http-${responses.map((response) => response.status).join(",")}`,
-        };
+        torForwarding.proxyUrl = torForwarding.proxyUrls[0] ?? null;
+        torForwarding.nextProxyIndex = 0;
+        return { ok: true, elapsedMs };
       } catch (error) {
         return {
           ok: false,
@@ -324,6 +339,9 @@ export const startOnionController = async (options?: {
     const entry: InboxItem = { ...item, expiresAt };
     const entryBytes = getItemBytes(entry);
     const state = inbox.get(deviceId) ?? { baseIndex: 0, bytes: 0, items: [] };
+    if (state.items.some((existing) => existing.id === item.id)) {
+      return true;
+    }
     if (
       inboxItems >= MAX_INBOX_ITEMS ||
       state.items.length >= MAX_DEVICE_INBOX_ITEMS ||

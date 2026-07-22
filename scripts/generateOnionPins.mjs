@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 
@@ -8,26 +7,6 @@ const fetchText = async (url) => {
     throw new Error(`Fetch failed ${res.status} ${url}`);
   }
   return res.text();
-};
-
-const fetchJson = async (url) => {
-  const res = await fetch(url, { headers: { "User-Agent": "nkc-onion-pinner" } });
-  if (!res.ok) {
-    throw new Error(`Fetch failed ${res.status} ${url}`);
-  }
-  return res.json();
-};
-
-const sha256FromUrl = async (url) => {
-  const res = await fetch(url, { headers: { "User-Agent": "nkc-onion-pinner" } });
-  if (!res.ok) {
-    throw new Error(`Download failed ${res.status} ${url}`);
-  }
-  const hash = crypto.createHash("sha256");
-  for await (const chunk of res.body) {
-    hash.update(chunk);
-  }
-  return hash.digest("hex");
 };
 
 const compareVersions = (a, b) => {
@@ -98,45 +77,6 @@ const extractTorPins = async () => {
   return pins;
 };
 
-const detectPlatform = (name) => {
-  if (/win32|windows/i.test(name)) return "win32";
-  if (/macos|darwin|osx|mac/i.test(name)) return "darwin";
-  if (/linux/i.test(name)) return "linux";
-  if (/android/i.test(name)) return "android";
-  return null;
-};
-
-const detectArch = (name) => {
-  if (/x86_64|amd64/i.test(name)) return "x64";
-  if (/i686|x86(?!_64)/i.test(name)) return "ia32";
-  if (/arm64|aarch64/i.test(name)) return "arm64";
-  if (/armv7|arm(?!64)/i.test(name)) return "arm";
-  return null;
-};
-
-const extractalternateRoutePins = async () => {
-  const release = await fetchJson("https://api.github.com/repos/oxen-io/alternateRoute/releases/latest");
-  const version = String(release.tag_name ?? "").replace(/^v/i, "");
-  const assets = Array.isArray(release.assets) ? release.assets : [];
-  const pins = [];
-  for (const asset of assets) {
-    if (!asset?.name || !asset?.browser_download_url) continue;
-    if (asset.name.endsWith(".asc") || asset.name.endsWith(".sig")) continue;
-    const platform = detectPlatform(asset.name);
-    const arch = detectArch(asset.name);
-    if (!platform || !arch) continue;
-    const sha256 = await sha256FromUrl(asset.browser_download_url);
-    pins.push({
-      platform,
-      arch,
-      version,
-      filename: asset.name,
-      sha256,
-    });
-  }
-  return pins;
-};
-
 const renderMap = (entries) => {
   return entries
     .map(
@@ -148,7 +88,6 @@ const renderMap = (entries) => {
 
 const main = async () => {
   const torPins = await extractTorPins();
-  const alternateRoutePins = await extractalternateRoutePins();
   const output = `export type PinnedKeyParts = {
   platform: NodeJS.Platform;
   arch: NodeJS.Architecture;
@@ -162,9 +101,6 @@ export const makePinnedKey = (parts: PinnedKeyParts) =>
 export const pinnedSha256 = {
   tor: {
 ${renderMap(torPins)}
-  },
-  alternateRoute: {
-${renderMap(alternateRoutePins)}
   },
 } as const;
 `;

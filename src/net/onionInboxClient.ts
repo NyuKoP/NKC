@@ -21,17 +21,11 @@ type PollerHandle = {
 
 type HealthResponse = {
   ok: boolean;
-  network: "tor" | "alternateRoute" | "none";
+  network: "tor" | "none";
   details?: string;
   tor?: {
     active: boolean;
     socksProxy?: string | null;
-    address?: string;
-    details?: string;
-  };
-  alternateRoute?: {
-    active: boolean;
-    proxyUrl?: string | null;
     address?: string;
     details?: string;
   };
@@ -49,7 +43,6 @@ type SendResponse = {
 type AddressResponse = {
   ok: boolean;
   torOnion?: string;
-  alternateRoute?: string;
   details?: string;
 };
 
@@ -332,7 +325,7 @@ export class OnionInboxClient {
     toDeviceId: string,
     envelope: string,
     ttlMs?: number,
-    route?: { mode: "auto" | "preferalternateRoute" | "preferTor" | "manual"; torOnion?: string; alternateRoute?: string },
+    route?: { mode: "auto" | "preferTor" | "manual"; torOnion?: string },
     signal?: AbortSignal,
     operationId?: string
   ): Promise<SendResponse> {
@@ -494,7 +487,8 @@ export class OnionInboxClient {
       state.schedule(backoffMs);
     };
 
-    state.schedule(POLL_BASE_DELAY_MS);
+    // Poll immediately so pending friend requests do not wait for the first interval.
+    state.schedule(0);
 
     return {
       stop: () => {

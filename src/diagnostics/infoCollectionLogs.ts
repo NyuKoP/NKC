@@ -44,7 +44,6 @@ export type FriendRouteOutgoingInfoLogInput = {
   senderDeviceId?: string;
   toDeviceId?: string;
   torOnion?: string;
-  alternateRoute?: string;
   error?: string;
   context?: Record<string, unknown>;
   errorDetail?: InfoLogErrorDetail;
@@ -130,7 +129,6 @@ let infoSequence = 0;
 const SENSITIVE_LOG_KEYS = new Set([
   "friendcode",
   "toronion",
-  "alternateRoute",
   "onionaddr",
   "onionaddress",
   "destination",
