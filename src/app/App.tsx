@@ -92,6 +92,7 @@ import {
   selectTorRuntimeCandidate,
   type TorRuntimeCandidate,
 } from "../net/tor/runtimeCandidate";
+import { ensurePublishedLocalOnionEndpoint } from "../net/tor/localOnionEndpoint";
 import { sanitizeRoutingHints } from "../net/privacy";
 import {
   buildGroupInviteEvent,
@@ -573,7 +574,7 @@ export default function App() {
     setSelectedConv(null);
   }, [clearConnectionToastGuard, setData, setSelectedConv, setSessionState]);
 
-  const resolveLocalRoutingHintsForFriendCode = useCallback(async () => {
+  const resolveLocalRoutingHintsForFriendCode = useCallback(async (requirePublished = true) => {
     const localDeviceId = getOrCreateDeviceId();
     const fallback = sanitizeRoutingHints({
       deviceId: localDeviceId,
@@ -594,19 +595,18 @@ export default function App() {
     let onionAddr: string | undefined;
     let alternateRouteAddr: string | undefined;
 
-    if (netConfig.onionSelectedNetwork === "tor" && nkc.ensureHiddenService) {
+    if (netConfig.onionSelectedNetwork === "tor") {
       try {
-        await nkc.ensureHiddenService();
-      } catch {
-        // Best-effort only.
-      }
-    }
-    if (nkc.getMyOnionAddress) {
-      try {
-        const value = (await nkc.getMyOnionAddress()).trim();
+        let value = "";
+        if (requirePublished) {
+          value = (await ensurePublishedLocalOnionEndpoint())?.trim() ?? "";
+        } else {
+          await nkc.ensureHiddenService?.();
+          value = (await nkc.getMyOnionAddress?.())?.trim() ?? "";
+        }
         if (value) onionAddr = value;
       } catch {
-        // Best-effort only.
+        onionAddr = undefined;
       }
     }
     if (nkc.getMyalternateRouteAddress) {
@@ -631,11 +631,13 @@ export default function App() {
     userProfile?.routingHints?.onionAddr,
   ]);
 
-  const buildLocalFriendCodePayload = useCallback(async (): Promise<Omit<FriendCodeV1, "v">> => {
+  const buildLocalFriendCodePayload = useCallback(async (
+    options?: { requirePublished?: boolean }
+  ): Promise<Omit<FriendCodeV1, "v">> => {
     const [identityPub, dhPub, localHints] = await Promise.all([
       getIdentityPublicKey(),
       getDhPublicKey(),
-      resolveLocalRoutingHintsForFriendCode(),
+      resolveLocalRoutingHintsForFriendCode(options?.requirePublished ?? true),
     ]);
     return {
       identityPub: encodeBase64Url(identityPub),
@@ -977,16 +979,46 @@ export default function App() {
   useEffect(() => {
     if (ui.mode !== "app") return;
     if (friendInboxStarted.current) return;
-    startFriendInboxListener(() => {
+    startFriendInboxListener((event) => {
       void hydrateVault();
+      if (event?.type === "friend_req") {
+        addToast({ message: "새 친구 요청이 도착했습니다." });
+      }
     }, {
       getLocalFriendCode: async () => {
-        const payload = await buildLocalFriendCodePayload();
+        const payload = await buildLocalFriendCodePayload({ requirePublished: false });
         return encodeFriendCodeV1({ v: 1, ...payload });
       },
     });
     friendInboxStarted.current = true;
-  }, [buildLocalFriendCodePayload, hydrateVault, ui.mode]);
+  }, [addToast, buildLocalFriendCodePayload, hydrateVault, ui.mode]);
+
+  useEffect(() => {
+    if (ui.mode !== "app") return;
+    let disposed = false;
+    let preparing = false;
+    const prepare = async () => {
+      if (disposed || preparing) return;
+      preparing = true;
+      try {
+        const status = await getOnionStatus();
+        if (status.runtime.status !== "running") return;
+        await ensurePublishedLocalOnionEndpoint();
+      } catch {
+        // The next status event or timer retries publication readiness.
+      } finally {
+        preparing = false;
+      }
+    };
+    void prepare();
+    const unsubscribe = onBackgroundStatus(() => void prepare());
+    const timer = window.setInterval(() => void prepare(), 5_000);
+    return () => {
+      disposed = true;
+      unsubscribe();
+      window.clearInterval(timer);
+    };
+  }, [ui.mode]);
 
   useEffect(() => {
     if (ui.mode !== "app") {

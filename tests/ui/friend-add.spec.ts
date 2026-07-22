@@ -272,6 +272,7 @@ const seedNetworkConfig = async (
         ensureHiddenService: async () => ({ ok: true }),
         getMyOnionAddress: async () => (selectedNetwork === "tor" ? serviceAddress ?? "" : ""),
         getMyalternateRouteAddress: async () => (selectedNetwork === "alternateRoute" ? serviceAddress ?? "" : ""),
+        prewarmOnionRoute: async () => ({ ok: true, elapsedMs: 1 }),
         startTor: async () => ({ ok: true }),
         stopTor: async () => ({ ok: true }),
         getTorStatus: async () => ({ state: "running", socksProxyUrl: "socks5://127.0.0.1:9050" }),
@@ -430,11 +431,11 @@ test.describe("Friend add E2E", () => {
     const bob = await bobContext.newPage();
     const aliceServiceAddress =
       network === "tor"
-        ? "alicefriendabcdefghijklmnop1234567890abcdefghijklmnop.onion"
+        ? `${"a".repeat(56)}.onion`
         : "alice.loki";
     const bobServiceAddress =
       network === "tor"
-        ? "bobfriendabcdefghijklmnop1234567890abcdefghijklmnop12.onion"
+        ? `${"b".repeat(56)}.onion`
         : "bob.loki";
     await seedNetworkConfig(alice, onionServer.baseUrl, {
       selectedNetwork: network,

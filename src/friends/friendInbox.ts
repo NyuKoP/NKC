@@ -7,7 +7,7 @@ import { emitFriendRouteIncomingInfoLog } from "../diagnostics/infoCollectionLog
 
 const textDecoder = new TextDecoder();
 let started = false;
-let onChangeCallback: (() => void) | null = null;
+let onChangeCallback: ((event?: { type: FriendFrameType }) => void) | null = null;
 let getLocalFriendCodeCallback: (() => Promise<string | undefined>) | null = null;
 
 type FriendFrameType = "friend_req" | "friend_accept" | "friend_decline";
@@ -52,7 +52,7 @@ const toInfoLogErrorDetail = (error: unknown) => {
 };
 
 export const startFriendInboxListener = (
-  onChange?: () => void,
+  onChange?: (event?: { type: FriendFrameType }) => void,
   options?: { getLocalFriendCode?: () => Promise<string | undefined> }
 ) => {
   if (onChange) {
@@ -168,7 +168,7 @@ export const startFriendInboxListener = (
             frame.type === "friend_accept" || frame.type === "friend_decline",
         },
       });
-      onChangeCallback?.();
+      onChangeCallback?.({ type: frame.type });
     })().catch((error) => console.warn("[friend] inbox handle failed", error));
   });
 };

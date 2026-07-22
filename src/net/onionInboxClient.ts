@@ -80,8 +80,9 @@ const safeError = (error: unknown) =>
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const SEND_TIMEOUT_MS = 60_000;
-const POLL_BASE_DELAY_MS = 1000;
+const POLL_BASE_DELAY_MS = 250;
 const POLL_MAX_DELAY_MS = 8000;
+const POLL_JITTER_MS = 100;
 
 const sharedInFlightRequests = new Map<string, Promise<unknown>>();
 
@@ -458,7 +459,7 @@ export class OnionInboxClient {
     };
     sharedPollers.set(pollerKey, state);
 
-    const jitterDelay = (value: number) => value + Math.floor(Math.random() * 251);
+    const jitterDelay = (value: number) => value + Math.floor(Math.random() * (POLL_JITTER_MS + 1));
 
     state.schedule = (delayMs: number) => {
       if (!state.active) return;
