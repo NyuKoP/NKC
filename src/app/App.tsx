@@ -113,6 +113,7 @@ import { getConvAllowDirect, setGroupAvatarOverride } from "../security/preferen
 import { setFriendAlias } from "../storage/friendStore";
 import { resolveDisplayName, resolveFriendDisplayName } from "../utils/displayName";
 import { startFriendRequestScheduler } from "../friends/friendRequestScheduler";
+import { isTorFriendCodeReady } from "../friends/friendCodeReadiness";
 import {
   startFriendResponseScheduler,
   type PendingFriendResponseType,
@@ -320,6 +321,12 @@ export default function App() {
   const friendRouteWakeSignatureRef = useRef<Record<string, string>>({});
   const friendRequestInFlightRef = useRef(new Map<string, Promise<boolean>>());
   const onionRouteRequired = netConfig.mode === "onionRouter" || netConfig.onionEnabled;
+
+  const setFriendAddDialogOpen = useCallback((open: boolean) => {
+    setMyFriendCode("");
+    setFriendCodeRuntimeSnapshot(EMPTY_RUNTIME_NETWORK_SNAPSHOT);
+    setFriendAddOpen(open);
+  }, []);
 
   const {
     groupAvatarOverrides,
@@ -656,17 +663,16 @@ export default function App() {
     setFriendCodeRuntimeSnapshot((prev) =>
       sameRuntimeNetworkSnapshot(prev, runtimeSnapshot) ? prev : runtimeSnapshot
     );
-    const selectedRuntimeState =
-      netConfig.onionSelectedNetwork === "tor"
-        ? runtimeSnapshot.torState
-        : runtimeSnapshot.alternateRouteState;
-    if (onionRouteRequired && selectedRuntimeState !== "running") {
+    if (runtimeSnapshot.torState !== "running") {
       setMyFriendCode((prev) => (prev ? "" : prev));
       return;
     }
     const payload = await buildLocalFriendCodePayload();
-    const hasRouteTarget = Boolean(payload.onionAddr || payload.alternateRouteAddr);
-    if (onionRouteRequired && !hasRouteTarget) {
+    const verifiedRuntimeSnapshot = await resolveRuntimeNetworkSnapshot();
+    setFriendCodeRuntimeSnapshot((prev) =>
+      sameRuntimeNetworkSnapshot(prev, verifiedRuntimeSnapshot) ? prev : verifiedRuntimeSnapshot
+    );
+    if (!isTorFriendCodeReady(verifiedRuntimeSnapshot, payload)) {
       setMyFriendCode((prev) => (prev ? "" : prev));
       return;
     }
@@ -678,8 +684,6 @@ export default function App() {
   }, [
     buildLocalFriendCodePayload,
     friendAddOpen,
-    netConfig.onionSelectedNetwork,
-    onionRouteRequired,
     resolveRuntimeNetworkSnapshot,
     userProfile,
   ]);
@@ -710,11 +714,15 @@ export default function App() {
       }
     };
     void refreshAll();
+    const unsubscribe = onBackgroundStatus(() => {
+      void refreshAll();
+    });
     const timer = window.setInterval(() => {
       void refreshAll();
     }, 4_000);
     return () => {
       disposed = true;
+      unsubscribe();
       window.clearInterval(timer);
     };
   }, [
@@ -729,41 +737,22 @@ export default function App() {
 
   const friendAddHint = useMemo(() => {
     if (!friendAddOpen) return null;
+    if (!myFriendCode && friendCodeRuntimeSnapshot.torState !== "running") {
+      return "Tor 연결이 확인되면 친구 코드가 자동으로 생성됩니다.";
+    }
     if (!myFriendCode) {
-      if (onionRouteRequired) {
-        const selectedNetwork = netConfig.onionSelectedNetwork;
-        const selectedLabel = selectedNetwork === "tor" ? "Tor" : "alternateRoute";
-        const selectedStatus = selectedNetwork === "tor"
-          ? friendCodeRuntimeSnapshot.torState
-          : friendCodeRuntimeSnapshot.alternateRouteState;
-        if (selectedStatus === "running") {
-          return `${selectedLabel} 경로 주소를 기다리는 중입니다. 주소가 확인되면 코드 복사가 활성화됩니다.`;
-        }
-        return `${selectedLabel} 연결 준비 중입니다. 준비가 끝나면 코드가 자동으로 생성됩니다.`;
-      }
-      return "친구 코드를 준비 중입니다.";
+      return "Tor에 연결되었습니다. Onion 주소를 확인하는 중입니다.";
     }
     const decoded = decodeFriendCodeV1(myFriendCode);
     if ("error" in decoded) {
       return "친구 코드 생성이 불완전할 수 있습니다. 잠시 후 다시 복사해 주세요.";
     }
 
-    const hasRouteTarget = Boolean(decoded.onionAddr || decoded.alternateRouteAddr);
-    const selectedNetwork = netConfig.onionSelectedNetwork;
-    const selectedLabel = selectedNetwork === "tor" ? "Tor" : "alternateRoute";
-    const selectedStatus = selectedNetwork === "tor"
-      ? friendCodeRuntimeSnapshot.torState
-      : friendCodeRuntimeSnapshot.alternateRouteState;
-    const selectedReady = selectedStatus === "running";
-
-    if (onionRouteRequired && !hasRouteTarget) {
-      if (selectedReady) {
-        return `${selectedLabel} 런타임은 동작 중이지만 코드의 라우팅 주소가 아직 준비되지 않았습니다. 잠시 후 코드를 다시 복사하세요.`;
-      }
-      return `${selectedLabel} 연결이 아직 준비되지 않아 코드에 라우팅 주소가 없을 수 있습니다. 대안: 내 코드를 먼저 상대에게 보내 상대가 먼저 친구 추가하게 하거나, 네트워크 설정에서 ${selectedLabel} 연결 후 코드를 다시 복사하세요.`;
+    if (!isTorFriendCodeReady(friendCodeRuntimeSnapshot, decoded)) {
+      return "Tor 연결 또는 Onion 주소가 더 이상 준비되지 않았습니다.";
     }
     return null;
-  }, [friendAddOpen, friendCodeRuntimeSnapshot, myFriendCode, netConfig, onionRouteRequired]);
+  }, [friendAddOpen, friendCodeRuntimeSnapshot, myFriendCode]);
 
   useEffect(() => {
     const unsubscribe = onTransportStatusChange((convId, status) => {
@@ -3243,17 +3232,22 @@ export default function App() {
       let refreshed = "";
       let hasRouteTarget = false;
       let refreshAttempts = 0;
+      setMyFriendCode("");
       for (const delayMs of [0, 700, 1400]) {
         if (delayMs > 0) {
           await waitMs(delayMs);
         }
         refreshAttempts += 1;
         const payload = await buildLocalFriendCodePayload();
+        const candidateRuntime = await resolveRuntimeNetworkSnapshot();
+        if (!isTorFriendCodeReady(candidateRuntime, payload)) {
+          setMyFriendCode("");
+          continue;
+        }
         refreshed = encodeFriendCodeV1({ v: 1, ...payload });
         setMyFriendCode(refreshed);
         const decoded = decodeFriendCodeV1(refreshed);
-        hasRouteTarget =
-          !("error" in decoded) && Boolean(decoded.onionAddr || decoded.alternateRouteAddr);
+        hasRouteTarget = !("error" in decoded) && Boolean(decoded.onionAddr);
         if (hasRouteTarget) break;
       }
 
@@ -3262,7 +3256,10 @@ export default function App() {
       setFriendCodeRuntimeSnapshot((prev) =>
         sameRuntimeNetworkSnapshot(prev, runtimeSnapshot) ? prev : runtimeSnapshot
       );
-      const resolved = hasRouteTarget && routerOpened;
+      const resolved = hasRouteTarget && routerOpened && runtimeSnapshot.torState === "running";
+      if (!resolved) {
+        setMyFriendCode("");
+      }
       emitRouterTestLog({
         status: resolved ? "ready" : "failed",
         stage: "friend-route-resolve:result",
@@ -4563,7 +4560,7 @@ export default function App() {
         search={ui.search}
         onSearch={setSearch}
         onSelectConv={handleSelectConv}
-        onAddFriend={() => setFriendAddOpen(true)}
+        onAddFriend={() => setFriendAddDialogOpen(true)}
         onCreateGroup={handleCreateGroup}
         onFriendChat={handleFriendChat}
         onFriendViewProfile={handleFriendViewProfile}
@@ -4674,10 +4671,10 @@ export default function App() {
       {userProfile ? (
         <FriendAddDialog
           open={friendAddOpen}
-          onOpenChange={setFriendAddOpen}
+          onOpenChange={setFriendAddDialogOpen}
           myCode={myFriendCode}
           myCodeHint={friendAddHint}
-          myCodeLoading={onionRouteRequired && !myFriendCode}
+          myCodeLoading={!myFriendCode}
           routeResolveBusy={routeResolveBusy}
           onCopyCode={handleCopyFriendCode}
           onResolveRoute={handleResolveFriendRoute}
