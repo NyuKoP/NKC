@@ -2,7 +2,7 @@ import { canonicalBytes } from "../crypto/canonicalJson";
 import { buildContactExchangeRecord, verifyContactExchangeRecord } from "../net/friendProtocol/contactExchangeManager";
 import { buildHandshakeRecord, verifyHandshakeRecord } from "../net/friendProtocol/handshakeManager";
 import { buildKeyAgreementRecord, verifyKeyAgreementRecord } from "../net/friendProtocol/keyAgreementManager";
-import type { externalFriendProtocol } from "../net/friendProtocol/types";
+import type { FriendControlProtocol } from "../net/friendProtocol/types";
 import type { UserProfile } from "../db/repo";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 import { decodeFriendCodeV1 } from "../security/friendCode";
@@ -29,7 +29,7 @@ export type FriendRequestFrame = {
   traceId?: string;
   from: FriendFrameFrom;
   profile?: FriendFrameProfile;
-  protocol?: externalFriendProtocol;
+  protocol?: FriendControlProtocol;
   ts?: number;
   sig?: string;
 };
@@ -40,7 +40,7 @@ export type FriendResponseFrame = {
   traceId?: string;
   from: FriendFrameFrom;
   profile?: FriendFrameProfile;
-  protocol?: externalFriendProtocol;
+  protocol?: FriendControlProtocol;
   ts?: number;
   sig?: string;
 };

@@ -37,15 +37,15 @@ vi.mock("../../../security/deviceRole", () => ({
 }));
 
 import { buildKeyAgreementRecord, verifyKeyAgreementRecord } from "../keyAgreementManager";
-import type { externalContactExchangeRecord, externalHandshakeRecord, HandshakeFrameInput } from "../types";
+import type { FriendContactExchangeRecord, FriendHandshakeRecord, HandshakeFrameInput } from "../types";
 
-const handshake: externalHandshakeRecord = {
+const handshake: FriendHandshakeRecord = {
   v: 1,
   transcriptHash: "transcript",
   proofSig: "proof",
 };
 
-const contactExchange: externalContactExchangeRecord = {
+const contactExchange: FriendContactExchangeRecord = {
   v: 1,
   profileHash: "profile",
   keyCommitment: "commitment",

@@ -2,8 +2,8 @@ import { canonicalBytes } from "../../crypto/canonicalJson";
 import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
 import { getSodium } from "../../security/sodium";
 import type {
-  externalContactExchangeRecord,
-  externalHandshakeRecord,
+  FriendContactExchangeRecord,
+  FriendHandshakeRecord,
   HandshakeFrameInput,
   ProtocolVerifyResult,
 } from "./types";
@@ -36,9 +36,9 @@ const buildKeyCommitment = async (frame: HandshakeFrameInput, transcriptHash: st
 
 export const buildContactExchangeRecord = async (
   frame: HandshakeFrameInput,
-  handshake: externalHandshakeRecord,
+  handshake: FriendHandshakeRecord,
   identityPriv: Uint8Array
-): Promise<externalContactExchangeRecord> => {
+): Promise<FriendContactExchangeRecord> => {
   const sodium = await getSodium();
   const profileHash = await buildProfileHash(frame);
   const keyCommitment = await buildKeyCommitment(frame, handshake.transcriptHash);
@@ -58,8 +58,8 @@ export const buildContactExchangeRecord = async (
 
 export const verifyContactExchangeRecord = async (
   frame: HandshakeFrameInput,
-  handshake: externalHandshakeRecord,
-  record: externalContactExchangeRecord
+  handshake: FriendHandshakeRecord,
+  record: FriendContactExchangeRecord
 ): Promise<ProtocolVerifyResult> => {
   if (record.v !== 1) return { ok: false, reason: "contact-version" };
   try {
@@ -85,4 +85,3 @@ export const verifyContactExchangeRecord = async (
     return { ok: false, reason: "contact-verify-error" };
   }
 };
-

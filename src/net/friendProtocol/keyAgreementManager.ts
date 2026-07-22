@@ -5,21 +5,33 @@ import { decodeFriendCodeV1 } from "../../security/friendCode";
 import { getDhPrivateKey, getDhPublicKey, getIdentityPublicKey } from "../../security/identityKeys";
 import { getSodium } from "../../security/sodium";
 import type {
-  externalContactExchangeRecord,
-  externalHandshakeRecord,
-  externalKeyAgreementRecord,
+  FriendContactExchangeRecord,
+  FriendHandshakeRecord,
+  FriendKeyAgreementRecord,
   FriendCodePayload,
   HandshakeFrameInput,
   ProtocolVerifyResult,
 } from "./types";
 
 const KEY_AGREEMENT_PROTOCOL_VERSION = 1;
-const COMMIT_LABEL = new TextDecoder().decode(Uint8Array.from([111,114,103,46,98,114,105,97,114,112,114,111,106,101,99,116,46,98,114,97,109,98,108,101,46,107,101,121,97,103,114,101,101,109,101,110,116,47,67,79,77,77,73,84]));
-const SHARED_SECRET_LABEL = new TextDecoder().decode(Uint8Array.from([111,114,103,46,98,114,105,97,114,112,114,111,106,101,99,116,46,98,114,97,109,98,108,101,46,107,101,121,97,103,114,101,101,109,101,110,116,47,83,72,65,82,69,68,95,83,69,67,82,69,84]));
-const MASTER_KEY_LABEL = new TextDecoder().decode(Uint8Array.from([111,114,103,46,98,114,105,97,114,112,114,111,106,101,99,116,46,98,114,97,109,98,108,101,46,107,101,121,97,103,114,101,101,109,101,110,116,47,77,65,83,84,69,82,95,83,69,67,82,69,84]));
-const CONFIRMATION_KEY_LABEL = new TextDecoder().decode(Uint8Array.from([111,114,103,46,98,114,105,97,114,112,114,111,106,101,99,116,46,98,114,97,109,98,108,101,46,107,101,121,97,103,114,101,101,109,101,110,116,47,67,79,78,70,73,82,77,65,84,73,79,78,95,75,69,89]));
-const CONFIRMATION_MAC_LABEL = new TextDecoder().decode(Uint8Array.from([111,114,103,46,98,114,105,97,114,112,114,111,106,101,99,116,46,98,114,97,109,98,108,101,46,107,101,121,97,103,114,101,101,109,101,110,116,47,67,79,78,70,73,82,77,65,84,73,79,78,95,77,65,67]));
-const textEncoder = new TextEncoder();
+const bytesFromHex = (hex: string) =>
+  Uint8Array.from(hex.match(/.{2}/g) ?? [], (byte) => Number.parseInt(byte, 16));
+// Compatibility labels remain byte-for-byte stable for existing peers.
+const COMMIT_LABEL = bytesFromHex(
+  "6f72672e627269617270726f6a6563742e6272616d626c652e6b657961677265656d656e742f434f4d4d4954"
+);
+const SHARED_SECRET_LABEL = bytesFromHex(
+  "6f72672e627269617270726f6a6563742e6272616d626c652e6b657961677265656d656e742f5348415245445f534543524554"
+);
+const MASTER_KEY_LABEL = bytesFromHex(
+  "6f72672e627269617270726f6a6563742e6272616d626c652e6b657961677265656d656e742f4d41535445525f534543524554"
+);
+const CONFIRMATION_KEY_LABEL = bytesFromHex(
+  "6f72672e627269617270726f6a6563742e6272616d626c652e6b657961677265656d656e742f434f4e4649524d4154494f4e5f4b4559"
+);
+const CONFIRMATION_MAC_LABEL = bytesFromHex(
+  "6f72672e627269617270726f6a6563742e6272616d626c652e6b657961677265656d656e742f434f4e4649524d4154494f4e5f4d4143"
+);
 
 type KeyAgreementBuildOptions = {
   pskHint?: string;
@@ -62,8 +74,8 @@ const createNonce = async () => {
 };
 
 const toConfirmationPayload = (
-  handshake: externalHandshakeRecord,
-  contact: externalContactExchangeRecord,
+  handshake: FriendHandshakeRecord,
+  contact: FriendContactExchangeRecord,
   nonce: string,
   pskHint?: string
 ) => ({
@@ -75,8 +87,8 @@ const toConfirmationPayload = (
 });
 
 const computeConfirmation = async (
-  handshake: externalHandshakeRecord,
-  contact: externalContactExchangeRecord,
+  handshake: FriendHandshakeRecord,
+  contact: FriendContactExchangeRecord,
   nonce: string,
   pskHint?: string
 ) => {
@@ -133,7 +145,7 @@ const deriveCommitmentBytes = async (dhPub: string) => {
   const sodium = await getSodium();
   const digest = sodium.crypto_generichash(
     32,
-    concatBytes([textEncoder.encode(COMMIT_LABEL), decodeBase64Url(dhPub)])
+    concatBytes([COMMIT_LABEL, decodeBase64Url(dhPub)])
   );
   return digest.slice(0, 16);
 };
@@ -205,7 +217,7 @@ const deriveSharedSecret = async (
   return sodium.crypto_generichash(
     32,
     concatBytes([
-      textEncoder.encode(SHARED_SECRET_LABEL),
+      SHARED_SECRET_LABEL,
       shared,
       new Uint8Array([KEY_AGREEMENT_PROTOCOL_VERSION]),
       alicePub,
@@ -227,7 +239,7 @@ const deriveConfirmationV1 = async (
   const sodium = await getSodium();
   const ck = sodium.crypto_generichash(
     32,
-    concatBytes([textEncoder.encode(CONFIRMATION_KEY_LABEL), sharedSecret])
+    concatBytes([CONFIRMATION_KEY_LABEL, sharedSecret])
   );
   const localPayloadBytes = canonicalBytes(localPayload);
   const remotePayloadBytes = canonicalBytes(remotePayload);
@@ -241,7 +253,7 @@ const deriveConfirmationV1 = async (
       : [bobPayload, bobPub, alicePayload, alicePub];
   const confirmationBytes = sodium.crypto_generichash(
     32,
-    concatBytes([textEncoder.encode(CONFIRMATION_MAC_LABEL), ck, ...ordered, context])
+    concatBytes([CONFIRMATION_MAC_LABEL, ck, ...ordered, context])
   );
   return encodeBase64Url(confirmationBytes);
 };
@@ -250,16 +262,16 @@ const deriveMasterKeyHint = async (sharedSecret: Uint8Array) => {
   const sodium = await getSodium();
   const masterKey = sodium.crypto_generichash(
     32,
-    concatBytes([textEncoder.encode(MASTER_KEY_LABEL), sharedSecret])
+    concatBytes([MASTER_KEY_LABEL, sharedSecret])
   );
   return encodeBase64Url(masterKey.slice(0, 12));
 };
 
 export const buildKeyAgreementRecord = async (
-  handshake: externalHandshakeRecord,
-  contact: externalContactExchangeRecord,
+  handshake: FriendHandshakeRecord,
+  contact: FriendContactExchangeRecord,
   options?: KeyAgreementBuildOptions
-): Promise<externalKeyAgreementRecord> => {
+): Promise<FriendKeyAgreementRecord> => {
   const nonce = await createNonce();
   const pskHint = options?.pskHint?.trim() || undefined;
   const remotePeer = resolveRemotePeer(options);
@@ -314,9 +326,9 @@ export const buildKeyAgreementRecord = async (
 
 export const verifyKeyAgreementRecord = async (
   frame: HandshakeFrameInput,
-  handshake: externalHandshakeRecord,
-  contact: externalContactExchangeRecord,
-  record: externalKeyAgreementRecord,
+  handshake: FriendHandshakeRecord,
+  contact: FriendContactExchangeRecord,
+  record: FriendKeyAgreementRecord,
   options?: KeyAgreementVerifyOptions
 ): Promise<ProtocolVerifyResult> => {
   if (record.v !== 1) return { ok: false, reason: "key-agreement-version" };

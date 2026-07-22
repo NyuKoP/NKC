@@ -2,7 +2,7 @@ import { canonicalBytes } from "../../crypto/canonicalJson";
 import { decodeBase64Url, encodeBase64Url } from "../../security/base64url";
 import { getSodium } from "../../security/sodium";
 import type {
-  externalHandshakeRecord,
+  FriendHandshakeRecord,
   HandshakeFrameInput,
   ProtocolVerifyResult,
 } from "./types";
@@ -21,7 +21,7 @@ const toTranscript = (frame: HandshakeFrameInput) => ({
 export const buildHandshakeRecord = async (
   frame: HandshakeFrameInput,
   identityPriv: Uint8Array
-): Promise<externalHandshakeRecord> => {
+): Promise<FriendHandshakeRecord> => {
   const sodium = await getSodium();
   const transcriptBytes = canonicalBytes(toTranscript(frame));
   const transcriptHash = encodeBase64Url(sodium.crypto_generichash(32, transcriptBytes));
@@ -35,7 +35,7 @@ export const buildHandshakeRecord = async (
 
 export const verifyHandshakeRecord = async (
   frame: HandshakeFrameInput,
-  record: externalHandshakeRecord
+  record: FriendHandshakeRecord
 ): Promise<ProtocolVerifyResult> => {
   if (record.v !== 1) return { ok: false, reason: "handshake-version" };
   try {
@@ -53,4 +53,3 @@ export const verifyHandshakeRecord = async (
     return { ok: false, reason: "handshake-verify-error" };
   }
 };
-

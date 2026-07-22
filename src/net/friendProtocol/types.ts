@@ -24,20 +24,20 @@ export type FriendCodePayload = {
   onionAddr?: string;
 };
 
-export type externalHandshakeRecord = {
+export type FriendHandshakeRecord = {
   v: 1;
   transcriptHash: string;
   proofSig: string;
 };
 
-export type externalContactExchangeRecord = {
+export type FriendContactExchangeRecord = {
   v: 1;
   profileHash: string;
   keyCommitment: string;
   profileSig: string;
 };
 
-export type externalKeyAgreementRecord = {
+export type FriendKeyAgreementRecord = {
   v: 1;
   method: "identity_dh" | "friend_code_oob_v1";
   nonce: string;
@@ -49,11 +49,11 @@ export type externalKeyAgreementRecord = {
   pskHint?: string;
 };
 
-export type externalFriendProtocol = {
+export type FriendControlProtocol = {
   v: 1;
-  handshake: externalHandshakeRecord;
-  contactExchange: externalContactExchangeRecord;
-  keyAgreement: externalKeyAgreementRecord;
+  handshake: FriendHandshakeRecord;
+  contactExchange: FriendContactExchangeRecord;
+  keyAgreement: FriendKeyAgreementRecord;
 };
 
 export type ProtocolVerifyResult = {
