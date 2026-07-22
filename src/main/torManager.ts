@@ -144,6 +144,8 @@ export class TorManager {
   private expectProcessExit = false;
   private bridgeDetail: string | null = null;
   private bridgeModeOverride: "force" | null = null;
+  private macSignatureRepairAttempted = false;
+  private macSystemTorFallbackAttempted = false;
 
   constructor(opts: { appDataDir: string; instanceId?: string }) {
     const suffix = opts.instanceId?.trim() ? `-${opts.instanceId.trim()}` : "";
@@ -212,6 +214,48 @@ export class TorManager {
     await new Promise<void>((resolve) => {
       execFile("xattr", ["-dr", "com.apple.quarantine", torPath], () => resolve());
     });
+  }
+
+  private async repairMacCodeSignature(torPath: string) {
+    if (process.platform !== "darwin") return;
+    const torDir = path.dirname(torPath);
+    const candidates = [
+      path.join(torDir, "libevent-2.1.7.dylib"),
+      path.join(torDir, "pluggable_transports", "conjure-client"),
+      path.join(torDir, "pluggable_transports", "lyrebird"),
+      torPath,
+    ].filter((candidate) => fs.existsSync(candidate));
+    for (const candidate of candidates) {
+      await new Promise<void>((resolve, reject) => {
+        execFile("/usr/bin/codesign", ["--force", "--sign", "-", candidate], (error, _stdout, stderr) => {
+          if (!error) {
+            resolve();
+            return;
+          }
+          reject(
+            new Error(
+              `codesign failed for ${path.basename(candidate)}: ${stderr?.trim() || error.message}`
+            )
+          );
+        });
+      });
+    }
+    await this.clearMacQuarantine(path.dirname(torDir));
+  }
+
+  private resolveMacSystemTorPath(currentPath: string) {
+    if (process.platform !== "darwin") return null;
+    const candidates = [
+      findInPath("tor"),
+      "/opt/homebrew/bin/tor",
+      "/usr/local/bin/tor",
+      "/opt/local/bin/tor",
+      "/usr/bin/tor",
+    ].filter((candidate): candidate is string => Boolean(candidate));
+    return candidates.find(
+      (candidate) =>
+        fs.existsSync(candidate) && path.resolve(candidate) !== path.resolve(currentPath)
+    ) ?? null;
   }
 
   private resolveCountryCode() {
@@ -385,6 +429,35 @@ export class TorManager {
       ),
     ]);
     if (!portReady || !bootstrapReady) {
+      const failedDetails = this.status.state === "failed" ? this.status.details : "";
+      const macKilled = process.platform === "darwin" && failedDetails.includes("signal=SIGKILL");
+      if (macKilled && !this.macSignatureRepairAttempted) {
+        this.macSignatureRepairAttempted = true;
+        try {
+          await this.repairMacCodeSignature(torPath);
+          await this.startInternal(opts);
+          return;
+        } catch (error) {
+          const detail = error instanceof Error ? error.message : String(error);
+          this.emit({ state: "failed", details: `[MACOS_TOR_BLOCKED] ${detail}` });
+        }
+      }
+      if (macKilled && !this.macSystemTorFallbackAttempted) {
+        this.macSystemTorFallbackAttempted = true;
+        const systemTorPath = this.resolveMacSystemTorPath(torPath);
+        if (systemTorPath) {
+          this.torPath = systemTorPath;
+          await this.startInternal(opts);
+          return;
+        }
+      }
+      if (macKilled) {
+        this.emit({
+          state: "failed",
+          details: `[MACOS_TOR_BLOCKED] bundled Tor exited with SIGKILL and no working system Tor was found | ${failedDetails}`,
+        });
+        return;
+      }
       if (this.status.state === "failed" && this.isDataDirConflict(this.status.details)) {
         return;
       }
@@ -465,6 +538,8 @@ export class TorManager {
 
   invalidateResolvedPath() {
     this.torPath = null;
+    this.macSignatureRepairAttempted = false;
+    this.macSystemTorFallbackAttempted = false;
   }
 
   getDiagnostics(): TorDiagnostics {
