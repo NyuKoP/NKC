@@ -6,6 +6,7 @@ import {
   KeyRound,
   Monitor,
   Palette,
+  RefreshCw,
   Shield,
   Users,
 } from "lucide-react";
@@ -31,7 +32,8 @@ export type SettingsView =
   | "help"
   | "login"
   | "storage"
-  | "devices";
+  | "devices"
+  | "updates";
 
 export type SettingsRoute = {
   key:
@@ -42,7 +44,8 @@ export type SettingsRoute = {
     | "settings.privacy"
     | "settings.login"
     | "settings.theme"
-    | "settings.storage";
+    | "settings.storage"
+    | "settings.updates";
   view: SettingsView;
   label: LocalizedLabel;
   testId?: string;
@@ -72,6 +75,7 @@ export const SETTINGS_ROUTES: SettingsRoute[] = [
     testId: "settings-theme-button",
   },
   { key: "settings.storage", view: "storage", label: { ko: "저장소 관리", en: "Storage management" } },
+  { key: "settings.updates", view: "updates", label: { ko: "앱 업데이트", en: "App updates" } },
 ];
 
 export const routeIconByView: Record<
@@ -86,4 +90,5 @@ export const routeIconByView: Record<
   login: KeyRound,
   theme: Palette,
   storage: HardDrive,
+  updates: RefreshCw,
 };

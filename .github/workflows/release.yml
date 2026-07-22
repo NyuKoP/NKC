@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create draft with generated release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
+            gh release create "$GITHUB_REF_NAME" --draft --generate-notes --title "NKC $GITHUB_REF_NAME"
+
+  publish:
+    needs: prepare-release
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: native/nkc-worker/go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Refresh Tor pins
+        run: npm run update:tor-pins
+
+      - name: Build
+        run: npm run build
+
+      - name: Publish Linux update
+        if: runner.os == 'Linux'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npx electron-builder --linux AppImage deb --publish always
+
+      - name: Publish macOS update
+        if: runner.os == 'macOS'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npx electron-builder --mac dmg zip --publish always
+
+      - name: Prepare Windows package
+        if: runner.os == 'Windows'
+        run: |
+          npm run generate:icons
+          npx electron-builder --win dir --publish never
+          npm run edit:win-exe
+
+      - name: Publish Windows update
+        if: runner.os == 'Windows'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: npx electron-builder --win nsis --prepackaged release/win-unpacked --publish always
+
+  finalize-release:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false

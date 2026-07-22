@@ -38,6 +38,7 @@ import { defaultAppPrefs, type AppPreferences, type AppPreferencesPatch } from "
 import { fetchWithTimeout } from "./net/fetchWithTimeout";
 import { createSafeConsole } from "./diagnostics/safeConsole";
 import { shouldUseDevRuntime } from "./main/runtimeMode";
+import { registerAppUpdaterIpc, scheduleInitialAppUpdateCheck } from "./main/appUpdater";
 
 export { resetPreloadToken } from "./main/ipc/nativeWorkerIpc";
 export { loadKeyPair, saveKeyPair } from "./main/services/secretStore";
@@ -1708,6 +1709,7 @@ app.whenReady().then(async () => {
     getNativeWorkerClient: () => nativeWorkerClient,
   });
   registerAppIpc();
+  registerAppUpdaterIpc(assertTrustedIpcSender);
   registerTestLogIpc(assertTrustedIpcSender);
   (async () => {
     torManager = new TorManager({ appDataDir: app.getPath("userData") });
@@ -1803,6 +1805,7 @@ app.whenReady().then(async () => {
   await applyPrefs(prefs);
   createTray();
   createMainWindow();
+  scheduleInitialAppUpdateCheck();
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createMainWindow();

@@ -64,6 +64,7 @@ import NetworkSettings from "./settings/sections/NetworkSettings";
 import NotificationsSettings from "./settings/sections/NotificationsSettings";
 import PrivacySettings from "./settings/sections/PrivacySettings";
 import StorageSettings from "./settings/sections/StorageSettings";
+import AppUpdateSettings from "./settings/sections/AppUpdateSettings";
 import {
   SETTINGS_ROUTES,
   routeIconByView,
@@ -1446,6 +1447,10 @@ export default function SettingsDialog({
                 setPendingFocusRequested(true);
               }}
             />
+          )}
+          {/* APP UPDATES */}
+          {view === "updates" && (
+            <AppUpdateSettings t={t} onBack={() => setView("main")} />
           )}
           {/* HELP */}
           {view === "help" && (

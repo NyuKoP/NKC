@@ -4,15 +4,22 @@ import { PinnedHashMissingError } from "../../errors";
 import { installTor } from "../installTor";
 
 describe("pinned hash checks", () => {
-  it("returns a pinned hash for a known Tor asset", () => {
-    const hash = getPinnedSha256("tor", {
-      platform: "win32",
-      arch: "x64",
-      version: "15.0.18",
-      assetName: "tor-expert-bundle-windows-x86_64-15.0.18.tar.gz",
-    });
-    expect(hash).toBe(
-      "6ac067402c7b4a3dc37887ed3754b3914b67fdc220c966190683e9ccf91abf0f"
+  it.each([
+    {
+      platform: "darwin" as const,
+      arch: "arm64" as const,
+      assetName: "tor-expert-bundle-macos-aarch64-15.0.19.tar.gz",
+      sha256: "c99cf6f69740a443c7fffaf598ceb0952b3914041507c8afe11bed84a3333eb1",
+    },
+    {
+      platform: "win32" as const,
+      arch: "x64" as const,
+      assetName: "tor-expert-bundle-windows-x86_64-15.0.19.tar.gz",
+      sha256: "6ac067402c7b4a3dc37887ed3754b3914b67fdc220c966190683e9ccf91abf0f",
+    },
+  ])("returns the pinned hash for $platform/$arch", ({ platform, arch, assetName, sha256 }) => {
+    expect(getPinnedSha256("tor", { platform, arch, version: "15.0.19", assetName })).toBe(
+      sha256
     );
   });
 

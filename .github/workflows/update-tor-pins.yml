@@ -1,0 +1,52 @@
+name: Update Tor pins
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.x"
+          cache: npm
+
+      - name: Install
+        run: npm ci
+
+      - name: Fetch current Tor pins
+        run: npm run update:tor-pins
+
+      - name: Test pin lookup
+        run: npm test -- --run src/main/onion/install/__tests__/pinnedHash.test.ts
+
+      - name: Create update pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          if git diff --quiet -- src/main/onion/pinnedHashes.ts; then
+            echo "Tor pins are current."
+            exit 0
+          fi
+          branch="automation/tor-pins-${GITHUB_RUN_ID}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git add src/main/onion/pinnedHashes.ts
+          git commit -m "chore: update Tor bundle pins"
+          git push --set-upstream origin "$branch"
+          gh pr create \
+            --title "chore: update Tor bundle pins" \
+            --body "Automated update from Tor's official signed checksum manifest. The focused pin lookup tests passed." \
+            --base main \
+            --head "$branch"

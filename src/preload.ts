@@ -108,6 +108,18 @@ contextBridge.exposeInMainWorld("appControls", {
   },
 });
 
+contextBridge.exposeInMainWorld("appUpdate", {
+  getStatus: () => ipcRenderer.invoke("appUpdate:getStatus") as Promise<unknown>,
+  check: () => ipcRenderer.invoke("appUpdate:check") as Promise<unknown>,
+  download: () => ipcRenderer.invoke("appUpdate:download") as Promise<unknown>,
+  install: () => ipcRenderer.invoke("appUpdate:install") as Promise<void>,
+  onStatus: (cb: (payload: unknown) => void) => {
+    const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);
+    ipcRenderer.on("appUpdate:status", handler);
+    return () => ipcRenderer.removeListener("appUpdate:status", handler);
+  },
+});
+
 contextBridge.exposeInMainWorld("p2p", {
   onConnectionStatus: (cb: (payload: unknown) => void) => {
     const handler = (_event: IpcRendererEvent, payload: unknown) => cb(payload);

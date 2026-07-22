@@ -12,7 +12,7 @@ const electronMainBuild = {
     formats: ["cjs"],
   },
   rollupOptions: {
-    external: ["electron"],
+    external: ["electron", "electron-updater"],
     output: {
       format: "cjs" as const,
       entryFileNames: "[name].js",
