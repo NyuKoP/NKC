@@ -79,7 +79,7 @@
     "playwright": "^1.57.0",
     "postcss": "^8.5.23",
     "resedit-cli": "^3.1.0",
-    "tailwindcss": "^3.4.17",
+    "tailwindcss": "^4.3.3",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.65.0",
     "vite": "^7.2.4",
