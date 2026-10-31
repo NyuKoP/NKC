@@ -1,3 +1,4 @@
+import { legacyOutboxCiphertext } from "../storage/storedPayload";
 import type { OutboxRecord } from "../db/schema";
 import {
   SecureStorageKeyring,
@@ -22,7 +23,7 @@ export type P2PSyncRoute = {
 };
 
 export type P2PSyncEngineBridge = {
-  handleIncoming: (convId: string, bytes: Uint8Array) => Promise<void> | void;
+  handleIncoming: (convId: string, bytes: Uint8Array) => Promise<import("./receiveCompletion").IncomingCompletion | void> | void;
   syncConversation: (convId: string) => Promise<void> | void;
   bindOutbound: (
     send: (convId: string, bytes: Uint8Array) => Promise<void>
@@ -53,7 +54,9 @@ type ManagedConversation = {
 };
 
 const textEncoder = new TextEncoder();
+
 const DEFAULT_FLUSH_BATCH = 10;
+
 const DEFAULT_OUTBOX_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 const defaultSyncEngineBridge: P2PSyncEngineBridge = {
@@ -66,6 +69,7 @@ const getExpiresAt = (record: OutboxRecord) => {
   if (typeof record.expiresAtMs === "number") return record.expiresAtMs;
   const createdAt = record.createdAt ?? record.createdAtMs ?? 0;
   const ttlMs = record.ttlMs ?? DEFAULT_OUTBOX_TTL_MS;
+
   return createdAt + ttlMs;
 };
 
@@ -110,12 +114,14 @@ export class P2PSyncOrchestrator {
     if (!this.keyring.isUnlocked()) {
       throw new Error("p2p_orchestrator_locked");
     }
+
     if (!this.active) {
       this.active = true;
       this.unbindOutbound = this.syncEngine.bindOutbound((convId, bytes) =>
         this.send(convId, bytes)
       ) ?? null;
     }
+
     await Promise.all(routes.map((route) => this.registerConversation(route)));
   }
 
@@ -123,38 +129,47 @@ export class P2PSyncOrchestrator {
     if (!this.keyring.isUnlocked()) {
       throw new Error("p2p_orchestrator_locked");
     }
+
     const existing = this.conversations.get(route.convId);
+
     if (existing) {
       existing.route = route;
+
       return existing.manager;
     }
+
     const manager = new ConnectionManager({
       convId: route.convId,
       connect: route.connect,
       hasPendingOutbox: (convId) => this.hasPendingOutbox(convId),
       flushOutbox: (convId) => this.flushOutbox(convId),
-      onData: (bytes) => this.syncEngine.handleIncoming(route.convId, bytes),
+      onData: async (bytes) => { await this.syncEngine.handleIncoming(route.convId, bytes); },
       onStateChange: (state, detail) => this.onStateChange?.(route.convId, state, detail),
       heartbeatIntervalMs: this.heartbeatIntervalMs,
       pongTimeoutMs: this.pongTimeoutMs,
       maxBackoffMs: this.maxBackoffMs,
       now: this.now,
     });
+
     this.conversations.set(route.convId, { route, manager });
+
     if (this.active) {
       await manager.start();
     }
+
     return manager;
   }
 
   async startConversation(convId: string) {
     const entry = this.conversations.get(convId);
+
     if (!entry) throw new Error("conversation_not_registered");
     await entry.manager.start();
   }
 
   async send(convId: string, bytes: Uint8Array) {
     const entry = this.conversations.get(convId);
+
     if (!entry) throw new Error("conversation_not_registered");
     await entry.manager.send(bytes);
   }
@@ -165,11 +180,13 @@ export class P2PSyncOrchestrator {
 
   async flushOutbox(convId: string) {
     const entry = this.conversations.get(convId);
+
     if (!entry) return;
     const due = await this.listDueOutbox(convId);
+
     for (const record of due) {
       try {
-        await entry.manager.send(textEncoder.encode(record.ciphertext));
+        await entry.manager.send(textEncoder.encode(legacyOutboxCiphertext(record)));
         await this.deleteOutboxRecord(record.id);
       } catch (error) {
         await this.markOutboxRetry(
@@ -185,16 +202,20 @@ export class P2PSyncOrchestrator {
     this.active = false;
     const managers = Array.from(this.conversations.values()).map((entry) => entry.manager);
     const errors: unknown[] = [];
+
     try {
       const results = await Promise.allSettled(managers.map((manager) => manager.stop()));
+
       for (const result of results) {
         if (result.status === "rejected") errors.push(result.reason);
       }
+
       try {
         this.unbindOutbound?.();
       } catch (error) {
         errors.push(error);
       }
+
       try {
         this.syncEngine.reset?.();
       } catch (error) {
@@ -205,6 +226,7 @@ export class P2PSyncOrchestrator {
       this.unbindOutbound = null;
       this.keyring.clear();
     }
+
     if (errors.length > 0) {
       throw new Error("p2p_orchestrator_shutdown_failed", { cause: errors });
     }
@@ -217,17 +239,24 @@ export class P2PSyncOrchestrator {
   private async listDueOutbox(convId: string, limit = this.maxFlushBatch) {
     const now = this.now();
     const all = await this.outboxStore.getAll(this.outboxTable);
+
     return all
       .filter((record) => {
         if (record.convId !== convId) return false;
+
         if (record.status !== "pending" && record.status !== "in_flight") return false;
+
         if (!record.ciphertext) return false;
+
         if (getExpiresAt(record) <= now) return false;
+
         return getNextAttemptAt(record) <= now;
       })
       .sort((lhs, rhs) => {
         const nextDelta = getNextAttemptAt(lhs) - getNextAttemptAt(rhs);
+
         if (nextDelta !== 0) return nextDelta;
+
         return (lhs.createdAtMs ?? lhs.createdAt ?? 0) - (rhs.createdAtMs ?? rhs.createdAt ?? 0);
       })
       .slice(0, limit);
@@ -245,6 +274,7 @@ export class P2PSyncOrchestrator {
     if (!this.outboxTable.update) return;
     const attempt = getAttempt(record) + 1;
     const nextAttemptAt = this.now() + Math.min(2 ** attempt * 1000, 60_000);
+
     const encrypted = await this.outboxStore.encryptRecord({
       ...record,
       attempt,
@@ -254,6 +284,7 @@ export class P2PSyncOrchestrator {
       lastError: error,
       status: "pending",
     });
+
     await this.outboxTable.put(encrypted);
   }
 }

@@ -4,7 +4,9 @@ import net from "node:net";
 import tls from "node:tls";
 
 export const DEFAULT_TOR_SOCKS_PROXY_URL = "socks5h://127.0.0.1:9050";
+
 const DEFAULT_TIMEOUT_MS = 15_000;
+
 const MAX_SOCKS_FIELD_BYTES = 255;
 
 type SocketFactory = (options: { host: string; port: number }) => net.Socket;
@@ -47,20 +49,24 @@ export type TorHttpResponse = {
 
 const parseSocksProxyUrl = (value: string): SocksProxyConfig => {
   const url = new URL(value);
+
   if (url.protocol !== "socks5:" && url.protocol !== "socks5h:" && url.protocol !== "socks:") {
     throw new Error("unsupported_socks_protocol");
   }
 
   const port = Number(url.port || "1080");
+
   if (!url.hostname || !Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error("invalid_socks_proxy");
   }
 
   const username = url.username ? decodeURIComponent(url.username) : null;
   const password = url.password ? decodeURIComponent(url.password) : null;
+
   if ((username && !password) || (!username && password)) {
     throw new Error("invalid_socks_auth");
   }
+
   if (
     username &&
     password &&
@@ -82,6 +88,7 @@ const parseSocksProxyUrl = (value: string): SocksProxyConfig => {
 const createBufferedSocketReader = (socket: net.Socket): BufferedSocketReader => {
   let buffered = Buffer.alloc(0);
   let closedError: Error | null = null;
+
   let pending:
     | {
         size: number;
@@ -92,14 +99,17 @@ const createBufferedSocketReader = (socket: net.Socket): BufferedSocketReader =>
 
   const tryResolvePending = () => {
     if (!pending) return;
+
     if (buffered.length >= pending.size) {
       const out = buffered.subarray(0, pending.size);
       buffered = buffered.subarray(pending.size);
       const { resolve } = pending;
       pending = null;
       resolve(Buffer.from(out));
+
       return;
     }
+
     if (closedError) {
       const { reject } = pending;
       pending = null;
@@ -131,12 +141,16 @@ const createBufferedSocketReader = (socket: net.Socket): BufferedSocketReader =>
       new Promise<Buffer>((resolve, reject) => {
         if (size <= 0) {
           resolve(Buffer.alloc(0));
+
           return;
         }
+
         if (pending) {
           reject(new Error("concurrent_read_not_supported"));
+
           return;
         }
+
         pending = { size, resolve, reject };
         tryResolvePending();
       }),
@@ -145,6 +159,7 @@ const createBufferedSocketReader = (socket: net.Socket): BufferedSocketReader =>
       socket.off("error", onError);
       socket.off("end", onEnd);
       buffered = Buffer.alloc(0);
+
       if (pending) {
         pending.reject(new Error("reader_disposed"));
         pending = null;
@@ -164,6 +179,7 @@ const readSocksBoundAddress = async (reader: BufferedSocketReader, addressType: 
   } else {
     throw new Error("socks_connect_failed");
   }
+
   await reader.readExactly(2);
 };
 
@@ -187,16 +203,20 @@ const connectSocket = async (
 
 const writeSocksAddress = (host: string, remoteDns: boolean) => {
   const ipVersion = remoteDns ? 0 : net.isIP(host);
+
   if (ipVersion === 4) {
     return {
       addressType: 0x01,
       payload: Buffer.from(host.split(".").map((part) => Number(part))),
     };
   }
+
   const hostBytes = Buffer.from(host, "utf8");
+
   if (hostBytes.length > MAX_SOCKS_FIELD_BYTES) {
     throw new Error("target_host_too_long");
   }
+
   return {
     addressType: 0x03,
     payload: Buffer.concat([Buffer.from([hostBytes.length]), hostBytes]),
@@ -223,6 +243,7 @@ export const connectTorTcp = async (
     const authMethod = proxy.username && proxy.password ? 0x02 : 0x00;
     socket.write(Buffer.from([0x05, 0x01, authMethod]));
     const methodReply = await reader.readExactly(2);
+
     if (methodReply[0] !== 0x05 || methodReply[1] !== authMethod) {
       throw new Error("socks_auth_failed");
     }
@@ -232,6 +253,7 @@ export const connectTorTcp = async (
       const password = Buffer.from(proxy.password ?? "", "utf8");
       socket.write(Buffer.concat([Buffer.from([0x01, username.length]), username, Buffer.from([password.length]), password]));
       const authReply = await reader.readExactly(2);
+
       if (authReply[0] !== 0x01 || authReply[1] !== 0x00) {
         throw new Error("socks_auth_failed");
       }
@@ -243,10 +265,13 @@ export const connectTorTcp = async (
     socket.write(Buffer.concat([Buffer.from([0x05, 0x01, 0x00, address.addressType]), address.payload, port]));
 
     const replyHead = await reader.readExactly(4);
+
     if (replyHead[0] !== 0x05 || replyHead[1] !== 0x00) {
       throw new Error("socks_connect_failed");
     }
+
     await readSocksBoundAddress(reader, replyHead[3] ?? 0);
+
     return socket;
   } catch (error) {
     socket.destroy();
@@ -274,8 +299,10 @@ export class TorSocksAgent extends http.Agent {
   addRequest(req: http.ClientRequest, options: http.RequestOptions) {
     const host = String(options.hostname ?? options.host ?? "");
     const port = Number(options.port ?? (this.secureEndpoint ? 443 : 80));
+
     if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
       req.destroy(new Error("invalid_target"));
+
       return;
     }
 
@@ -308,6 +335,7 @@ export class TorSocksAgent extends http.Agent {
 
 const getServername = (options: http.RequestOptions, fallbackHost: string) => {
   const maybeServername = (options as { servername?: unknown }).servername;
+
   return typeof maybeServername === "string" ? maybeServername : fallbackHost;
 };
 
@@ -322,12 +350,14 @@ export const requestViaTor = async (
 ): Promise<TorHttpResponse> => {
   const parsed = typeof url === "string" ? new URL(url) : url;
   const isHttps = parsed.protocol === "https:";
+
   if (!isHttps && parsed.protocol !== "http:") {
     throw new Error("unsupported_protocol");
   }
 
   const body = typeof options.body === "string" ? Buffer.from(options.body, "utf8") : options.body;
   const { httpAgent, httpsAgent } = createTorProxyAgents(options);
+
   const requestOptions: http.RequestOptions = {
     method: options.method ?? "GET",
     headers: {
@@ -354,9 +384,11 @@ export const requestViaTor = async (
     });
 
     req.once("error", reject);
+
     if (body) {
       req.write(body);
     }
+
     req.end();
   });
 };

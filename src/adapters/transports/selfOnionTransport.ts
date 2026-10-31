@@ -17,8 +17,11 @@ type SelfOnionOptions = {
 
 const toTransportState = (routeStatus: InternalOnionRouteState["status"]): TransportState => {
   if (routeStatus === "ready") return "connected";
+
   if (routeStatus === "building" || routeStatus === "rebuilding") return "connecting";
+
   if (routeStatus === "degraded") return "degraded";
+
   return "failed";
 };
 
@@ -49,6 +52,7 @@ export const createSelfOnionTransport = ({
   const syncFromRouteState = (route: InternalOnionRouteState) => {
     emitState(toTransportState(route.status));
     const nextReady = route.status === "ready";
+
     if (readyState !== nextReady) {
       emitFlowTraceLog({
         event: "selfOnion:readyChange",
@@ -58,6 +62,7 @@ export const createSelfOnionTransport = ({
       });
       readyState = nextReady;
     }
+
     if (route.status === "degraded" || route.status === "idle" || route.status === "expired") {
       routeController.reportRouteBuildFail();
     }
@@ -68,12 +73,14 @@ export const createSelfOnionTransport = ({
     async start() {
       emitState("connecting");
       reportRelayPool();
+
       if (!routeUnsubscribe) {
         routeUnsubscribe = useInternalOnionRouteStore.subscribe((next, previous) => {
           if (next.route === previous.route) return;
           syncFromRouteState(next.route);
         });
       }
+
       const config = useNetConfigStore.getState().config;
       syncInternalOnionRouteRuntimeWithConfig(config);
       const operationId = `self-onion-publish:${createId()}`;
@@ -84,6 +91,7 @@ export const createSelfOnionTransport = ({
         hsType: "v3",
         portMapCount: 1,
       });
+
       try {
         await routeManager.start(config.selfOnionMinRelays);
         syncFromRouteState(useInternalOnionRouteStore.getState().route);
@@ -100,8 +108,8 @@ export const createSelfOnionTransport = ({
           hsType: "v3",
           durMs: Math.max(0, Date.now() - startedAt),
           errCode:
-            error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
-              ? ((error as { code?: string }).code ?? "UNKNOWN")
+            error && typeof error === "object" && "code" in error && typeof error.code === "string"
+              ? (error.code ?? "UNKNOWN")
               : "UNKNOWN",
           errDetail: error instanceof Error ? error.message : String(error),
         });
@@ -113,17 +121,18 @@ export const createSelfOnionTransport = ({
         routeUnsubscribe();
         routeUnsubscribe = null;
       }
+
       emitState("idle");
     },
     async send(packet: TransportPacket) {
       const route = useInternalOnionRouteStore.getState().route;
+
       if (route.status !== "ready") {
-        const error = new Error(
+        throw Object.assign(new Error(
           "INTERNAL_ONION_NOT_READY: Internal onion route is not ready"
-        ) as Error & { code?: string };
-        error.code = "INTERNAL_ONION_NOT_READY";
-        throw error;
+        ), { code: "INTERNAL_ONION_NOT_READY" });
       }
+
       await sendDataViaCurrentRoute(packet);
       const rttMs = route.hops.reduce((acc, hop) => Math.max(acc, hop.rttMs ?? 0), 0);
       ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs }));

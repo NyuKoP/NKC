@@ -21,6 +21,7 @@ export const getRouteInfo = (
         pathLabel: "나 → 릴레이 → 상대 (1 hop)",
       };
     }
+
     return {
       mode,
       description: "상대와 직접 연결합니다.",
@@ -31,6 +32,7 @@ export const getRouteInfo = (
   if (mode === "selfOnion") {
     const desiredHops = internalRouteState?.desiredHops ?? config.selfOnionMinRelays;
     const establishedHops = internalRouteState?.establishedHops ?? 0;
+
     return {
       mode,
       description: "내장 온니언 라우팅으로 여러 홉을 경유합니다.",

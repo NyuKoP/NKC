@@ -2,6 +2,8 @@ import type { NetworkMode } from "./mode";
 
 export type OnionNetwork = "tor";
 
+export type TorBridgeMode = "auto" | "off" | "force";
+
 export type OnionComponentStatus = "idle" | "downloading" | "installing" | "ready" | "failed";
 
 export type OnionComponentState = {
@@ -29,23 +31,25 @@ export interface NetConfig {
   onionEnabled: boolean;
   onionSelectedNetwork: OnionNetwork;
   torAutoPrepareOnAppStart?: boolean;
+  torBridgeMode?: TorBridgeMode;
   tor: OnionComponentState;
   lastUpdateCheckAtMs?: number;
 }
 
 // Higher anonymity can increase latency; faster modes can expose IPs.
 export const DEFAULT_NET_CONFIG: NetConfig = {
-  mode: "selfOnion",
-  onionProxyEnabled: false,
+  mode: "onionRouter",
+  onionProxyEnabled: true,
   onionProxyUrl: "http://127.0.0.1:8080",
-  webrtcRelayOnly: false,
-  disableLinkPreview: false,
-  selfOnionEnabled: true,
+  webrtcRelayOnly: true,
+  disableLinkPreview: true,
+  selfOnionEnabled: false,
   selfOnionMinRelays: 3,
   allowRemoteProxy: false,
-  onionEnabled: false,
+  onionEnabled: true,
   onionSelectedNetwork: "tor",
   torAutoPrepareOnAppStart: true,
+  torBridgeMode: "auto",
   tor: { installed: false, status: "idle" },
   lastUpdateCheckAtMs: undefined,
 };

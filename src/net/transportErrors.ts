@@ -15,15 +15,16 @@ export const createTransportError = (
   message: string,
   details?: Record<string, unknown>
 ) => {
-  const error = new Error(message) as TransportError;
-  error.code = code;
+  const error: TransportError = Object.assign(new Error(message), { code });
+
   if (details) {
     error.details = details;
   }
+
   return error;
 };
 
 export const getTransportErrorCode = (error: unknown) =>
-  error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
-    ? ((error as { code?: string }).code ?? "")
+  error && typeof error === "object" && "code" in error && typeof error.code === "string"
+    ? (error.code ?? "")
     : "";

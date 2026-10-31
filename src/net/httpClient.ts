@@ -15,16 +15,20 @@ export const createHttpClient = (): HttpClient => {
   return {
     async request(url, init, options) {
       const config = useNetConfigStore.getState().config;
+
       if (config.mode === "onionRouter" && !config.onionProxyEnabled) {
         console.warn("[net] Onion router mode requires proxy.");
         throw new Error("Onion proxy required");
       }
+
       if (options?.kind === "linkPreview" && config.disableLinkPreview) {
         console.warn("[net] Link preview blocked by privacy settings.");
         throw new Error("Link preview disabled");
       }
+
       const timeoutMs = 15_000;
       const { signal: parentSignal, ...requestInit } = init ?? {};
+
       return fetchWithTimeout(url, requestInit, {
         timeoutMs,
         parentSignal: parentSignal ?? undefined,

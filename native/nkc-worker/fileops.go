@@ -80,10 +80,10 @@ func readFileChunkBinary(params fileChunkParams) (map[string]any, []byte, error)
 	if err != nil {
 		return nil, nil, err
 	}
-	offset := params.Index * params.ChunkSize
-	if offset >= info.Size() {
+	if info.Size() <= 0 || params.Index > (info.Size()-1)/params.ChunkSize {
 		return nil, nil, fmt.Errorf("chunk_out_of_range")
 	}
+	offset := params.Index * params.ChunkSize
 	length := params.ChunkSize
 	if remaining := info.Size() - offset; remaining < length {
 		length = remaining

@@ -7,10 +7,13 @@ const compareVersions = (left: string, right: string) => {
   const leftParts = left.replace(/^v/i, "").split(".").map(Number);
   const rightParts = right.replace(/^v/i, "").split(".").map(Number);
   const length = Math.max(leftParts.length, rightParts.length);
+
   for (let index = 0; index < length; index += 1) {
     const difference = (leftParts[index] ?? 0) - (rightParts[index] ?? 0);
+
     if (difference !== 0) return Math.sign(difference);
   }
+
   return 0;
 };
 
@@ -38,11 +41,14 @@ export const runVerifiedTorAutoUpdate = (
   const applyUpdate = dependencies.applyUpdate ?? applyOnionUpdate;
   inFlight = (async () => {
     const status = await checkUpdates();
+
     if (!shouldAutoUpdateTor(status.components.tor)) return "unchanged";
     await applyUpdate("tor");
+
     return "updated";
   })().finally(() => {
     inFlight = null;
   });
+
   return inFlight;
 };

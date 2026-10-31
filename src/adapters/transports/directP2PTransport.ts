@@ -23,17 +23,26 @@ type SignalMessage =
   | { v: 1; t: "ice"; c: RTCIceCandidateInit };
 
 const SIGNAL_PREFIX = "NKC-RTC1.";
+
 const DATA_CHANNEL_LABEL = "nkc-direct-v1";
+
 const FILE_DATA_CHANNEL_LABEL = "nkc-file-v1";
+
 const CAPABILITIES_PACKET_ID = "__nkc_capabilities__";
+
 const BINARY_PACKET_CAPABILITY = "binary-packet-v1";
+
 const DEFAULT_STUN_URL = "stun:stun.l.google.com:19302";
+
 const RECOMMENDED_FILE_FRAME_BYTES = 64 * 1024;
+
 const DATA_CHANNEL_HIGH_WATER_BYTES = 2 * 1024 * 1024;
+
 const DATA_CHANNEL_DRAIN_TIMEOUT_MS = 10_000;
 
 const toBase64Url = (value: string) => {
   const b64 = btoa(value);
+
   return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 };
 
@@ -41,11 +50,13 @@ const fromBase64Url = (value: string) => {
   const padded = value.replace(/-/g, "+").replace(/_/g, "/");
   const pad = padded.length % 4;
   const withPad = pad ? padded + "=".repeat(4 - pad) : padded;
+
   return atob(withPad);
 };
 
 const encodeSignal = (message: SignalMessage) => {
   const json = JSON.stringify(message);
+
   return `${SIGNAL_PREFIX}${toBase64Url(json)}`;
 };
 
@@ -53,21 +64,29 @@ const decodeSignal = (code: string): SignalMessage => {
   if (!code.startsWith(SIGNAL_PREFIX)) {
     throw new Error("Invalid signal code prefix.");
   }
+
   const payload = code.slice(SIGNAL_PREFIX.length);
   const json = fromBase64Url(payload);
   const parsed = JSON.parse(json) as SignalMessage;
+
   if (!parsed || parsed.v !== 1 || !parsed.t) {
     throw new Error("Invalid signal code payload.");
   }
+
   return parsed;
 };
 
 const mapIceState = (value: RTCIceConnectionState | undefined): TransportState => {
   if (value === "connected" || value === "completed") return "connected";
+
   if (value === "disconnected") return "degraded";
+
   if (value === "failed") return "failed";
+
   if (value === "closed") return "idle";
+
   if (value === "checking" || value === "new") return "connecting";
+
   return "connecting";
 };
 
@@ -88,11 +107,14 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
 
   const waitForChannelCapacity = async (channel: RTCDataChannel) => {
     const startedAt = Date.now();
+
     while (channel.bufferedAmount > DATA_CHANNEL_HIGH_WATER_BYTES) {
       if (channel.readyState !== "open") throw new Error("DIRECT_NOT_OPEN: Data channel closed while draining");
+
       if (Date.now() - startedAt >= DATA_CHANNEL_DRAIN_TIMEOUT_MS) {
         throw new Error("DIRECT_BACKPRESSURE_TIMEOUT: Data channel did not drain");
       }
+
       await new Promise<void>((resolve) => setTimeout(resolve, 10));
     }
   };
@@ -123,11 +145,15 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
     if (data instanceof ArrayBuffer || data instanceof Uint8Array) {
       if (isBinaryTransportPacket(data)) {
         const packet = decodeBinaryTransportPacket(data);
+
         if (packet) messageHandlers.forEach((handler) => handler(packet));
+
         return;
       }
     }
+
     let raw = "";
+
     if (typeof data === "string") {
       raw = data;
     } else if (data instanceof ArrayBuffer) {
@@ -137,17 +163,23 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
     } else {
       return;
     }
+
     try {
       const parsed = JSON.parse(raw) as TransportPacket;
+
       if (!parsed || typeof parsed.id !== "string") return;
+
       if (parsed.id === CAPABILITIES_PACKET_ID) {
         const capabilities = (parsed as { capabilities?: unknown }).capabilities;
+
         if (Array.isArray(capabilities) && capabilities.includes(BINARY_PACKET_CAPABILITY)) {
           binaryPacketSupported = true;
           sendCapabilities();
         }
+
         return;
       }
+
       messageHandlers.forEach((handler) => handler(parsed));
     } catch {
       // ignore invalid packets
@@ -162,6 +194,7 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
       emitState("connected");
       sendCapabilities();
     };
+
     dataChannel.onmessage = (event) => handleDataMessage(event.data);
     dataChannel.onclose = () => emitState("idle");
     dataChannel.onerror = () => emitState("failed");
@@ -172,22 +205,27 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
     channel.binaryType = "arraybuffer";
     channel.onmessage = (event) => {
       const value = event.data;
+
       const bytes = value instanceof ArrayBuffer
         ? new Uint8Array(value)
         : value instanceof Uint8Array
           ? value
           : null;
+
       if (!bytes) return;
       fileFrameHandlers.forEach((handler) => handler(bytes));
     };
+
     channel.onerror = () => emitState("degraded");
   };
 
   const ensurePeerConnection = () => {
     if (peerConnection) return peerConnection;
+
     const pc = new RTCPeerConnection({
       iceServers: [{ urls: DEFAULT_STUN_URL }],
     });
+
     pc.onicecandidate = (event) => {
       if (event.candidate) {
         const payload = event.candidate.toJSON
@@ -198,12 +236,15 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
               sdpMLineIndex: event.candidate.sdpMLineIndex ?? undefined,
               usernameFragment: event.candidate.usernameFragment ?? undefined,
             };
+
         emitSignal({ v: 1, t: "ice", c: payload });
       }
     };
+
     pc.oniceconnectionstatechange = () => {
       emitState(mapIceState(pc.iceConnectionState));
     };
+
     pc.ondatachannel = (event) => {
       if (event.channel.label === FILE_DATA_CHANNEL_LABEL) {
         setupFileDataChannel(event.channel);
@@ -211,7 +252,9 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
         setupDataChannel(event.channel);
       }
     };
+
     peerConnection = pc;
+
     return pc;
   };
 
@@ -219,6 +262,7 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
     if (!peerConnection || !peerConnection.remoteDescription) return;
     const queued = pendingIce;
     pendingIce = [];
+
     for (const candidate of queued) {
       try {
         await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
@@ -241,97 +285,121 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
       pendingIce = [];
       binaryPacketSupported = false;
       capabilitiesSent = false;
+
       if (dataChannel) {
         try {
           dataChannel.close();
         } catch {
           // ignore close errors
         }
+
         dataChannel = null;
       }
+
       if (fileDataChannel) {
         try {
           fileDataChannel.close();
         } catch {
           // ignore close errors
         }
+
         fileDataChannel = null;
       }
+
       if (peerConnection) {
         try {
           peerConnection.close();
         } catch {
           // ignore close errors
         }
+
         peerConnection = null;
       }
+
       emitState("idle");
     },
     async send(packet: TransportPacket) {
       if (!dataChannel || dataChannel.readyState !== "open") {
-        const error = new Error("DIRECT_NOT_OPEN: Direct P2P data channel is not open") as Error & {
-          code?: string;
-        };
-        error.code = "DIRECT_NOT_OPEN";
-        throw error;
+        throw Object.assign(new Error("DIRECT_NOT_OPEN: Direct P2P data channel is not open"), {
+          code: "DIRECT_NOT_OPEN",
+        });
       }
+
       await waitForChannelCapacity(dataChannel);
       const binary = binaryPacketSupported ? encodeBinaryTransportPacket(packet) : null;
+
       if (binary) {
-        dataChannel.send(binary.slice().buffer as ArrayBuffer);
+        dataChannel.send(binary.slice().buffer);
       } else {
         const legacyPacket =
           packet.payload instanceof Uint8Array
             ? { ...packet, payload: { b64: encodeBase64Url(packet.payload) } }
             : packet;
+
         dataChannel.send(JSON.stringify(legacyPacket));
       }
+
       ackHandlers.forEach((handler) => handler({ id: packet.id, rttMs: 0 }));
     },
     async createOfferCode() {
       await this.start();
       const pc = ensurePeerConnection();
+
       if (!dataChannel) {
         const channel = pc.createDataChannel(DATA_CHANNEL_LABEL, { ordered: true });
         setupDataChannel(channel);
       }
+
       if (!fileDataChannel) {
         const channel = pc.createDataChannel(FILE_DATA_CHANNEL_LABEL, { ordered: false });
         setupFileDataChannel(channel);
       }
+
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+
       if (!pc.localDescription) {
         throw new Error("Failed to create local offer");
       }
+
       return encodeSignal({ v: 1, t: "offer", sdp: pc.localDescription });
     },
     async acceptSignalCode(code: string) {
       await this.start();
       const pc = ensurePeerConnection();
       const message = decodeSignal(code.trim());
+
       if (message.t === "offer") {
         await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
         await flushPendingIce();
         const answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
+
         if (!pc.localDescription) {
           throw new Error("Failed to create local answer");
         }
+
         emitSignal({ v: 1, t: "answer", sdp: pc.localDescription });
+
         return;
       }
+
       if (message.t === "answer") {
         await pc.setRemoteDescription(new RTCSessionDescription(message.sdp));
         await flushPendingIce();
+
         return;
       }
+
       if (message.t === "ice") {
         if (!message.c) return;
+
         if (!pc.remoteDescription) {
           pendingIce.push(message.c);
+
           return;
         }
+
         await pc.addIceCandidate(new RTCIceCandidate(message.c));
       }
     },
@@ -342,21 +410,26 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
       if (!fileDataChannel || fileDataChannel.readyState !== "open") {
         throw new Error("DIRECT_FILE_NOT_OPEN: Direct P2P file data channel is not open");
       }
+
       const negotiatedMax = peerConnection?.sctp?.maxMessageSize;
+
       if (negotiatedMax && frame.byteLength > negotiatedMax) {
         throw new Error("DIRECT_FILE_FRAME_TOO_LARGE: Frame exceeds negotiated SCTP maximum");
       }
+
       await waitForChannelCapacity(fileDataChannel);
-      fileDataChannel.send(frame.slice().buffer as ArrayBuffer);
+      fileDataChannel.send(frame.slice().buffer);
     },
     recommendedFileFrameSize() {
       const negotiatedMax = peerConnection?.sctp?.maxMessageSize;
+
       return negotiatedMax && Number.isFinite(negotiatedMax)
         ? Math.min(RECOMMENDED_FILE_FRAME_BYTES, negotiatedMax)
         : RECOMMENDED_FILE_FRAME_BYTES;
     },
     onFileFrame(cb: (frame: Uint8Array) => void) {
       fileFrameHandlers.add(cb);
+
       return () => fileFrameHandlers.delete(cb);
     },
     onMessage(cb: (packet: TransportPacket) => void) {
@@ -370,5 +443,6 @@ export const createDirectP2PTransport = (): Transport & DirectSignalExt => {
       cb(state);
     },
   };
+
   return transport;
 };

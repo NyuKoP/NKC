@@ -36,12 +36,14 @@ export class SecureStorageKeyring {
   setMasterKey(key: Uint8Array, options: { wipeInput?: boolean } = {}) {
     this.clear();
     this.key = new Uint8Array(key);
+
     if (options.wipeInput) key.fill(0);
   }
 
   async unlockFromStartKey(startKey: string, header: VaultHeader) {
     const mkm = await deriveMkm(startKey, header);
     const vk = await deriveVk(mkm);
+
     try {
       this.setMasterKey(vk, { wipeInput: true });
     } finally {
@@ -52,6 +54,7 @@ export class SecureStorageKeyring {
 
   withKey<T>(fn: (key: Uint8Array) => T): T {
     if (!this.key) throw new Error("secure_storage_locked");
+
     return fn(this.key);
   }
 
@@ -71,6 +74,7 @@ const textEncoder = new TextEncoder();
 
 const toBase64Url = (bytes: Uint8Array) => {
   const raw = Array.from(bytes, (byte) => String.fromCharCode(byte)).join("");
+
   return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 };
 
@@ -78,13 +82,16 @@ export const hashIndexValue = async (namespace: string, value: unknown) => {
   if (!globalThis.crypto?.subtle) {
     throw new Error("webcrypto_unavailable");
   }
+
   const bytes = textEncoder.encode(`${namespace}\0${JSON.stringify(value)}`);
   const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+
   return toBase64Url(new Uint8Array(digest));
 };
 
 const assertNoFieldOverlap = (left: string[], right: string[], label: string) => {
   const overlap = left.filter((field) => right.includes(field));
+
   if (overlap.length) {
     throw new Error(`${label}: ${overlap.join(",")}`);
   }
@@ -94,6 +101,7 @@ const requireRecordId = (value: unknown) => {
   if (typeof value !== "string" || !value.trim()) {
     throw new Error("invalid_secure_record_id");
   }
+
   return value;
 };
 
@@ -102,9 +110,11 @@ export const createSecureStore = <TPlain extends object>(
 ) => {
   const keyring = options.keyring ?? defaultSecureStorageKeyring;
   const indexFields = [...options.indexFields];
+
   const publicFields = Array.from(
     new Set([options.idField, ...indexFields, ...(options.publicFields ?? [])])
   );
+
   const sensitiveFields = options.sensitiveFields ?? [];
   const encryptRemainder = options.encryptRemainder ?? true;
   assertNoFieldOverlap(publicFields, sensitiveFields, "secure_storage_public_sensitive_overlap");
@@ -122,6 +132,7 @@ export const createSecureStore = <TPlain extends object>(
 
     for (const [field, value] of Object.entries(record)) {
       if (publicSet.has(field)) continue;
+
       if (sensitiveSet.has(field) || encryptRemainder) {
         encrypted[field] = value;
       } else {
@@ -130,9 +141,11 @@ export const createSecureStore = <TPlain extends object>(
     }
 
     const encryptedFields = Object.keys(encrypted).sort();
+
     const enc_b64 = await keyring.withKey((key) =>
       encryptJsonRecord(key, id, options.recordType, encrypted)
     );
+
     return {
       ...clear,
       secure: {
@@ -146,6 +159,7 @@ export const createSecureStore = <TPlain extends object>(
 
   const decryptRecord = async (stored: SecureStoredRecord): Promise<TPlain> => {
     const id = requireRecordId(stored[options.idField]);
+
     if (
       stored.secure?.v !== 1 ||
       stored.secure.recordType !== options.recordType ||
@@ -153,6 +167,7 @@ export const createSecureStore = <TPlain extends object>(
     ) {
       throw new Error("invalid_secure_record");
     }
+
     const decrypted = await keyring.withKey((key) =>
       decryptJsonRecord<Record<string, unknown>>(
         key,
@@ -161,8 +176,10 @@ export const createSecureStore = <TPlain extends object>(
         stored.secure.enc_b64
       )
     );
+
     const { secure, ...clear } = stored;
     void secure;
+
     return { ...clear, ...decrypted } as TPlain;
   };
 
@@ -173,21 +190,27 @@ export const createSecureStore = <TPlain extends object>(
       table.put(await encryptRecord(record)),
     add: async (table: SecureTableLike<SecureStoredRecord>, record: TPlain) => {
       const encrypted = await encryptRecord(record);
+
       if (table.add) return table.add(encrypted);
+
       return table.put(encrypted);
     },
     bulkPut: async (table: SecureTableLike<SecureStoredRecord>, records: TPlain[]) => {
       const encrypted = await Promise.all(records.map((record) => encryptRecord(record)));
+
       if (table.bulkPut) return table.bulkPut(encrypted);
       await Promise.all(encrypted.map((record) => table.put(record)));
+
       return undefined;
     },
     get: async (table: SecureTableLike<SecureStoredRecord>, id: string) => {
       const stored = await table.get(id);
+
       return stored ? decryptRecord(stored) : undefined;
     },
     getAll: async (table: SecureTableLike<SecureStoredRecord>) => {
       const records = await table.toArray();
+
       return Promise.all(records.map((record) => decryptRecord(record)));
     },
   };

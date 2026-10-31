@@ -10,11 +10,15 @@ import type {
 } from "./types";
 
 type TimeoutHandle = ReturnType<typeof setTimeout>;
+
 type IntervalHandle = ReturnType<typeof setInterval>;
 
 type SetTimeoutFn = (callback: () => void, delayMs: number) => TimeoutHandle;
+
 type ClearTimeoutFn = (timeout: TimeoutHandle) => void;
+
 type SetIntervalFn = (callback: () => void, delayMs: number) => IntervalHandle;
+
 type ClearIntervalFn = (interval: IntervalHandle) => void;
 
 type PendingAck = {
@@ -37,10 +41,15 @@ export const DEFAULT_REBUILD_BACKOFF_MS = [
 ] as const;
 
 const DEFAULT_HELLO_ACK_TIMEOUT_MS = 4_000;
+
 const DEFAULT_KEEPALIVE_INTERVAL_MS = 15_000;
+
 const DEFAULT_KEEPALIVE_MISS_LIMIT = 2;
+
 const MIN_CIRCUIT_BYTES = 16;
+
 const MIN_HOPS = 1;
+
 const MAX_HOPS = 6;
 
 const clampDesiredHops = (value: number) => Math.max(MIN_HOPS, Math.min(MAX_HOPS, Math.floor(value)));
@@ -48,12 +57,15 @@ const clampDesiredHops = (value: number) => Math.max(MIN_HOPS, Math.min(MAX_HOPS
 const dedupePeerIds = (peerIds: string[]) => {
   const seen = new Set<string>();
   const unique: string[] = [];
+
   for (const raw of peerIds) {
     const peerId = raw.trim();
+
     if (!peerId || seen.has(peerId)) continue;
     seen.add(peerId);
     unique.push(peerId);
   }
+
   return unique;
 };
 
@@ -64,10 +76,13 @@ const toHex = (bytes: Uint8Array) =>
 
 const defaultRandomBytes = (size: number) => {
   const bytes = new Uint8Array(size);
+
   if (!globalThis.crypto?.getRandomValues) {
     throw new Error("Secure random generator is unavailable");
   }
+
   globalThis.crypto.getRandomValues(bytes);
+
   return bytes;
 };
 
@@ -173,10 +188,13 @@ export class InternalOnionRouteManager {
     const desiredChanged = nextDesiredHops !== this.desiredHops;
     this.desiredHops = nextDesiredHops;
     this.running = true;
+
     if (!desiredChanged && this.routeState.status === "ready") {
       this.startKeepaliveLoop();
+
       return true;
     }
+
     return this.buildRoute(nextDesiredHops);
   }
 
@@ -188,6 +206,7 @@ export class InternalOnionRouteManager {
     this.clearRebuildTimer();
     this.clearPendingHelloAcks("ROUTE_STOPPED");
     this.pendingPings.clear();
+
     const routeState: InternalOnionRouteState = {
       desiredHops: this.desiredHops,
       establishedHops: 0,
@@ -195,6 +214,7 @@ export class InternalOnionRouteManager {
       hops: createHops(this.desiredHops, []),
       updatedAtTs: this.now(),
     };
+
     this.setRouteState(routeState);
   }
 
@@ -215,6 +235,7 @@ export class InternalOnionRouteManager {
       updatedAtTs: this.now(),
       lastError: reason,
     }));
+
     return this.buildRouteInternal({
       desiredHops: this.desiredHops,
       rebuilding: true,
@@ -223,29 +244,36 @@ export class InternalOnionRouteManager {
   }
 
   handleHelloAck(message: HopAckMessage) {
-    if (message.type !== "HOP_ACK") return;
-    if (!this.currentCircuitId || message.circuitId !== this.currentCircuitId) return;
+    if (message.type !== "HOP_ACK") return false;
+
+    if (!this.currentCircuitId || message.circuitId !== this.currentCircuitId) return false;
     // relayNetwork verifies the Ed25519 signature before dispatching ACK messages here.
     const pending = this.pendingHelloAcks.get(message.hopIndex);
-    if (!pending) return;
+
+    if (!pending || message.relayPeerId !== pending.peerId) return false;
     this.clearTimeoutFn(pending.timeout);
     this.pendingHelloAcks.delete(message.hopIndex);
+
     if (!message.ok) {
       pending.reject(new Error("HOP_ACK_REJECTED"));
-      return;
+
+      return true;
     }
-    if (message.relayPeerId !== pending.peerId) {
-      pending.reject(new Error("HOP_ACK_PEER_MISMATCH"));
-      return;
-    }
+
     pending.resolve(message);
+
+    return true;
   }
 
-  handlePingPong(message: HopPongMessage) {
-    if (message.type !== "HOP_PONG") return;
-    if (!this.currentCircuitId || message.circuitId !== this.currentCircuitId) return;
+  handlePingPong(message: HopPongMessage, signerPeerId?: string) {
+    if (message.type !== "HOP_PONG") return false;
+
+    if (!this.currentCircuitId || message.circuitId !== this.currentCircuitId) return false;
+
+    if (signerPeerId && this.routeState.hops.find(hop => hop.hopIndex === message.hopIndex)?.peerId !== signerPeerId) return false;
     const pending = this.pendingPings.get(message.hopIndex);
-    if (!pending) return;
+
+    if (!pending) return false;
     this.pendingPings.delete(message.hopIndex);
     const rttMs = Math.max(0, this.now() - pending.sentTs);
     this.updateRouteState((current) => {
@@ -259,6 +287,7 @@ export class InternalOnionRouteManager {
             }
           : item
       );
+
       return {
         ...current,
         establishedHops: computeEstablishedHops(hops),
@@ -266,6 +295,8 @@ export class InternalOnionRouteManager {
         updatedAtTs: this.now(),
       };
     });
+
+    return true;
   }
 
   private async buildRouteInternal(options: {
@@ -282,6 +313,7 @@ export class InternalOnionRouteManager {
     const allPeers = dedupePeerIds(this.getRelayPeerIds());
     const localPeerId = this.getLocalPeerId().trim();
     const selectedPeerIds = allPeers.filter((peerId) => peerId !== localPeerId).slice(0, desiredHops);
+
     if (selectedPeerIds.length === 0) {
       const waitingState: InternalOnionRouteState = {
         desiredHops,
@@ -291,9 +323,11 @@ export class InternalOnionRouteManager {
         lastError: "NO_RELAY_PEERS",
         updatedAtTs: this.now(),
       };
+
       this.currentCircuitId = null;
       this.setRouteState(waitingState);
       this.scheduleRebuild("NO_RELAY_PEERS");
+
       return false;
     }
 
@@ -312,12 +346,15 @@ export class InternalOnionRouteManager {
     for (let index = 0; index < selectedPeerIds.length; index += 1) {
       const hopIndex = index + 1;
       const peerId = selectedPeerIds[index];
+
       try {
         const ack = await this.sendHelloAndAwaitAck({
           circuitId,
           hopIndex,
           peerId,
         });
+
+        if (!this.running || this.currentCircuitId !== circuitId) return false;
         this.updateRouteState((current) => {
           const hops: InternalOnionHopState[] = current.hops.map(
             (hop): InternalOnionHopState =>
@@ -330,6 +367,7 @@ export class InternalOnionRouteManager {
                 }
               : hop
           );
+
           return {
             ...current,
             establishedHops: computeEstablishedHops(hops),
@@ -339,6 +377,7 @@ export class InternalOnionRouteManager {
           };
         });
       } catch {
+        if (!this.running || this.currentCircuitId !== circuitId) return false;
         this.updateRouteState((current) => {
           const hops: InternalOnionHopState[] = current.hops.map(
             (hop): InternalOnionHopState =>
@@ -349,6 +388,7 @@ export class InternalOnionRouteManager {
                 }
               : hop
           );
+
           return {
             ...current,
             status: "degraded",
@@ -359,17 +399,20 @@ export class InternalOnionRouteManager {
           };
         });
         this.scheduleRebuild(options.failureReason);
+
         return false;
       }
     }
 
     this.rebuildBackoffIndex = 0;
+
     const finalizedHops = this.routeState.hops.map(
       (hop): InternalOnionHopState => ({
         ...hop,
         status: hop.status === "dead" ? "pending" : hop.status,
       })
     );
+
     const establishedHops = computeEstablishedHops(finalizedHops);
     this.setRouteState({
       desiredHops,
@@ -380,6 +423,7 @@ export class InternalOnionRouteManager {
       updatedAtTs: this.now(),
     });
     this.startKeepaliveLoop();
+
     return true;
   }
 
@@ -389,6 +433,7 @@ export class InternalOnionRouteManager {
     peerId: string;
   }) {
     const { circuitId, hopIndex, peerId } = params;
+
     const helloMessage: HopHelloMessage = {
       type: "HOP_HELLO",
       circuitId,
@@ -402,8 +447,10 @@ export class InternalOnionRouteManager {
         this.pendingHelloAcks.delete(hopIndex);
         reject(new Error("HOP_ACK_TIMEOUT"));
       }, this.helloAckTimeoutMs);
+
       this.pendingHelloAcks.set(hopIndex, { peerId, resolve, reject, timeout });
       this.emitControlPlane?.(helloMessage);
+
       if (!this.emitControlPlane) {
         this.handleHelloAck({
           type: "HOP_ACK",
@@ -415,17 +462,22 @@ export class InternalOnionRouteManager {
         });
       }
     });
+
     return ack;
   }
 
   private keepaliveTick() {
     if (!this.running) return;
+
     if (this.routeState.status !== "ready") return;
+
     if (!this.currentCircuitId) return;
+
     for (const hop of this.routeState.hops) {
       if (hop.status !== "ok" || !hop.peerId) continue;
       const pending = this.pendingPings.get(hop.hopIndex);
       const nextMisses = pending ? pending.misses + 1 : 0;
+
       if (nextMisses > this.keepaliveMissLimit) {
         this.pendingPings.delete(hop.hopIndex);
         this.clearKeepaliveLoop();
@@ -439,6 +491,7 @@ export class InternalOnionRouteManager {
                 }
               : item
           );
+
           return {
             ...current,
             status: "degraded",
@@ -449,19 +502,23 @@ export class InternalOnionRouteManager {
           };
         });
         this.scheduleRebuild("KEEPALIVE_MISSED");
+
         return;
       }
+
       const pingMessage: HopPingMessage = {
         type: "HOP_PING",
         circuitId: this.currentCircuitId,
         hopIndex: hop.hopIndex,
         ts: this.now(),
       };
+
       this.pendingPings.set(hop.hopIndex, {
         sentTs: pingMessage.ts,
         misses: nextMisses,
       });
       this.emitControlPlane?.(pingMessage);
+
       if (!this.emitControlPlane) {
         this.handlePingPong({
           type: "HOP_PONG",
@@ -487,9 +544,11 @@ export class InternalOnionRouteManager {
   private scheduleRebuild(reason: string) {
     if (!this.running) return;
     this.clearRebuildTimer();
+
     const delay =
       this.rebuildBackoffMs[Math.min(this.rebuildBackoffIndex, this.rebuildBackoffMs.length - 1)] ??
       this.rebuildBackoffMs[this.rebuildBackoffMs.length - 1];
+
     this.rebuildBackoffIndex = Math.min(
       this.rebuildBackoffIndex + 1,
       this.rebuildBackoffMs.length - 1
@@ -521,6 +580,7 @@ export class InternalOnionRouteManager {
       this.clearTimeoutFn(pending.timeout);
       pending.reject(new Error(errorCode));
     }
+
     this.pendingHelloAcks.clear();
   }
 

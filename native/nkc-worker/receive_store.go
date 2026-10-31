@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 )
@@ -95,8 +96,16 @@ func validateReceiveInit(p receiveInitParams) error {
 	if p.Directory == "" {
 		return fmt.Errorf("invalid_directory")
 	}
-	if filepath.Base(p.FileName) != p.FileName || p.FileName == "." || p.FileName == ".." || p.FileName == "" {
+	// Win32 spelling aliases must not bypass the reserved transfer filenames below.
+	if !filepath.IsLocal(p.FileName) || filepath.Base(p.FileName) != p.FileName || p.FileName == "." || p.FileName == ".." ||
+		p.FileName != strings.TrimRight(p.FileName, " .") {
 		return fmt.Errorf("invalid_file_name")
+	}
+	for _, suffix := range []string{".part", ".journal", ".journal.tmp"} {
+		name := strings.ToLower(p.FileName)
+		if strings.HasSuffix(name, suffix) && transferIDPattern.MatchString(strings.TrimSuffix(name, suffix)) {
+			return fmt.Errorf("reserved_file_name")
+		}
 	}
 	return nil
 }
@@ -110,19 +119,49 @@ func (m *receiveManager) init(p receiveInitParams) (any, error) {
 	}
 	base := filepath.Join(p.Directory, p.TransferID)
 	tmpPath, journalPath := base+".part", base+".journal"
+	// UUID casing cannot create a second owner of the same Windows partial file.
+	transferKey := strings.ToLower(p.TransferID)
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if existing := m.transfers[p.TransferID]; existing != nil {
-		return existing.status(), nil
-	}
-	j := receiveJournal{Version: 1, TransferID: p.TransferID, FileName: p.FileName, FileSize: p.FileSize, ChunkSize: p.ChunkSize, TotalChunks: p.TotalChunks, SHA256: p.SHA256, Bitmap: make([]byte, (p.TotalChunks+7)/8)}
-	if raw, err := os.ReadFile(journalPath); err == nil {
-		if err := json.Unmarshal(raw, &j); err != nil {
-			return nil, fmt.Errorf("invalid_receive_journal")
+	if existing := m.transfers[transferKey]; existing != nil {
+		// Release the manager before the transfer lock, matching finalize/abort order.
+		m.mu.Unlock()
+		existing, err := m.lock(p.TransferID)
+		if err != nil {
+			return nil, err
 		}
-		if j.TransferID != p.TransferID || j.FileSize != p.FileSize || j.ChunkSize != p.ChunkSize || j.TotalChunks != p.TotalChunks || j.SHA256 != p.SHA256 {
+		defer existing.mu.Unlock()
+		if existing.tmpPath != tmpPath || existing.journal.TransferID != p.TransferID ||
+			existing.journal.FileName != p.FileName || existing.journal.FileSize != p.FileSize ||
+			existing.journal.ChunkSize != p.ChunkSize || existing.journal.TotalChunks != p.TotalChunks || existing.journal.SHA256 != p.SHA256 {
 			return nil, fmt.Errorf("receive_manifest_mismatch")
 		}
+		return existing.status(), nil
+	}
+	defer m.mu.Unlock()
+	j := receiveJournal{Version: 1, TransferID: p.TransferID, FileName: p.FileName, FileSize: p.FileSize, ChunkSize: p.ChunkSize, TotalChunks: p.TotalChunks, SHA256: p.SHA256, Bitmap: make([]byte, (p.TotalChunks+7)/8)}
+	if journalFile, err := os.Open(journalPath); err == nil {
+		raw, readErr := io.ReadAll(io.LimitReader(journalFile, 64*1024+1))
+		_ = journalFile.Close()
+		if readErr != nil {
+			return nil, readErr
+		}
+		var restored receiveJournal
+		if len(raw) > 64*1024 || json.Unmarshal(raw, &restored) != nil {
+			return nil, fmt.Errorf("invalid_receive_journal")
+		}
+		if restored.Version != 1 || len(restored.Bitmap) != len(j.Bitmap) {
+			return nil, fmt.Errorf("invalid_receive_journal")
+		}
+		if restored.TransferID != p.TransferID || restored.FileName != p.FileName || restored.FileSize != p.FileSize || restored.ChunkSize != p.ChunkSize || restored.TotalChunks != p.TotalChunks || restored.SHA256 != p.SHA256 {
+			return nil, fmt.Errorf("receive_manifest_mismatch")
+		}
+		info, statErr := os.Stat(tmpPath)
+		if statErr != nil || !info.Mode().IsRegular() || info.Size() != p.FileSize {
+			return nil, fmt.Errorf("receive_partial_mismatch")
+		}
+		j = restored
+	} else if !os.IsNotExist(err) {
+		return nil, err
 	}
 	flags := os.O_RDWR | os.O_CREATE
 	if _, err := os.Stat(tmpPath); os.IsNotExist(err) {
@@ -137,15 +176,24 @@ func (m *receiveManager) init(p receiveInitParams) (any, error) {
 		return nil, err
 	}
 	t := &receiveTransfer{journal: j, file: f, tmpPath: tmpPath, journalPath: journalPath, finalPath: filepath.Join(p.Directory, p.FileName), lastCheckpoint: time.Now(), durableBitmap: append([]byte(nil), j.Bitmap...)}
-	m.transfers[p.TransferID] = t
+	m.transfers[transferKey] = t
 	return t.status(), nil
 }
 
-func (m *receiveManager) get(id string) (*receiveTransfer, error) {
+func (m *receiveManager) lock(id string) (*receiveTransfer, error) {
+	id = strings.ToLower(id)
 	m.mu.RLock()
 	t := m.transfers[id]
 	m.mu.RUnlock()
 	if t == nil {
+		return nil, fmt.Errorf("receive_not_initialized")
+	}
+	t.mu.Lock()
+	m.mu.RLock()
+	active := m.transfers[id] == t
+	m.mu.RUnlock()
+	if !active {
+		t.mu.Unlock()
 		return nil, fmt.Errorf("receive_not_initialized")
 	}
 	return t, nil
@@ -199,11 +247,10 @@ func (m *receiveManager) write(p receiveWriteParams) (any, error) {
 }
 
 func (m *receiveManager) writeBinary(transferID string, index int64, data []byte) (any, error) {
-	t, err := m.get(transferID)
+	t, err := m.lock(transferID)
 	if err != nil {
 		return nil, err
 	}
-	t.mu.Lock()
 	defer t.mu.Unlock()
 	if index < 0 || index >= t.journal.TotalChunks {
 		return nil, fmt.Errorf("chunk_out_of_range")
@@ -216,7 +263,7 @@ func (m *receiveManager) writeBinary(transferID string, index int64, data []byte
 		return nil, fmt.Errorf("invalid_chunk_length")
 	}
 	if bitSet(t.journal.Bitmap, index) {
-		return map[string]any{"duplicate": true, "checkpointed": true}, nil
+		return map[string]any{"duplicate": true, "checkpointed": bitSet(t.durableBitmap, index)}, nil
 	}
 	n, err := t.file.WriteAt(data, index*t.journal.ChunkSize)
 	if err != nil || n != len(data) {
@@ -277,11 +324,10 @@ func (t *receiveTransfer) checkpointLocked() error {
 }
 
 func (m *receiveManager) checkpoint(id string) (any, error) {
-	t, err := m.get(id)
+	t, err := m.lock(id)
 	if err != nil {
 		return nil, err
 	}
-	t.mu.Lock()
 	defer t.mu.Unlock()
 	if err := t.checkpointLocked(); err != nil {
 		return nil, err
@@ -290,11 +336,10 @@ func (m *receiveManager) checkpoint(id string) (any, error) {
 }
 
 func (m *receiveManager) finalize(id string) (any, error) {
-	t, err := m.get(id)
+	t, err := m.lock(id)
 	if err != nil {
 		return nil, err
 	}
-	t.mu.Lock()
 	defer t.mu.Unlock()
 	for i := int64(0); i < t.journal.TotalChunks; i++ {
 		if !bitSet(t.journal.Bitmap, i) {
@@ -311,14 +356,21 @@ func (m *receiveManager) finalize(id string) (any, error) {
 	if _, err := io.Copy(h, t.file); err != nil {
 		return nil, err
 	}
-	if hex.EncodeToString(h.Sum(nil)) != t.journal.SHA256 {
+	if !strings.EqualFold(hex.EncodeToString(h.Sum(nil)), t.journal.SHA256) {
 		return nil, fmt.Errorf("file_hash_mismatch")
 	}
-	if err := t.file.Close(); err != nil {
+	// Different transfers can share a destination; serialize its existence check and rename.
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, err := os.Lstat(t.finalPath); err == nil {
+		return nil, fmt.Errorf("destination_exists")
+	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-	if _, err := os.Stat(t.finalPath); err == nil {
-		return nil, fmt.Errorf("destination_exists")
+	// A closed transfer resumes from its durable journal, including rename failures.
+	defer delete(m.transfers, strings.ToLower(id))
+	if err := t.file.Close(); err != nil {
+		return nil, err
 	}
 	if err := os.Rename(t.tmpPath, t.finalPath); err != nil {
 		return nil, err
@@ -329,29 +381,26 @@ func (m *receiveManager) finalize(id string) (any, error) {
 	if err := os.Remove(t.journalPath); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	m.mu.Lock()
-	delete(m.transfers, id)
-	m.mu.Unlock()
 	return map[string]any{"path": t.finalPath, "sha256": t.journal.SHA256}, nil
 }
 
 func (m *receiveManager) abort(id string) (any, error) {
-	t, err := m.get(id)
+	t, err := m.lock(id)
 	if err != nil {
 		return nil, err
 	}
-	t.mu.Lock()
 	defer t.mu.Unlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// Closed handles must reopen; remove the journal before its partial file.
+	defer delete(m.transfers, strings.ToLower(id))
 	if err := t.file.Close(); err != nil {
 		return nil, err
 	}
-	for _, path := range []string{t.tmpPath, t.journalPath, t.journalPath + ".tmp"} {
+	for _, path := range []string{t.journalPath + ".tmp", t.journalPath, t.tmpPath} {
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
 	}
-	m.mu.Lock()
-	delete(m.transfers, id)
-	m.mu.Unlock()
 	return map[string]bool{"aborted": true}, nil
 }

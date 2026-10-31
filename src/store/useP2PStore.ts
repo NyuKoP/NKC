@@ -40,21 +40,28 @@ type P2PConnectionStatusBridge = {
   onConnectionStatus: (cb: (payload: unknown) => void) => () => void;
 };
 
-const CONNECTION_STATES = new Set<ConnectionManagerState>([
+const CONNECTION_STATES = [
   "idle",
   "connecting",
   "connected",
   "reconnecting",
   "closed",
-]);
+] as const;
+
+const isConnectionState = (value: unknown): value is ConnectionManagerState =>
+  CONNECTION_STATES.some((state) => state === value);
 
 export const resolveP2PConnectionHealth = (
   state: ConnectionManagerState
 ): P2PConnectionHealth => {
   if (state === "connected") return "online";
+
   if (state === "connecting") return "connecting";
+
   if (state === "reconnecting") return "degraded";
+
   if (state === "closed") return "offline";
+
   return "idle";
 };
 
@@ -78,6 +85,7 @@ export const useP2PStore = create<P2PStoreState>((set) => ({
     set((current) => {
       const remaining = { ...current.connectionsByConvId };
       delete remaining[convId];
+
       return { connectionsByConvId: remaining };
     }),
   resetConnectionStates: () => set({ connectionsByConvId: {} }),
@@ -102,24 +110,26 @@ export const isP2PConnectionStatusPayload = (
   payload: unknown
 ): payload is P2PConnectionStatusPayload => {
   if (!payload || typeof payload !== "object") return false;
-  const candidate = payload as Partial<P2PConnectionStatusPayload>;
+
   return (
-    typeof candidate.convId === "string" &&
-    CONNECTION_STATES.has(candidate.state as ConnectionManagerState) &&
-    (candidate.detail === undefined || typeof candidate.detail === "string") &&
-    (candidate.changedAt === undefined || typeof candidate.changedAt === "number")
+    "convId" in payload && typeof payload.convId === "string" &&
+    "state" in payload && isConnectionState(payload.state) &&
+    (!("detail" in payload) || payload.detail === undefined || typeof payload.detail === "string") &&
+    (!("changedAt" in payload) || payload.changedAt === undefined || typeof payload.changedAt === "number")
   );
 };
 
 const getP2PConnectionStatusBridge = (): P2PConnectionStatusBridge | null => {
   if (typeof window === "undefined") return null;
-  return (window as unknown as { p2p?: P2PConnectionStatusBridge }).p2p ?? null;
+
+  return window.p2p ?? null;
 };
 
 export const bindP2PConnectionStatusBridge = (
   bridge: P2PConnectionStatusBridge | null = getP2PConnectionStatusBridge()
 ) => {
   if (!bridge) return () => {};
+
   return bridge.onConnectionStatus((payload) => {
     if (!isP2PConnectionStatusPayload(payload)) return;
     applyP2PConnectionStatus(payload);

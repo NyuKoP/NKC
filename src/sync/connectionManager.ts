@@ -51,10 +51,14 @@ export type TorTcpConnector = (
   options?: { proxyUrl?: string; timeoutMs?: number }
 ) => Promise<TorTcpSocketLike>;
 
-const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
-const DEFAULT_PONG_TIMEOUT_MS = 10_000;
+const DEFAULT_HEARTBEAT_INTERVAL_MS = 15_000;
+
+const DEFAULT_PONG_TIMEOUT_MS = 5_000;
+
 const DEFAULT_MAX_BACKOFF_MS = 60_000;
+
 const textEncoder = new TextEncoder();
+
 const textDecoder = new TextDecoder();
 
 const toBytes = (value: unknown) => textEncoder.encode(JSON.stringify(value));
@@ -62,12 +66,15 @@ const toBytes = (value: unknown) => textEncoder.encode(JSON.stringify(value));
 const parseControlFrame = (bytes: Uint8Array): ConnectionManagerFrame | null => {
   try {
     const parsed = JSON.parse(textDecoder.decode(bytes)) as Partial<ConnectionManagerFrame>;
+
     if (parsed.type === "SYNC_PING" && typeof parsed.id === "string") {
       return { type: "SYNC_PING", id: parsed.id, ts: Number(parsed.ts) || Date.now() };
     }
+
     if (parsed.type === "SYNC_PONG" && typeof parsed.id === "string") {
       return { type: "SYNC_PONG", id: parsed.id, ts: Number(parsed.ts) || Date.now() };
     }
+
     return null;
   } catch {
     return null;
@@ -126,16 +133,19 @@ export class ConnectionManager {
 
   async start() {
     this.closed = false;
+
     if (this.connection && this.state === "connected") return;
     await this.openConnection("connecting");
   }
 
   async send(bytes: Uint8Array) {
     const connection = this.connection;
+
     if (!connection || this.state !== "connected") {
       await this.scheduleReconnectIfNeeded("send_without_connection");
       throw new Error("connection_not_ready");
     }
+
     try {
       await connection.send(bytes);
       this.markActivity();
@@ -158,9 +168,11 @@ export class ConnectionManager {
 
   private async openConnection(state: ConnectionManagerState) {
     if (this.closed) return;
+
     if (this.openInFlight) return this.openInFlight;
     const task = this.openConnectionOnce(state);
     this.openInFlight = task;
+
     try {
       await task;
     } finally {
@@ -171,12 +183,16 @@ export class ConnectionManager {
   private async openConnectionOnce(state: ConnectionManagerState) {
     if (this.closed) return;
     this.setState(state);
+
     try {
       const connection = await this.connectFn();
+
       if (this.closed) {
         await connection.close();
+
         return;
       }
+
       await this.attachConnection(connection);
       this.reconnectAttempt = 0;
       this.setState("connected");
@@ -212,6 +228,7 @@ export class ConnectionManager {
     const connection = this.connection;
     this.connection = null;
     this.unsubs.splice(0).forEach((unsubscribe) => unsubscribe());
+
     if (connection) {
       try {
         await connection.close();
@@ -224,18 +241,23 @@ export class ConnectionManager {
   private async handleIncoming(bytes: Uint8Array) {
     this.markActivity();
     const control = parseControlFrame(bytes);
+
     if (control?.type === "SYNC_PING") {
       await this.connection?.send(toBytes({ type: "SYNC_PONG", id: control.id, ts: this.now() }));
       this.markActivity();
+
       return;
     }
+
     if (control?.type === "SYNC_PONG") {
       if (control.id === this.pendingPingId) {
         this.pendingPingId = null;
         this.clearPongTimer();
       }
+
       return;
     }
+
     await this.onData?.(bytes);
   }
 
@@ -248,17 +270,24 @@ export class ConnectionManager {
 
   private async scheduleReconnectIfNeeded(reason: string) {
     if (this.closed || this.reconnectTimer) return;
+
     if (this.reconnectScheduling) {
       await this.reconnectScheduling;
+
       return;
     }
+
     const task = (async () => {
       const pending = await this.hasPendingOutbox(this.convId);
+
       if (this.closed || this.reconnectTimer) return;
+
       if (!pending) {
         this.setState("idle", reason);
+
         return;
       }
+
       const delay = backoffDelayMs(this.reconnectAttempt, this.maxBackoffMs);
       this.reconnectAttempt += 1;
       this.setState("reconnecting", `${reason}; retry_in=${delay}`);
@@ -267,7 +296,9 @@ export class ConnectionManager {
         void this.openConnection("connecting");
       }, delay);
     })();
+
     this.reconnectScheduling = task;
+
     try {
       await task;
     } finally {
@@ -287,16 +318,19 @@ export class ConnectionManager {
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
     }
+
     this.clearPongTimer();
     this.pendingPingId = null;
   }
 
   private async maybeSendPing() {
     if (!this.connection || this.state !== "connected" || this.pendingPingId) return;
+
     if (this.now() - this.lastActivityAt < this.heartbeatIntervalMs) return;
     const pingId = this.createId();
     const connection = this.connection;
     this.pendingPingId = pingId;
+
     try {
       await connection.send(toBytes({ type: "SYNC_PING", id: pingId, ts: this.now() }));
       this.pongTimer = setTimeout(() => {
@@ -344,19 +378,26 @@ export const createDataChannelConnection = (channel: RTCDataChannel): ManagedCon
   onData: (handler) => {
     const onMessage = (event: MessageEvent) => {
       const data = event.data;
+
       if (data instanceof ArrayBuffer) {
         handler(new Uint8Array(data));
+
         return;
       }
+
       if (data instanceof Blob) {
         void data.arrayBuffer().then((buffer) => handler(new Uint8Array(buffer)));
+
         return;
       }
+
       if (typeof data === "string") {
         handler(textEncoder.encode(data));
       }
     };
+
     channel.addEventListener("message", onMessage);
+
     return () => channel.removeEventListener("message", onMessage);
   },
   onClose: (handler) => {
@@ -364,6 +405,7 @@ export const createDataChannelConnection = (channel: RTCDataChannel): ManagedCon
     const onError = () => handler(new Error("datachannel_error"));
     channel.addEventListener("close", onClose);
     channel.addEventListener("error", onError);
+
     return () => {
       channel.removeEventListener("close", onClose);
       channel.removeEventListener("error", onError);
@@ -381,15 +423,19 @@ export const createTorTcpConnectionFactory =
       proxyUrl: options.proxyUrl,
       timeoutMs: options.timeoutMs,
     });
+
     return {
       send: (bytes) =>
         new Promise<void>((resolve, reject) => {
           try {
             const ok = socket.write(bytes);
+
             if (ok === false) {
               setTimeout(resolve, 0);
+
               return;
             }
+
             resolve();
           } catch (error) {
             reject(error);
@@ -399,16 +445,20 @@ export const createTorTcpConnectionFactory =
       onData: (handler) => {
         const onData = (chunk: Uint8Array) => handler(chunk);
         socket.on("data", onData);
+
         return () => socket.off("data", onData as (...args: unknown[]) => void);
       },
       onClose: (handler) => {
         const onClose = () => handler();
         const onEnd = () => handler(new Error("socket_ended"));
+
         const onError = (error: unknown) =>
           handler(error instanceof Error ? error : new Error(String(error)));
+
         socket.once("close", onClose);
         socket.once("end", onEnd);
         socket.once("error", onError);
+
         return () => {
           socket.off("close", onClose);
           socket.off("end", onEnd);

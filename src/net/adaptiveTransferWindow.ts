@@ -1,12 +1,13 @@
 export class AdaptiveTransferWindow {
-  private window = 1;
+  private window: number;
   private successStreak = 0;
   private readonly maximum: number;
   private readonly promotionThreshold: number;
 
-  constructor(maximum = 2, promotionThreshold = 3) {
+  constructor(maximum = 2, promotionThreshold = 3, initialWindow = 1) {
     this.maximum = maximum;
     this.promotionThreshold = promotionThreshold;
+    this.window = Math.max(1, Math.min(maximum, initialWindow));
   }
 
   get current() {
@@ -15,16 +16,19 @@ export class AdaptiveTransferWindow {
 
   onSuccess() {
     this.successStreak += 1;
+
     if (this.window === 1 && this.maximum > 1 && this.successStreak >= this.promotionThreshold) {
       this.window = this.maximum;
       this.successStreak = 0;
     }
+
     return this.window;
   }
 
   onFailure() {
     this.window = 1;
     this.successStreak = 0;
+
     return this.window;
   }
 }

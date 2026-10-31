@@ -18,6 +18,7 @@ const assertValidProxyUrl = (proxyUrl: string) => {
     if (error instanceof Error) {
       throw error;
     }
+
     throw new Error("Invalid proxy URL");
   }
 };
@@ -31,6 +32,7 @@ const tryProxy = async (config: NetConfig, proxyUrl: string) => {
       onionProxyUrl: proxyUrl,
     });
     const health = await checkProxyHealth();
+
     return health.ok;
   } catch {
     return false;
@@ -39,11 +41,14 @@ const tryProxy = async (config: NetConfig, proxyUrl: string) => {
 
 export const detectLocalOnionProxy = async (config: NetConfig) => {
   const userUrl = config.onionProxyUrl?.trim();
+
   if (userUrl) {
     assertValidProxyUrl(userUrl);
+
     if (!config.allowRemoteProxy && !isLocalhostProxy(userUrl)) {
       return null;
     }
+
     if (await tryProxy(config, userUrl)) return userUrl;
   }
 

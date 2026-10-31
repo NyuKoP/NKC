@@ -7,4 +7,10 @@ export type TorRuntimeCandidate = {
 export const selectTorRuntimeCandidate = (
   componentRuntime: TorRuntimeCandidate | null,
   routingRuntime: TorRuntimeCandidate | null
-) => componentRuntime ?? routingRuntime;
+) => {
+  if (componentRuntime?.state === "running") return componentRuntime;
+
+  if (routingRuntime?.state === "running") return routingRuntime;
+
+  return componentRuntime ?? routingRuntime;
+};

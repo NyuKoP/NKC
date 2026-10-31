@@ -2,10 +2,12 @@ import { appendTestLog } from "../utils/testLogSink";
 import { isInfoCollectionEnabled } from "./infoCollectionConfig";
 
 export const INFO_EVENT_FRIEND_ADD = "nkc:test:friend-add";
+
 export const INFO_EVENT_FRIEND_ROUTE = "nkc:test:friend-route";
+
 export const INFO_EVENT_ROUTER = "nkc:test:router";
 
-type FriendControlFrameType = "friend_req" | "friend_accept" | "friend_decline";
+type FriendControlFrameType = "friend_req" | "friend_accept" | "friend_decline" | "profile_update";
 
 export type InfoLogErrorDetail = {
   name?: string;
@@ -107,12 +109,14 @@ type CustomEventConstructorLike = new (
 
 const getBrowserWindow = () => {
   const candidate = globalThis as { window?: BrowserWindowLike };
+
   return candidate.window ?? null;
 };
 
 const createBrowserCustomEvent = (eventName: string, detail: unknown) => {
   const candidate = globalThis as { CustomEvent?: CustomEventConstructorLike };
   const CustomEventCtor = candidate.CustomEvent;
+
   return CustomEventCtor ? new CustomEventCtor(eventName, { detail }) : null;
 };
 
@@ -120,11 +124,13 @@ const dispatchInfoEvent = (eventName: string, payload: unknown) => {
   if (!isInfoCollectionEnabled()) return;
   const browserWindow = getBrowserWindow();
   const event = createBrowserCustomEvent(eventName, payload);
+
   if (!browserWindow || !event) return;
   browserWindow.dispatchEvent(event);
 };
 
 let infoSequence = 0;
+const intakeCauses = new Map<string, { at: number; suppressed: number }>();
 
 const SENSITIVE_LOG_KEYS = new Set([
   "friendcode",
@@ -149,10 +155,12 @@ const SENSITIVE_LOG_KEYS = new Set([
   "credentials",
   "icecandidate",
   "ipaddress",
+  "filename",
 ]);
 
 const sanitizeLogString = (value: string) =>
   value
+    .replace(/phase2i:[a-zA-Z0-9_-]{43}/g, "[experimental-channel-redacted]")
     .replace(/\b[a-z2-7]{56}\.onion\b/gi, "[onion-redacted]")
     .replace(/\bNKC1-[A-Za-z0-9_-]+\b/g, "[friend-code-redacted]")
     .replace(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g, "[ip-redacted]")
@@ -164,35 +172,44 @@ const sanitizeLogString = (value: string) =>
     .replace(/\b[A-Za-z]:\\[^\r\n]*/g, "[path-redacted]")
     .replace(/\/(?:Users|home|tmp)\/[^\r\n]*/g, "[path-redacted]");
 
-export const sanitizeInfoLogPayload = <T>(value: T, depth = 0): T => {
-  if (typeof value === "string") return sanitizeLogString(value) as T;
+export function sanitizeInfoLogPayload(value: Record<string, unknown>, depth?: number): Record<string, unknown>;
+export function sanitizeInfoLogPayload(value: unknown, depth?: number): unknown;
+export function sanitizeInfoLogPayload(value: unknown, depth = 0): unknown {
+  if (typeof value === "string") return sanitizeLogString(value);
+
   if (value === null || typeof value !== "object" || depth >= 8) return value;
+
   if (value instanceof Error) {
-    const coded = value as Error & { code?: unknown };
     return {
       name: value.name || "Error",
       message: sanitizeLogString(value.message || "Unknown error"),
-      ...(typeof coded.code === "string" ? { code: sanitizeLogString(coded.code) } : {}),
-    } as T;
+      ...("code" in value && typeof value.code === "string" ? { code: sanitizeLogString(value.code) } : {}),
+    };
   }
+
   if (Array.isArray(value)) {
-    return value.map((item) => sanitizeInfoLogPayload(item, depth + 1)) as T;
+    return value.map((item) => sanitizeInfoLogPayload(item, depth + 1));
   }
+
   const sanitized: Record<string, unknown> = {};
+
   for (const [key, item] of Object.entries(value)) {
     const normalizedKey = key.toLowerCase().replace(/[^a-z0-9]/g, "");
+
     const isIdentifier =
       !normalizedKey.startsWith("has") &&
       (normalizedKey.endsWith("deviceid") ||
         normalizedKey.endsWith("friendid") ||
         normalizedKey.endsWith("profileid") ||
         normalizedKey.endsWith("friendidhash"));
+
     sanitized[key] = SENSITIVE_LOG_KEYS.has(normalizedKey) || isIdentifier
       ? "[redacted]"
       : sanitizeInfoLogPayload(item, depth + 1);
   }
-  return sanitized as T;
-};
+
+  return sanitized;
+}
 
 const withSequence = <T extends object>(payload: T) => ({
   ...payload,
@@ -201,53 +218,75 @@ const withSequence = <T extends object>(payload: T) => ({
 
 export const emitFriendAddInfoLog = (detail: FriendAddInfoLogInput) => {
   if (!isInfoCollectionEnabled()) return;
+
   const payload = withSequence({
     ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
+
   console.info("[test][friend-add]", payload);
   dispatchInfoEvent(INFO_EVENT_FRIEND_ADD, payload);
 };
 
 export const emitFriendRouteOutgoingInfoLog = (detail: FriendRouteOutgoingInfoLogInput) => {
   if (!isInfoCollectionEnabled()) return;
+
   const payload = withSequence({
     ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
+
   console.info("[test][friend-route]", payload);
   dispatchInfoEvent(INFO_EVENT_FRIEND_ROUTE, payload);
 };
 
 export const emitFriendRouteIncomingInfoLog = (detail: FriendRouteIncomingInfoLogInput) => {
   if (!isInfoCollectionEnabled()) return;
+
   const payload = withSequence({
     ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
+
   console.info("[test][friend-route]", payload);
   dispatchInfoEvent(INFO_EVENT_FRIEND_ROUTE, payload);
 };
 
 export const emitRouterInfoLog = (detail: RouterInfoLogInput) => {
   if (!isInfoCollectionEnabled()) return;
+
   const payload = withSequence({
     ...sanitizeInfoLogPayload(detail),
     timestamp: new Date().toISOString(),
   });
+
   console.info("[test][router]", payload);
   dispatchInfoEvent(INFO_EVENT_ROUTER, payload);
 };
 
 export const emitFlowTraceLog = (detail: FlowTraceLogInput) => {
   if (!isInfoCollectionEnabled()) return;
+  const sanitized = sanitizeInfoLogPayload(detail);
+  if (["incomingEnvelope:failed", "incomingEnvelope:dropped"].includes(detail.event) && typeof sanitized.reason === "string") {
+    const key = JSON.stringify([detail.event, sanitized.reason.slice(0, 160),
+      typeof sanitized.errorCode === "string" ? sanitized.errorCode.slice(0, 80) : ""]);
+    const previous = intakeCauses.get(key), now = performance.now();
+    if (previous && now - previous.at < 8000) { previous.suppressed++; return; }
+    if (previous?.suppressed) sanitized.suppressedCount = previous.suppressed;
+    intakeCauses.delete(key);
+    intakeCauses.set(key, { at: now, suppressed: 0 });
+    if (intakeCauses.size > 256) intakeCauses.delete(intakeCauses.keys().next().value!);
+  }
+
   const payload = withSequence({
-    ...sanitizeInfoLogPayload(detail),
+    ...sanitized,
     timestamp: new Date().toISOString(),
   });
-  const event = typeof payload.event === "string" ? payload.event : "unknown";
+
+  const event = typeof sanitized.event === "string" ? sanitized.event : "unknown";
   const label = `[trace][${event}]`;
-  const level = payload.level;
+  const level = sanitized.level;
+
   if (level === "debug") {
     console.debug(label, payload);
   } else if (level === "warn") {
@@ -257,6 +296,7 @@ export const emitFlowTraceLog = (detail: FlowTraceLogInput) => {
   } else {
     console.info(label, payload);
   }
+
   dispatchInfoEvent(INFO_EVENT_ROUTER, payload);
 };
 
@@ -264,19 +304,25 @@ let infoSinkAttached = false;
 
 export const attachInfoCollectionLogSink = () => {
   if (!isInfoCollectionEnabled()) return () => {};
+
   const browserWindow = getBrowserWindow();
+
   if (!browserWindow) return () => {};
+
   if (infoSinkAttached) return () => {};
+
   infoSinkAttached = true;
 
   const handleFriendAdd = (event: BrowserEventLike) => {
     const detail = event.detail;
     void appendTestLog("friend-add", detail);
   };
+
   const handleFriendRoute = (event: BrowserEventLike) => {
     const detail = event.detail;
     void appendTestLog("friend-route", detail);
   };
+
   const handleRouter = (event: BrowserEventLike) => {
     const detail = event.detail;
     void appendTestLog("router", detail);

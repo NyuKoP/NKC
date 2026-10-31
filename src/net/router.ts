@@ -1,32 +1,50 @@
+import { legacyOutboxCiphertext } from "../storage/storedPayload";
+import type { ReceiveContext } from "../accounts/receiveContext";
+import { captureLocalOperationContext } from "../accounts/receiveContext";
+import { getAuthorizedDevice } from "../devices/deviceApprovals";
+import { captureDeviceRegistryContext, getRegistry } from "../devices/deviceRegistry";
+import { getAccountOwnerGeneration } from "../accounts/accountOwnerLifecycle";
+import { getVaultKey, onVaultKeyChange } from "../crypto/sessionKeyring";
+import type { VaultAccess } from "../db/vaultAccess";
+import { type IncomingCompletion } from "../sync/receiveCompletion";
 import type { NetConfig } from "./netConfig";
+import { firstMessageMeasurement } from "../diagnostics/coldStartMetrics";
 import { useNetConfigStore } from "./netConfigStore";
 import { createRouteController, type RouteController } from "./routeController";
 import { createHttpClient, type HttpClient } from "./httpClient";
 import type { OutboxRecord } from "../db/schema";
 import { computeExpiresAt } from "../policies/ttl";
-import { enqueueOutgoing, onAckReceived } from "../policies/deliveryPolicy";
-import { putOutbox, updateOutbox } from "../storage/outboxStore";
+import { enqueueOutgoing, onAckReceived, cancelInvalidatedOutgoing } from "../policies/deliveryPolicy";
+import { getOutbox, putOutbox, updateOutbox } from "../storage/outboxStore";
+import { listProfiles, listConversations } from "../db/repo";
+import { hasAuthenticatedFriendKeys } from "../security/trust";
 import type { Transport, TransportPacket, TransportState } from "../adapters/transports/types";
 import { createDirectP2PTransport } from "../adapters/transports/directP2PTransport";
 import { createSelfOnionTransport } from "../adapters/transports/selfOnionTransport";
 import { createOnionRouterTransport } from "../adapters/transports/onionRouterTransport";
 import { getConnectionStatus, updateConnectionStatus } from "./connectionStatus";
-import { decideRouterTransport } from "./transportPolicy";
+import { assertSupportedNetworkConfig, assertTorBackedTransport, decideRouterTransport } from "./transportPolicy";
 import { useAppStore } from "../app/store";
 import { useInternalOnionRouteStore } from "../stores/internalOnionRouteStore";
 import { emitFlowTraceLog } from "../diagnostics/infoCollectionLogs";
 import { createTransportError, getTransportErrorCode } from "./transportErrors";
 import { decodeFriendCodeV1 } from "../security/friendCode";
 import { createSafeConsole } from "../diagnostics/safeConsole";
+import { createPrioritySendQueue } from "./prioritySendQueue";
 
 const console = createSafeConsole(globalThis.console);
 
 export type TransportKind = "directP2P" | "selfOnion" | "onionRouter";
+
 export type IncomingPacketMeta = {
   via: TransportKind;
+  receiveContext?: ReceiveContext;
+  binaryPacketBytes?: Uint8Array;
 };
 
 type SendPayload = {
+  access?: VaultAccess;
+  recipientIdentityPub?: string;
   convId: string;
   messageId: string;
   ciphertext: string;
@@ -43,6 +61,7 @@ type SendPayload = {
 };
 
 type SendDeps = {
+  access?: VaultAccess;
   config?: NetConfig;
   routeController?: RouteController;
   httpClient?: HttpClient;
@@ -55,10 +74,17 @@ type PrewarmDeps = SendDeps & {
 };
 
 const defaultRouteController = createRouteController();
+
 const defaultHttpClient = createHttpClient();
+
 const transportCache = new Map<TransportKind, Transport>();
-let transportStarted = new WeakSet<Transport>();
+
+let onionSendQueue = createPrioritySendQueue();
+
+let transportStarted = new WeakMap<Transport, { generation: number; ready: Promise<void> }>();
+
 const inboundAttachedKinds = new Set<TransportKind>();
+
 const transportStateByKind: Partial<Record<TransportKind, TransportState>> = {};
 
 const debugLog = (label: string, payload: Record<string, unknown>) => {
@@ -66,10 +92,84 @@ const debugLog = (label: string, payload: Record<string, unknown>) => {
   void payload;
 };
 
+const assertCurrentPacketAuthority = async (record: OutboxRecord, packet: TransportPacket, access?: VaultAccess) => {
+  let frame: { header?: { deviceDelivery?: { sessionId?: string }; friendSessionId?: string }; deviceDelivery?: unknown } | null;
+  try { frame = JSON.parse(legacyOutboxCiphertext(record)); } catch { return; }
+  if (!access || !frame || !frame.header && !frame.deviceDelivery) return;
+  const local = await captureLocalOperationContext();
+  if (!local || local.vault.accountId !== access.accountId || local.vault.db !== access.db ||
+      local.vault.session.token !== access.session.token) throw new Error("OWNER_SESSION_CHANGED");
+  let context = { ...local, vault: access };
+  if (frame.header?.deviceDelivery || frame.deviceDelivery) {
+    context = await captureDeviceRegistryContext(context);
+    const target = (await getRegistry(context))[packet.toDeviceId ?? ""]?.authorization;
+    const current = target ? await getAuthorizedDevice(target.deviceId, context, target.accountRootIdentityPub) : null;
+    if (!current?.route || current.identityPub !== record.recipientIdentityPub ||
+        current.route.onionAddr !== packet.route?.torOnion || current.route.inboxWriteToken !== packet.route?.inboxWriteToken) {
+      throw new Error("DEVICE_AUTHORIZATION_REQUIRED");
+    }
+    if (frame.header) await (await import("../sync/syncEngine")).assertCurrentDeviceSession(record.convId,
+      frame.header.deviceDelivery?.sessionId, current, context);
+  } else {
+    const peers = (await listProfiles(access)).filter(peer => peer.kind === "friend" && peer.identityPub === record.recipientIdentityPub &&
+      peer.friendStatus === "normal" && hasAuthenticatedFriendKeys(peer) && peer.trust?.status !== "blocked" && peer.verification?.status !== "key_changed");
+    if (peers.length !== 1) throw new Error("OWNER_PEER_ROUTE_UNAVAILABLE");
+    await (await import("../sync/syncEngine")).assertCurrentFriendSession(record.convId, frame.header?.friendSessionId, context);
+  }
+  if (frame.header) {
+    const event = await access.db.events.get(record.id);
+    if (event?.outgoingSourceStamp !== undefined) {
+      if (!event.outgoingBody_enc || event.envelopeJson !== record.ciphertext || !event.localConvId) throw new Error("OUTGOING_SOURCE_CHANGED");
+      const { decryptJsonRecord } = await import("../crypto/vault");
+      const body = await decryptJsonRecord(access.key, event.eventId, `outgoing:${event.eventHash}`, event.outgoingBody_enc);
+      const conv = (await listConversations(access)).find(item => item.id === event.localConvId);
+      const profiles = await listProfiles(access);
+      const partner = profiles.find(item => item.kind === "friend" && item.id === event.outgoingPartnerId && conv?.participants.includes(item.id));
+      if (!partner) throw new Error("OUTGOING_SOURCE_CHANGED");
+      await (await import("../sync/outgoingSource")).assertCurrentOutgoingSource(event.localConvId, partner, body, context, event.outgoingSourceStamp);
+    }
+  }
+};
+
+const assertPendingFriendRequest = async (record: OutboxRecord, access?: VaultAccess) => {
+  let frame: { type?: unknown; convId?: unknown } | null;
+
+  try { frame = JSON.parse(legacyOutboxCiphertext(record)); } catch { return; }
+  if (frame?.type !== "friend_req") return;
+  if (!access || record.ownerAccountId !== access.accountId || !record.recipientIdentityPub) {
+    throw new Error("OWNER_REQUIRED");
+  }
+
+  const [profiles, conversations] = await Promise.all([listProfiles(access), listConversations(access)]);
+  const peers = profiles.filter(profile => profile.kind === "friend" && profile.identityPub === record.recipientIdentityPub);
+  const user = profiles.find(profile => profile.kind === "user");
+  const conversation = conversations.find(item => item.id === record.convId);
+  access.assertLocal();
+
+  if (peers.length !== 1 || peers[0].friendStatus !== "request_out" ||
+      peers[0].trust?.status === "blocked" || peers[0].verification?.status === "key_changed" ||
+      !user || !conversation || conversation.type === "group" || conversation.participants.length !== 2 ||
+      !conversation.participants.includes(user.id) || !conversation.participants.includes(peers[0].id) ||
+      !conversation.pendingOutgoing || conversation.blocked ||
+      (frame.convId !== undefined && frame.convId !== record.convId)) {
+    throw new Error("FRIEND_REQUEST_STATE_CHANGED");
+  }
+};
+
 type DerivedRoutingMeta = {
   toDeviceId?: string;
   route?: { torOnion?: string; inboxWriteToken?: string };
   staleDeviceAliases?: string[];
+};
+const assertDispatchAuthority = async (record: OutboxRecord, packet: TransportPacket, access?: VaultAccess) => {
+  try {
+    await assertPendingFriendRequest(record, access);
+    await assertCurrentPacketAuthority(record, packet, access);
+  } catch (error) {
+    if (access && error instanceof Error && ["FRIEND_REQUEST_STATE_CHANGED", "OUTGOING_SOURCE_CHANGED"].includes(error.message))
+      await cancelInvalidatedOutgoing(record, access);
+    throw error;
+  }
 };
 
 const deriveRoutingMetaFromStores = (
@@ -78,18 +178,25 @@ const deriveRoutingMetaFromStores = (
   const state = useAppStore.getState();
   const conv = state.convs.find((item) => item.id === convId);
   const me = state.userProfile;
+
   if (!conv || !me) return {};
+
   const isDirect =
     !(conv.type === "group" || conv.participants.length > 2) &&
     conv.participants.length === 2;
+
   if (!isDirect) return {};
   const partnerId = conv.participants.find((id) => id && id !== me.id) ?? null;
+
   if (!partnerId) return {};
   const partner = state.friends.find((friend) => friend.id === partnerId) ?? null;
+
   if (!partner) return {};
   const friendCode = partner.profileVcard?.friendCode?.trim();
+
   const decodedFriendCode =
     friendCode && friendCode.length > 0 ? decodeFriendCodeV1(friendCode) : null;
+
   const recovered =
     decodedFriendCode && !("error" in decodedFriendCode)
       ? {
@@ -98,14 +205,18 @@ const deriveRoutingMetaFromStores = (
           inboxWriteToken: decodedFriendCode.inboxWriteToken,
         }
       : undefined;
+
   const toDeviceId =
     partner.routingHints?.deviceId ??
     partner.primaryDeviceId ??
     partner.deviceId ??
     recovered?.toDeviceId;
+
   const torOnion = partner.routingHints?.onionAddr ?? recovered?.torOnion;
+
   const inboxWriteToken =
     partner.routingHints?.inboxWriteToken ?? recovered?.inboxWriteToken;
+
   return {
     toDeviceId,
     route: torOnion ? { torOnion, inboxWriteToken } : undefined,
@@ -121,8 +232,11 @@ const attachHandlers = (
   kind: TransportKind
 ) => {
   transport.onAck((messageId, rttMs) => {
+    firstMessageMeasurement.transportAck(messageId);
     controller.reportAck(messageId, rttMs);
-    void onAckReceived(messageId);
+
+    // Transport handoff/ACK cannot authenticate application storage in an owned runtime.
+    if (typeof window === "undefined" || !window.nkc?.activateAccountSession) void onAckReceived(messageId);
   });
   transport.onState((state) => {
     transportStateByKind[kind] = state;
@@ -137,10 +251,15 @@ const getTransport = (
   httpClient: HttpClient,
   overrides?: Partial<Record<TransportKind, Transport>>
 ) => {
-  if (overrides?.[kind]) return overrides[kind] as Transport;
-  if (transportCache.has(kind)) return transportCache.get(kind) as Transport;
+  assertTorBackedTransport(kind);
+
+  if (overrides?.[kind]) return overrides[kind];
+  const cached = transportCache.get(kind);
+
+  if (cached) return cached;
 
   let transport: Transport;
+
   if (kind === "directP2P") {
     transport = createDirectP2PTransport();
   } else if (kind === "selfOnion") {
@@ -148,21 +267,60 @@ const getTransport = (
   } else {
     transport = createOnionRouterTransport({ httpClient, config });
   }
+
   attachHandlers(transport, controller, kind);
+
   if (!inboundAttachedKinds.has(kind)) {
-    transport.onMessage((packet) => {
-      inboundHandlers.forEach((handler) => handler(packet, { via: kind }));
-    });
+    transport.onMessage(async (packet, receiveContext, binaryPacketBytes) => {
+      const entries = [...inboundHandlers];
+      const highest = Math.max(...entries.map(entry => Number.isFinite(entry.authority) ? entry.authority! : -Infinity));
+      const selected = entries.filter(entry => Number.isFinite(entry.authority) && entry.authority === highest);
+      const meta = { via: kind, receiveContext, binaryPacketBytes };
+
+      for (const observer of entries.filter(entry => entry.authority === undefined)) {
+        void Promise.resolve().then(() => observer.handler(packet, meta)).catch(() => {});
+      }
+
+      return selected.length === 1 ? selected[0].handler(packet, meta) : undefined;
+    }, { authority: 100 });
     inboundAttachedKinds.add(kind);
   }
+
   transportCache.set(kind, transport);
+
   return transport;
 };
 
 const ensureStarted = async (transport: Transport) => {
-  if (transportStarted.has(transport)) return;
-  await transport.start();
-  transportStarted.add(transport);
+  const generation = getAccountOwnerGeneration();
+  const previous = transportStarted.get(transport);
+
+  if (previous?.generation === generation) return previous.ready;
+
+  const ready = (async () => {
+    if (previous) {
+      await previous.ready.catch(() => {});
+      await transport.stop();
+    }
+
+    if (getAccountOwnerGeneration() !== generation) throw new Error("OWNER_SESSION_CHANGED");
+    await transport.start();
+
+    if (getAccountOwnerGeneration() !== generation) throw new Error("OWNER_SESSION_CHANGED");
+  })();
+
+  transportStarted.set(transport, { generation, ready });
+
+  try { await ready; }
+  catch (error) {
+    if (transportStarted.get(transport)?.ready === ready) {
+      await transport.stop().catch(() => {});
+
+      if (transportStarted.get(transport)?.ready === ready) transportStarted.delete(transport);
+    }
+
+    throw error;
+  }
 };
 
 export const resolveTransport = (
@@ -171,33 +329,55 @@ export const resolveTransport = (
 ): TransportKind => decideRouterTransport(config, controller);
 
 export const __testResetRouter = () => {
+  onionSendQueue.close();
+  onionSendQueue = createPrioritySendQueue();
   transportCache.clear();
-  transportStarted = new WeakSet<Transport>();
+  transportStarted = new WeakMap();
   inboundAttachedKinds.clear();
   delete transportStateByKind.directP2P;
   delete transportStateByKind.onionRouter;
   delete transportStateByKind.selfOnion;
+
   if (inboundRetryTimer) clearTimeout(inboundRetryTimer);
   inboundRetryTimer = null;
   inboundRetryAttempt = 0;
   inboundStartPromise = null;
 };
 
+let routerResetPromise: Promise<void> | null = null;
+
+export const resetRouterRuntime = (): Promise<void> => {
+  if (routerResetPromise) return routerResetPromise;
+  routerResetPromise = (async () => {
+    onionSendQueue.close();
+    const activeTransports = Array.from(new Set(transportCache.values()));
+    await Promise.allSettled(activeTransports.map((transport) => transport.stop()));
+    __testResetRouter();
+  })().finally(() => { routerResetPromise = null; });
+
+  return routerResetPromise;
+};
+
 const warnOnionRouterGuards = (config: NetConfig) => {
   if (config.mode !== "onionRouter" && !config.onionEnabled) return;
+
   if (!config.disableLinkPreview || !config.webrtcRelayOnly) return;
 };
 
 const toErrorMessage = (error: unknown) => {
   const code = getTransportErrorCode(error);
   const message = error instanceof Error ? error.message : String(error);
+
   if (!code) return message;
+
   if (message.toLowerCase().includes(code.toLowerCase())) return message;
+
   return `${code}:${message}`;
 };
 
 const createMissingDestinationError = (kind: TransportKind, opId: string) => {
   console.warn(`[net][route] missing_to skip route=${kind} opId=${opId}`);
+
   return createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: missing destination 'to'");
 };
 
@@ -206,12 +386,17 @@ const isFatalMisconfigError = (error: unknown) => getTransportErrorCode(error) =
 const isOnionFirstPolicy = (config: NetConfig) =>
   config.mode === "onionRouter" || config.mode === "selfOnion" || config.onionEnabled;
 
+const isTorOnlyPolicy = (config: NetConfig) =>
+  config.mode === "onionRouter" && config.onionSelectedNetwork === "tor";
+
 const isDirectNotOpenError = (message: string) => message.toLowerCase().includes("direct_not_open");
 
 const isOnionNotReadyError = (error: unknown, message?: string) => {
   const code = getTransportErrorCode(error);
+
   if (code === "INTERNAL_ONION_NOT_READY" || code === "TOR_NOT_READY") return true;
   const text = (message ?? toErrorMessage(error)).toLowerCase();
+
   return (
     text.includes("internal_onion_not_ready") ||
     text.includes("internal onion route is not ready") ||
@@ -221,12 +406,19 @@ const isOnionNotReadyError = (error: unknown, message?: string) => {
 
 const toRouteDecisionReason = (error: unknown, message?: string) => {
   const text = message ?? toErrorMessage(error);
+
   if (isFatalMisconfigError(error)) return "MISSING_TO_SKIP";
+
   if (isRouteTargetMissingError(text)) return "ROUTE_TARGET_MISSING";
+
   if (isOnionNotReadyError(error, text)) return "ONION_NOT_READY_DEFER";
+
   if (isDirectNotOpenError(text)) return "DIRECT_NOT_OPEN_SKIP";
+
   if (isRouteCandidateMissingError(text)) return "NO_ROUTE_CANDIDATE";
+
   if (isOnionProxyUnavailableError(text)) return "PROXY_UNAVAILABLE";
+
   return "ROUTE_ERROR";
 };
 
@@ -240,6 +432,7 @@ const isRouteCandidateMissingError = (message: string) =>
 
 const isOnionProxyUnavailableError = (message: string) => {
   const normalized = message.toLowerCase();
+
   return (
     message.includes("forward_failed:no_proxy") ||
     message.includes("forward_failed:proxy_unreachable") ||
@@ -252,6 +445,7 @@ const isOnionProxyUnavailableError = (message: string) => {
 
 const isSelfOnionRouteNotReadyError = (message: string) => {
   const normalized = message.toLowerCase();
+
   return (
     normalized.includes("internal onion route is not ready") ||
     normalized.includes("internal_onion_not_ready") ||
@@ -300,21 +494,26 @@ const toRouteGateSnapshot = (
   const routeState = useInternalOnionRouteStore.getState().route;
   const connection = getConnectionStatus();
   const onionRouterState = transportStateByKind.onionRouter;
+
   const routerConnected =
     onionRouterState === "connected" ||
     onionRouterState === "degraded" ||
     (connection.transport === "onionRouter" &&
       (connection.state === "connected" || connection.state === "degraded"));
+
   const directState = transportStateByKind.directP2P;
+
   const directOpen =
     directState === "connected" ||
     directState === "degraded" ||
     (connection.transport === "directP2P" &&
       (connection.state === "connected" || connection.state === "degraded"));
+
   const onionReady =
     config.mode === "onionRouter" || config.onionEnabled
       ? routerConnected
       : routeState.status === "ready";
+
   return {
     onionReady,
     torBootstrapped: config.onionSelectedNetwork === "tor" ? routerConnected : null,
@@ -381,38 +580,54 @@ const getPrewarmKinds = (
   includeFallback: boolean
 ): TransportKind[] => {
   if (!includeFallback) return [chosen];
+
   if (chosen === "onionRouter") return ["onionRouter", "directP2P", "selfOnion"];
+
   if (chosen === "directP2P") return ["directP2P", "onionRouter", "selfOnion"];
+
   return ["selfOnion", "onionRouter", "directP2P"];
 };
 
-const inboundHandlers = new Set<(packet: TransportPacket, meta: IncomingPacketMeta) => void>();
+const inboundHandlers = new Set<{ authority?: number; handler: (packet: TransportPacket, meta: IncomingPacketMeta) => IncomingCompletion | void | Promise<IncomingCompletion | void> }>();
+
 let inboundAttached = false;
+
 let inboundStartPromise: Promise<void> | null = null;
+
 let inboundRetryTimer: ReturnType<typeof setTimeout> | null = null;
+
 let inboundRetryAttempt = 0;
+
 const INBOUND_RETRY_BASE_MS = 2_000;
+
 const INBOUND_RETRY_MAX_MS = 30_000;
 
 export const prewarmRouter = async (deps: PrewarmDeps = {}) => {
   const config = deps.config ?? useNetConfigStore.getState().config;
+  assertSupportedNetworkConfig(config);
   const controller = deps.routeController ?? defaultRouteController;
   const httpClient = deps.httpClient ?? defaultHttpClient;
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolve(config, controller);
-  const requested = [...new Set(getPrewarmKinds(chosen, deps.includeFallback ?? true))];
+  assertTorBackedTransport(chosen);
+  const includeFallback = (deps.includeFallback ?? true) && !isTorOnlyPolicy(config);
+  const requested = [...new Set(getPrewarmKinds(chosen, includeFallback))].filter(kind => kind !== "directP2P");
+
   const settled = await Promise.all(
     requested.map(async (kind) => {
       try {
         const transport = getTransport(kind, config, controller, httpClient, deps.transports);
         await ensureStarted(transport);
+
         return { kind, ok: true as const };
       } catch (error) {
         controller.reportSendFail(kind);
+
         return { kind, ok: false as const, error: toErrorMessage(error) };
       }
     })
   );
+
   return {
     chosenTransport: chosen,
     requested,
@@ -421,7 +636,7 @@ export const prewarmRouter = async (deps: PrewarmDeps = {}) => {
       .filter((item) => !item.ok)
       .map((item) => ({
         transport: item.kind,
-        error: (item as { error?: string }).error ?? "unknown error",
+        error: item.error ?? "unknown error",
       })),
     mode: config.mode,
     onionEnabled: config.onionEnabled,
@@ -430,26 +645,39 @@ export const prewarmRouter = async (deps: PrewarmDeps = {}) => {
 };
 
 const ensureInboundListener = async () => {
+  if (routerResetPromise) await routerResetPromise;
+
   if (inboundStartPromise) return inboundStartPromise;
+
   if (inboundHandlers.size === 0) return;
   const config = useNetConfigStore.getState().config;
   const controller = defaultRouteController;
   const httpClient = defaultHttpClient;
-  const transports = [
-    getTransport("onionRouter", config, controller, httpClient),
-    getTransport("selfOnion", config, controller, httpClient),
-  ];
+
+  const transportKinds: TransportKind[] = isTorOnlyPolicy(config)
+    ? ["onionRouter"]
+    : ["onionRouter", "selfOnion"];
+
+  const transports = transportKinds.map((kind) =>
+    getTransport(kind, config, controller, httpClient)
+  );
+
   if (!inboundAttached) inboundAttached = true;
   inboundStartPromise = Promise.allSettled(
     transports.map((transport) => ensureStarted(transport))
   )
     .then((results) => {
-      const onionRouterFailed = results[0]?.status === "rejected";
+      const onionRouterIndex = transportKinds.indexOf("onionRouter");
+
+      const onionRouterFailed =
+        onionRouterIndex >= 0 && results[onionRouterIndex]?.status === "rejected";
+
       if (onionRouterFailed && inboundHandlers.size > 0 && !inboundRetryTimer) {
         const delayMs = Math.min(
           INBOUND_RETRY_MAX_MS,
           INBOUND_RETRY_BASE_MS * 2 ** inboundRetryAttempt
         );
+
         inboundRetryAttempt += 1;
         inboundRetryTimer = setTimeout(() => {
           inboundRetryTimer = null;
@@ -458,7 +686,9 @@ const ensureInboundListener = async () => {
       } else if (!onionRouterFailed) {
         inboundRetryAttempt = 0;
       }
+
       const allFailed = results.every((result) => result.status === "rejected");
+
       if (allFailed) {
         throw new Error("All inbound transports failed to start");
       }
@@ -469,16 +699,25 @@ const ensureInboundListener = async () => {
     .finally(() => {
       inboundStartPromise = null;
     });
+
   return inboundStartPromise;
 };
+
+onVaultKeyChange(() => {
+  void resetRouterRuntime().then(() => {
+    if (getVaultKey()) return ensureInboundListener();
+  }).catch(() => { /* Startup retries through the existing inbound listener. */ });
+});
 
 const resolveTransportForExplicitRoute = (
   chosen: TransportKind,
   route?: { torOnion?: string }
 ) => {
   if (chosen !== "selfOnion") return chosen;
+
   if (!route?.torOnion) return chosen;
   const routeState = useInternalOnionRouteStore.getState().route;
+
   return routeState.status === "ready" ? chosen : "onionRouter";
 };
 
@@ -486,16 +725,21 @@ export const sendCiphertext = async (
   payload: SendPayload,
   deps: SendDeps = {}
 ) => {
+  await payload.access?.assertMain();
   const config = deps.config ?? useNetConfigStore.getState().config;
+  assertSupportedNetworkConfig(config);
   const controller = deps.routeController ?? defaultRouteController;
   const httpClient = deps.httpClient ?? defaultHttpClient;
-  const derived = payload.toDeviceId
+
+  const derived = payload.toDeviceId || payload.access
     ? {}
     : deriveRoutingMetaFromStores(payload.convId);
+
   const toDeviceId = (payload.toDeviceId ?? derived.toDeviceId)?.trim();
   const route = payload.route ?? derived.route;
   const policy = config.mode === "onionRouter" || config.onionEnabled ? "STRICT" : "ALLOW_FALLBACK";
   const createdAtMs = Date.now();
+
   const record: OutboxRecord = {
     id: payload.messageId,
     convId: payload.convId,
@@ -513,17 +757,22 @@ export const sendCiphertext = async (
     transferId: payload.transferId,
     chunkIndex: payload.chunkIndex,
     binaryTransport: payload.binaryTransport,
+    ownerAccountId: payload.access?.accountId,
+    recipientIdentityPub: payload.recipientIdentityPub,
   };
 
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
   const chosen = resolveTransportForExplicitRoute(resolve(config, controller), route);
+  assertTorBackedTransport(chosen);
+
   const attemptTrace: Array<{
     transport: TransportKind;
     phase: "primary" | "fallback";
     ok: boolean;
     error?: string;
   }> = [];
+
   const gateDecision = enforceRouteGate({
     opId: payload.messageId,
     wanted: chosen,
@@ -534,7 +783,7 @@ export const sendCiphertext = async (
 
   if (!gateDecision.ok) {
     if (gateDecision.kind === "DEFER") {
-      await enqueueOutgoing(record);
+      if (await enqueueOutgoing(record, payload.access) === false) return { ok: true, transport: chosen, alreadyQueued: true };
       emitFlowTraceLog({
         event: "routeGate:block",
         opId: payload.messageId,
@@ -560,6 +809,7 @@ export const sendCiphertext = async (
         attempt: 0,
         errCode: gateDecision.reason,
       });
+
       return {
         ok: false,
         transport: chosen,
@@ -581,6 +831,7 @@ export const sendCiphertext = async (
       gateDecision.reason === "MISSING_TO"
         ? createMissingDestinationError(chosen, payload.messageId)
         : createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: route gate rejected send");
+
     emitFlowTraceLog({
       event: "routeSelect:decision",
       opId: payload.messageId,
@@ -599,6 +850,7 @@ export const sendCiphertext = async (
       errDetail: misconfig.message,
       attempt: 0,
     });
+
     return {
       ok: false,
       transport: chosen,
@@ -636,7 +888,15 @@ export const sendCiphertext = async (
     hasRoute: Boolean(route?.torOnion),
   });
 
-  await enqueueOutgoing(record);
+  // Claim the row before the immediate send. Otherwise the delivery worker can
+  // pick up the same pending row while transport.send() is still running and
+  // send the same profile/message event twice.
+  const immediateSendAtMs = Date.now();
+  record.status = "in_flight";
+  record.inFlightAtMs = immediateSendAtMs;
+  record.ackDeadlineMs = immediateSendAtMs + 20_000;
+
+  if (await enqueueOutgoing(record, payload.access) === false) return { ok: true, transport: chosen, alreadyQueued: true };
 
   const attemptSend = async (
     kind: TransportKind,
@@ -648,6 +908,7 @@ export const sendCiphertext = async (
     if (!toDeviceId) {
       throw createMissingDestinationError(kind, payload.messageId);
     }
+
     if (
       (config.mode === "onionRouter" || config.onionEnabled) &&
       kind === "directP2P" &&
@@ -662,6 +923,7 @@ export const sendCiphertext = async (
       });
       throw new Error("Direct P2P blocked in onion router mode");
     }
+
     if (
       (config.mode === "onionRouter" || config.onionEnabled) &&
       kind === "selfOnion" &&
@@ -676,11 +938,13 @@ export const sendCiphertext = async (
       });
       throw new Error("Self-onion blocked while onion router is enabled");
     }
+
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
     await ensureStarted(transport);
     record.attempts += 1;
     record.lastAttemptAtMs = Date.now();
-    await putOutbox(record);
+    await putOutbox(record, payload.access);
+
     const packet: TransportPacket = {
       id: payload.messageId,
       payload: payload.binaryTransport
@@ -688,7 +952,8 @@ export const sendCiphertext = async (
         : payload.ciphertext,
       toDeviceId,
       route,
-    } as TransportPacket;
+    };
+
     const startedAt = Date.now();
     emitFlowTraceLog({
       event: "requestSend:start",
@@ -698,8 +963,26 @@ export const sendCiphertext = async (
       bytes: getByteLength(payload.ciphertext),
       timeoutMs: null,
     });
+
     try {
-      await transport.send(packet);
+      const send = async () => {
+        await payload.access?.assertMain();
+        await assertDispatchAuthority(record, packet, payload.access);
+
+        return transport.send(packet);
+      };
+      const sendResult = await (kind === "onionRouter"
+        ? onionSendQueue.run(record.priority ?? "normal", send, packet.id)
+        : send());
+
+      if (sendResult?.handoff === "offline-queue") {
+        await updateOutbox(record.id, {
+          status: "in_flight",
+          inFlightAtMs: Date.now(),
+          ackDeadlineMs: undefined,
+        }, payload.access);
+      }
+
       emitFlowTraceLog({
         event: "requestSend:ok",
         opId: payload.messageId,
@@ -712,8 +995,8 @@ export const sendCiphertext = async (
         opId: payload.messageId,
         routeAttempted: kind,
         errCode:
-          error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
-            ? ((error as { code?: string }).code ?? "UNKNOWN")
+          error && typeof error === "object" && "code" in error && typeof error.code === "string"
+            ? (error.code ?? "UNKNOWN")
             : "UNKNOWN",
         errDetail: error instanceof Error ? error.message : String(error),
         durMs: Math.max(0, Date.now() - startedAt),
@@ -721,6 +1004,7 @@ export const sendCiphertext = async (
       });
       throw error;
     }
+
     return kind;
   };
 
@@ -732,6 +1016,7 @@ export const sendCiphertext = async (
       messageId: payload.messageId,
       transport: used,
     });
+
     return {
       ok: true,
       transport: used,
@@ -748,6 +1033,7 @@ export const sendCiphertext = async (
   } catch (error) {
     const primaryErrorCode = getTransportErrorCode(error);
     const primaryErrorMessage = toErrorMessage(error);
+
     if (!isFatalMisconfigError(error)) {
       attemptTrace.push({
         transport: chosen,
@@ -756,18 +1042,22 @@ export const sendCiphertext = async (
         error: primaryErrorMessage,
       });
     }
+
     const attemptErrors: string[] = [
       `${chosen}: ${primaryErrorMessage}`,
     ];
+
     if (!isFatalMisconfigError(error)) {
       controller.reportSendFail(chosen);
     }
+
     debugLog("[net] sendCiphertext: send failed", {
       convId: payload.convId,
       messageId: payload.messageId,
       chosen,
       error: primaryErrorMessage,
     });
+
     if (isFatalMisconfigError(error)) {
       emitFlowTraceLog({
         event: "routeSelect:decision",
@@ -787,6 +1077,7 @@ export const sendCiphertext = async (
         errDetail: primaryErrorMessage,
         attempt: 0,
       });
+
       return {
         ok: false,
         transport: chosen,
@@ -802,6 +1093,7 @@ export const sendCiphertext = async (
         },
       };
     }
+
     if (isOnionFirstPolicy(config) && (chosen === "onionRouter" || chosen === "selfOnion") && isOnionNotReadyError(error, primaryErrorMessage)) {
       const deferredReason = primaryErrorCode === "TOR_NOT_READY" ? "TOR_NOT_READY" : "INTERNAL_ONION_NOT_READY";
       emitFlowTraceLog({
@@ -829,6 +1121,7 @@ export const sendCiphertext = async (
         attempt: record.attempts,
         errCode: deferredReason,
       });
+
       return {
         ok: false,
         transport: chosen,
@@ -845,24 +1138,30 @@ export const sendCiphertext = async (
         },
       };
     }
+
     const allowDirectFallback =
       chosen === "onionRouter" &&
       (isRouteTargetMissingError(primaryErrorMessage) ||
         isOnionProxyUnavailableError(primaryErrorMessage));
+
     const allowSelfOnionFallback =
       chosen === "onionRouter" &&
       (isOnionProxyUnavailableError(primaryErrorMessage) ||
         isRouteCandidateMissingError(primaryErrorMessage));
+
     const fallbackKinds: TransportKind[] =
-      allowSelfOnionFallback
-        ? ["selfOnion", "directP2P"]
+      isTorOnlyPolicy(config) && chosen === "onionRouter"
+        ? []
+        : allowSelfOnionFallback
+        ? ["selfOnion"]
         : allowDirectFallback
-        ? ["directP2P"]
+        ? []
         : chosen === "directP2P"
         ? ["onionRouter", "selfOnion"]
         : config.mode === "selfOnion" && chosen === "selfOnion"
           ? ["onionRouter"]
           : [];
+
     emitFlowTraceLog({
       event: "routeSelect:decision",
       opId: payload.messageId,
@@ -873,8 +1172,10 @@ export const sendCiphertext = async (
       reason: toRouteDecisionReason(error, primaryErrorMessage),
       why: primaryErrorMessage,
     });
+
     for (const fallbackKind of fallbackKinds) {
       const maxAttempts = fallbackKind === "selfOnion" ? 2 : 1;
+
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
           const used = await attemptSend(fallbackKind, {
@@ -882,12 +1183,14 @@ export const sendCiphertext = async (
             allowSelfOnionWhenOnionGuarded:
               allowSelfOnionFallback && fallbackKind === "selfOnion",
           });
+
           attemptTrace.push({ transport: fallbackKind, phase: "fallback", ok: true });
           debugLog("[net] sendCiphertext: fallback ok", {
             convId: payload.convId,
             messageId: payload.messageId,
             transport: used,
           });
+
           return {
             ok: true,
             transport: used,
@@ -906,6 +1209,7 @@ export const sendCiphertext = async (
           };
         } catch (fallbackError) {
           const fallbackErrorMessage = toErrorMessage(fallbackError);
+
           if (!isFatalMisconfigError(fallbackError)) {
             attemptTrace.push({
               transport: fallbackKind,
@@ -914,14 +1218,17 @@ export const sendCiphertext = async (
               error: fallbackErrorMessage,
             });
           }
+
           if (
             isOnionFirstPolicy(config) &&
             (fallbackKind === "onionRouter" || fallbackKind === "selfOnion") &&
             isOnionNotReadyError(fallbackError, fallbackErrorMessage)
           ) {
             const fallbackCode = getTransportErrorCode(fallbackError);
+
             const deferredReason =
               fallbackCode === "TOR_NOT_READY" ? "TOR_NOT_READY" : "INTERNAL_ONION_NOT_READY";
+
             emitFlowTraceLog({
               event: "routeGate:block",
               opId: payload.messageId,
@@ -947,6 +1254,7 @@ export const sendCiphertext = async (
               attempt: record.attempts,
               errCode: deferredReason,
             });
+
             return {
               ok: false,
               transport: chosen,
@@ -966,11 +1274,13 @@ export const sendCiphertext = async (
               },
             };
           }
+
           const shouldRetrySelfOnion =
             fallbackKind === "selfOnion" &&
             attempt < maxAttempts &&
             isSelfOnionRouteNotReadyError(fallbackErrorMessage) &&
             !isOnionFirstPolicy(config);
+
           if (shouldRetrySelfOnion) {
             debugLog("[net] sendCiphertext: fallback retry", {
               convId: payload.convId,
@@ -983,12 +1293,15 @@ export const sendCiphertext = async (
             await wait(SELF_ONION_RETRY_DELAY_MS);
             continue;
           }
+
           attemptErrors.push(
             `${fallbackKind}: ${fallbackErrorMessage}`
           );
+
           if (!isFatalMisconfigError(fallbackError)) {
             controller.reportSendFail(fallbackKind);
           }
+
           debugLog("[net] sendCiphertext: fallback failed", {
             convId: payload.convId,
             messageId: payload.messageId,
@@ -999,6 +1312,7 @@ export const sendCiphertext = async (
         }
       }
     }
+
     emitFlowTraceLog({
       event: "requestSend:failed",
       opId: payload.messageId,
@@ -1007,6 +1321,7 @@ export const sendCiphertext = async (
       errDetail: attemptErrors.join(" || "),
       attempt: attemptTrace.length,
     });
+
     return {
       ok: false,
       transport: chosen,
@@ -1031,34 +1346,113 @@ export const sendOutboxRecord = async (
   record: OutboxRecord,
   deps: SendDeps = {}
 ) => {
+  legacyOutboxCiphertext(record);
+  let access = deps.access ?? (await captureLocalOperationContext())?.vault;
+  await access?.assertMain();
+
+  if (access) {
+    const current = await getOutbox(record.id, access);
+
+    if (!current || current.status === "acked" || current.lastError === "LOCAL_SOURCE_CANCELLED" || (current.ownerAccountId && current.ownerAccountId !== access.accountId)) {
+      return { ok: false as const, retryable: false };
+    }
+
+    if (current.ownerAccountId !== access.accountId || current.ciphertext !== record.ciphertext ||
+        current.convId !== record.convId || current.recipientIdentityPub !== record.recipientIdentityPub ||
+        current.binaryTransport !== record.binaryTransport) throw new Error("OWNER_OUTBOX_MISMATCH");
+  }
+
   const config = deps.config ?? useNetConfigStore.getState().config;
   const controller = deps.routeController ?? defaultRouteController;
   const httpClient = deps.httpClient ?? defaultHttpClient;
-  const derived = deriveRoutingMetaFromStores(record.convId);
+  let derived: DerivedRoutingMeta;
+  assertSupportedNetworkConfig(config);
+  let certified: import("../devices/deviceApprovals").DeviceAuthorization | null = null;
+  let encryptedFriendPacket = false;
+
+  if (access) {
+    let packet: { type?: unknown; convId?: unknown; header?: { deviceDelivery?: { author?: { accountRootIdentityPub?: string } } }; deviceDelivery?: { author?: { accountRootIdentityPub?: string } } };
+
+    try { packet = JSON.parse(legacyOutboxCiphertext(record)); } catch { packet = {}; }
+    encryptedFriendPacket = Boolean(packet.header);
+
+    const delivery = packet.header?.deviceDelivery ?? packet.deviceDelivery;
+
+    if (delivery) {
+      const local = await captureLocalOperationContext();
+
+      if (!local || local.vault.accountId !== access.accountId || local.vault.session.token !== access.session.token) throw new Error("OWNER_SESSION_CHANGED");
+      const context = await captureDeviceRegistryContext({ ...local, vault: access });
+      access = context.vault;
+      // The recipient's authorization is selected by identity, never the sender's Root claim.
+      const target = (await getRegistry(context))[record.toDeviceId ?? ""]?.authorization;
+      certified = target ? await getAuthorizedDevice(target.deviceId, context, target.accountRootIdentityPub) : null;
+
+      if (!certified?.route || certified.identityPub !== record.recipientIdentityPub) throw new Error("DEVICE_AUTHORIZATION_REQUIRED");
+      if (encryptedFriendPacket) {
+        const envelope = JSON.parse(legacyOutboxCiphertext(record)) as { header: { deviceDelivery: { sessionId?: string } } };
+        await (await import("../sync/syncEngine")).assertCurrentDeviceSession(record.convId,
+          envelope.header.deviceDelivery.sessionId, certified, context);
+      }
+    }
+  }
+
+  if (certified?.route) {
+    derived = { toDeviceId: certified.deviceId, route: { torOnion: certified.route.onionAddr, inboxWriteToken: certified.route.inboxWriteToken } };
+  } else if (access) {
+    const peers = (await listProfiles(access)).filter(profile => profile.kind === "friend" &&
+      profile.identityPub === record.recipientIdentityPub && profile.friendStatus !== "blocked" &&
+      (!encryptedFriendPacket || profile.friendStatus === "normal" && hasAuthenticatedFriendKeys(profile)) &&
+      profile.friendStatus !== "deleted" && profile.trust?.status !== "blocked" && profile.verification?.status !== "key_changed");
+
+    if (peers.length !== 1) throw new Error("OWNER_PEER_ROUTE_UNAVAILABLE");
+    if (encryptedFriendPacket) {
+      const context = await captureLocalOperationContext();
+      if (!context || context.vault.accountId !== access.accountId || context.vault.db !== access.db) throw new Error("OWNER_REQUIRED");
+      const packet = JSON.parse(legacyOutboxCiphertext(record)) as { header: { friendSessionId?: string } };
+      await (await import("../sync/syncEngine")).assertCurrentFriendSession(record.convId, packet.header.friendSessionId, context);
+    }
+    const peer = peers[0];
+    derived = { toDeviceId: peer.routingHints?.deviceId ?? peer.primaryDeviceId,
+      route: peer.routingHints?.onionAddr ? { torOnion: peer.routingHints.onionAddr, inboxWriteToken: peer.routingHints.inboxWriteToken } : undefined };
+  } else derived = deriveRoutingMetaFromStores(record.convId);
   const recordToDeviceId = record.toDeviceId?.trim();
+
   const hasStaleAlias = recordToDeviceId
     ? Boolean(derived.staleDeviceAliases?.includes(recordToDeviceId))
     : false;
-  const toDeviceId = (hasStaleAlias ? derived.toDeviceId : record.toDeviceId ?? derived.toDeviceId)?.trim();
-  const torOnion = record.torOnion ?? derived.route?.torOnion;
+
+  const toDeviceId = (derived.toDeviceId ?? (hasStaleAlias ? undefined : record.toDeviceId))?.trim();
+  const torOnion = derived.route?.torOnion ?? record.torOnion;
   const inboxWriteToken = derived.route?.inboxWriteToken;
   const policy = config.mode === "onionRouter" || config.onionEnabled ? "STRICT" : "ALLOW_FALLBACK";
+  let nativeOfflineQueueHandoff = false;
 
-  if ((!record.toDeviceId || hasStaleAlias) && (toDeviceId || torOnion)) {
+  if (
+    (toDeviceId && toDeviceId !== record.toDeviceId) ||
+    (torOnion && torOnion !== record.torOnion)
+  ) {
     const patch: Partial<OutboxRecord> = {};
+
     if (toDeviceId) patch.toDeviceId = toDeviceId;
+
     if (torOnion) patch.torOnion = torOnion;
+
     if (Object.keys(patch).length) {
-      await updateOutbox(record.id, patch);
+      await updateOutbox(record.id, patch, access);
     }
   }
 
   warnOnionRouterGuards(config);
   const resolve = deps.resolveTransport ?? resolveTransport;
+
   const chosen = resolveTransportForExplicitRoute(
     resolve(config, controller),
     torOnion ? { torOnion } : undefined
   );
+
+  assertTorBackedTransport(chosen);
+
   const gateDecision = enforceRouteGate({
     opId: record.id,
     wanted: chosen,
@@ -1097,6 +1491,7 @@ export const sendOutboxRecord = async (
         attempt: record.attempts,
         errCode: gateDecision.reason,
       });
+
       return { ok: false as const, retryable: true };
     }
 
@@ -1104,6 +1499,7 @@ export const sendOutboxRecord = async (
       gateDecision.reason === "MISSING_TO"
         ? createMissingDestinationError(chosen, record.id)
         : createTransportError("FATAL_MISCONFIG", "FATAL_MISCONFIG: route gate rejected send");
+
     emitFlowTraceLog({
       event: "routeSelect:decision",
       opId: record.id,
@@ -1122,6 +1518,7 @@ export const sendOutboxRecord = async (
       errDetail: misconfig.message,
       attempt: record.attempts,
     });
+
     return { ok: false as const, retryable: false };
   }
 
@@ -1162,6 +1559,7 @@ export const sendOutboxRecord = async (
       nextRetryAt: record.nextAttemptAtMs,
       attempt: record.attempts,
     });
+
     return { ok: false as const, retryable: false };
   }
 
@@ -1175,6 +1573,7 @@ export const sendOutboxRecord = async (
     if (!toDeviceId) {
       throw createMissingDestinationError(kind, record.id);
     }
+
     if (
       (config.mode === "onionRouter" || config.onionEnabled) &&
       kind === "directP2P" &&
@@ -1189,6 +1588,7 @@ export const sendOutboxRecord = async (
       });
       throw new Error("Direct P2P blocked in onion router mode");
     }
+
     if (
       (config.mode === "onionRouter" || config.onionEnabled) &&
       kind === "selfOnion" &&
@@ -1203,27 +1603,47 @@ export const sendOutboxRecord = async (
       });
       throw new Error("Self-onion blocked while onion router is enabled");
     }
+
     const transport = getTransport(kind, config, controller, httpClient, deps.transports);
     await ensureStarted(transport);
+
     const packet: TransportPacket = {
       id: record.id,
       payload: record.binaryTransport
-        ? new TextEncoder().encode(record.ciphertext)
-        : record.ciphertext,
+        ? new TextEncoder().encode(legacyOutboxCiphertext(record))
+        : legacyOutboxCiphertext(record),
       toDeviceId,
       route: torOnion ? { torOnion, inboxWriteToken } : undefined,
-    } as TransportPacket;
+    };
+
     const startedAt = Date.now();
     emitFlowTraceLog({
       event: "requestSend:start",
       opId: record.id,
       routeAttempted: kind,
       msgType: "ciphertext",
-      bytes: getByteLength(record.ciphertext),
+      bytes: getByteLength(legacyOutboxCiphertext(record)),
       timeoutMs: null,
     });
+
     try {
-      await transport.send(packet);
+      const send = async () => {
+        await access?.assertMain();
+        if (access && (await getOutbox(record.id, access))?.status === "acked") throw new Error("OWNER_DELIVERY_ALREADY_CONFIRMED");
+        await assertDispatchAuthority(record, packet, access);
+
+        return transport.send(packet);
+      };
+      const sendResult = await (kind === "onionRouter"
+        ? onionSendQueue.run(record.priority ?? "normal", send, packet.id)
+        : send());
+
+      await access?.assertMain();
+      nativeOfflineQueueHandoff = sendResult?.handoff === "offline-queue";
+      // A successful Onion HTTP response proves only that a mailbox accepted
+      // the encrypted packet. It does not prove that the recipient renderer
+      // decrypted and stored it, so delivery state must wait for a separate
+      // authenticated encrypted application receipt.
       emitFlowTraceLog({
         event: "requestSend:ok",
         opId: record.id,
@@ -1236,8 +1656,8 @@ export const sendOutboxRecord = async (
         opId: record.id,
         routeAttempted: kind,
         errCode:
-          error && typeof error === "object" && typeof (error as { code?: unknown }).code === "string"
-            ? ((error as { code?: string }).code ?? "UNKNOWN")
+          error && typeof error === "object" && "code" in error && typeof error.code === "string"
+            ? (error.code ?? "UNKNOWN")
             : "UNKNOWN",
         errDetail: error instanceof Error ? error.message : String(error),
         durMs: Math.max(0, Date.now() - startedAt),
@@ -1245,6 +1665,7 @@ export const sendOutboxRecord = async (
       });
       throw error;
     }
+
     return kind;
   };
 
@@ -1255,19 +1676,25 @@ export const sendOutboxRecord = async (
       messageId: record.id,
       transport: chosen,
     });
-    return { ok: true as const };
+
+    return nativeOfflineQueueHandoff
+      ? { ok: true as const, handoff: "offline-queue" as const }
+      : { ok: true as const };
   } catch (error) {
     const primaryErrorCode = getTransportErrorCode(error);
     const primaryErrorMessage = toErrorMessage(error);
+
     if (!isFatalMisconfigError(error)) {
       controller.reportSendFail(chosen);
     }
+
     debugLog("[net] sendOutboxRecord: send failed", {
       convId: record.convId,
       messageId: record.id,
       chosen,
       error: primaryErrorMessage,
     });
+
     if (isFatalMisconfigError(error)) {
       emitFlowTraceLog({
         event: "routeSelect:decision",
@@ -1287,8 +1714,10 @@ export const sendOutboxRecord = async (
         errDetail: primaryErrorMessage,
         attempt: record.attempts,
       });
+
       return { ok: false as const, retryable: false };
     }
+
     if (isOnionFirstPolicy(config) && (chosen === "onionRouter" || chosen === "selfOnion") && isOnionNotReadyError(error, primaryErrorMessage)) {
       const deferredReason = primaryErrorCode === "TOR_NOT_READY" ? "TOR_NOT_READY" : "INTERNAL_ONION_NOT_READY";
       emitFlowTraceLog({
@@ -1316,26 +1745,33 @@ export const sendOutboxRecord = async (
         attempt: record.attempts,
         errCode: deferredReason,
       });
+
       return { ok: false as const, retryable: true };
     }
+
     const allowDirectFallback =
       chosen === "onionRouter" &&
       (isRouteTargetMissingError(primaryErrorMessage) ||
         isOnionProxyUnavailableError(primaryErrorMessage));
+
     const allowSelfOnionFallback =
       chosen === "onionRouter" &&
       (isOnionProxyUnavailableError(primaryErrorMessage) ||
         isRouteCandidateMissingError(primaryErrorMessage));
+
     const fallbackKinds: TransportKind[] =
-      allowSelfOnionFallback
-        ? ["selfOnion", "directP2P"]
+      isTorOnlyPolicy(config) && chosen === "onionRouter"
+        ? []
+        : allowSelfOnionFallback
+        ? ["selfOnion"]
         : allowDirectFallback
-        ? ["directP2P"]
+        ? []
         : chosen === "directP2P"
         ? ["onionRouter", "selfOnion"]
         : config.mode === "selfOnion" && chosen === "selfOnion"
           ? ["onionRouter"]
           : [];
+
     emitFlowTraceLog({
       event: "routeSelect:decision",
       opId: record.id,
@@ -1346,8 +1782,10 @@ export const sendOutboxRecord = async (
       reason: toRouteDecisionReason(error, primaryErrorMessage),
       why: primaryErrorMessage,
     });
+
     for (const fallbackKind of fallbackKinds) {
       const maxAttempts = fallbackKind === "selfOnion" ? 2 : 1;
+
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
         try {
           await attemptSend(fallbackKind, {
@@ -1360,17 +1798,21 @@ export const sendOutboxRecord = async (
             messageId: record.id,
             transport: fallbackKind,
           });
+
           return { ok: true as const };
         } catch (fallbackError) {
           const fallbackErrorMessage = toErrorMessage(fallbackError);
+
           if (
             isOnionFirstPolicy(config) &&
             (fallbackKind === "onionRouter" || fallbackKind === "selfOnion") &&
             isOnionNotReadyError(fallbackError, fallbackErrorMessage)
           ) {
             const fallbackCode = getTransportErrorCode(fallbackError);
+
             const deferredReason =
               fallbackCode === "TOR_NOT_READY" ? "TOR_NOT_READY" : "INTERNAL_ONION_NOT_READY";
+
             emitFlowTraceLog({
               event: "routeGate:block",
               opId: record.id,
@@ -1396,13 +1838,16 @@ export const sendOutboxRecord = async (
               attempt: record.attempts,
               errCode: deferredReason,
             });
+
             return { ok: false as const, retryable: true };
           }
+
           const shouldRetrySelfOnion =
             fallbackKind === "selfOnion" &&
             attempt < maxAttempts &&
             isSelfOnionRouteNotReadyError(fallbackErrorMessage) &&
             !isOnionFirstPolicy(config);
+
           if (shouldRetrySelfOnion) {
             debugLog("[net] sendOutboxRecord: fallback retry", {
               convId: record.convId,
@@ -1415,9 +1860,11 @@ export const sendOutboxRecord = async (
             await wait(SELF_ONION_RETRY_DELAY_MS);
             continue;
           }
+
           if (!isFatalMisconfigError(fallbackError)) {
             controller.reportSendFail(fallbackKind);
           }
+
           debugLog("[net] sendOutboxRecord: fallback failed", {
             convId: record.convId,
             messageId: record.id,
@@ -1428,6 +1875,7 @@ export const sendOutboxRecord = async (
         }
       }
     }
+
     emitFlowTraceLog({
       event: "requestSend:deferred",
       opId: record.id,
@@ -1435,17 +1883,22 @@ export const sendOutboxRecord = async (
       nextRetryAt: record.nextAttemptAtMs,
       attempt: record.attempts,
     });
+
     return { ok: false as const, retryable: true };
   }
 };
 
 export const onIncomingPacket = (
-  handler: (packet: TransportPacket, meta: IncomingPacketMeta) => void
+  handler: (packet: TransportPacket, meta: IncomingPacketMeta) => IncomingCompletion | void | Promise<IncomingCompletion | void>,
+  options: { authority?: number } = { authority: 0 }
 ) => {
-  inboundHandlers.add(handler);
+  const entry = { handler, authority: options.authority };
+  inboundHandlers.add(entry);
   void ensureInboundListener();
+
   return () => {
-    inboundHandlers.delete(handler);
+    inboundHandlers.delete(entry);
+
     if (inboundHandlers.size === 0 && inboundRetryTimer) {
       clearTimeout(inboundRetryTimer);
       inboundRetryTimer = null;

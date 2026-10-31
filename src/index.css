@@ -1,5 +1,3 @@
-@import url("https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Noto+Sans+KR:wght@400;500;600;700&display=swap");
-
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -16,30 +14,62 @@
     --nkc-brand-soft: #B4C0D9;
     --nkc-brand-mist: #E5FAFF;
 
-    --nkc-bg: #1B1C1F;
-    --nkc-panel: #1A1A1A;
-    --nkc-panel-muted: #222222;
-    --nkc-card: #2D2D2D;
-    --nkc-text: #E8E8E8;
-    --nkc-muted: #8E8E8E;
-    --nkc-accent: #397F98;
+    --nkc-bg: #141414;
+    --nkc-panel: #202020;
+    --nkc-panel-muted: #252525;
+    --nkc-card: #292929;
+    --nkc-text: #E9ECEF;
+    --nkc-muted: #ADB4BA;
+    --nkc-accent: #326C81;
     --nkc-accent-text: #FFFFFF;
-    --nkc-danger: #E34040;
-    --nkc-border: #2A2A2A;
-    --nkc-surface: #2D2D2D;
-    --nkc-hover: #252525;
-    --nkc-selected: #1F2D32;
-    --nkc-list-selected: #242B3B;
-    --nkc-list-focus: #789FF3;
-    --nkc-bubble-sent: #2F6273;
-    --nkc-bubble-sent-text: #FFFFFF;
-    --nkc-bubble-recv: #2D2D2D;
-    --nkc-bubble-recv-text: #E8E8E8;
-    --nkc-focus-ring: rgba(91, 138, 240, 0.62);
+    --nkc-danger: #F2A6AD;
+    --nkc-error-text: #F2A6AD;
+    --nkc-border: #4A4A4A;
+    --nkc-divider: #3C3C3C;
+    --nkc-surface: #242424;
+    --nkc-hover: #303030;
+    --nkc-selected: #233138;
+    --nkc-list-selected: #253039;
+    --nkc-list-focus: #9BBCFF;
+    --nkc-bubble-sent: #294D5D;
+    --nkc-bubble-sent-text: #EDF6FA;
+    --nkc-bubble-recv: #292929;
+    --nkc-bubble-recv-text: #E9ECEF;
+    --nkc-focus-ring: #9BBCFF;
+    --nkc-sidebar: #1C1C1C;
+    --nkc-elevated: #292929;
+    --nkc-input: #161616;
+    --nkc-secondary: #C3C9CE;
+    --nkc-disabled: #8B9197;
+    --nkc-link: #8AC4D7;
+    --nkc-control-border: #89939C;
+    --nkc-control-off: #5B6269;
+    --nkc-brand-hover: #39758B;
+    --nkc-brand-pressed: #2A5C70;
+    --nkc-brand-stroke: #8AC4D7;
+    --nkc-bubble-meta: #C0D7E0;
+    --nkc-danger-bg: #3B252D;
+    --nkc-danger-border: #BA737F;
+    --nkc-danger-hover: #4B2D37;
+    --nkc-warning: #E8C68A;
+    --nkc-warning-bg: #3B3324;
+    --nkc-warning-border: #AF965F;
+    --nkc-success: #A4D8B4;
+    --nkc-success-bg: #22382E;
+    --nkc-success-border: #759D83;
+    --nkc-info: #ABC9F4;
+    --nkc-info-bg: #233347;
+    --nkc-info-border: #7A9BC8;
+    --nkc-offline: #AAB8C3;
+    --nkc-offline-bg: #29313A;
+    --nkc-queued: #E8C68A;
+    --nkc-toast: #292929;
+    --nkc-overlay: rgba(4, 9, 13, 0.64);
   }
 
   /* ── NKC Light Theme ── */
   .light {
+    --nkc-error-text: #B91C1C;
     color-scheme: light;
 
     --nkc-brand-deep: #234854;
@@ -57,8 +87,9 @@
     --nkc-muted: #5E5E5E;
     --nkc-accent: #2F6273;
     --nkc-accent-text: #FFFFFF;
-    --nkc-danger: #E34040;
+    --nkc-danger: #B91C1C;
     --nkc-border: #E9E9E9;
+    --nkc-divider: #D1D5DB;
     --nkc-surface: #FFFFFF;
     --nkc-hover: #ECECEC;
     --nkc-selected: #E5FAFF;
@@ -68,7 +99,36 @@
     --nkc-bubble-sent-text: #FFFFFF;
     --nkc-bubble-recv: #E5E5EA;
     --nkc-bubble-recv-text: #1A1A1A;
-    --nkc-focus-ring: rgba(57, 127, 152, 0.45);
+    --nkc-focus-ring: #2F6273;
+    --nkc-sidebar: #F6F6F6;
+    --nkc-elevated: #FFFFFF;
+    --nkc-input: #FFFFFF;
+    --nkc-secondary: #4B5563;
+    --nkc-disabled: #697580;
+    --nkc-link: #2F6273;
+    --nkc-control-border: #72808C;
+    --nkc-control-off: #73828F;
+    --nkc-brand-hover: #285565;
+    --nkc-brand-pressed: #234854;
+    --nkc-brand-stroke: #2F6273;
+    --nkc-bubble-meta: #D9EDF4;
+    --nkc-danger-bg: #FDEBEC;
+    --nkc-danger-border: #B91C1C;
+    --nkc-danger-hover: #F9DADC;
+    --nkc-warning: #805500;
+    --nkc-warning-bg: #FFF4D6;
+    --nkc-warning-border: #926400;
+    --nkc-success: #24613B;
+    --nkc-success-bg: #E6F4EB;
+    --nkc-success-border: #337A4C;
+    --nkc-info: #27568B;
+    --nkc-info-bg: #E9F1FF;
+    --nkc-info-border: #3469A4;
+    --nkc-offline: #505D69;
+    --nkc-offline-bg: #EDF0F3;
+    --nkc-queued: #805500;
+    --nkc-toast: #FFFFFF;
+    --nkc-overlay: rgba(0, 0, 0, 0.60);
   }
 
   html,
@@ -110,6 +170,43 @@
 }
 
 @layer utilities {
+  .text-nkc-accent, .text-nkc-brandPrimary, .text-nkc-brandAccent { color: var(--nkc-link); }
+  .border-nkc-accent { border-color: var(--nkc-brand-stroke); }
+  .bg-nkc-listSelected { box-shadow: inset 3px 0 var(--nkc-brand-stroke); }
+  .nkc-modal-content, [role="dialog"] { background-color: var(--nkc-elevated); }
+  [data-testid="sidebar"] { background-color: var(--nkc-sidebar); }
+  button.bg-nkc-accent:hover:not(:disabled) { background-color: var(--nkc-brand-hover); filter: none; }
+  button.bg-nkc-accent:active:not(:disabled) { background-color: var(--nkc-brand-pressed); filter: none; }
+  :is(input, textarea, select)[class]:where(:not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="range"]):not([type="hidden"]):not(.sr-only)) {
+    background-color: var(--nkc-input);
+    border-color: var(--nkc-control-border);
+    outline: 1px solid var(--nkc-control-border);
+    outline-offset: -1px;
+    color: var(--nkc-text);
+  }
+  input::placeholder, textarea::placeholder { color: var(--nkc-muted); opacity: 1; }
+  :is(button, input, textarea, select, summary, [role="menuitem"], a):focus-visible {
+    outline: 2px solid var(--nkc-focus-ring);
+    outline-offset: 3px;
+  }
+  input[type="checkbox"], input[type="radio"] { accent-color: var(--nkc-accent); }
+  .nkc-input-group { outline: 1px solid var(--nkc-control-border); outline-offset: -1px; }
+  .nkc-input-group:focus-within { outline: 2px solid var(--nkc-focus-ring); outline-offset: 3px; }
+  .nkc-input-group :is(input, textarea)[class] { background-color: transparent; border: none; outline: none; }
+  :is(input, textarea).border-nkc-dangerBorder { border-color: var(--nkc-danger-border); outline-color: var(--nkc-danger-border); }
+  ::selection { background-color: var(--nkc-selected); color: var(--nkc-text); }
+  .nkc-error { color: var(--nkc-error-text); }
+  /* Panels/toasts stay below modals; profile/crop/confirmation retain their nested layers. */
+  .nkc-modal-overlay { z-index: 60; }
+  .nkc-modal-content { z-index: 61; }
+
+  .settings-dialog { color: var(--nkc-text); }
+  .settings-dialog .text-xs { font-size: 0.875rem; line-height: 1.5rem; }
+  .settings-dialog .text-sm { line-height: 1.6; }
+  .settings-dialog button:not([role="switch"]) { min-height: 36px; }
+  .settings-dialog button:focus-visible { outline: 2px solid var(--nkc-focus-ring); outline-offset: 3px; }
+  .settings-back-header { display: flex; align-items: center; gap: 16px; margin-block: 20px; }
+
   .nkc-auth-shell {
     position: relative;
     display: flex;
@@ -151,7 +248,7 @@
     overflow-y: auto;
     border: 1px solid var(--nkc-border);
     border-radius: 26px;
-    background: color-mix(in srgb, var(--nkc-panel) 96%, transparent);
+    background: var(--nkc-elevated);
     padding: 28px;
     box-shadow: 0 24px 80px rgba(0, 0, 0, 0.32);
   }
@@ -167,16 +264,16 @@
 
   .nkc-auth-input {
     width: 100%;
-    border: 1px solid var(--nkc-border);
+    border: 1px solid var(--nkc-control-border);
     border-radius: 10px;
-    background: var(--nkc-bg);
+    background: var(--nkc-input);
     padding: 11px 12px;
     color: var(--nkc-text);
     outline: none;
   }
 
   .nkc-auth-input:focus {
-    border-color: var(--nkc-accent);
+    border-color: var(--nkc-focus-ring);
     box-shadow: 0 0 0 3px var(--nkc-focus-ring);
   }
 

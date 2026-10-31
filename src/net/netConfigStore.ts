@@ -8,39 +8,56 @@ const STORAGE_KEY = "netConfig.v1";
 
 const getStorage = () => {
   if (typeof window !== "undefined") return window.localStorage;
+
   if (typeof globalThis !== "undefined") {
     return (globalThis as { localStorage?: Storage }).localStorage;
   }
+
   return undefined;
 };
 
 const migrateMode = (mode?: string): NetworkMode => {
   if (!mode) return DEFAULT_NET_CONFIG.mode;
+
   if (mode === "selfOnion" || mode === "onionRouter" || mode === "directP2P") return mode;
+
   return DEFAULT_NET_CONFIG.mode;
 };
 
 const clampSelfOnionRelays = (value: number) => Math.max(3, Math.min(4, value));
 
+const normalizeTorBridgeMode = (value: unknown): NetConfig["torBridgeMode"] =>
+  value === "off" || value === "force" ? value : "auto";
+
 const loadStoredConfig = (): NetConfig => {
   const storage = getStorage();
+
   if (!storage) return DEFAULT_NET_CONFIG;
   const raw = storage.getItem(STORAGE_KEY);
+
   if (!raw) return DEFAULT_NET_CONFIG;
+
   try {
     const parsed = JSON.parse(raw) as Partial<NetConfig>;
-    const migratedMode = migrateMode(parsed.mode as string | undefined);
+    const migratedMode = migrateMode(parsed.mode);
     const next = { ...DEFAULT_NET_CONFIG, ...parsed, mode: migratedMode };
-    return { ...next, selfOnionMinRelays: clampSelfOnionRelays(next.selfOnionMinRelays) };
+
+    return {
+      ...next,
+      selfOnionMinRelays: clampSelfOnionRelays(next.selfOnionMinRelays),
+      torBridgeMode: normalizeTorBridgeMode(next.torBridgeMode),
+    };
   } catch (error) {
     console.error("Failed to read net config", error);
     storage.removeItem(STORAGE_KEY);
+
     return DEFAULT_NET_CONFIG;
   }
 };
 
 const persistConfig = (config: NetConfig) => {
   const storage = getStorage();
+
   if (!storage) return;
   storage.setItem(STORAGE_KEY, JSON.stringify(config));
 };
@@ -55,6 +72,7 @@ export const enforceRules = (config: NetConfig): NetConfig => {
       disableLinkPreview: true,
     };
   }
+
   return config;
 };
 
@@ -69,6 +87,7 @@ type NetConfigState = {
   setOnionEnabled: (value: boolean) => void;
   setOnionNetwork: (value: NetConfig["onionSelectedNetwork"]) => void;
   setTorAutoPrepareOnAppStart: (value: boolean) => void;
+  setTorBridgeMode: (value: NonNullable<NetConfig["torBridgeMode"]>) => void;
   setComponentState: (
     network: NetConfig["onionSelectedNetwork"],
     state: Partial<NetConfig["tor"]>
@@ -85,6 +104,7 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
       mode,
       onionEnabled: mode === "onionRouter" ? get().config.onionEnabled : false,
     });
+
     persistConfig(next);
     syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
@@ -95,6 +115,7 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
       onionProxyEnabled: enabled,
       onionProxyUrl: url ?? get().config.onionProxyUrl,
     });
+
     persistConfig(next);
     syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
@@ -122,6 +143,7 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
       ...get().config,
       selfOnionMinRelays: clampSelfOnionRelays(value),
     });
+
     persistConfig(next);
     syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
@@ -143,12 +165,19 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
     persistConfig(next);
     set({ config: next });
   },
+  setTorBridgeMode: (value) => {
+    const next = enforceRules({ ...get().config, torBridgeMode: normalizeTorBridgeMode(value) });
+    persistConfig(next);
+    set({ config: next });
+  },
   setComponentState: (network, state) => {
     const current = get().config;
+
     const next = enforceRules({
       ...current,
       [network]: { ...current[network], ...state },
     });
+
     persistConfig(next);
     syncInternalOnionRouteRuntimeWithConfig(next);
     set({ config: next });
@@ -163,7 +192,9 @@ export const useNetConfigStore = create<NetConfigState>((set, get) => ({
     const enforced = enforceRules({
       ...next,
       selfOnionMinRelays: clampSelfOnionRelays(next.selfOnionMinRelays),
+      torBridgeMode: normalizeTorBridgeMode(next.torBridgeMode),
     });
+
     persistConfig(enforced);
     syncInternalOnionRouteRuntimeWithConfig(enforced);
     set({ config: enforced });

@@ -1,11 +1,16 @@
 import { create } from "zustand";
 import type { Conversation, Message, UserProfile } from "../db/repo";
 import { createId } from "../utils/ids";
+import { onAccountOwnerChange } from "../accounts/accountOwnerLifecycle";
 
 export type UiMode = "locked" | "onboarding" | "app";
+
 export type RightTab = "about" | "media" | "settings";
+
 export type ListMode = "chats" | "friends";
+
 export type ListFilter = "all" | "unread" | "favorites";
+
 export type Language = "ko" | "en";
 
 export type Toast = {
@@ -54,12 +59,14 @@ export type AppState = {
   setLanguage: (value: Language) => void;
   setSession: (value: Partial<AppState["session"]>) => void;
   setUserProfile: (profile: UserProfile | null) => void;
+  setFriends: (friends: UserProfile[]) => void;
   setData: (payload: {
     user: UserProfile | null;
     friends: UserProfile[];
     convs: Conversation[];
     messagesByConv: Record<string, Message[]>;
   }) => void;
+  clearAccountView: () => void;
   addToast: (toast: Omit<Toast, "id">) => void;
   removeToast: (id: string) => void;
   setConfirm: (confirm: ConfirmState) => void;
@@ -68,6 +75,7 @@ export type AppState = {
 const getInitialLanguage = (): Language => {
   if (typeof window === "undefined") return "ko";
   const value = window.localStorage.getItem("nkc.lang");
+
   return value === "en" ? "en" : "ko";
 };
 
@@ -112,13 +120,32 @@ export const useAppStore = create<AppState>((set) => ({
     if (typeof window !== "undefined") {
       window.localStorage.setItem("nkc.lang", value);
     }
+
     set((state) => ({ ui: { ...state.ui, language: value } }));
   },
   setSession: (value) =>
     set((state) => ({ session: { ...state.session, ...value } })),
   setUserProfile: (userProfile) => set({ userProfile }),
+  setFriends: (friends) => set({ friends }),
   setData: ({ user, friends, convs, messagesByConv }) =>
     set({ userProfile: user, friends, convs, messagesByConv }),
+  clearAccountView: () => set((state) => ({
+    session: { unlocked: false, vkInMemory: false },
+    userProfile: null,
+    friends: [],
+    convs: [],
+    messagesByConv: {},
+    ui: {
+      ...state.ui,
+      // Account creation must stay on onboarding while the new vault is prepared.
+      mode: state.ui.mode === "onboarding" ? "onboarding" : "locked",
+      selectedConvId: null,
+      isComposing: false,
+      search: "",
+      toast: [],
+      confirm: null,
+    },
+  })),
   addToast: (toast) =>
     set((state) => ({
       ui: {
@@ -136,3 +163,6 @@ export const useAppStore = create<AppState>((set) => ({
   setConfirm: (confirm) =>
     set((state) => ({ ui: { ...state.ui, confirm } })),
 }));
+
+// Registry and database switches notify before the active account changes.
+onAccountOwnerChange(() => useAppStore.getState().clearAccountView());

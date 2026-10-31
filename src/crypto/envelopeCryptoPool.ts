@@ -1,4 +1,5 @@
 import type { Envelope, EnvelopeHeader } from "./box";
+import type { WorkerPayload } from "./envelopeCrypto.worker";
 
 type Pending = {
   resolve: (value: Envelope | undefined) => void;
@@ -22,32 +23,39 @@ export class EnvelopeCryptoPool {
         type: "module",
         name: "nkc-envelope-crypto",
       });
+
       const slot: WorkerSlot = { worker, pending: 0 };
       worker.onmessage = (event: MessageEvent<{ id: number; ok: boolean; envelope?: Envelope; error?: string }>) => {
         const pending = this.requests.get(event.data.id);
+
         if (!pending) return;
         this.requests.delete(event.data.id);
         slot.pending = Math.max(0, slot.pending - 1);
+
         if (event.data.ok) pending.resolve(event.data.envelope);
         else pending.reject(new Error(event.data.error ?? "Envelope encryption worker failed"));
       };
+
       worker.onerror = (event) => {
         for (const [id, pending] of this.requests) {
           pending.reject(new Error(event.message || "Envelope encryption worker crashed"));
           this.requests.delete(id);
         }
+
         slot.pending = 0;
       };
+
       return slot;
     });
   }
 
-  private request<T extends Envelope | undefined>(slot: WorkerSlot, payload: object): Promise<T> {
+  private request(slot: WorkerSlot, payload: WorkerPayload): Promise<Envelope | undefined> {
     const id = this.nextId++;
     slot.pending += 1;
-    return new Promise<T>((resolve, reject) => {
+
+    return new Promise<Envelope | undefined>((resolve, reject) => {
       this.requests.set(id, {
-        resolve: resolve as (value: Envelope | undefined) => void,
+        resolve,
         reject,
       });
       slot.worker.postMessage({ id, ...payload });
@@ -67,14 +75,17 @@ export class EnvelopeCryptoPool {
     const slot = this.slots.reduce((best, candidate) =>
       candidate.pending < best.pending ? candidate : best
     );
-    const envelope = await this.request<Envelope>(slot, {
+
+    const envelope = await this.request(slot, {
       type: "encrypt",
       key,
       header,
       body,
       identityPrivateKey,
     });
+
     if (!envelope) throw new Error("Envelope encryption worker returned no envelope");
+
     return envelope;
   }
 
@@ -82,7 +93,9 @@ export class EnvelopeCryptoPool {
     for (const pending of this.requests.values()) {
       pending.reject(new Error("Envelope encryption worker closed"));
     }
+
     this.requests.clear();
+
     for (const slot of this.slots) slot.worker.terminate();
   }
 }

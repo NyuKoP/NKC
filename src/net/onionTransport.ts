@@ -4,15 +4,17 @@ import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 import { createHttpClient } from "./httpClient";
 import { useNetConfigStore } from "./netConfigStore";
 import { createId } from "../utils/ids";
-import type { PeerHint, Transport, TransportStatus } from "./transport";
+import { combineReceiveCompletions } from "../sync/receiveCompletion";
+import type { PeerHint, Transport, TransportStatus, MessageHandler } from "./transport";
 
-const hasOwn = (value: object, key: PropertyKey) =>
-  Object.prototype.hasOwnProperty.call(value, key);
+import { firstMessageMeasurement } from "../diagnostics/coldStartMetrics";
 
 const normalizePayload = (payload: TransportPacket["payload"]) => {
   if (payload instanceof Uint8Array) return payload;
-  if (payload && typeof payload === "object" && hasOwn(payload, "b64")) {
-    const b64 = (payload as { b64?: unknown }).b64;
+
+  if (payload && typeof payload === "object" && Object.hasOwn(payload, "b64")) {
+    const b64 = payload.b64;
+
     if (typeof b64 === "string") {
       try {
         return decodeBase64Url(b64);
@@ -21,31 +23,42 @@ const normalizePayload = (payload: TransportPacket["payload"]) => {
       }
     }
   }
+
   if (typeof payload === "string") return new TextEncoder().encode(payload);
+
   return null;
 };
 
 const mapState = (state: AdapterState): TransportStatus["state"] => {
   if (state === "connecting") return "connecting";
+
   if (state === "connected" || state === "degraded") return "connected";
+
   if (state === "failed") return "failed";
+
   return "idle";
 };
 
 export const createOnionTransport = (): Transport => {
   const httpClient = createHttpClient();
+
   const adapter = createOnionRouterTransport({
+    receiveAuthority: 10,
     httpClient,
     config: useNetConfigStore.getState().config,
   });
 
   let status: TransportStatus = { state: "idle" };
-  const messageHandlers = new Set<(bytes: Uint8Array) => void>();
+  let peer: PeerHint | undefined;
+  const messageHandlers = new Set<MessageHandler>();
 
-  adapter.onMessage((packet) => {
+  adapter.onMessage(async (packet, context) => {
     const bytes = normalizePayload(packet.payload);
+
     if (!bytes) return;
-    messageHandlers.forEach((handler) => handler(bytes));
+    firstMessageMeasurement.bindPacketBytes(bytes, packet.id);
+
+    return combineReceiveCompletions(await Promise.all(Array.from(messageHandlers, handler => handler(bytes, context))));
   });
 
   adapter.onState((state) => {
@@ -55,8 +68,9 @@ export const createOnionTransport = (): Transport => {
   return {
     kind: "onion",
     async connect(peerHint?: PeerHint) {
-      void peerHint;
+      peer = peerHint;
       status = { state: "connecting" };
+
       try {
         await adapter.start();
         status = { state: "connected" };
@@ -67,14 +81,24 @@ export const createOnionTransport = (): Transport => {
       }
     },
     async send(bytes: Uint8Array) {
-      const packet: TransportPacket = {
+      const packet: TransportPacket & {
+        toDeviceId?: string;
+        route: { torOnion?: string; inboxWriteToken?: string };
+      } = {
         id: createId(),
         payload: { b64: encodeBase64Url(bytes) },
+        toDeviceId: peer?.peerDeviceId,
+        route: {
+          torOnion: peer?.onionAddr,
+          inboxWriteToken: peer?.inboxWriteToken,
+        },
       };
+
       await adapter.send(packet);
     },
     onMessage(cb) {
       messageHandlers.add(cb);
+
       return () => {
         messageHandlers.delete(cb);
       };

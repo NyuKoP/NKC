@@ -23,6 +23,7 @@ export class TorManager {
       `DataDirectory ${dataDir}`,
       `SocksPort 127.0.0.1:${socksPort}`,
     ];
+
     return lines.join("\n");
   }
 
@@ -39,6 +40,7 @@ export class TorManager {
 
   private async ensureExecutable(binaryPath: string) {
     if (process.platform === "win32") return;
+
     try {
       await fs.chmod(binaryPath, 0o755);
     } catch {
@@ -56,6 +58,7 @@ export class TorManager {
   async repairMacCodeSignature(binaryPath: string) {
     if (process.platform !== "darwin") return;
     const torDir = path.dirname(binaryPath);
+
     const candidates = [
       path.join(torDir, "libevent-2.1.7.dylib"),
       path.join(torDir, "pluggable_transports", "conjure-client"),
@@ -68,8 +71,10 @@ export class TorManager {
         execFile("/usr/bin/codesign", ["--force", "--sign", "-", candidate], (error, _stdout, stderr) => {
           if (!error) {
             resolve();
+
             return;
           }
+
           reject(
             new Error(
               `codesign failed for ${path.basename(candidate)}: ${stderr?.trim() || error.message}`
@@ -78,6 +83,7 @@ export class TorManager {
         });
       });
     }
+
     await this.clearMacQuarantine(path.dirname(torDir));
   }
 
@@ -92,6 +98,7 @@ export class TorManager {
     await this.ensureExecutable(binaryPath);
     await this.clearMacQuarantine(binaryPath);
     let args: string[];
+
     if (mode === "torrc") {
       await fs.mkdir(dataDir, { recursive: true });
       const torrcPath = path.join(dataDir, "torrc");
@@ -100,15 +107,19 @@ export class TorManager {
     } else {
       args = ["--SocksPort", `127.0.0.1:${socksPort}`, "--DataDirectory", dataDir];
     }
+
     const bundleRoot = path.dirname(path.dirname(binaryPath));
     const hasBundleDefaults = fsSync.existsSync(path.join(bundleRoot, "data", "torrc-defaults"));
+
     if (hasBundleDefaults) {
       await this.clearMacQuarantine(bundleRoot);
     }
+
     const child = spawn(binaryPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
       cwd: hasBundleDefaults ? bundleRoot : undefined,
     });
+
     this.process = child;
     this.state = { running: true, pid: child.pid };
     child.stdout?.on("data", (chunk) => this.appendLog(chunk));
@@ -129,35 +140,45 @@ export class TorManager {
 
   async stop() {
     const child = this.process;
+
     if (!child) {
       this.state = { running: false };
+
       return;
     }
+
     // Mark stopped first so late exit events cannot clobber newer process state.
     this.process = null;
     this.state = { running: false };
     await new Promise<void>((resolve) => {
       let finished = false;
+
       const done = () => {
         if (finished) return;
         finished = true;
         resolve();
       };
+
       child.once("exit", () => done());
       child.once("error", () => done());
+
       try {
         child.kill("SIGTERM");
       } catch {
         done();
+
         return;
       }
+
       setTimeout(() => {
         if (finished) return;
+
         try {
           child.kill("SIGKILL");
         } catch {
           // ignore
         }
+
         setTimeout(done, 300);
       }, 3000);
     });

@@ -1,12 +1,17 @@
-import { beforeAll, bench, describe } from "vitest";
+import { beforeAll, describe, test } from "vitest";
 import { deriveConversationKey, deriveConversationKeyPair } from "../crypto/box";
 import { getSodium } from "../security/sodium";
 
 let localPrivateKey: Uint8Array;
+
 let remotePublicKey: Uint8Array;
+
 let psk: Uint8Array;
+
 const encoder = new TextEncoder();
+
 const legacyContext = encoder.encode("direct:benchmark-friend");
+
 const ratchetContext = encoder.encode("conv:benchmark-conversation");
 
 beforeAll(async () => {
@@ -17,18 +22,22 @@ beforeAll(async () => {
 });
 
 describe("conversation key derivation", () => {
-  bench("two independent shared-secret calculations", async () => {
-    await deriveConversationKey(localPrivateKey, remotePublicKey, psk, legacyContext);
-    await deriveConversationKey(localPrivateKey, remotePublicKey, psk, ratchetContext);
+  test("two independent shared-secret calculations", async ({ bench }) => {
+    await bench("two independent shared-secret calculations", async () => {
+      await deriveConversationKey(localPrivateKey, remotePublicKey, psk, legacyContext);
+      await deriveConversationKey(localPrivateKey, remotePublicKey, psk, ratchetContext);
+    }).run();
   });
 
-  bench("one shared-secret calculation for both keys", async () => {
-    await deriveConversationKeyPair(
-      localPrivateKey,
-      remotePublicKey,
-      psk,
-      legacyContext,
-      ratchetContext
-    );
+  test("one shared-secret calculation for both keys", async ({ bench }) => {
+    await bench("one shared-secret calculation for both keys", async () => {
+      await deriveConversationKeyPair(
+        localPrivateKey,
+        remotePublicKey,
+        psk,
+        legacyContext,
+        ratchetContext
+      );
+    }).run();
   });
 });

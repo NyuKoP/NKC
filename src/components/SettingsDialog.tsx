@@ -1,12 +1,17 @@
-﻿import { useCallback, useEffect, useRef, useState } from "react";
+import "./settings/settings.css";
+import { APP_BACK_EVENT } from "../ui/mouseNavigation";
+import { useCallback, useEffect, useRef, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import {
   AlertTriangle,
   Check,
   Clock,
   Key,
+  Wrench,
+  X,
 } from "lucide-react";
 import type { UserProfile } from "../db/repo";
+import { isPresenceStatus, type PresenceStatus } from "../profile/presence";
 import {
   clearChatHistory,
   deleteAllMedia,
@@ -15,7 +20,6 @@ import {
   listProfiles,
 } from "../db/repo";
 import { estimateStorageUsage, type StorageUsage } from "../storage/storageUsage";
-import { clearOutboxQueue } from "../storage/outboxStore";
 import { useAppStore } from "../app/store";
 import {
   defaultPrivacyPrefs,
@@ -55,9 +59,9 @@ import { getConnectionStatus, onConnectionStatus } from "../net/connectionStatus
 import { validateProxyUrl } from "../net/proxyControl";
 import Avatar from "./Avatar";
 import ConfirmDialog from "./ConfirmDialog";
-import StartKey from "./StartKey";
 import SettingsBackHeader from "./settings/SettingsBackHeader";
 import DevicesSettings from "./settings/sections/DevicesSettings";
+import DeveloperSettings from "./settings/sections/DeveloperSettings";
 import { useDeviceSyncSettings } from "./settings/hooks/useDeviceSyncSettings";
 import LoginSettings from "./settings/sections/LoginSettings";
 import FriendsSettings from "./settings/sections/FriendsSettings";
@@ -66,6 +70,7 @@ import NotificationsSettings from "./settings/sections/NotificationsSettings";
 import PrivacySettings from "./settings/sections/PrivacySettings";
 import StorageSettings from "./settings/sections/StorageSettings";
 import AppUpdateSettings from "./settings/sections/AppUpdateSettings";
+import RecoveryKeySettings from "./settings/sections/RecoveryKeySettings";
 import {
   SETTINGS_ROUTES,
   routeIconByView,
@@ -84,9 +89,10 @@ type SettingsDialogProps = {
     displayName: string;
     status: string;
     theme: "dark" | "light";
+    presenceStatus: PresenceStatus;
   }) => Promise<void>;
 
-  onUploadPhoto: (file: File) => Promise<void>;
+  onOpenProfileEditor: () => void;
   onLock: () => void;
 
   pinEnabled: boolean;
@@ -101,13 +107,19 @@ type SettingsDialogProps = {
 
   onLogout: () => void;
   onWipe: () => void;
+  onClearPendingMessages: () => Promise<void>;
 };
+
+const getOwnPresenceStatus = (user: UserProfile): PresenceStatus =>
+  isPresenceStatus(user.presence?.status) ? user.presence.status : "online";
 
 const getConnectionChoiceFromConfig = (mode: NetworkMode): ConnectionChoice => {
   if (mode === "onionRouter") {
     return "torOnion";
   }
+
   if (mode === "selfOnion") return "selfOnion";
+
   return "directP2P";
 };
 
@@ -116,7 +128,7 @@ export default function SettingsDialog({
   onOpenChange,
   user,
   onSaveProfile,
-  onUploadPhoto,
+  onOpenProfileEditor,
   onLock,
   pinEnabled,
   onSetPin,
@@ -128,9 +140,34 @@ export default function SettingsDialog({
   onUnblockFriend,
   onLogout,
   onWipe,
+  onClearPendingMessages,
 }: SettingsDialogProps) {
   const [view, setView] = useState<SettingsView>("main");
-  const prevOpenRef = useRef(open);
+  const settingsContentRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    const goBack = () => {
+      // A confirmation dialog above settings owns interaction until dismissed.
+      const dialogs = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
+
+      if (dialogs[dialogs.length - 1] !== settingsContentRef.current) return;
+
+      if (view !== "main") setView("main");
+      else onOpenChange(false);
+    };
+
+    window.addEventListener(APP_BACK_EVENT, goBack);
+
+    return () => window.removeEventListener(APP_BACK_EVENT, goBack);
+  }, [open, view, onOpenChange]);
+
+  useEffect(() => {
+    settingsContentRef.current?.querySelector('[data-testid="settings-dialog-body"]')?.scrollTo(0, 0);
+  }, [view]);
+  const prevOpenRef = useRef(false);
+
   const {
     config: netConfig,
     setMode,
@@ -138,19 +175,22 @@ export default function SettingsDialog({
     setOnionEnabled,
     setOnionNetwork,
     setTorAutoPrepareOnAppStart,
+    setTorBridgeMode,
     setComponentState,
     setLastUpdateCheckAt,
     setSelfOnionMinRelays,
   } = useNetConfigStore();
+
   const internalOnionRoute = useInternalOnionRouteStore((state) => state.route);
 
   // profile
   const [displayName, setDisplayName] = useState(user.displayName);
   const [status, setStatus] = useState(user.status);
   const [theme, setTheme] = useState<"dark" | "light">(user.theme);
-  const [editing, setEditing] = useState(false);
-  const [displayNameDraft, setDisplayNameDraft] = useState(user.displayName);
-  const [statusDraft, setStatusDraft] = useState(user.status);
+
+  const [presenceStatus, setPresenceStatus] = useState<PresenceStatus>(() =>
+    getOwnPresenceStatus(user)
+  );
 
   // privacy
   const [privacyPrefs, setPrivacyPrefsState] = useState(defaultPrivacyPrefs);
@@ -166,12 +206,19 @@ export default function SettingsDialog({
   // network
   const [onionEnabledDraft, setOnionEnabledDraft] = useState(netConfig.onionEnabled);
   const [onionNetworkDraft, setOnionNetworkDraft] = useState(netConfig.onionSelectedNetwork);
+
   const [torAutoPrepareDraft, setTorAutoPrepareDraft] = useState(
     netConfig.torAutoPrepareOnAppStart !== false
   );
+
+  const [torBridgeModeDraft, setTorBridgeModeDraft] = useState<"off" | "auto" | "force">(
+    netConfig.torBridgeMode ?? "auto"
+  );
+
   const [connectionChoiceDraft, setConnectionChoiceDraft] = useState<ConnectionChoice>(
     getConnectionChoiceFromConfig(netConfig.mode)
   );
+
   const [onionStatus, setOnionStatus] = useState<OnionStatus | null>(null);
   const [proxyUrlDraft, setProxyUrlDraft] = useState(netConfig.onionProxyUrl);
   const [proxyUrlError, setProxyUrlError] = useState("");
@@ -180,20 +227,25 @@ export default function SettingsDialog({
   const [torApplyBusy, setTorApplyBusy] = useState(false);
   const [torUninstallBusy, setTorUninstallBusy] = useState(false);
   const [torStatusBusy, setTorStatusBusy] = useState(false);
+  const [developerApplyBusy, setDeveloperApplyBusy] = useState(false);
+  const [developerSaveMessage, setDeveloperSaveMessage] = useState("");
   const [connectionStatus, setConnectionStatus] = useState(getConnectionStatus());
   const [chatWipeBusy, setChatWipeBusy] = useState(false);
   const [mediaWipeBusy, setMediaWipeBusy] = useState(false);
   const [pendingWipeBusy, setPendingWipeBusy] = useState(false);
   const [wipeConfirmOpen, setWipeConfirmOpen] = useState(false);
+
   const [wipeConfirmType, setWipeConfirmType] = useState<"chat" | "media" | "pending" | null>(
     null
   );
+
   const [storageUsage, setStorageUsage] = useState<StorageUsage>({
     chatBytes: 0,
     mediaBytes: 0,
     pendingBytes: 0,
     totalBytes: 0,
   });
+
   const pendingSectionRef = useRef<HTMLDivElement | null>(null);
   const [pendingFocusRequested, setPendingFocusRequested] = useState(false);
 
@@ -217,6 +269,7 @@ export default function SettingsDialog({
     (ko: string, en: string) => (language === "en" ? en : ko),
     [language]
   );
+
   const tl = useCallback(
     (label: LocalizedLabel) => (language === "en" ? label.en : label.ko),
     [language]
@@ -225,11 +278,14 @@ export default function SettingsDialog({
   const handleProxyUrlChange = (value: string) => {
     setProxyUrlDraft(value);
     const trimmed = value.trim();
+
     if (!trimmed) {
       setProxyUrlError("");
       setProxy(netConfig.onionProxyEnabled, "");
+
       return;
     }
+
     try {
       const { normalized } = validateProxyUrl(trimmed);
       setProxyUrlError("");
@@ -246,18 +302,19 @@ export default function SettingsDialog({
     setDisplayName(user.displayName);
     setStatus(user.status);
     setTheme(user.theme);
-    setDisplayNameDraft(user.displayName);
-    setStatusDraft(user.status);
-    setEditing(false);
+    const nextPresence = getOwnPresenceStatus(user);
+    setPresenceStatus(nextPresence);
   }, [user]);
 
   useEffect(() => {
     const wasOpen = prevOpenRef.current;
+
     if (!wasOpen && open) {
       setView("main");
       setOnionEnabledDraft(netConfig.onionEnabled);
       setOnionNetworkDraft(netConfig.onionSelectedNetwork);
       setTorAutoPrepareDraft(netConfig.torAutoPrepareOnAppStart !== false);
+      setTorBridgeModeDraft(netConfig.torBridgeMode ?? "auto");
       setConnectionChoiceDraft(
         getConnectionChoiceFromConfig(netConfig.mode)
       );
@@ -277,12 +334,14 @@ export default function SettingsDialog({
           setPrefsLoaded(true);
         });
     }
+
     prevOpenRef.current = open;
   }, [
     open,
     netConfig.onionEnabled,
     netConfig.onionSelectedNetwork,
     netConfig.torAutoPrepareOnAppStart,
+    netConfig.torBridgeMode,
     netConfig.onionProxyUrl,
     netConfig.mode,
   ]);
@@ -299,14 +358,15 @@ export default function SettingsDialog({
     setPinEnabledUi(pinEnabled);
   }, [pinEnabled]);
 
-
   useEffect(() => {
     if (!open || view !== "network") return;
     setConnectionStatus(getConnectionStatus());
     const unsubscribe = onConnectionStatus(setConnectionStatus);
+
     const interval = window.setInterval(() => {
       setConnectionStatus(getConnectionStatus());
     }, 1500);
+
     return () => {
       unsubscribe();
       window.clearInterval(interval);
@@ -314,19 +374,28 @@ export default function SettingsDialog({
   }, [open, view]);
 
   useEffect(() => {
-    if (!open || view !== "network") return;
+    if (!open || (view !== "network" && view !== "developer")) return;
+    let cancelled = false;
+    let refreshing = false;
+
     const refresh = async () => {
+      if (refreshing || cancelled) return;
+      refreshing = true;
       try {
         const status = await getOnionStatus();
+        if (cancelled) return;
         setOnionStatus(status);
         setComponentState("tor", status.components.tor);
       } catch {
         // Ignore transient polling errors.
-      }
+      } finally { refreshing = false; }
     };
+
     void refresh();
     const interval = window.setInterval(refresh, 1500);
+
     const unsubscribe = onOnionProgress((payload) => {
+      if (cancelled) return;
       setComponentState(payload.network, payload.status);
       setOnionStatus((prev) =>
         prev
@@ -337,7 +406,9 @@ export default function SettingsDialog({
           : prev
       );
     });
+
     return () => {
+      cancelled = true;
       window.clearInterval(interval);
       unsubscribe();
     };
@@ -351,11 +422,13 @@ export default function SettingsDialog({
   useEffect(() => {
     if (!saveMessage) return;
     const t = window.setTimeout(() => setSaveMessage(""), 2000);
+
     return () => window.clearTimeout(t);
   }, [saveMessage]);
 
   const updatePrivacy = async (next: typeof privacyPrefs) => {
     setPrivacyPrefsState(next);
+
     try {
       await setPrivacyPrefs(next);
     } catch (e) {
@@ -365,11 +438,13 @@ export default function SettingsDialog({
 
   const updateAppPrefs = useCallback(async (patch: AppPreferencesPatch) => {
     setAppPrefsState((current) => applyAppPrefsPatch(current, patch));
+
     try {
       const next = await setAppPrefs(patch);
       setAppPrefsState(next);
     } catch (e) {
       console.error("Failed to save app prefs", e);
+
       try {
         setAppPrefsState(await getAppPrefs());
       } catch {
@@ -407,6 +482,7 @@ export default function SettingsDialog({
   const handleTorStatus = async () => {
     if (torStatusBusy) return;
     setTorStatusBusy(true);
+
     try {
       await refreshOnionStatus();
       setSaveMessage(t("Tor 상태 확인 완료", "Tor status checked"));
@@ -421,6 +497,7 @@ export default function SettingsDialog({
   const handleCheckUpdates = async () => {
     if (torCheckBusy) return;
     setTorCheckBusy(true);
+
     try {
       const status = await checkOnionUpdates();
       setOnionStatus(status);
@@ -438,6 +515,7 @@ export default function SettingsDialog({
   const handleApplyUpdate = async (network: OnionNetwork) => {
     if (torApplyBusy) return;
     setTorApplyBusy(true);
+
     try {
       await applyOnionUpdate(network);
       await refreshOnionStatus();
@@ -453,17 +531,10 @@ export default function SettingsDialog({
   const handleInstall = async (network: OnionNetwork) => {
     if (torInstallBusy) return;
     setTorInstallBusy(true);
+
     try {
       await installOnion(network);
       await refreshOnionStatus();
-      try {
-        const status = await checkOnionUpdates();
-        setOnionStatus(status);
-        setComponentState("tor", status.components.tor);
-        setLastUpdateCheckAt(Date.now());
-      } catch (error) {
-        console.error("Failed to check onion updates after install", error);
-      }
       setSaveMessage(t("Tor 설치 완료", "Tor installed"));
     } catch (error) {
       console.error("Failed to install onion component", error);
@@ -476,6 +547,7 @@ export default function SettingsDialog({
   const handleUninstall = async (network: OnionNetwork) => {
     if (torUninstallBusy) return;
     setTorUninstallBusy(true);
+
     try {
       await uninstallOnion(network);
       await refreshOnionStatus();
@@ -489,20 +561,26 @@ export default function SettingsDialog({
   };
 
   const handleSaveOnion = async () => {
+    if (connectionChoiceDraft === "directP2P") {
+      setSaveMessage(t("이전 Direct 설정은 지원되지 않습니다. Tor Onion을 선택하세요.", "Legacy Direct settings are unsupported. Select Tor Onion."));
+
+      return;
+    }
+
     const nextMode: typeof netConfig.mode =
-      connectionChoiceDraft === "directP2P"
-        ? "directP2P"
-        : connectionChoiceDraft === "selfOnion"
+      connectionChoiceDraft === "selfOnion"
           ? "selfOnion"
           : "onionRouter";
+
     const nextOnionNetwork: OnionNetwork = "tor";
     const nextOnionEnabled = nextMode === "onionRouter" ? onionEnabledDraft : false;
+
     try {
       setMode(nextMode);
       setOnionNetwork(nextOnionNetwork);
       setTorAutoPrepareOnAppStart(torAutoPrepareDraft);
       setOnionEnabled(nextOnionEnabled);
-      await setOnionMode(nextOnionEnabled, nextOnionNetwork);
+      await setOnionMode(nextOnionEnabled, nextOnionNetwork, netConfig.torBridgeMode ?? "auto");
       setSaveMessage(t("저장됨", "Saved"));
     } catch (error) {
       console.error("Failed to save onion settings", error);
@@ -513,14 +591,51 @@ export default function SettingsDialog({
   const handleConnectOnion = async (network?: OnionNetwork) => {
     try {
       const nextNetwork = network ?? onionNetworkDraft;
+      // Connecting Tor is an explicit routing decision. Persist it before
+      // starting the runtime so the active route cannot remain selfOnion while
+      // a Tor SOCKS process is already running.
+      setConnectionChoiceDraft("torOnion");
       setOnionNetworkDraft(nextNetwork);
       setOnionEnabledDraft(true);
-      await setOnionMode(true, nextNetwork);
+      setMode("onionRouter");
+      setOnionNetwork(nextNetwork);
+      setTorAutoPrepareOnAppStart(torAutoPrepareDraft);
+      setOnionEnabled(true);
+      await setOnionMode(true, nextNetwork, netConfig.torBridgeMode ?? "auto");
       setSaveMessage(t("연결 중...", "Connecting..."));
       await refreshOnionStatus();
     } catch (error) {
       console.error("Failed to start onion runtime", error);
       setSaveMessage(t("연결 실패", "Connect failed"));
+    }
+  };
+
+  const handleSaveDeveloperSettings = async () => {
+    if (developerApplyBusy) return;
+    const nextBridgeMode = torBridgeModeDraft;
+    const torRunning = onionStatus?.runtime.status === "running" && onionStatus.runtime.network === "tor";
+    setDeveloperApplyBusy(true);
+    setDeveloperSaveMessage("");
+
+    try {
+      setTorBridgeMode(nextBridgeMode);
+
+      if (torRunning) {
+        await setOnionMode(true, "tor", nextBridgeMode);
+        await refreshOnionStatus();
+        setDeveloperSaveMessage(
+          t("저장했으며 Tor 연결을 다시 구성했습니다.", "Saved and rebuilt the Tor connection.")
+        );
+      } else {
+        setDeveloperSaveMessage(
+          t("저장했습니다. 다음 Tor 연결부터 적용됩니다.", "Saved. This will apply on the next Tor connection.")
+        );
+      }
+    } catch (error) {
+      console.error("Failed to apply developer network settings", error);
+      setDeveloperSaveMessage(t("브리지 정책 적용에 실패했습니다.", "Failed to apply the bridge policy."));
+    } finally {
+      setDeveloperApplyBusy(false);
     }
   };
 
@@ -540,30 +655,34 @@ export default function SettingsDialog({
   };
 
   const handleConnectionChoiceChange = (choice: ConnectionChoice) => {
+    if (choice === "directP2P") return;
     setConnectionChoiceDraft(choice);
-    if (choice === "directP2P") {
-      setOnionEnabledDraft(false);
-      return;
-    }
+
     if (choice === "selfOnion") {
       setOnionEnabledDraft(false);
+
       return;
     }
+
     if (choice === "torOnion") {
       setOnionNetworkDraft("tor");
       setOnionEnabledDraft(true);
+
       return;
     }
   };
 
   const formatBytes = (value: number) => {
     if (value >= 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+
     if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`;
+
     return `${value} B`;
   };
 
   const handleCopyAddress = async (value: string, label: string) => {
     if (!value) return;
+
     try {
       if (!navigator.clipboard) throw new Error("Clipboard not available");
       await navigator.clipboard.writeText(value);
@@ -580,10 +699,13 @@ export default function SettingsDialog({
     const friends = profiles.filter((profile) => profile.kind === "friend");
     const conversations = await listConversations();
     const messagesBy: Record<string, Awaited<ReturnType<typeof listMessagesByConv>>> = {};
+
     for (const conv of conversations) {
       messagesBy[conv.id] = await listMessagesByConv(conv.id);
     }
+
     setData({ user, friends, convs: conversations, messagesByConv: messagesBy });
+
     if (userProfileState && user?.id !== userProfileState.id) {
       setSelectedConv(null);
     }
@@ -592,10 +714,12 @@ export default function SettingsDialog({
   useEffect(() => {
     if (view !== "danger" || !pendingFocusRequested) return;
     const element = pendingSectionRef.current;
+
     if (element) {
       element.scrollIntoView({ behavior: "smooth", block: "start" });
       element.focus({ preventScroll: true });
     }
+
     setPendingFocusRequested(false);
   }, [pendingFocusRequested, view]);
 
@@ -607,75 +731,61 @@ export default function SettingsDialog({
     />
   );
 
-  const startEdit = () => {
-    setDisplayNameDraft(displayName);
-    setStatusDraft(status);
-    setEditing(true);
-  };
-
-  const cancelEdit = () => {
-    setDisplayNameDraft(displayName);
-    setStatusDraft(status);
-    setEditing(false);
-  };
-
-  const saveEdit = async () => {
-    try {
-      await onSaveProfile({
-        displayName: displayNameDraft.trim() || displayName,
-        status: statusDraft,
-        theme,
-      });
-      setDisplayName(displayNameDraft.trim() || displayName);
-      setStatus(statusDraft);
-      setEditing(false);
-      setSaveMessage(t("저장되었습니다.", "Saved."));
-    } catch (e) {
-      console.error("Failed to save profile", e);
-      setSaveMessage(t("저장에 실패했습니다.", "Save failed."));
-    }
-  };
-
   const handleSetPin = async () => {
     setPinError("");
+
     if (!pinAvailable) {
-      setPinError(t("PIN lock is unavailable on this platform/build.", "PIN lock is unavailable on this platform/build."));
+      setPinError(t("이 기기에서는 PIN 잠금을 사용할 수 없습니다.", "PIN lock is unavailable on this platform/build."));
+
       return;
     }
+
     const value = pinDraft.trim();
+
     if (value.length < 4) {
       setPinError(t("PIN은 최소 4자리 이상이어야 합니다.", "PIN must be at least 4 digits."));
+
       return;
     }
+
     const result = await onSetPin(value);
+
     if (!result.ok) {
-      setPinError(result.error || t("PIN 설정에 실패했습니다.", "Failed to set PIN."));
+      console.warn("PIN setting rejected", result.error);
+      setPinError(t("PIN을 설정하지 못했습니다. 4–8자리 숫자를 확인하고 다시 시도해 주세요.", "Could not set PIN. Check that it contains 4–8 digits and try again."));
+
       return;
     }
+
     setPinDraft("");
     setSaveMessage(t("PIN이 설정되었습니다.", "PIN set."));
   };
 
   const handleTogglePin = async (next: boolean) => {
     setPinError("");
+
     if (!pinAvailable) {
-      setPinError(t("PIN lock is unavailable on this platform/build.", "PIN lock is unavailable on this platform/build."));
+      setPinError(t("이 기기에서는 PIN 잠금을 사용할 수 없습니다.", "PIN lock is unavailable on this platform/build."));
+
       return;
     }
+
     if (next) {
       // Show PIN entry UI immediately; persistence happens on "Set PIN".
       setPinEnabledUi(true);
+
       return;
     }
+
     try {
       await onDisablePin();
       setPinDraft("");
       setPinEnabledUi(false);
-      setSaveMessage(t("PIN disabled.", "PIN disabled."));
+      setSaveMessage(t("PIN 잠금을 해제했습니다.", "PIN disabled."));
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      console.error("Failed to disable PIN", error);
       setPinEnabledUi(true);
-      setPinError(message || t("PIN 해제에 실패했습니다.", "Failed to disable PIN."));
+      setPinError(t("PIN 해제에 실패했습니다. 다시 시도해 주세요.", "Failed to disable PIN. Please try again."));
     }
   };
 
@@ -683,8 +793,11 @@ export default function SettingsDialog({
 
   const getDotState = (kind: OnionNetwork, status: OnionStatus | null): DotState => {
     const component = status?.components?.[kind];
+
     if (component?.error || component?.status === "failed") return "error";
+
     if (status?.runtime?.status === "running" && status.runtime.network === kind) return "running";
+
     if (
       (status?.runtime?.status === "starting" && status.runtime.network === kind) ||
       component?.status === "downloading" ||
@@ -692,13 +805,17 @@ export default function SettingsDialog({
     ) {
       return "starting";
     }
+
     return "stopped";
   };
 
   const getDotClass = (state: DotState) => {
-    if (state === "running") return "bg-emerald-300";
-    if (state === "starting") return "bg-amber-300 animate-pulse";
-    if (state === "error") return "bg-red-400";
+    if (state === "running") return "bg-nkc-success";
+
+    if (state === "starting") return "bg-nkc-warning animate-pulse";
+
+    if (state === "error") return "bg-nkc-danger";
+
     return "bg-nkc-muted";
   };
 
@@ -717,6 +834,8 @@ export default function SettingsDialog({
       torAddress,
     } = snapshot;
 
+    if (mode === "directP2P") return t("경로: Direct 지원 안 함", "Route: Direct unsupported");
+
     if (mode === "selfOnion" || connection.transport === "selfOnion") {
       if (internalRoute.status === "ready") {
         return t(
@@ -724,12 +843,15 @@ export default function SettingsDialog({
           `Route: Built-in Onion (${internalRoute.establishedHops}/${internalRoute.desiredHops} hops)`
         );
       }
+
       if (internalRoute.status === "degraded") {
         return t("경로: 내부 Onion (불안정)", "Route: Built-in Onion (degraded)");
       }
+
       if (internalRoute.status === "building" || internalRoute.status === "rebuilding") {
         return t("경로: 내부 Onion (재구성중)", "Route: Built-in Onion (rebuilding)");
       }
+
       return t("경로: 내부 Onion (대기)", "Route: Built-in Onion (idle)");
     }
 
@@ -737,45 +859,58 @@ export default function SettingsDialog({
       if (connection.state === "connected") {
         return t("경로: Direct P2P", "Route: Direct P2P");
       }
+
       if (connection.state === "connecting") {
         return t("경로: Direct P2P (연결 중)", "Route: Direct P2P (connecting)");
       }
+
       if (connection.state === "failed") {
         return t("경로: Direct P2P (실패)", "Route: Direct P2P (failed)");
       }
+
       if (connection.state === "degraded") {
         return t("경로: Direct P2P (불안정)", "Route: Direct P2P (degraded)");
       }
+
       return t("경로: Direct P2P (대기)", "Route: Direct P2P (idle)");
     }
 
     if (connection.transport === "onionRouter") {
       const network = runtime?.network;
       const status = runtime?.status;
+
       if (network === "tor") {
         if (status === "running" && torAddress) {
           return t("경로: Tor Hidden Service", "Route: Tor Hidden Service");
         }
+
         if (status === "running") {
           return t("경로: Tor (Onion)", "Route: Tor (Onion)");
         }
+
         if (status === "starting") {
           return t("경로: Tor (연결 중)", "Route: Tor (connecting)");
         }
+
         if (status === "failed") {
           return t("경로: Tor (실패)", "Route: Tor (failed)");
         }
+
         if (status === "idle") {
           return t("경로: Tor (대기)", "Route: Tor (idle)");
         }
+
         return t("경로: Tor", "Route: Tor");
       }
+
       if (status === "starting") {
         return t("경로: Onion (연결 중)", "Route: Onion (connecting)");
       }
+
       if (status === "failed") {
         return t("경로: Onion (실패)", "Route: Onion (failed)");
       }
+
       if (status === "running") {
         return t("경로: Onion (연결됨)", "Route: Onion (connected)");
       }
@@ -790,9 +925,15 @@ export default function SettingsDialog({
       : connectionChoiceDraft === "selfOnion"
         ? "selfOnion"
         : "onionRouter";
-  const routeInfo = getRouteInfo(netConfig.mode, netConfig, internalOnionRoute);
+
+  const routeInfo = netConfig.mode === "directP2P" ? {
+    pathLabel: t("전송 차단됨", "Sending blocked"),
+    description: t("이전 Direct 설정은 지원되지 않습니다. Tor Onion으로 전환하세요.", "Legacy Direct settings are unsupported. Switch to Tor Onion."),
+  } : getRouteInfo(netConfig.mode, netConfig, internalOnionRoute);
+
   const runtime = onionStatus?.runtime;
   const torAddress = userProfileState?.routingHints?.onionAddr ?? "";
+
   const activeRouteLabel = formatActiveRouteLabel({
     connection: connectionStatus,
     mode: netConfig.mode,
@@ -800,6 +941,7 @@ export default function SettingsDialog({
     internalRoute: internalOnionRoute,
     torAddress,
   });
+
   const runtimeStateLabel = runtime
     ? runtime.status === "running"
       ? t("상태: 실행 중", "Status: running")
@@ -809,14 +951,18 @@ export default function SettingsDialog({
           ? t("상태: 실패", "Status: failed")
           : t("상태: 대기", "Status: idle")
     : t("상태: 확인 필요", "Status: check required");
+
   const runtimeNetworkLabel = runtime?.network
     ? `${t("네트워크", "Network")}: ${runtime.network}`
     : `${t("네트워크", "Network")}: -`;
+
   const runtimeSocksLabel =
     runtime && runtime.status === "running" && runtime.network === "tor" && runtime.socksPort
       ? ` · SOCKS 127.0.0.1:${runtime.socksPort}`
       : "";
+
   const runtimeErrorDetail = runtime?.error ?? "";
+
   const runtimeErrorLabel = runtimeErrorDetail
     ? runtimeErrorDetail.includes("MACOS_TOR_BLOCKED")
       ? t(
@@ -825,6 +971,7 @@ export default function SettingsDialog({
         )
       : t("Tor 연결을 시작하지 못했습니다.", "Tor could not be started.")
     : "";
+
   const runtimeStatusTooltip =
     runtime?.status === "running"
       ? t("Onion 상태: 실행 중", "Onion status: running")
@@ -834,25 +981,29 @@ export default function SettingsDialog({
             "자동/대기 상태: 설정이 없거나 연결 경로를 자동으로 선택 중",
             "Auto/pending: no setting or auto-selecting route"
           );
+
   const runtimeStatusIcon =
     runtime?.status === "running" ? (
       <Check size={12} className="text-nkc-accent" />
     ) : runtime?.status === "failed" ? (
-      <AlertTriangle size={12} className="text-red-300" />
+      <AlertTriangle size={12} className="text-nkc-danger" />
     ) : (
       <Clock size={12} className="text-nkc-muted" />
     );
 
   const formatOnionError = (value?: string) => {
     if (!value) return null;
+
     if (value === "PINNED_HASH_MISSING")
       return t("실패: 검증 데이터 없음", "Failed: missing verification data");
+
     if (value === "ASSET_NOT_FOUND")
       return t("실패: 지원 자산 없음", "Failed: no compatible asset");
     const trimmed = value.split("| details=")[0].trim();
     const match = trimmed.match(/^\[([^\]]+)\]\s*(.*)$/);
     const code = match?.[1] ?? "";
     const message = match?.[2] ?? trimmed;
+
     const label =
       code === "DOWNLOAD_FAILED"
         ? t("다운로드 실패", "Download failed")
@@ -873,15 +1024,19 @@ export default function SettingsDialog({
                     : code === "UNKNOWN_ERROR"
                       ? t("알 수 없는 오류", "Unknown error")
                       : null;
+
     const shortMessage = label ? `${label}${message ? ` · ${message}` : ""}` : message;
+
     return `${t("실패", "Failed")}: ${shortMessage}`;
   };
 
   const selfOnionHopTarget = internalOnionRoute.desiredHops;
+
   const selfOnionHopConnected = Math.min(
     internalOnionRoute.establishedHops,
     internalOnionRoute.desiredHops
   );
+
   const selfOnionRouteLabel = getRouteStatusText(internalOnionRoute, language);
   const selfOnionHopProgressText = getHopsProgressText(internalOnionRoute);
   const selfOnionHopDetails = internalOnionRoute.hops;
@@ -889,9 +1044,13 @@ export default function SettingsDialog({
 
   const buildComponentLabel = (state: typeof netConfig.tor) => {
     if (state.status === "downloading") return t("다운로드 중", "Downloading");
+
     if (state.status === "installing") return t("설치 중", "Installing");
+
     if (state.status === "failed") return t("실패", "Failed");
+
     if (state.installed) return t("설치됨", "Installed");
+
     return t("미설치", "Not installed");
   };
 
@@ -901,6 +1060,7 @@ export default function SettingsDialog({
   const torUpdateAvailable = Boolean(
     netConfig.tor.latest && netConfig.tor.latest !== netConfig.tor.version
   );
+
   const torUpdateStatus = netConfig.lastUpdateCheckAtMs
     ? netConfig.tor.error === "PINNED_HASH_MISSING"
       ? t("검증 데이터 없음", "Missing verification data")
@@ -910,6 +1070,7 @@ export default function SettingsDialog({
         ? `${t("업데이트 가능", "Update available")}: ${netConfig.tor.latest}`
         : t("최신 상태", "Up to date")
     : "";
+
   const torErrorLabel = formatOnionError(netConfig.tor.error);
 
   const canSaveOnion =
@@ -925,10 +1086,11 @@ export default function SettingsDialog({
         )
       : draftMode === "directP2P"
         ? t(
-            "Direct P2P: 프록시 없이 직접 연결을 시도합니다.",
-            "Direct P2P: attempts a direct connection without a proxy."
+            "Direct P2P: 이 버전에서 전송이 차단됩니다.",
+            "Direct P2P: sending is blocked in this release."
           )
-      : t("내부 Onion: 앱 내부 hop 경로를 사용합니다.", "Built-in Onion: uses in-app hops.");
+      : t("내부 Onion: Tor 기반 NKC 릴레이 경로를 사용합니다.", "Built-in Onion: uses a Tor-backed NKC relay route.");
+
   const showDirectWarning = draftMode === "directP2P";
   const proxyAuto = !proxyUrlDraft.trim();
   const prefsDisabled = !prefsLoaded;
@@ -939,130 +1101,103 @@ export default function SettingsDialog({
     <>
       <Dialog.Root open={open} onOpenChange={onOpenChange}>
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/60" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 h-[80vh] w-[92vw] max-w-2xl -translate-x-1/2 -translate-y-1/2 overflow-y-auto rounded-nkc border border-nkc-border bg-nkc-panel p-8 shadow-soft">
-          <Dialog.Title className="text-lg font-semibold text-nkc-text">
-            {t("설정", "Settings")}
-          </Dialog.Title>
-          <Dialog.Description className="sr-only">
-            {t("설정 대화상자", "Settings dialog")}
-          </Dialog.Description>
+          <Dialog.Overlay className="nkc-modal-overlay fixed inset-0 bg-black/60" />
+          <Dialog.Content ref={settingsContentRef} className="nkc-modal-content settings-dialog fixed left-1/2 top-1/2 flex h-[80vh] w-[92vw] max-w-2xl -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-nkc border border-nkc-border bg-nkc-panel shadow-soft">
+          <header data-testid="settings-dialog-header" className="flex shrink-0 items-center justify-between gap-4 border-b border-nkc-divider px-8 py-5">
+            <div>
+              <Dialog.Title className="text-lg font-semibold text-nkc-text">
+                {t("설정", "Settings")}
+              </Dialog.Title>
+              <Dialog.Description className="mt-1 text-xs text-nkc-muted">
+                {t("환경, 연결 및 개인정보를 관리하세요.", "Manage your preferences, connections and privacy.")}
+              </Dialog.Description>
+            </div>
+            <Dialog.Close
+              type="button"
+              aria-label={t("닫기", "Close")}
+              className="flex h-9 w-9 items-center justify-center rounded-full text-nkc-muted transition-colors hover:bg-nkc-hover hover:text-nkc-text focus-visible:ring-2 focus-visible:ring-nkc-focusRing"
+            >
+              <X size={18} />
+            </Dialog.Close>
+          </header>
+          <div data-testid="settings-dialog-body" className="min-h-0 flex-1 overflow-y-auto px-8 pb-6">
 
           {/* MAIN */}
           {view === "main" && (
-            <div className="mt-6 grid gap-6">
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="flex items-start gap-4">
-                  <Avatar name={displayName} colorKey={user.id} avatarRef={user.avatarRef} size={64} />
+            <div className="settings-home mt-5 grid gap-4">
+              <section className="rounded-xl border border-nkc-divider bg-nkc-surface p-5">
+                <div className="flex items-center gap-4">
+                  <Avatar name={displayName} colorKey={user.id} avatarRef={user.avatarRef} size={60} />
                   <div className="min-w-0 flex-1">
-                    {!editing ? (
-                      <>
-                        <div className="truncate text-sm font-semibold text-nkc-text">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="truncate text-[15px] font-semibold text-nkc-text">
                           {displayName}
                         </div>
-                        <div className="mt-1 truncate text-xs text-nkc-muted">
-                          {status ? status : t("상태 메시지가 없습니다.", "No status message.")}
+                        <div className="mt-1 truncate text-[13px] text-nkc-muted">
+                          {status
+                            ? status
+                            : presenceStatus === "idle"
+                              ? t("자리 비움", "Idle")
+                              : presenceStatus === "dnd"
+                                ? t("방해 금지", "Do not disturb")
+                                : presenceStatus === "offline"
+                                  ? t("오프라인", "Offline")
+                                  : t("온라인", "Online")}
                         </div>
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <button
-                            type="button"
-                            onClick={startEdit}
-                            className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
-                          >
-                            {t("편집", "Edit")}
-                          </button>
-                        </div>
-                      </>
-                    ) : (
-                      <>
-                        <label className="text-sm text-nkc-text">
-                          {t("표시 이름", "Display name")}
-                          <input
-                            value={displayNameDraft}
-                            onChange={(e) => setDisplayNameDraft(e.target.value)}
-                            className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
-                          />
-                        </label>
-                        <label className="mt-3 block text-sm text-nkc-text">
-                          {t("상태 메시지", "Status message")}
-                          <input
-                            value={statusDraft}
-                            onChange={(e) => setStatusDraft(e.target.value)}
-                            className="mt-2 w-full rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text"
-                          />
-                        </label>
-
-                        <div className="mt-3 flex flex-wrap gap-2">
-                          <label className="cursor-pointer rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel">
-                            {t("사진 업로드", "Upload photo")}
-                            <input
-                              type="file"
-                              accept="image/png,image/jpeg,image/gif,image/webp"
-                              className="hidden"
-                              onChange={async (e) => {
-                                const file = e.target.files?.[0];
-                                if (!file) return;
-                                try {
-                                  await onUploadPhoto(file);
-                                  setSaveMessage(t("사진이 업로드되었습니다.", "Photo uploaded."));
-                                } catch (err) {
-                                  console.error("Upload failed", err);
-                                  setSaveMessage(t("사진 업로드에 실패했습니다.", "Photo upload failed."));
-                                } finally {
-                                  e.currentTarget.value = "";
-                                }
-                              }}
-                            />
-                          </label>
-
-                          <button
-                            type="button"
-                            onClick={saveEdit}
-                            className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText"
-                          >
-                            {t("저장", "Save")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={cancelEdit}
-                            className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
-                          >
-                            {t("취소", "Cancel")}
-                          </button>
-                        </div>
-                      </>
-                    )}
+                      </div>
+                      <button
+                        type="button"
+                        data-testid="settings-open-profile-editor"
+                        onClick={onOpenProfileEditor}
+                        className="shrink-0 rounded-lg border border-nkc-divider px-3.5 py-2 text-xs font-semibold text-nkc-text transition-colors hover:bg-nkc-hover focus-visible:ring-2 focus-visible:ring-nkc-focusRing"
+                      >
+                        {t("프로필 편집", "Edit profile")}
+                      </button>
+                    </div>
                   </div>
                 </div>
               </section>
 
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
-                <div className="flex flex-col">
-                  {SETTINGS_ROUTES.map((route, idx, list) => (
+              {([
+                { key: "general", label: t("일반", "General"), views: ["notifications", "theme", "updates"] },
+                { key: "connection", label: t("연결", "Connections"), views: ["friends", "network", "devices"] },
+                { key: "security", label: t("보안 / 데이터", "Security / Data"), views: ["privacy", "login", "storage"] },
+              ] satisfies { key: string; label: string; views: SettingsView[] }[]).map((group) => {
+                const routes = SETTINGS_ROUTES.filter((route) => group.views.some((view) => view === route.view));
+
+                return (
+                  <section key={group.key} className="overflow-hidden rounded-xl border border-nkc-divider bg-nkc-surface">
+                    <div className="px-4 pb-2 pt-3 text-[11px] font-semibold text-nkc-muted">
+                      {group.label}
+                    </div>
+                    <div className="flex flex-col">
+                      {routes.map((route, idx, list) => (
                       <button
                         key={route.key}
                         type="button"
                         onClick={() => setView(route.view)}
-                        data-testid={route.testId}
-                        className={`flex w-full items-center gap-[0.7rem] px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel ${
-                          idx === list.length - 1 ? "" : "border-b border-nkc-border"
+                        data-testid={route.testId ?? `settings-${route.view}-button`}
+                        className={`flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm text-nkc-text transition-colors hover:bg-nkc-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-nkc-focusRing ${
+                          idx === list.length - 1 ? "" : "border-b border-nkc-divider"
                         }`}
                       >
                         {(() => {
                           const RouteIcon = routeIconByView[route.view as keyof typeof routeIconByView];
+
                           return RouteIcon ? (
                             <RouteIcon size={16} className="text-nkc-muted" />
                           ) : null;
                         })()}
                         {tl(route.label)}
                       </button>
-                    ))}
-                </div>
-              </section>
+                      ))}
+                    </div>
+                  </section>
+                );
+              })}
 
-              <div className="h-3" />
-
-              <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted">
+              <section className="overflow-hidden rounded-xl border border-nkc-divider bg-nkc-surface">
                 <div className="flex flex-col">
                   <div className="px-4 pb-1 pt-3 text-xs font-semibold text-nkc-muted">
                     {t("복구 / 위험", "Recovery / Danger")}
@@ -1070,8 +1205,9 @@ export default function SettingsDialog({
 
                   <button
                     type="button"
+                    data-testid="settings-recovery-button"
                     onClick={() => setView("privacyKeys")}
-                    className="flex w-full items-center gap-[0.7rem] border-b border-nkc-border px-4 py-3 text-left text-sm text-nkc-text hover:bg-nkc-panel"
+                    className="flex w-full items-center gap-3 border-b border-nkc-divider px-4 py-3.5 text-left text-sm text-nkc-text transition-colors hover:bg-nkc-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-nkc-focusRing"
                   >
                     <Key size={16} className="text-nkc-muted" />
                     {t("시작키 설정", "Start key")}
@@ -1079,25 +1215,32 @@ export default function SettingsDialog({
 
                   <button
                     type="button"
-                    onClick={() => setView("danger")}
-                    className="flex w-full items-center gap-[0.7rem] px-4 py-3 text-left text-sm text-nkc-text hover:bg-red-500/20"
+                    data-testid="settings-developer-button"
+                    onClick={() => {
+                      setTorBridgeModeDraft(netConfig.torBridgeMode ?? "auto");
+                      setDeveloperSaveMessage("");
+                      setView("developer");
+                    }}
+                    className="flex w-full items-center gap-3 border-b border-nkc-divider px-4 py-3.5 text-left text-sm text-nkc-text transition-colors hover:bg-nkc-hover focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-nkc-focusRing"
                   >
-                    <AlertTriangle size={16} className="text-red-500" />
-                    <span className="text-red-500 font-semibold">
+                    <Wrench size={16} className="text-nkc-muted" />
+                    {t("개발자 기능", "Developer features")}
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="settings-danger-button"
+                    onClick={() => setView("danger")}
+                    className="flex w-full items-center gap-3 px-4 py-3.5 text-left text-sm text-nkc-text transition-colors hover:bg-nkc-dangerBg focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-nkc-dangerBorder"
+                  >
+                    <AlertTriangle size={16} className="text-nkc-danger" />
+                    <span className="text-nkc-danger font-semibold">
                       {t("위험 구역", "Danger zone")}
                     </span>
                   </button>
                 </div>
               </section>
 
-
-              <div className="flex justify-end gap-2">
-                <Dialog.Close asChild>
-                  <button className="rounded-nkc border border-nkc-border px-4 py-2 text-sm text-nkc-text hover:bg-nkc-panelMuted">
-                    {t("닫기", "Close")}
-                  </button>
-                </Dialog.Close>
-              </div>
 
               {saveMessage ? (
                 <div className="text-right text-xs text-nkc-muted">{saveMessage}</div>
@@ -1137,20 +1280,22 @@ export default function SettingsDialog({
             <div className="mt-6 grid gap-6">
               {renderBackHeader(t("테마", "Theme"))}
               <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
-                <div className="flex flex-wrap gap-3">
+                <div className="settings-theme-options">
                   {themeOptions.map((opt) => (
                     <button
                       key={opt.value}
                       type="button"
                       onClick={() => setTheme(opt.value)}
                       data-testid={`theme-option-${opt.value}`}
-                      className={`rounded-nkc border px-4 py-2 text-xs ${
-                        theme === opt.value
-                          ? "border-nkc-accent bg-nkc-panel text-nkc-text"
-                          : "border-nkc-border text-nkc-muted hover:bg-nkc-panel"
-                      }`}
+                      aria-pressed={theme === opt.value}
+                      className="settings-theme-option"
                     >
-                      {tl(opt.label)}
+                      <span aria-hidden="true" className={`settings-theme-preview settings-theme-preview--${opt.value}`}>
+                        <span className="settings-preview-sidebar" />
+                        <span className="settings-preview-messages"><i /><i /><i /></span>
+                      </span>
+                      <span className="settings-theme-label"><span className="settings-choice-dot" aria-hidden="true" />
+                      {tl(opt.label)}</span>
                     </button>
                   ))}
                 </div>
@@ -1160,6 +1305,7 @@ export default function SettingsDialog({
                 <div className="mt-2 flex flex-wrap gap-2">
                   <button
                     type="button"
+                    aria-pressed={language === "ko"}
                     onClick={() => setLanguage("ko")}
                     className={`rounded-nkc border px-3 py-2 text-xs ${
                       language === "ko"
@@ -1171,6 +1317,7 @@ export default function SettingsDialog({
                   </button>
                   <button
                     type="button"
+                    aria-pressed={language === "en"}
                     onClick={() => setLanguage("en")}
                     className={`rounded-nkc border px-3 py-2 text-xs ${
                       language === "en"
@@ -1188,7 +1335,7 @@ export default function SettingsDialog({
                   type="button"
                   data-testid="theme-save-button"
                   onClick={async () => {
-                    await onSaveProfile({ displayName, status, theme });
+                    await onSaveProfile({ displayName, status, theme, presenceStatus });
                     setSaveMessage(t("저장되었습니다.", "Saved."));
                     setView("main");
                   }}
@@ -1269,6 +1416,14 @@ export default function SettingsDialog({
           {/* DEVICES */}
           {view === "devices" && (
             <DevicesSettings
+              historyPolicy={deviceSyncSettings.historyPolicy}
+              onHistoryPolicyChange={deviceSyncSettings.setHistoryPolicy}
+              approvedDevices={deviceSyncSettings.approvedDevices}
+              currentDeviceId={deviceSyncSettings.currentDeviceId}
+              canRevoke={deviceSyncSettings.canRevoke}
+              onUnlinkDevice={deviceSyncSettings.handleUnlinkDevice}
+              freshnessBusy={deviceSyncSettings.freshnessBusy}
+              onFreshnessAction={deviceSyncSettings.handleFreshnessAction}
               t={t}
               onBack={() => setView("main")}
               onGenerateSyncCode={deviceSyncSettings.handleGenerateSyncCode}
@@ -1296,7 +1451,9 @@ export default function SettingsDialog({
               onSubmitLink={deviceSyncSettings.handleSubmitLink}
               rendezvousBaseUrlDraft={deviceSyncSettings.rendezvousBaseUrlDraft}
               onRendezvousBaseUrlChange={deviceSyncSettings.handleRendezvousBaseUrlChange}
-              onRendezvousBaseUrlBlur={deviceSyncSettings.handleRendezvousBaseUrlBlur}
+              onRendezvousBaseUrlSave={deviceSyncSettings.handleRendezvousBaseUrlSave}
+              rendezvousSaveStatus={deviceSyncSettings.rendezvousSaveStatus}
+              rendezvousError={deviceSyncSettings.rendezvousError}
               rendezvousUseOnionProxy={deviceSyncSettings.rendezvousUseOnionProxy}
               onRendezvousUseOnionChange={deviceSyncSettings.handleRendezvousUseOnionChange}
               hostRendezvousStatus={deviceSyncSettings.hostRendezvousStatus}
@@ -1323,14 +1480,31 @@ export default function SettingsDialog({
           )}
           {/* PRIVACY KEYS */}
           {view === "privacyKeys" && (
-            <div className="mt-6 grid gap-6">
-              <SettingsBackHeader
-                title={t("키 / 복구", "Keys / Recovery")}
-                backLabel={t("뒤로", "Back")}
-                onBack={() => setView("privacy")}
-              />
-              <StartKey onRotate={onRotateStartKey} onDone={() => setView("privacy")} />
-            </div>
+            <RecoveryKeySettings
+              t={t}
+              onBack={() => setView("main")}
+              onRotate={onRotateStartKey}
+            />
+          )}
+
+          {/* DEVELOPER */}
+          {view === "developer" && (
+            <DeveloperSettings
+              t={t}
+              onBack={() => setView("main")}
+              bridgeMode={torBridgeModeDraft}
+              savedBridgeMode={netConfig.torBridgeMode ?? "auto"}
+              onBridgeModeChange={(value) => {
+                setTorBridgeModeDraft(value);
+                setDeveloperSaveMessage("");
+              }}
+              onSave={handleSaveDeveloperSettings}
+              busy={developerApplyBusy}
+              torRunning={
+                onionStatus?.runtime.status === "running" && onionStatus.runtime.network === "tor"
+              }
+              saveMessage={developerSaveMessage}
+            />
           )}
 
           {/* FRIENDS */}
@@ -1348,16 +1522,16 @@ export default function SettingsDialog({
           {view === "danger" && (
             <div className="mt-6 grid gap-6">
               {renderBackHeader(t("위험 구역", "Danger zone"))}
-              <section className="rounded-nkc border border-red-500/50 bg-red-500/20 p-6">
+              <section className="rounded-nkc border border-nkc-dangerBorder bg-nkc-surface p-6">
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h3 className="text-sm font-semibold text-black">
+                    <h3 className="text-sm font-semibold text-nkc-text">
                       {t("위험 구역", "Danger zone")}
                     </h3>
-                    <p className="mt-1 text-xs text-black/80">
-                      {t("로그아웃 또는 데이터 삭제를 진행합니다.", "Proceed with logout or data reset.")}
+                    <p className="mt-1 text-xs text-nkc-muted">
+                      {t("로그아웃하거나 현재 계정의 로컬 데이터를 삭제합니다.", "Log out or delete this account's local data.")}
                     </p>
-                    <div className="mt-3 space-y-1 text-xs text-black/80">
+                    <div className="mt-3 space-y-1 text-xs text-nkc-muted">
                       <div>
                         {t(
                           "기존 기기가 온라인일 때만 동기화/기기 추가가 가능합니다.",
@@ -1366,8 +1540,8 @@ export default function SettingsDialog({
                       </div>
                       <div>
                         {t(
-                          "기존 기기를 분실/파손하면 이 계정은 복구할 수 없고 새 계정을 만들어야 합니다.",
-                          "If the existing device is lost or broken, this account cannot be recovered and you must create a new account."
+                          "계정을 삭제하면 암호 키와 로컬 DB가 제거됩니다. 다른 기기나 OS 백업의 사본은 별도로 삭제해야 합니다.",
+                          "Deleting the account removes its encryption keys and local database. Copies on other devices or in OS backups must be deleted separately."
                         )}
                       </div>
                     </div>
@@ -1377,36 +1551,36 @@ export default function SettingsDialog({
                   <button
                     type="button"
                     onClick={onLogout}
-                    className="rounded-nkc border border-red-400/60 px-3 py-2 text-xs text-black hover:bg-red-500/20"
+                    className="rounded-nkc border border-nkc-dangerBorder px-3 py-2 text-xs text-nkc-text hover:bg-nkc-dangerBg"
                   >
                     {t("로그아웃", "Logout")}
                   </button>
                   <button
                     type="button"
                     onClick={onWipe}
-                    className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-black hover:bg-red-500/40"
+                    className="rounded-nkc border border-nkc-dangerBorder bg-nkc-dangerBg px-3 py-2 text-xs font-semibold text-nkc-text hover:bg-nkc-dangerBg"
                   >
-                    {t("데이터 삭제", "Delete data")}
+                    {t("현재 계정 삭제", "Delete current account")}
                   </button>
                 </div>
               </section>
               <section
                 ref={pendingSectionRef}
                 tabIndex={-1}
-                className="rounded-nkc border border-red-500/50 bg-red-500/10 p-6 outline-none focus-visible:ring-2 focus-visible:ring-red-400/70"
+                className="rounded-nkc border border-nkc-dangerBorder bg-nkc-surface p-6 outline-none focus-visible:ring-2 focus-visible:ring-nkc-dangerBorder"
               >
                 <div className="flex items-start justify-between gap-4">
                   <div>
-                    <h3 className="text-sm font-semibold text-black">
+                    <h3 className="text-sm font-semibold text-nkc-text">
                       {t("전송 대기 메시지 (고급)", "Pending messages (advanced)")}
                     </h3>
-                    <p className="mt-1 text-xs text-black/80">
+                    <p className="mt-1 text-xs text-nkc-muted">
                       {t(
                         "아직 상대방에게 전달되지 않았을 수 있는 암호화 메시지입니다.",
                         "These may be encrypted messages not yet delivered to the other party."
                       )}
                     </p>
-                    <div className="mt-3 space-y-1 text-xs text-black/80">
+                    <div className="mt-3 space-y-1 text-xs text-nkc-muted">
                       <div>
                         {t("삭제하면 영구적으로 손실됩니다.", "Deletion is permanent.")}
                       </div>
@@ -1416,10 +1590,10 @@ export default function SettingsDialog({
                     </div>
                   </div>
                   <div className="text-right">
-                    <div className="text-[11px] uppercase tracking-wide text-black/70">
+                    <div className="text-[11px] uppercase tracking-wide text-nkc-muted">
                       {t("현재 크기", "Current size")}
                     </div>
-                    <div className="text-sm font-semibold text-black">
+                    <div className="text-sm font-semibold text-nkc-text">
                       {formatBytes(storageUsage.pendingBytes)}
                     </div>
                   </div>
@@ -1433,7 +1607,7 @@ export default function SettingsDialog({
                       setWipeConfirmOpen(true);
                     }}
                     disabled={pendingWipeBusy}
-                    className="rounded-nkc border border-red-300 bg-red-500/30 px-3 py-2 text-xs font-semibold text-black hover:bg-red-500/40 disabled:opacity-50"
+                    className="rounded-nkc border border-nkc-dangerBorder bg-nkc-dangerBg px-3 py-2 text-xs font-semibold text-nkc-text hover:bg-nkc-dangerBg disabled:opacity-50"
                   >
                     {pendingWipeBusy
                       ? t("처리 중...", "Working...")
@@ -1491,6 +1665,7 @@ export default function SettingsDialog({
             </div>
           )}
 
+          </div>
           </Dialog.Content>
         </Dialog.Portal>
       </Dialog.Root>
@@ -1506,8 +1681,8 @@ export default function SettingsDialog({
         message={
           wipeConfirmType === "pending"
             ? t(
-                "전송 대기 메시지를 삭제합니다. 아직 상대방에게 전달되지 않았을 수 있는 암호화 메시지입니다. 삭제하면 영구적으로 손실됩니다. 다른 기기에는 영향을 주지 않습니다. 계속할까요?",
-                "This deletes pending messages. They may be encrypted messages not yet delivered to the other party. Deletion is permanent. Other devices are not affected. Continue?"
+                "전송 대기 메시지와 아직 수락되지 않은 발신 친구 요청을 삭제합니다. 삭제하면 영구적으로 손실되며 해당 친구 요청은 취소됩니다. 다른 기기에는 영향을 주지 않습니다. 계속할까요?",
+                "This deletes pending messages and unaccepted outgoing friend requests. Deletion is permanent and cancels those friend requests. Other devices are not affected. Continue?"
               )
             : wipeConfirmType === "media"
               ? t(
@@ -1529,22 +1704,30 @@ export default function SettingsDialog({
           if (wipeConfirmType === "pending") {
             if (pendingWipeBusy) return;
             setPendingWipeBusy(true);
+
             try {
-              await clearOutboxQueue();
+              await onClearPendingMessages();
               await refreshStorageUsage();
-              setSaveMessage(t("전송 대기 메시지를 삭제했습니다.", "Pending messages deleted."));
+              setSaveMessage(
+                t(
+                  "전송 대기 메시지와 발신 대기 친구 요청을 삭제했습니다.",
+                  "Pending messages and outgoing friend requests deleted."
+                )
+              );
             } catch (error) {
               console.error("Failed to clear pending outbox", error);
               setSaveMessage(t("전송 대기 메시지 삭제에 실패했습니다.", "Pending delete failed."));
             } finally {
               setPendingWipeBusy(false);
             }
+
             return;
           }
 
           if (wipeConfirmType === "chat") {
             if (chatWipeBusy) return;
             setChatWipeBusy(true);
+
             try {
               await clearChatHistory();
               await refreshAppData();
@@ -1556,11 +1739,13 @@ export default function SettingsDialog({
             } finally {
               setChatWipeBusy(false);
             }
+
             return;
           }
 
           if (mediaWipeBusy) return;
           setMediaWipeBusy(true);
+
           try {
             await deleteAllMedia();
             await refreshAppData();

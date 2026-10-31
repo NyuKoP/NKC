@@ -45,14 +45,23 @@ export const startFriendResponseScheduler = ({
 
     for (const target of targets) {
       const current = states.get(target.convId) ?? { attempts: 0, nextAttemptAt: 0, lastAttemptAt: 0 };
+
       if (current.nextAttemptAt && now < current.nextAttemptAt) continue;
+
       if (now - current.lastAttemptAt < 5_000) continue;
 
+      states.set(target.convId, {
+        ...current,
+        lastAttemptAt: now,
+        nextAttemptAt: Number.POSITIVE_INFINITY,
+      });
       const ok = await onAttempt(target);
+
       if (ok) {
         states.delete(target.convId);
         continue;
       }
+
       const nextAttempts = current.attempts + 1;
       states.set(target.convId, {
         attempts: nextAttempts,
@@ -72,6 +81,7 @@ export const startFriendResponseScheduler = ({
 
   const stop = () => {
     stopped = true;
+
     if (timer) {
       clearInterval(timer);
       timer = null;
@@ -79,5 +89,6 @@ export const startFriendResponseScheduler = ({
   };
 
   start();
+
   return { stop };
 };

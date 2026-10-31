@@ -8,14 +8,19 @@ type DisplayNameInput = {
 };
 
 export const resolveDisplayName = (input: DisplayNameInput) => {
-  const alias = input.alias?.trim();
+  const alias = typeof input.alias === "string" ? input.alias.trim() : "";
+
   if (alias) return alias;
-  const displayName = input.displayName?.trim();
+  const displayName = typeof input.displayName === "string" ? input.displayName.trim() : "";
+
   if (displayName) return displayName;
-  const friendId = input.friendId?.trim();
+  const friendId = typeof input.friendId === "string" ? input.friendId.trim() : "";
+
   if (friendId) return friendId;
-  const id = input.id?.trim();
+  const id = typeof input.id === "string" ? input.id.trim() : "";
+
   if (id) return id.slice(0, 8);
+
   return "알 수 없음";
 };
 
@@ -29,4 +34,3 @@ export const resolveFriendDisplayName = (
     friendId: friend?.friendId,
     id: friend?.id,
   });
-

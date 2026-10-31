@@ -133,13 +133,18 @@ export default function NetworkSettings({
 }: NetworkSettingsProps) {
   const runtime = onionStatus?.runtime;
   const torConnected = runtime?.status === "running" && runtime.network === "tor";
+
   const formatHopStatus = (status: InternalOnionHopState["status"]) => {
     if (status === "ok") return t("연결됨", "Connected");
+
     if (status === "dead") return t("불안정", "Degraded");
+
     return t("대기", "Pending");
   };
+
   const formatTs = (ts?: number) => {
     if (!ts) return "-";
+
     try {
       return new Date(ts).toLocaleTimeString();
     } catch {
@@ -157,11 +162,20 @@ export default function NetworkSettings({
 
       <section className="rounded-nkc border border-nkc-border bg-nkc-panelMuted p-6">
         <div className="text-sm font-semibold text-nkc-text">{t("연결 방식", "Connection mode")}</div>
+        <p className="mt-2 text-xs leading-relaxed text-nkc-muted">
+          {t("이 버전의 통신은 Tor를 사용합니다. Tor Onion 또는 Tor 기반 Internal Onion을 선택하세요.", "This release uses Tor. Choose Tor Onion or the Tor-backed Internal Onion relay.")}
+        </p>
+        {connectionChoice === "directP2P" && (
+          <p role="alert" className="nkc-error mt-3 text-sm">
+            {t("저장된 Direct 설정은 이 버전에서 지원되지 않아 전송이 차단됩니다. Tor Onion을 선택하고 저장하세요.", "Your saved Direct setting is unsupported in this release and sending is blocked. Select Tor Onion and save.")}
+          </p>
+        )}
         <div className="mt-3 grid gap-2">
-          <div className="order-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
+          <div className="settings-network-option order-2 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
             <div className="flex items-start gap-3">
               <input
                 id="network-mode-directP2P"
+                disabled
                 type="radio"
                 name="network-mode"
                 className="mt-1"
@@ -172,13 +186,13 @@ export default function NetworkSettings({
               <label htmlFor="network-mode-directP2P">
                 <div className="text-sm font-medium text-nkc-text">Direct P2P</div>
                 <div className="text-xs text-nkc-muted">
-                  {t("프록시 없이 직접 연결", "Direct connection without proxy")}
+                  {t("이 버전에서 지원되지 않는 이전 설정입니다.", "Legacy setting, unsupported in this release.")}
                 </div>
               </label>
             </div>
           </div>
 
-          <div className="order-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
+          <div className="settings-network-option order-1 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-start gap-3">
                 <input
@@ -206,12 +220,11 @@ export default function NetworkSettings({
                       title={t("Tor 상태", "Tor status")}
                       className={`inline-flex h-2 w-2 rounded-full ${getDotClass(
                         getDotState("tor", onionStatus)
-                      )} cursor-pointer`}
-                      tabIndex={0}
+                      )}`}
                     />
                   </label>
                   <div className="text-xs text-nkc-muted">
-                    {t("SOCKS 기반 앱 트래픽 전용", "SOCKS-based app traffic only")}
+                    {t("이 앱의 통신을 Tor 네트워크로 연결합니다.", "Route this app's traffic through the Tor network.")}
                   </div>
                 </div>
               </div>
@@ -241,7 +254,7 @@ export default function NetworkSettings({
                   "앱 실행 시 Tor 자동 준비",
                   "Prepare Tor automatically on app start"
                 )}
-                checked={torAutoPrepareOnAppStart}
+                checked={connectionChoice === "torOnion" && torAutoPrepareOnAppStart}
                 disabled={connectionChoice !== "torOnion"}
                 testId="tor-auto-prepare"
                 onChange={setTorAutoPrepareOnAppStart}
@@ -270,7 +283,7 @@ export default function NetworkSettings({
                   </div>
                 </div>
                 {runtimeErrorLabel ? (
-                  <div className="mt-3 rounded-nkc border border-red-400/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
+                  <div className="mt-3 rounded-nkc border border-nkc-dangerBorder bg-nkc-dangerBg px-3 py-2 text-xs text-nkc-text">
                     <div className="break-words font-medium leading-5">{runtimeErrorLabel}</div>
                     {runtimeErrorDetail ? (
                       <details className="mt-2 text-[11px] text-nkc-muted">
@@ -305,7 +318,7 @@ export default function NetworkSettings({
                   </div>
                 ) : null}
                 {torErrorLabel ? (
-                  <div className="mt-2 max-w-full break-words text-xs text-red-300">{torErrorLabel}</div>
+                  <div className="mt-2 max-w-full break-words text-xs text-nkc-text">{torErrorLabel}</div>
                 ) : null}
                 <div className="mt-3 flex flex-wrap gap-2">
                   {!netConfig.tor.installed ? (
@@ -314,7 +327,7 @@ export default function NetworkSettings({
                         type="button"
                         onClick={() => void onInstall("tor")}
                         disabled={torInstallBusy}
-                        className="rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panelMuted disabled:opacity-50"
+                        className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
                       >
                         {torInstallBusy
                           ? t("처리 중...", "Working...")
@@ -340,6 +353,7 @@ export default function NetworkSettings({
                           torConnected ? torInstallBusy : torInstallBusy || !isComponentReady(netConfig.tor)
                         }
                         className="rounded-nkc bg-nkc-accent px-3 py-2 text-xs font-semibold text-nkc-accentText disabled:opacity-50"
+                        data-testid="tor-connect-button"
                       >
                         {torConnected ? t("연결 해제", "Disconnect") : t("연결", "Connect")}
                       </button>
@@ -388,7 +402,7 @@ export default function NetworkSettings({
             ) : null}
           </div>
 
-          <div className="order-3 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
+          <div className="settings-network-option order-3 rounded-nkc border border-nkc-border bg-nkc-panel px-3 py-2 text-sm text-nkc-text">
             <div className="flex items-start gap-3">
               <input
                 id="network-mode-selfOnion"
@@ -402,7 +416,7 @@ export default function NetworkSettings({
               <label htmlFor="network-mode-selfOnion">
                 <div className="text-sm font-medium text-nkc-text">{t("내부 Onion", "Built-in Onion")}</div>
                 <div className="text-xs text-nkc-muted">
-                  {t("내장 Onion 경로(N hops)", "Built-in Onion route (N hops)")}
+                  {t("고급 설정 · Tor로 전달하는 NKC 릴레이 경로(N hops)입니다.", "Advanced · NKC relay route (N hops), forwarded over Tor.")}
                 </div>
               </label>
             </div>
@@ -457,7 +471,7 @@ export default function NetworkSettings({
                   </div>
                 ))}
                 {selfOnionLastError ? (
-                  <div className="text-red-300">{t("최근 오류", "Last error")}: {selfOnionLastError}</div>
+                  <div className="text-nkc-text">{t("최근 오류", "Last error")}: {selfOnionLastError}</div>
                 ) : null}
               </div>
             </details>
@@ -465,13 +479,13 @@ export default function NetworkSettings({
         ) : null}
         {showDirectWarning ? (
           <div
-            className="mt-3 rounded-nkc border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-200"
+            className="mt-3 rounded-nkc border border-nkc-warningBorder bg-nkc-warningBg px-3 py-2 text-xs text-nkc-text"
             data-testid="direct-p2p-warning"
           >
             <div>
               {t(
-                "Direct P2P는 상대에게 IP가 노출될 수 있습니다. 위험을 이해하는 경우에만 사용하세요.",
-                "Direct P2P exposes your IP to the peer. Enable only if you understand the risk."
+                "이전 Direct 설정에서는 전송할 수 없습니다. Tor Onion을 선택하고 저장하세요.",
+                "Sending is unavailable with the legacy Direct setting. Select Tor Onion and save."
               )}
             </div>
           </div>
@@ -520,13 +534,13 @@ export default function NetworkSettings({
                 onChange={(e) => onProxyUrlChange(e.target.value)}
                 placeholder={t("예: socks5://127.0.0.1:9050", "e.g. socks5://127.0.0.1:9050")}
                 className={`w-full rounded-nkc border bg-nkc-panel px-3 py-2 text-sm text-nkc-text placeholder:text-nkc-muted ${
-                  proxyUrlError ? "border-red-400/60" : "border-nkc-border"
+                  proxyUrlError ? "border-nkc-dangerBorder" : "border-nkc-border"
                 }`}
                 aria-invalid={proxyUrlError ? "true" : "false"}
                 data-testid="proxy-url-input"
               />
               {proxyUrlError ? (
-                <div className="mt-2 text-xs text-red-300" data-testid="proxy-url-error">
+                <div className="mt-2 text-xs text-nkc-text" data-testid="proxy-url-error">
                   {proxyUrlError}
                 </div>
               ) : null}
@@ -548,7 +562,7 @@ export default function NetworkSettings({
           className="rounded-nkc bg-nkc-accent px-4 py-2 text-xs font-semibold text-nkc-accentText disabled:cursor-not-allowed disabled:opacity-50"
           disabled={draftMode === "onionRouter" && onionEnabledDraft && !canSaveOnion}
         >
-          {t("Save", "Save")}
+          {t("저장", "Save")}
         </button>
       </div>
 

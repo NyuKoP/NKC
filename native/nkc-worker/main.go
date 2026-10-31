@@ -27,10 +27,11 @@ const maxFrameHeaderBytes = 1024 * 1024
 const maxFrameBodyBytes = 32 * 1024 * 1024
 
 type response struct {
-	ID     string `json:"id"`
-	OK     bool   `json:"ok"`
-	Result any    `json:"result,omitempty"`
-	Error  string `json:"error,omitempty"`
+	ID             string `json:"id"`
+	OK             bool   `json:"ok"`
+	Result         any    `json:"result,omitempty"`
+	Error          string `json:"error,omitempty"`
+	ResultEncoding string `json:"resultEncoding,omitempty"`
 }
 
 type worker struct {
@@ -143,6 +144,9 @@ func (w *worker) handle(req request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
+		if params.PayloadFormat != "" {
+			return nil, fmt.Errorf("binary_forward_requires_binary_ipc")
+		}
 		return w.forwardOnion(params)
 	case "transport.forward.binary":
 		params, err := decodeParams[transportForwardParams](req.Params)
@@ -152,7 +156,12 @@ func (w *worker) handle(req request) (any, error) {
 		if len(req.Body) == 0 {
 			return nil, fmt.Errorf("missing_forward_payload")
 		}
-		if err := json.Unmarshal(req.Body, &params.Payload); err != nil {
+		if params.PayloadFormat == binaryQueuePayloadFormat {
+			if params.Payload.Envelope != "" {
+				return nil, fmt.Errorf("ambiguous_forward_payload")
+			}
+			params.Payload.Envelope = string(req.Body)
+		} else if err := json.Unmarshal(req.Body, &params.Payload); err != nil {
 			return nil, fmt.Errorf("invalid_forward_payload:%w", err)
 		}
 		return w.forwardOnion(params)
@@ -166,8 +175,12 @@ func (w *worker) handle(req request) (any, error) {
 			return nil, err
 		}
 		w.queueMu.Lock()
+		previous := w.queue
 		w.queue = store
 		w.queueMu.Unlock()
+		if previous != nil {
+			previous.setProxy("")
+		}
 		return map[string]bool{"initialized": true}, nil
 	case "queue.setFriends":
 		queue := w.getQueue()
@@ -178,7 +191,7 @@ func (w *worker) handle(req request) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]bool{"updated": true}, queue.setFriends(params.Friends)
+		return map[string]bool{"updated": true}, queue.setFriends(params.AccountID, params.Friends)
 	case "queue.enqueue":
 		queue := w.getQueue()
 		if queue == nil {
@@ -189,12 +202,76 @@ func (w *worker) handle(req request) (any, error) {
 			return nil, err
 		}
 		return queue.enqueue(params)
+	case "queue.revokeDevice":
+		queue := w.getQueue()
+		if queue == nil {
+			return nil, fmt.Errorf("queue_not_initialized")
+		}
+		params, err := decodeParams[struct {
+			AccountID string `json:"accountId"`
+			DeviceID  string `json:"deviceId"`
+		}](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, queue.revokeDevice(params.AccountID, params.DeviceID)
+	case "queue.confirmApplication", "queue.cancelApplication", "queue.supersedeApplication":
+		queue := w.getQueue()
+		if queue == nil {
+			return nil, fmt.Errorf("queue_not_initialized")
+		}
+		params, err := decodeParams[struct {
+			AccountID string `json:"accountId"`
+			ID        string `json:"id"`
+		}](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		if req.Method == "queue.cancelApplication" {
+			return map[string]bool{"ok": true}, queue.cancelApplication(params.AccountID, params.ID)
+		}
+		if req.Method == "queue.supersedeApplication" {
+			return map[string]bool{"ok": true}, queue.supersedeApplication(params.AccountID, params.ID)
+		}
+		return map[string]bool{"ok": true}, queue.confirmApplication(params.AccountID, params.ID)
 	case "queue.list":
 		queue := w.getQueue()
 		if queue == nil {
 			return nil, fmt.Errorf("queue_not_initialized")
 		}
-		return queue.list(), nil
+		params, err := decodeParams[accountParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		accountID, err := normalizeAccountID(params.AccountID)
+		if err != nil {
+			return nil, err
+		}
+		return queue.list(accountID), nil
+	case "queue.removeAccount":
+		queue := w.getQueue()
+		if queue == nil {
+			return nil, fmt.Errorf("queue_not_initialized")
+		}
+		params, err := decodeParams[accountParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"removed": true}, queue.removeAccount(params.AccountID)
+	case "queue.clearPending":
+		queue := w.getQueue()
+		if queue == nil {
+			return nil, fmt.Errorf("queue_not_initialized")
+		}
+		params, err := decodeParams[accountParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		removed, err := queue.clearPending(params.AccountID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]int{"removed": removed}, nil
 	case "queue.setProxy":
 		queue := w.getQueue()
 		if queue == nil {
@@ -206,6 +283,16 @@ func (w *worker) handle(req request) (any, error) {
 		}
 		queue.setProxy(params.ProxyURL)
 		return map[string]bool{"updated": true}, nil
+	case "queue.setActiveAccount":
+		queue := w.getQueue()
+		if queue == nil {
+			return nil, fmt.Errorf("queue_not_initialized")
+		}
+		params, err := decodeParams[accountParams](req.Params)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"updated": true}, queue.setActiveAccount(params.AccountID, params.SessionToken)
 	case "queue.flush":
 		queue := w.getQueue()
 		if queue == nil {
@@ -231,8 +318,18 @@ func main() {
 		outputMu.Lock()
 		defer outputMu.Unlock()
 		header, err := json.Marshal(payload)
+		if err == nil && len(header) > maxFrameHeaderBytes && len(body) == 0 && payload.OK {
+			// Keep large JSON results out of the bounded metadata header; reuse the existing body frame.
+			body, err = json.Marshal(payload.Result)
+			if err == nil {
+				payload.Result = nil
+				payload.ResultEncoding = "json"
+				header, err = json.Marshal(payload)
+			}
+		}
 		if err != nil || len(header) > maxFrameHeaderBytes || len(body) > maxFrameBodyBytes {
-			return
+			header, _ = json.Marshal(response{ID: payload.ID, OK: false, Error: "native_worker_response_too_large"})
+			body = nil
 		}
 		var prefix [8]byte
 		binary.BigEndian.PutUint32(prefix[0:4], uint32(len(header)))
@@ -264,6 +361,16 @@ func main() {
 	go func() {
 		defer requests.Done()
 		for req := range queueRequests {
+			if req.Method == "queue.flush" {
+				// Queue setup stays ordered, but network waits must not stall
+				// queue CRUD or the stdin reader. flushMu prevents overlap.
+				requests.Add(1)
+				go func(req request) {
+					defer requests.Done()
+					handleRequest(req)
+				}(req)
+				continue
+			}
 			handleRequest(req)
 		}
 	}()

@@ -4,6 +4,7 @@ import fs from "node:fs";
 const hashFile = async (filePath: string) => {
   const hash = crypto.createHash("sha256");
   const stream = fs.createReadStream(filePath);
+
   return new Promise<string>((resolve, reject) => {
     stream.on("data", (chunk) => hash.update(chunk));
     stream.on("error", reject);
@@ -13,12 +14,10 @@ const hashFile = async (filePath: string) => {
 
 export const verifySha256 = async (filePath: string, expectedSha256: string) => {
   const actual = await hashFile(filePath);
+
   if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
-    const error = new Error(
+    throw Object.assign(new Error(
       `SHA256 mismatch (expected=${expectedSha256.toLowerCase()}, actual=${actual.toLowerCase()})`
-    );
-    (error as { expected?: string; actual?: string }).expected = expectedSha256;
-    (error as { expected?: string; actual?: string }).actual = actual;
-    throw error;
+    ), { expected: expectedSha256, actual });
   }
 };

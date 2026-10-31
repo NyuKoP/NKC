@@ -7,6 +7,7 @@ import { getBinaryPath } from "../componentRegistry";
 import type { OnionNetwork } from "../../../net/netConfig";
 import { readCurrentPointer } from "../install/swapperRollback";
 import { TorManager } from "./torManager";
+import { verifyInstalledTor } from "../install/installedTorProvenance";
 
 type RuntimeStatus = {
   status: "idle" | "starting" | "running" | "failed";
@@ -16,6 +17,7 @@ type RuntimeStatus = {
 };
 
 const PORT_START = 9050;
+
 const PORT_END = 9070;
 
 const findAvailablePort = async () => {
@@ -28,8 +30,10 @@ const findAvailablePort = async () => {
       });
       server.listen(port, "127.0.0.1");
     });
+
     if (isFree) return port;
   }
+
   throw new Error("No available SOCKS port");
 };
 
@@ -39,25 +43,33 @@ const waitForPort = async (
   getFailure?: () => string | null
 ) => {
   const start = Date.now();
+
   while (Date.now() - start < timeoutMs) {
     const failure = getFailure?.();
+
     if (failure) {
       throw new Error(failure);
     }
+
     const ok = await new Promise<boolean>((resolve) => {
       const socket = net.createConnection({ host: "127.0.0.1", port }, () => {
         socket.end();
         resolve(true);
       });
+
       socket.on("error", () => resolve(false));
     });
+
     if (ok) return;
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+
   const failure = getFailure?.();
+
   if (failure) {
     throw new Error(failure);
   }
+
   throw new Error(`SOCKS proxy not ready (port ${port})`);
 };
 
@@ -68,16 +80,20 @@ export class OnionRuntime {
   private findInPath(binName: string) {
     const envPath = process.env.PATH ?? "";
     const parts = envPath.split(path.delimiter);
+
     for (const part of parts) {
       const full = path.join(part, binName);
+
       if (fsSync.existsSync(full)) return full;
     }
+
     return null;
   }
 
   private resolveSystemTorBinaryPath() {
     const binName = process.platform === "win32" ? "tor.exe" : "tor";
     const fromPath = this.findInPath(binName);
+
     const candidates = [
       process.env.NKC_SYSTEM_TOR_BIN?.trim(),
       fromPath,
@@ -86,18 +102,22 @@ export class OnionRuntime {
       "/opt/local/bin/tor",
       "/usr/bin/tor",
     ].filter((value): value is string => Boolean(value));
+
     for (const candidate of candidates) {
       if (fsSync.existsSync(candidate)) return candidate;
     }
+
     return null;
   }
 
   private async waitForTorSocks(port: number) {
     await waitForPort(port, 90000, () => {
       const state = this.torManager.getState();
+
       if (!state.running) {
         return state.error ?? "Tor exited before SOCKS became ready";
       }
+
       return null;
     });
   }
@@ -105,16 +125,26 @@ export class OnionRuntime {
   private async startTorWithFallback(binaryPath: string, port: number, dataDir: string) {
     const attempts: string[] = [];
     let lastFailure = "";
+
     const systemTorBinary =
       process.platform === "darwin" ? this.resolveSystemTorBinaryPath() : null;
+
     const tryStart = async (
       label: string,
       candidatePath: string,
       mode: "torrc" | "cli"
     ) => {
       try {
+        const installPath = path.dirname(path.dirname(binaryPath));
+
+        const verifiedPath = await verifyInstalledTor(path.resolve(installPath, "../../.."), {
+          version: path.basename(installPath), path: installPath,
+        });
+
+        if (path.resolve(candidatePath) !== verifiedPath) throw new Error("TOR_UNTRUSTED_OVERRIDE");
         await this.torManager.start(candidatePath, port, dataDir, mode);
         await this.waitForTorSocks(port);
+
         return true;
       } catch (error) {
         const state = this.torManager.getState();
@@ -123,35 +153,45 @@ export class OnionRuntime {
         lastFailure = `${message}${detail}`;
         attempts.push(`${label}: ${message}${detail}`);
         await this.torManager.stop();
+
         return false;
       }
     };
+
     const trySystemTor = async () => {
       if (!systemTorBinary) return false;
+
       if (path.resolve(systemTorBinary) === path.resolve(binaryPath)) return false;
+
       return tryStart(`system-cli(${systemTorBinary})`, systemTorBinary, "cli");
     };
 
     if (await tryStart("bundled-torrc", binaryPath, "torrc")) return;
+
     // stop() clears manager state, so preserve the attempt failure before stopping and inspect that.
     if (process.platform === "darwin" && lastFailure.includes("signal=SIGKILL")) {
       try {
         await this.torManager.repairMacCodeSignature(binaryPath);
+
         if (await tryStart("bundled-resigned-cli", binaryPath, "cli")) return;
       } catch (error) {
         attempts.push(
           `macos-codesign-repair: ${error instanceof Error ? error.message : String(error)}`
         );
       }
+
       if (await trySystemTor()) return;
     }
+
     if (await tryStart("bundled-cli", binaryPath, "cli")) return;
+
     if (await trySystemTor()) return;
 
     const prefix =
       process.platform === "darwin" && attempts.some((attempt) => attempt.includes("signal=SIGKILL"))
         ? "[MACOS_TOR_BLOCKED] macOS stopped the bundled Tor process"
         : "Tor SOCKS startup failed after retry";
+
     throw new Error(`${prefix}: ${attempts.join(" || ")}`);
   }
 
@@ -159,16 +199,21 @@ export class OnionRuntime {
     if (this.status.status === "running" && this.status.network === network) return;
     await this.stop();
     this.status = { status: "starting", network };
+
     try {
       const pointer = await readCurrentPointer(userDataDir, network);
+
       if (!pointer) {
         throw new Error("Component not installed");
       }
+
+      await verifyInstalledTor(userDataDir, pointer);
 
       const port = await findAvailablePort();
       const dataDir = path.join(userDataDir, "onion", "runtime", network);
       await fs.mkdir(dataDir, { recursive: true });
       const binaryPath = path.join(pointer.path, getBinaryPath(network));
+
       if (!fsSync.existsSync(binaryPath)) {
         throw new Error(`BINARY_MISSING: ${binaryPath}`);
       }

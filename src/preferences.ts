@@ -1,4 +1,5 @@
 export type SyncIntervalMinutes = 0 | 1 | 3 | 5 | 10 | 15 | 20 | 25 | 30;
+
 export type DeviceSyncTransportPolicy = "directOnly" | "followNetwork";
 
 export type AppPreferences = {
@@ -30,7 +31,7 @@ export type AppPreferencesPatch = {
 
 export const defaultAppPrefs: AppPreferences = {
   login: {
-    autoStartEnabled: true,
+    autoStartEnabled: false,
     startInTray: false,
     closeToTray: true,
     closeToExit: false,
@@ -96,6 +97,7 @@ export const applyAppPrefsPatch = (
   if (patch.login?.closeToTray === true) {
     next.login.closeToExit = false;
   }
+
   if (patch.login?.closeToExit === true) {
     next.login.closeToTray = false;
   }
@@ -110,17 +112,22 @@ type PrefsBridge = {
 
 const getBridge = (): PrefsBridge | null => {
   const root = globalThis as typeof globalThis & { prefs?: PrefsBridge };
+
   return root.prefs ?? null;
 };
 
 export const getAppPrefs = async () => {
   const bridge = getBridge();
+
   if (!bridge) throw new Error("Preferences bridge unavailable");
+
   return bridge.get();
 };
 
 export const setAppPrefs = async (patch: AppPreferencesPatch) => {
   const bridge = getBridge();
+
   if (!bridge) throw new Error("Preferences bridge unavailable");
+
   return bridge.set(patch);
 };

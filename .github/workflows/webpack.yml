@@ -38,11 +38,14 @@ jobs:
       - name: Lint
         run: npm run lint
 
-      - name: Unit tests
-        run: npm test -- --run
-
       - name: Build
         run: npm run build
+
+      - name: Security qualification required
+        run: |
+          echo "Release qualification remains blocked; private tests are not included in this source snapshot."
+          exit 1
+
 
   package:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

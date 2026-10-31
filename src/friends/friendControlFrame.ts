@@ -4,11 +4,16 @@ import { buildHandshakeRecord, verifyHandshakeRecord } from "../net/friendProtoc
 import { buildKeyAgreementRecord, verifyKeyAgreementRecord } from "../net/friendProtocol/keyAgreementManager";
 import type { FriendControlProtocol } from "../net/friendProtocol/types";
 import type { UserProfile } from "../db/repo";
+import type { ProfilePresence } from "../profile/presence";
 import { decodeBase64Url, encodeBase64Url } from "../security/base64url";
 import { decodeFriendCodeV1 } from "../security/friendCode";
 import { getSodium } from "../security/sodium";
 
-export type FriendControlFrameType = "friend_req" | "friend_accept" | "friend_decline";
+export type FriendControlFrameType =
+  | "friend_req"
+  | "friend_accept"
+  | "friend_decline"
+  | "profile_update";
 
 type FriendFrameFrom = {
   identityPub: string;
@@ -21,10 +26,16 @@ type FriendFrameProfile = {
   displayName?: string;
   status?: string;
   avatarRef?: UserProfile["avatarRef"];
+  presence?: ProfilePresence;
+  avatar?: {
+    mime: string;
+    data: string;
+  };
 };
 
 export type FriendRequestFrame = {
   type: "friend_req";
+  reconnect?: boolean;
   convId?: string;
   traceId?: string;
   from: FriendFrameFrom;
@@ -45,11 +56,26 @@ export type FriendResponseFrame = {
   sig?: string;
 };
 
-export type FriendControlFrame = FriendRequestFrame | FriendResponseFrame;
+export type ProfileUpdateFrame = {
+  type: "profile_update";
+  convId?: string;
+  traceId?: string;
+  from: FriendFrameFrom;
+  profile: FriendFrameProfile;
+  ts: number;
+  sig?: string;
+};
 
-export type UnsignedFriendControlFrame = Omit<FriendControlFrame, "sig">;
+export type FriendControlFrame = FriendRequestFrame | FriendResponseFrame | ProfileUpdateFrame;
+
+export type UnsignedFriendControlFrame = FriendControlFrame extends infer Frame
+  ? Frame extends FriendControlFrame
+    ? Omit<Frame, "sig">
+    : never
+  : never;
 
 export const FRIEND_CONTROL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 export const FRIEND_CONTROL_MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
 
 export const isFriendControlFrameFresh = (frame: FriendControlFrame, now = Date.now()) =>
@@ -58,26 +84,69 @@ export const isFriendControlFrameFresh = (frame: FriendControlFrame, now = Date.
   Number(frame.ts) <= now + FRIEND_CONTROL_MAX_FUTURE_SKEW_MS;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value) && typeof value === "object";
+  Boolean(value) && typeof value === "object" && !Array.isArray(value);
 
 export const isFriendControlFrame = (value: unknown): value is FriendControlFrame => {
   if (!isRecord(value)) return false;
   const type = value.type;
-  if (type !== "friend_req" && type !== "friend_accept" && type !== "friend_decline") {
+
+  if (
+    type !== "friend_req" &&
+    type !== "friend_accept" &&
+    type !== "friend_decline" &&
+    type !== "profile_update"
+  ) {
     return false;
   }
+
   if (!isRecord(value.from)) return false;
+
   if (typeof value.from.identityPub !== "string" || !value.from.identityPub.trim()) return false;
+
   if (typeof value.from.dhPub !== "string" || !value.from.dhPub.trim()) return false;
+  for (const field of ["deviceId", "friendCode"]) {
+    if (value.from[field] !== undefined && typeof value.from[field] !== "string") return false;
+  }
+  for (const field of ["convId", "traceId"]) {
+    if (value[field] !== undefined && typeof value[field] !== "string") return false;
+  }
+  if (value.ts !== undefined && !Number.isFinite(value.ts)) return false;
+
+  if (value.profile !== undefined) {
+    if (!isRecord(value.profile)) return false;
+    if (value.profile.displayName !== undefined && typeof value.profile.displayName !== "string") return false;
+    if (value.profile.status !== undefined && typeof value.profile.status !== "string") return false;
+  }
+
+  if (type === "profile_update" && (!isRecord(value.profile) || !Number.isFinite(value.ts))) {
+    return false;
+  }
+
   return true;
 };
 
+export const getSerializedProfileUpdateKind = (value: string): "avatar" | "metadata" | null => {
+  try {
+    const parsed = JSON.parse(value) as {
+      type?: unknown;
+      profile?: { avatar?: unknown };
+    };
+
+    if (parsed.type !== "profile_update") return null;
+
+    return parsed.profile?.avatar ? "avatar" : "metadata";
+  } catch {
+    return null;
+  }
+};
+
 export const stripFriendControlFrameSignature = (
-  frame: FriendControlFrame | UnsignedFriendControlFrame
+  frame: FriendControlFrame
 ): UnsignedFriendControlFrame => {
-  const { sig, ...unsigned } = frame as FriendControlFrame;
+  const { sig, ...unsigned } = frame;
   void sig;
-  return unsigned as UnsignedFriendControlFrame;
+
+  return unsigned;
 };
 
 export const signFriendControlFrame = async (
@@ -85,10 +154,12 @@ export const signFriendControlFrame = async (
   identityPriv: Uint8Array
 ) => {
   const sodium = await getSodium();
+
   const sig = sodium.crypto_sign_detached(
     canonicalBytes(stripFriendControlFrameSignature(frame)),
     identityPriv
   );
+
   return encodeBase64Url(sig);
 };
 
@@ -106,9 +177,12 @@ export const enrichFriendControlFrameWithProtocol = async (
     remoteOnionAddr?: string;
   }
 ): Promise<UnsignedFriendControlFrame> => {
-  if ((frame as FriendControlFrame).protocol) return frame;
+  if (frame.type === "profile_update") return frame;
+
+  if (frame.protocol) return frame;
   const handshake = await buildHandshakeRecord(frame, identityPriv);
   const contactExchange = await buildContactExchangeRecord(frame, handshake, identityPriv);
+
   const keyAgreement = await buildKeyAgreementRecord(handshake, contactExchange, {
     pskHint: options?.pskHint,
     localDhPriv: options?.localDhPriv,
@@ -119,6 +193,7 @@ export const enrichFriendControlFrameWithProtocol = async (
     remoteDeviceId: options?.remoteDeviceId,
     remoteOnionAddr: options?.remoteOnionAddr,
   });
+
   return {
     ...frame,
     protocol: {
@@ -136,33 +211,45 @@ export const verifyFriendControlFrameProtocol = async (
 ) => {
   if (frame.from.friendCode) {
     const decoded = decodeFriendCodeV1(frame.from.friendCode);
+
     if ("error" in decoded) {
       return { ok: false, verified: true as const, reason: "friend-code-invalid" };
     }
+
     if (decoded.identityPub !== frame.from.identityPub) {
       return { ok: false, verified: true as const, reason: "friend-code-identity-mismatch" };
     }
+
     if (decoded.dhPub !== frame.from.dhPub) {
       return { ok: false, verified: true as const, reason: "friend-code-dh-mismatch" };
     }
+
     if (decoded.deviceId && frame.from.deviceId && decoded.deviceId !== frame.from.deviceId) {
       return { ok: false, verified: true as const, reason: "friend-code-device-mismatch" };
     }
   }
+
+  if (frame.type === "profile_update") return { ok: true, verified: true as const };
   const protocol = frame.protocol;
+
   if (!protocol) return { ok: true, verified: false as const };
+
   if (protocol.v !== 1) {
     return { ok: false, verified: true as const, reason: "protocol-version" };
   }
+
   const handshake = await verifyHandshakeRecord(frame, protocol.handshake);
+
   if (!handshake.ok) {
     return { ok: false, verified: true as const, reason: handshake.reason ?? "handshake-invalid" };
   }
+
   const contactExchange = await verifyContactExchangeRecord(
     frame,
     protocol.handshake,
     protocol.contactExchange
   );
+
   if (!contactExchange.ok) {
     return {
       ok: false,
@@ -170,6 +257,7 @@ export const verifyFriendControlFrameProtocol = async (
       reason: contactExchange.reason ?? "contact-exchange-invalid",
     };
   }
+
   const keyAgreement = await verifyKeyAgreementRecord(
     frame,
     protocol.handshake,
@@ -177,6 +265,7 @@ export const verifyFriendControlFrameProtocol = async (
     protocol.keyAgreement,
     options
   );
+
   if (!keyAgreement.ok) {
     return {
       ok: false,
@@ -184,17 +273,21 @@ export const verifyFriendControlFrameProtocol = async (
       reason: keyAgreement.reason ?? "key-agreement-invalid",
     };
   }
+
   return { ok: true, verified: true as const };
 };
 
 export const verifyFriendControlFrameSignature = async (frame: FriendControlFrame) => {
   if (typeof frame.sig !== "string" || !frame.sig.trim()) return false;
+
   if (typeof frame.from?.identityPub !== "string" || !frame.from.identityPub.trim()) return false;
+
   try {
     const sodium = await getSodium();
     const sig = decodeBase64Url(frame.sig);
     const verifyKey = decodeBase64Url(frame.from.identityPub);
     const payload = canonicalBytes(stripFriendControlFrameSignature(frame));
+
     return sodium.crypto_sign_verify_detached(sig, payload, verifyKey);
   } catch {
     return false;

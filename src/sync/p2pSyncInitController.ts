@@ -42,6 +42,7 @@ export class P2PSyncInitController<
 
   async unlockAndActivate() {
     if (!this.shutdownRequested && this.orchestrator?.isActive()) return this.orchestrator;
+
     if (this.activationPromise) return this.activationPromise;
 
     const epoch = ++this.activationEpoch;
@@ -49,6 +50,7 @@ export class P2PSyncInitController<
     this.activationPromise = (async () => {
       await this.unlockKeyring();
       const orchestrator = this.orchestrator ?? (await this.createOrchestrator());
+
       try {
         this.throwIfActivationCancelled(epoch);
         const routes = (await this.loadRoutes?.()) ?? [];
@@ -57,12 +59,14 @@ export class P2PSyncInitController<
         this.throwIfActivationCancelled(epoch);
         this.orchestrator = orchestrator;
         this.onReady?.(orchestrator);
+
         return orchestrator;
       } catch (error) {
         if (!this.orchestrator || this.orchestrator === orchestrator) {
           this.orchestrator = null;
           await orchestrator.shutdown();
         }
+
         throw error;
       }
     })()
@@ -81,9 +85,11 @@ export class P2PSyncInitController<
     this.shutdownRequested = true;
     this.activationEpoch += 1;
     const pending = this.activationPromise;
+
     const orchestrator = pending
       ? await pending.catch(() => null)
       : this.orchestrator;
+
     this.activationPromise = null;
     this.orchestrator = null;
     await orchestrator?.shutdown();

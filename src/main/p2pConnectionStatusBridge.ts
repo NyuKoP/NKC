@@ -27,6 +27,7 @@ export const createP2PMainStatePublisher =
       detail,
       changedAt: now(),
     };
+
     for (const window of getWindows()) {
       if (window.webContents.isDestroyed?.()) continue;
       window.webContents.send(P2P_CONNECTION_STATUS_CHANNEL, payload);

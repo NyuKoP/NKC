@@ -18,13 +18,14 @@ const getPointerPath = (userDataDir: string, network: OnionNetwork) =>
 const writeJsonAtomic = async (filePath: string, data: CurrentPointer) => {
   const tempPath = `${filePath}.tmp`;
   await fs.mkdir(path.dirname(filePath), { recursive: true });
-  await fs.writeFile(tempPath, JSON.stringify(data, null, 2));
+  await fs.writeFile(tempPath, JSON.stringify(data, null, 2), { flush: true });
   await fs.rename(tempPath, filePath);
 };
 
 export const readCurrentPointer = async (userDataDir: string, network: OnionNetwork) => {
   try {
     const raw = await fs.readFile(getPointerPath(userDataDir, network), "utf8");
+
     return JSON.parse(raw) as CurrentPointer;
   } catch {
     return null;
@@ -38,9 +39,12 @@ export const swapWithRollback = async (
 ) => {
   const previous = await readCurrentPointer(userDataDir, network);
   await writeJsonAtomic(getPointerPath(userDataDir, network), next);
+
   return async () => {
     if (previous) {
       await writeJsonAtomic(getPointerPath(userDataDir, network), previous);
+    } else {
+      await fs.rm(getPointerPath(userDataDir, network), { force: true });
     }
   };
 };

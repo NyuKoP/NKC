@@ -32,26 +32,35 @@ export default function AppUpdateSettings({ t, onBack }: Props) {
 
   useEffect(() => {
     const bridge = getBridge();
+
     if (!bridge) {
       setStatus({ state: "unsupported", currentVersion: "-", error: "bridge-unavailable" });
+
       return;
     }
-    void bridge.getStatus().then(setStatus).catch((error: unknown) =>
-      setStatus((current) => ({ ...current, state: "error", error: error instanceof Error ? error.message : String(error) }))
-    );
+
+    void bridge.getStatus().then(setStatus).catch((error: unknown) => {
+      console.error("Failed to read app update status", error);
+      setStatus((current) => ({ ...current, state: "error", error: error instanceof Error ? error.message : String(error) }));
+    });
+
     return bridge.onStatus(setStatus);
   }, []);
 
   const run = useCallback(async (action: "check" | "download" | "install") => {
     const bridge = getBridge();
+
     if (!bridge) return;
     setBusy(true);
+
     if (action === "check") setCheckResult(null);
+
     try {
       if (action === "install") await bridge.install();
       else {
         const nextStatus = await bridge[action]();
         setStatus(nextStatus);
+
         if (action === "check") {
           if (nextStatus.state === "current") {
             setCheckResult(t("최신 버전입니다.", "You are using the latest version."));
@@ -61,6 +70,7 @@ export default function AppUpdateSettings({ t, onBack }: Props) {
         }
       }
     } catch (error) {
+      console.error("App update action failed", error);
       setStatus((current) => ({
         ...current,
         state: current.state === "unsupported" ? "unsupported" : "error",
@@ -78,10 +88,12 @@ export default function AppUpdateSettings({ t, onBack }: Props) {
       case "downloading": return t(`업데이트 다운로드 중 ${Math.round(status.percent ?? 0)}%`, `Downloading update ${Math.round(status.percent ?? 0)}%`);
       case "downloaded": return t("업데이트 준비가 끝났습니다. 재시작하면 설치됩니다.", "The update is ready. Restart to install it.");
       case "current": return t("최신 버전을 사용 중입니다.", "You are using the latest version.");
-      case "unsupported": return status.error === "packaged-app-required"
+      case "unsupported": return status.error === "manual-github-releases"
+        ? t("새 버전은 NKC GitHub Releases에서 직접 다운로드해 설치해 주세요.", "Download and install new versions manually from NKC GitHub Releases.")
+        : status.error === "packaged-app-required"
         ? t("개발 실행본에서는 앱 업데이트를 사용할 수 없습니다.", "App updates are unavailable in development builds.")
         : t("현재 설치 형식에서는 자동 업데이트를 사용할 수 없습니다.", "Automatic updates are unavailable for this install format.");
-      case "error": return t(`업데이트 확인 실패: ${status.error ?? "unknown"}`, `Update failed: ${status.error ?? "unknown"}`);
+      case "error": return t("업데이트를 확인하지 못했습니다. 인터넷 연결을 확인하고 다시 시도해 주세요.", "Could not check for updates. Check your internet connection and try again.");
       default: return t("업데이트를 확인할 수 있습니다.", "You can check for updates.");
     }
   })();
@@ -93,7 +105,7 @@ export default function AppUpdateSettings({ t, onBack }: Props) {
         <div className="flex items-start justify-between gap-4">
           <div>
             <div className="text-sm font-semibold text-nkc-text">NKC</div>
-            <div className="mt-1 text-xs text-nkc-muted">{message}</div>
+            <div role={status.state === "error" ? "alert" : "status"} className={`mt-1 text-xs ${status.state === "error" ? "nkc-error" : "text-nkc-muted"}`}>{message}</div>
           </div>
           <span className="rounded-full border border-nkc-border px-3 py-1 text-xs text-nkc-text">
             v{status.currentVersion}

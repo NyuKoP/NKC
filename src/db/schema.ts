@@ -1,25 +1,50 @@
 import Dexie from "dexie";
 import type { Table } from "dexie";
+import { getActiveAccount } from "../accounts/accountRegistry";
+import { notifyAccountOwnerChange } from "../accounts/accountOwnerLifecycle";
 
 export type MetaRecord = { key: string; value: string };
+
 export type EncryptedRecord = { id: string; enc_b64: string; updatedAt: number };
+
 export type MessageRecord = {
   id: string;
   convId: string;
   ts: number;
-  enc_b64: string;
+  // The raw-v3 frame is self-versioned; the field name preserves existing table/index APIs.
+  enc_b64: string | Uint8Array;
 };
+
 export type EventRecord = {
+  logicalMessageId?: string;
   eventId: string;
   convId: string;
   authorDeviceId: string;
   lamport: number;
   ts: number;
-  envelopeJson: string;
   prevHash?: string;
   eventHash: string;
   conflict?: boolean;
-};
+  // New authenticated text events only. Old rows have no discriminator.
+  bodyType?: "msg" | "rcpt" | "control";
+  applicationState?: "pending" | "stored";
+  authenticatedBody_enc?: string | Uint8Array;
+  applicationCryptoCommitted?: boolean;
+  applicationBodyHash?: string;
+  ratchetCommitFingerprint?: string;
+  outgoingBody_enc?: string;
+  ratchetVersion?: 1 | 2;
+  localConvId?: string;
+  ephemeralApplication?: boolean;
+  mediaReceipt_enc?: string;
+  mediaReceiptQueued?: boolean;
+  outgoingSourceStamp?: string;
+  outgoingPartnerId?: string;
+} & (
+  | { envelopeFormat?: undefined; envelopeJson: string; envelopeBytes?: never }
+  | { envelopeFormat: "nkce-v1"; envelopeBytes: Uint8Array; envelopeJson?: never }
+);
+
 export type OutboxRecord = {
   id: string;
   convId: string;
@@ -28,7 +53,6 @@ export type OutboxRecord = {
   attempt?: number;
   nextAttemptAt?: number;
   lastError?: string;
-  ciphertext: string;
   priority?: "high" | "normal";
   // Legacy metadata kept for compatibility with existing delivery modules.
   toDeviceId?: string;
@@ -38,15 +62,24 @@ export type OutboxRecord = {
   lastAttemptAtMs?: number;
   nextAttemptAtMs: number;
   attempts: number;
-  status: "pending" | "in_flight" | "acked" | "expired";
+  status: "pending" | "in_flight" | "acked" | "expired" | "prepared" | "handoff_in_progress" | "result_uncertain" | "native_owned" | "native_terminal";
   inFlightAtMs?: number;
   ackDeadlineMs?: number;
   retention?: "standard" | "transient";
   transferId?: string;
   chunkIndex?: number;
   binaryTransport?: boolean;
-};
+  ownerAccountId?: string;
+  recipientIdentityPub?: string;
+  nativeRoute_enc?: string;
+  nativeRetryStopped?: boolean;
+} & (
+  | { payloadFormat?: undefined; ciphertext: string; payloadBytes?: never }
+  | { payloadFormat: "nkcp-v2"; payloadBytes: Uint8Array; ciphertext?: never; nativeRetryId: string }
+);
+
 export type MediaChunkRecord = {
+  logicalProof_enc?: string;
   id: string;
   ownerType: "profile" | "message" | "group";
   ownerId: string;
@@ -56,6 +89,11 @@ export type MediaChunkRecord = {
   total: number;
   updatedAt: number;
 };
+
+export type LegacyEventRecord = Extract<EventRecord, { envelopeFormat?: undefined }>;
+
+export type LegacyOutboxRecord = Extract<OutboxRecord, { payloadFormat?: undefined }>;
+
 export type MediaIndexRecord = {
   mediaId: string;
   convId: string;
@@ -69,6 +107,7 @@ export type MediaIndexRecord = {
   complete: boolean;
   corrupted?: boolean;
 };
+
 export type MediaPayloadChunkRecord = {
   mediaId: string;
   idx: number;
@@ -77,22 +116,30 @@ export type MediaPayloadChunkRecord = {
   chunkHash: string;
   updatedAt: number;
 };
+
 export type ReceiptRecord = {
   id: string;
   convId: string;
   msgId: string;
-  kind: "delivered" | "read" | "read_cursor";
+  kind: "delivered" | "read" | "read_cursor" | "media_stored";
   ts: number;
   actorId?: string;
   cursorTs?: number;
   anchorMsgId?: string;
+  logicalRead_enc?: string;
+  logicalDelivered_enc?: string;
+  /** Exact packet identity captured by authenticated binary application receipt commit. */
+  nativeRetryId?: string;
 };
+
 export type TombstoneRecord = { id: string; type: string; deletedAt: number };
+
 export type FriendAliasRecord = {
   friendId: string;
   alias: string;
   updatedAt: number;
 };
+
 export type MediaTransferRecord = {
   transferId: string;
   enc_b64: string;
@@ -116,8 +163,8 @@ export class NKCVaultDB extends Dexie {
   friendAliases!: Table<FriendAliasRecord, string>;
   mediaTransfers!: Table<MediaTransferRecord, string>;
 
-  constructor() {
-    super("nkc_vault");
+  constructor(name = getActiveAccount().dbName) {
+    super(name);
     this.version(1).stores({
       meta: "key",
       profiles: "id, updatedAt",
@@ -268,11 +315,13 @@ export class NKCVaultDB extends Dexie {
             const createdAt = record.createdAt ?? record.createdAtMs ?? Date.now();
             const nextAttemptAt = record.nextAttemptAt ?? record.nextAttemptAtMs ?? createdAt;
             const attempt = record.attempt ?? record.attempts ?? 0;
+
             const ttlMs =
               record.ttlMs ??
               (typeof record.expiresAtMs === "number" && record.expiresAtMs > createdAt
                 ? record.expiresAtMs - createdAt
                 : OUTBOX_DEFAULT_TTL_MS);
+
             record.createdAt = createdAt;
             record.nextAttemptAt = nextAttemptAt;
             record.attempt = attempt;
@@ -282,6 +331,7 @@ export class NKCVaultDB extends Dexie {
             record.attempts = record.attempts ?? attempt;
             record.expiresAtMs = record.expiresAtMs ?? createdAt + ttlMs;
             record.status = record.status ?? "pending";
+
             if (typeof record.lastError !== "string") {
               record.lastError = "";
             }
@@ -309,10 +359,11 @@ export class NKCVaultDB extends Dexie {
 
 export let db = new NKCVaultDB();
 
-const isDev = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+const isDev = Boolean(import.meta.env?.DEV);
 
 const logDb = (message: string, detail?: Record<string, unknown>) => {
   if (!isDev) return;
+
   if (detail) {
     console.debug(`[db] ${message}`, detail);
   } else {
@@ -326,15 +377,19 @@ export const ensureDbOpen = async () => {
   if (resetPromise) {
     await resetPromise;
   }
+
   if (!db.isOpen()) {
     logDb("open");
     await db.open();
     logDb("open:ready");
   }
+
   return db;
 };
 
 export const resetDb = async () => {
+  notifyAccountOwnerChange();
+
   if (resetPromise) return resetPromise;
   resetPromise = (async () => {
     logDb("delete:start");
@@ -347,5 +402,32 @@ export const resetDb = async () => {
   })().finally(() => {
     resetPromise = null;
   });
+
   return resetPromise;
+};
+
+export const switchVaultDb = async (dbName = getActiveAccount().dbName) => {
+  if (resetPromise) await resetPromise;
+
+  if (db.name === dbName) {
+    await ensureDbOpen();
+
+    return db;
+  }
+
+  notifyAccountOwnerChange();
+  db.close();
+  db = new NKCVaultDB(dbName);
+  await db.open();
+
+  return db;
+};
+
+export const deleteVaultDatabase = async (dbName: string) => {
+  notifyAccountOwnerChange();
+
+  if (resetPromise) await resetPromise;
+
+  if (db.name === dbName) db.close();
+  await Dexie.delete(dbName);
 };

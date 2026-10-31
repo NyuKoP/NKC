@@ -1,4 +1,4 @@
-import { bench, describe } from "vitest";
+import { describe, test } from "vitest";
 import { encodeBinaryTransportPacket } from "../adapters/transports/packetCodec";
 import { encodeBase64Url } from "../security/base64url";
 
@@ -8,11 +8,15 @@ const payloads = [
 ] as const;
 
 describe.each(payloads)("transport encoding $label", ({ bytes }) => {
-  bench("legacy Base64 JSON", () => {
-    JSON.stringify({ id: "benchmark-message", payload: { b64: encodeBase64Url(bytes) } });
+  test("legacy Base64 JSON", async ({ bench }) => {
+    await bench("legacy Base64 JSON", () => {
+      JSON.stringify({ id: "benchmark-message", payload: { b64: encodeBase64Url(bytes) } });
+    }).run();
   });
 
-  bench("binary packet", () => {
-    encodeBinaryTransportPacket({ id: "benchmark-message", payload: bytes });
+  test("binary packet", async ({ bench }) => {
+    await bench("binary packet", () => {
+      encodeBinaryTransportPacket({ id: "benchmark-message", payload: bytes });
+    }).run();
   });
 });

@@ -1,42 +1,31 @@
 import { getSecretStore } from "./secretStore";
 
 const INVITE_PREFIX = "nkc_invite_used_v1:";
-const memoryStore = new Map<string, string>();
+
 const inviteLocks = new Map<string, Promise<void>>();
 
-const getSecret = async (key: string) => {
-  try {
-    const store = getSecretStore();
-    return await store.get(key);
-  } catch {
-    return memoryStore.get(key) ?? null;
-  }
-};
+const getSecret = (key: string) => getSecretStore().get(key);
 
-const setSecret = async (key: string, value: string) => {
-  try {
-    const store = getSecretStore();
-    await store.set(key, value);
-    return;
-  } catch {
-    memoryStore.set(key, value);
-  }
-};
+const setSecret = (key: string, value: string) => getSecretStore().set(key, value);
 
 const withInviteLock = async <T>(fingerprint: string, work: () => Promise<T>) => {
   const key = `${INVITE_PREFIX}${fingerprint}`;
   const previous = inviteLocks.get(key) ?? Promise.resolve();
   let release!: () => void;
+
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
+
   const queued = previous.then(() => gate);
   inviteLocks.set(key, queued);
   await previous;
+
   try {
     return await work();
   } finally {
     release();
+
     if (inviteLocks.get(key) === queued) {
       inviteLocks.delete(key);
     }
@@ -45,6 +34,7 @@ const withInviteLock = async <T>(fingerprint: string, work: () => Promise<T>) =>
 
 export const isInviteUsed = async (fingerprint: string) => {
   const value = await getSecret(`${INVITE_PREFIX}${fingerprint}`);
+
   return value === "1";
 };
 
@@ -55,17 +45,33 @@ export const markInviteUsed = async (fingerprint: string) => {
 export const runOneTimeInviteGuard = async <T>(
   fingerprint: string,
   work: () => Promise<T>,
-  shouldConsume: (value: T) => boolean = () => true
+  shouldConsume: (value: T) => boolean = () => true,
+  legacyFingerprints: readonly string[] = []
 ): Promise<{ ok: true; value: T } | { ok: false }> => {
+  const store = getSecretStore();
+  const key = `${INVITE_PREFIX}${fingerprint}`;
   return withInviteLock(fingerprint, async () => {
-    const used = await isInviteUsed(fingerprint);
+    const used = (await store.get(key)) === "1";
+
     if (used) {
       return { ok: false } as const;
     }
-    const value = await work();
-    if (shouldConsume(value)) {
-      await markInviteUsed(fingerprint);
+
+    // Migrate a pre-canonicalization marker for this exact submitted spelling.
+    // Unknown historical spelling-only digests cannot be reverse-migrated here.
+    for (const legacy of new Set(legacyFingerprints)) {
+      if (legacy !== fingerprint && (await store.get(`${INVITE_PREFIX}${legacy}`)) === "1") {
+        await store.set(key, "1");
+        return { ok: false } as const;
+      }
     }
+
+    const value = await work();
+
+    if (shouldConsume(value)) {
+      await store.set(key, "1");
+    }
+
     return { ok: true, value } as const;
   });
 };

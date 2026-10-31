@@ -37,6 +37,7 @@ export default function PrivacySettings({
   onUpdatePrivacy,
 }: PrivacySettingsProps) {
   void onOpenKeys;
+
   return (
     <div className="mt-6 grid gap-6">
       <SettingsBackHeader
@@ -73,7 +74,7 @@ export default function PrivacySettings({
           {!pinAvailable ? (
             <div className="text-xs text-nkc-muted">
               {t(
-                "PIN lock is unavailable on this platform/build.",
+                "이 기기에서는 PIN 잠금을 사용할 수 없습니다.",
                 "PIN lock is unavailable on this platform/build."
               )}
             </div>
@@ -103,7 +104,7 @@ export default function PrivacySettings({
             </div>
           ) : null}
 
-          {pinError ? <div className="text-xs text-red-300">{pinError}</div> : null}
+          {pinError ? <div className="text-xs nkc-error">{pinError}</div> : null}
         </div>
       </section>
 
@@ -111,16 +112,44 @@ export default function PrivacySettings({
         <div className="flex flex-col">
           <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
             <div>
-              <div className="text-sm font-medium text-nkc-text">{t("읽음 표시", "Read receipts")}</div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("읽음 표시 사용 안 함", "Disable read receipts")}
+              </div>
               <div className="text-xs text-nkc-muted">
-                {t("상대에게 읽음 상태를 공유합니다.", "Share read status with the other person.")}
+                {t(
+                  "메시지를 읽어도 상대방에게 읽음 상태를 보내지 않습니다.",
+                  "Do not send read status when you read a message."
+                )}
               </div>
             </div>
             <ToggleSwitch
-              label={t("읽음 표시", "Read receipts")}
-              checked={privacyPrefs.readReceipts}
+              label={t("읽음 표시 사용 안 함", "Disable read receipts")}
+              testId="privacy-disable-read-receipts-switch"
+              checked={!privacyPrefs.readReceipts}
               onChange={(checked) =>
-                void onUpdatePrivacy({ ...privacyPrefs, readReceipts: checked })
+                void onUpdatePrivacy({ ...privacyPrefs, readReceipts: !checked })
+              }
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-4 border-b border-nkc-border px-4 py-3">
+            <div>
+              <div className="text-sm font-medium text-nkc-text">
+                {t("온라인 상태 숨기기", "Hide online status")}
+              </div>
+              <div className="text-xs text-nkc-muted">
+                {t(
+                  "친구에게 항상 오프라인으로 표시됩니다. 프로필과 상태 메시지는 계속 동기화됩니다.",
+                  "Always appear offline to friends. Profile and status messages still sync."
+                )}
+              </div>
+            </div>
+            <ToggleSwitch
+              label={t("온라인 상태 숨기기", "Hide online status")}
+              testId="privacy-hide-presence-switch"
+              checked={privacyPrefs.hidePresence}
+              onChange={(checked) =>
+                void onUpdatePrivacy({ ...privacyPrefs, hidePresence: checked })
               }
             />
           </div>

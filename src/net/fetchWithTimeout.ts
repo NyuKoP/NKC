@@ -9,34 +9,50 @@ export type AbortTraceEvent = {
   reason?: string;
 };
 
-export type FetchWithTimeoutOptions = {
+export type FetchWithTimeoutOptions<TResponse = Response> = {
   timeoutMs: number;
   parentSignal?: AbortSignal;
   opId?: string;
   traceSource?: string;
   onTrace?: (event: AbortTraceEvent) => void;
-  fetchImpl?: (url: string, init?: RequestInit) => Promise<unknown>;
+  fetchImpl?: (url: string, init?: RequestInit) => Promise<TResponse>;
 };
 
 const toSafeOperationId = (url: string, explicit?: string) => {
   if (explicit && explicit.trim()) {
     return explicit.trim();
   }
+
   try {
     const parsed = new URL(url);
     const safePath = parsed.pathname || "/";
     const deviceId = parsed.searchParams.get("deviceId");
+
     return deviceId ? `${safePath}?deviceId=${deviceId}` : safePath;
   } catch {
     return url;
   }
 };
 
-export const fetchWithTimeout = async <TResponse = Response>(
+export function fetchWithTimeout<TResponse>(
+  url: string,
+  init: RequestInit,
+  options: FetchWithTimeoutOptions<TResponse> & {
+    fetchImpl: (url: string, init?: RequestInit) => Promise<TResponse>;
+  }
+): Promise<TResponse>;
+
+export function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  options: FetchWithTimeoutOptions
+): Promise<Response>;
+
+export async function fetchWithTimeout<TResponse>(
   url: string,
   init: RequestInit = {},
-  options: FetchWithTimeoutOptions
-): Promise<TResponse> => {
+  options: FetchWithTimeoutOptions<TResponse>
+): Promise<Response | TResponse> {
   const controller = new AbortController();
   const timeoutMs = Math.max(1, options.timeoutMs);
   const source = options.traceSource ?? "timeout";
@@ -60,20 +76,24 @@ export const fetchWithTimeout = async <TResponse = Response>(
   const fireAbort = (reason: "timeout" | "parent") => {
     if (abortReason) return;
     abortReason = reason;
+
     const detail =
       reason === "timeout"
         ? `fetch timeout ${timeoutMs}ms`
         : "aborted-by-parent-signal";
+
     emitTrace("abort:fired", detail);
     controller.abort(detail);
   };
 
   let onParentAbort: (() => void) | null = null;
+
   if (options.parentSignal) {
     if (options.parentSignal.aborted) {
       fireAbort("parent");
       throw createTransportError("ABORTED_PARENT", "fetch aborted by parent signal");
     }
+
     onParentAbort = () => fireAbort("parent");
     options.parentSignal.addEventListener("abort", onParentAbort, { once: true });
   }
@@ -83,9 +103,8 @@ export const fetchWithTimeout = async <TResponse = Response>(
   }, timeoutMs);
 
   try {
-    const fetchImpl =
-      (options.fetchImpl as ((input: string, init?: RequestInit) => Promise<TResponse>) | undefined) ??
-      (fetch as unknown as (input: string, init?: RequestInit) => Promise<TResponse>);
+    const fetchImpl = options.fetchImpl ?? fetch;
+
     return await fetchImpl(url, {
       ...init,
       signal: controller.signal,
@@ -96,16 +115,19 @@ export const fetchWithTimeout = async <TResponse = Response>(
         cause: error instanceof Error ? error.message : String(error),
       });
     }
+
     if (abortReason === "parent") {
       throw createTransportError("ABORTED_PARENT", "fetch aborted by parent signal", {
         cause: error instanceof Error ? error.message : String(error),
       });
     }
+
     throw error;
   } finally {
     clearTimeout(timeout);
+
     if (options.parentSignal && onParentAbort) {
       options.parentSignal.removeEventListener("abort", onParentAbort);
     }
   }
-};
+}

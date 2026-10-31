@@ -1,6 +1,9 @@
 const DB_NAME = "vault-db";
+
 const STORE_NAME = "vault";
+
 const ENVELOPE_KEY = "envelope";
+
 const DB_VERSION = 1;
 
 export const openDB = (): Promise<IDBDatabase> => {
@@ -9,6 +12,7 @@ export const openDB = (): Promise<IDBDatabase> => {
 
     request.onupgradeneeded = () => {
       const db = request.result;
+
       if (!db.objectStoreNames.contains(STORE_NAME)) {
         db.createObjectStore(STORE_NAME);
       }
@@ -49,6 +53,7 @@ export const hasEnvelope = async (): Promise<boolean> => {
       finalize();
       reject(tx.error);
     };
+
     tx.onabort = () => {
       finalize();
       reject(tx.error);

@@ -1,15 +1,22 @@
+import { readEventEnvelope } from "../storage/storedPayload";
 import type { Conversation, Message, UserProfile } from "../db/repo";
 import { listEventsByConv, listMessagesByConv } from "../db/repo";
 import {
   decryptEnvelope,
+  isEnvelopeLike,
+  type EnvelopeBytes,
   deriveConversationKey,
   type Envelope,
   verifyEnvelopeSignature,
 } from "../crypto/box";
-import { getOrInitDhRatchetState, tryRecvDhKey, tryRecvKey } from "../crypto/ratchet";
+import { createReceiveStateV1, createReceiveStateV2, getOrInitDhRatchetState,
+  prepareOrderedReceive, tryRecvDhKey, tryRecvKey, type OrderedReceiveState,
+  type RetainedReceiveKey } from "../crypto/ratchet";
 import { encodeBinaryEnvelope } from "../crypto/vault";
 import { getVaultKey } from "../crypto/sessionKeyring";
 import { getFriendPsk } from "./pskStore";
+import { throwIfCryptoStorageFailure } from "./cryptoStorageErrors";
+import { isUnifiedTextChannel } from "../sync/unifiedAppPolicy";
 import { decodeBase64Url } from "./base64url";
 import { getDhPrivateKey, getIdentityPublicKey } from "./identityKeys";
 import {
@@ -17,6 +24,7 @@ import {
   clearRatchetState,
   getDhRatchetState,
   setDhRatchetState,
+  nativeRatchetCasEnabled,
 } from "./ratchetStore";
 import { db, ensureDbOpen } from "../db/schema";
 import { putReadCursor, putReceipt } from "../storage/receiptStore";
@@ -33,7 +41,9 @@ import {
 } from "./mediaPolicy";
 
 const LEGACY_MEDIA_MAX_CHUNKS = 500;
+
 const LEGACY_MEDIA_MAX_CHUNK_BYTES = 1024 * 1024;
+
 const LEGACY_MEDIA_MAX_B64_LENGTH = Math.ceil(LEGACY_MEDIA_MAX_CHUNK_BYTES * 4 / 3) + 4;
 
 const console = createSafeConsole(globalThis.console);
@@ -54,9 +64,11 @@ const determineSenderAndKey = async (
   if (await verifyEnvelopeSignature(envelope, myIdentityPub)) {
     return { senderId: currentUserId, verifyKey: myIdentityPub };
   }
+
   if (await verifyEnvelopeSignature(envelope, theirIdentityPub)) {
     return { senderId: friendId, verifyKey: theirIdentityPub };
   }
+
   return null;
 };
 
@@ -85,9 +97,13 @@ const storeMediaChunk = async (payload: {
   b64: string;
 }) => {
   const vk = getVaultKey();
+
   if (!vk) return;
+
   if (!isValidMediaOwnerId(payload.ownerId)) return;
+
   if (!Number.isInteger(payload.idx) || !Number.isInteger(payload.total)) return;
+
   if (
     payload.idx < 0 ||
     payload.total <= 0 ||
@@ -98,27 +114,35 @@ const storeMediaChunk = async (payload: {
   ) return;
   const ownerType = payload.ownerType === "group" ? "group" : "message";
   const mime = normalizeMediaMime(payload.mime);
+
   if (isPreviewMediaClaim(payload.mime) && !isSafePreviewMime(mime)) return;
   let bytes: Uint8Array;
+
   try {
     bytes = decodeBase64Url(payload.b64);
   } catch {
     return;
   }
+
   if (bytes.byteLength <= 0 || bytes.byteLength > LEGACY_MEDIA_MAX_CHUNK_BYTES) return;
+
   if (payload.idx === 0 && isSafePreviewMime(mime) && !hasValidPreviewSignature(mime, bytes)) {
     return;
   }
+
   const chunkId = `${ownerType}:${payload.ownerId}:${payload.idx}`;
   await ensureDbOpen();
+
   const existing = await db.mediaChunks
     .where("ownerId")
     .equals(payload.ownerId)
     .and((chunk) => chunk.ownerType === ownerType)
     .first();
+
   if (existing && (existing.total !== payload.total || normalizeMediaMime(existing.mime) !== mime)) {
     return;
   }
+
   const enc_b64 = await encodeBinaryEnvelope(vk, chunkId, "mediaChunk", bytes);
   await db.mediaChunks.put({
     id: chunkId,
@@ -139,17 +163,30 @@ export const loadConversationMessages = async (
 ) => {
   const legacy = await listMessagesByConv(conv.id).catch(() => []);
   await ensureDbOpen();
+
   const tombstones = await db.tombstones
     .where("type")
     .equals("message")
     .toArray()
     .catch(() => []);
+
   const tombstoneIds = new Set(tombstones.map((item) => item.id));
 
   if (!friend?.dhPub || !friend?.identityPub) {
     return tombstoneIds.size
       ? legacy.filter((message) => !tombstoneIds.has(message.id))
       : legacy;
+  }
+
+  const eventRecords = (await listEventsByConv(conv.id).catch(() => [])).filter(record => {
+    try {
+      const header = readEventEnvelope(record).header;
+      // Owned sync recovers session-bound events; static legacy keys cannot replay them.
+      return !header?.friendSessionId && !header?.deviceDelivery?.sessionId && !isUnifiedTextChannel(header?.convId ?? "");
+    } catch { return true; }
+  });
+  if (!eventRecords.length) {
+    return tombstoneIds.size ? legacy.filter((message) => !tombstoneIds.has(message.id)) : legacy;
   }
 
   const dhPriv = await getDhPrivateKey();
@@ -163,16 +200,28 @@ export const loadConversationMessages = async (
   const myIdentityPub = await getIdentityPublicKey();
   const theirIdentityPub = decodeBase64Url(friend.identityPub);
 
-  const eventRecords = await listEventsByConv(conv.id).catch(() => []);
   const messages: Message[] = [...legacy];
   const messageIds = new Set(messages.map((message) => message.id));
+
   const pushMessageIfNew = (message: Message) => {
     if (messageIds.has(message.id)) return;
     messageIds.add(message.id);
     messages.push(message);
   };
+
   const replayConvId = `${conv.id}:replay:${createId()}`;
   const existingDhState = await getDhRatchetState(conv.id);
+  const pureReplay = nativeRatchetCasEnabled();
+
+  let replayV1: OrderedReceiveState | null = pureReplay
+    ? { version: 1, ratchet: await createReceiveStateV1(ratchetBaseKey) } : null;
+
+  let replayV2: OrderedReceiveState | null = pureReplay
+    ? { version: 2, ratchet: { ...await createReceiveStateV2(ratchetBaseKey),
+      ...(existingDhState ? { dhSelfPriv: existingDhState.dhSelfPriv, dhSelfPub: existingDhState.dhSelfPub } : {}) } } : null;
+
+  let retainedV1: RetainedReceiveKey[] = [];
+  let retainedV2: RetainedReceiveKey[] = [];
 
   const handleBody = async (
     body: unknown,
@@ -181,6 +230,7 @@ export const loadConversationMessages = async (
     messageId: string
   ): Promise<Message | null> => {
     if (!body || typeof body !== "object") return null;
+
     const typed = body as {
       type?: string;
       text?: string;
@@ -203,6 +253,7 @@ export const loadConversationMessages = async (
 
     if (isGroupEventPayload(body)) {
       await applyGroupEvent(body, senderId, currentUserId);
+
       return null;
     }
 
@@ -210,6 +261,7 @@ export const loadConversationMessages = async (
       const media = typed.media === undefined
         ? undefined
         : parseIncomingMediaRef(typed.media, messageId) ?? undefined;
+
       return {
         id: messageId,
         convId: conv.id,
@@ -223,14 +275,17 @@ export const loadConversationMessages = async (
 
     if (typed.type === "rcpt" && typed.kind === "read" && typeof typed.msgId === "string") {
       await storeReadReceipt(typed.convId ?? conv.id, typed.msgId, typed.ts ?? ts, senderId);
+
       return null;
     }
 
     if (typed.type === "rcpt" && typed.kind === "read_cursor") {
       const targetConvId = typed.convId ?? conv.id;
+
       const cursorTsCandidate = Number.isFinite(typed.cursorTs)
         ? Number(typed.cursorTs)
         : typed.ts ?? ts;
+
       if (!Number.isFinite(cursorTsCandidate)) return null;
       const cursorTs = cursorTsCandidate;
       await putReadCursor({
@@ -239,6 +294,7 @@ export const loadConversationMessages = async (
         cursorTs,
         anchorMsgId: typed.anchorMsgId ?? typed.msgId,
       });
+
       return null;
     }
 
@@ -256,6 +312,7 @@ export const loadConversationMessages = async (
         mime: typeof typed.mime === "string" ? typed.mime : "application/octet-stream",
         b64: typed.b64,
       });
+
       return null;
     }
 
@@ -263,7 +320,7 @@ export const loadConversationMessages = async (
   };
 
   try {
-    if (existingDhState) {
+    if (existingDhState && !pureReplay) {
       const replayDhState = await getOrInitDhRatchetState(replayConvId, ratchetBaseKey);
       await setDhRatchetState(replayConvId, {
         ...replayDhState,
@@ -273,13 +330,18 @@ export const loadConversationMessages = async (
     }
 
     for (const record of eventRecords) {
-    let envelope: Envelope;
+    let envelope: Envelope | EnvelopeBytes;
+
     try {
-      envelope = JSON.parse(record.envelopeJson) as Envelope;
+      envelope = readEventEnvelope(record);
     } catch (error) {
       console.warn("[msg] invalid envelope json", { convId: record.convId, eventId: record.eventId }, error);
       continue;
     }
+
+    // Unified text is already authenticated and stored atomically. Do not replay
+    // its separate chain through the legacy preview/recovery ratchet.
+    if (isUnifiedTextChannel(envelope.header?.convId ?? "") || !isEnvelopeLike(envelope)) continue;
 
     const resolved = await determineSenderAndKey(
       envelope,
@@ -288,6 +350,7 @@ export const loadConversationMessages = async (
       myIdentityPub,
       theirIdentityPub
     );
+
     if (!resolved) {
       console.warn("[msg] signature invalid for both keys", {
         convId: record.convId,
@@ -295,13 +358,24 @@ export const loadConversationMessages = async (
       });
       continue;
     }
+
     const { senderId, verifyKey } = resolved;
 
     try {
       const rk = envelope.header.rk;
+
       if (rk && rk.v === 2 && Number.isFinite(rk.i) && typeof rk.dh === "string") {
         logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "v2" });
-        const recv = await tryRecvDhKey(replayConvId, ratchetBaseKey, rk);
+        let body!: { type: "msg"; text: string; media?: Message["media"]; clientBatchId?: string };
+
+        const authenticate = async (key: Uint8Array) => {
+          body = await decryptEnvelope<typeof body>(key, envelope, verifyKey);
+        };
+
+        const recv: Awaited<ReturnType<typeof prepareOrderedReceive>> | Awaited<ReturnType<typeof tryRecvDhKey>> = pureReplay
+          ? await prepareOrderedReceive(replayV2!, rk, retainedV2, Date.now(), authenticate)
+          : await tryRecvDhKey(replayConvId, ratchetBaseKey, rk, 50, authenticate);
+
         if ("deferred" in recv) {
           logDecrypt("deferred", { convId: record.convId, eventId: record.eventId, mode: "v2" });
           pushMessageIfNew({
@@ -313,28 +387,37 @@ export const loadConversationMessages = async (
           });
           continue;
         }
-        const body = await decryptEnvelope<{
-          type: "msg";
-          text: string;
-          media?: Message["media"];
-          clientBatchId?: string;
-        }>(recv.msgKey, envelope, verifyKey);
 
         logDecrypt("commit", { convId: record.convId, eventId: record.eventId, mode: "v2" });
-        await recv.commit();
+
+        if (pureReplay && "state" in recv) {
+          replayV2 = recv.state;
+          retainedV2 = recv.retained;
+        } else if ("commit" in recv) await recv.commit();
+
         const message = await handleBody(
           body,
           senderId,
           envelope.header.ts,
           envelope.header.eventId
         );
+
         if (message) pushMessageIfNew(message);
         continue;
       }
 
       if (rk && rk.v === 1 && Number.isFinite(rk.i)) {
         logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "v1" });
-        const recv = await tryRecvKey(replayConvId, ratchetBaseKey, rk.i);
+        let authenticatedBody: { type: "msg"; text: string; media?: Message["media"]; clientBatchId?: string } | undefined;
+
+        const authenticate = async (key: Uint8Array) => {
+          authenticatedBody = await decryptEnvelope<typeof authenticatedBody>(key, envelope, verifyKey);
+        };
+
+        const recv: Awaited<ReturnType<typeof prepareOrderedReceive>> | Awaited<ReturnType<typeof tryRecvKey>> = pureReplay
+          ? await prepareOrderedReceive(replayV1!, rk, retainedV1, Date.now(), authenticate)
+          : await tryRecvKey(replayConvId, ratchetBaseKey, rk.i, 50, authenticate);
+
         if ("deferred" in recv) {
           logDecrypt("deferred", { convId: record.convId, eventId: record.eventId, mode: "v1" });
           pushMessageIfNew({
@@ -346,25 +429,34 @@ export const loadConversationMessages = async (
           });
           continue;
         }
-        const body = await decryptEnvelope<{
+
+        if (pureReplay && "state" in recv) {
+          replayV1 = recv.state;
+          retainedV1 = recv.retained;
+        }
+
+        const body = "msgKey" in recv ? await decryptEnvelope<{
           type: "msg";
           text: string;
           media?: Message["media"];
           clientBatchId?: string;
-        }>(recv.msgKey, envelope, verifyKey);
+        }>(recv.msgKey, envelope, verifyKey) : authenticatedBody!;
 
         logDecrypt("ok", { convId: record.convId, eventId: record.eventId, mode: "v1" });
+
         const message = await handleBody(
           body,
           senderId,
           envelope.header.ts,
           envelope.header.eventId
         );
+
         if (message) pushMessageIfNew(message);
         continue;
       }
 
       logDecrypt("path", { convId: record.convId, eventId: record.eventId, mode: "legacy" });
+
       const body = await decryptEnvelope<{
         type: "msg";
         text: string;
@@ -373,14 +465,17 @@ export const loadConversationMessages = async (
       }>(legacyKey, envelope, verifyKey);
 
       logDecrypt("ok", { convId: record.convId, eventId: record.eventId, mode: "legacy" });
+
       const message = await handleBody(
         body,
         senderId,
         envelope.header.ts,
         envelope.header.eventId
       );
+
       if (message) pushMessageIfNew(message);
     } catch (error) {
+      throwIfCryptoStorageFailure(error);
       console.warn(
         "[msg] decrypt failed",
         { convId: record.convId, eventId: record.eventId },
@@ -389,10 +484,11 @@ export const loadConversationMessages = async (
     }
     }
   } finally {
-    await Promise.allSettled([clearRatchetState(replayConvId), clearDhRatchetState(replayConvId)]);
+    if (!pureReplay) await Promise.allSettled([clearRatchetState(replayConvId), clearDhRatchetState(replayConvId)]);
   }
 
   messages.sort((a, b) => a.ts - b.ts);
+
   return tombstoneIds.size
     ? messages.filter((message) => !tombstoneIds.has(message.id))
     : messages;

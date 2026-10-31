@@ -14,6 +14,7 @@ export default function Toasts() {
           removeToast(toast.id);
           timerMap.delete(toast.id);
         }, 2500);
+
         timerMap.set(toast.id, id);
       }
     });
@@ -27,13 +28,16 @@ export default function Toasts() {
   if (!toasts.length) return null;
 
   return (
-    <div className="pointer-events-none fixed bottom-6 right-6 z-50 flex flex-col gap-2">
+    <div
+      data-testid="toast-region"
+      className="pointer-events-none fixed bottom-6 right-6 z-50 flex max-w-[calc(100vw-48px)] flex-col gap-2"
+    >
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className="pointer-events-auto flex items-center gap-3 rounded-nkc border border-nkc-border bg-nkc-panel px-4 py-3 text-sm text-nkc-text shadow-soft"
+          className="pointer-events-auto flex items-center gap-3 rounded-nkc border border-nkc-controlBorder bg-nkc-toast px-4 py-3 text-sm text-nkc-text shadow-soft"
         >
-          <span className="flex-1">{toast.message}</span>
+          <span className="min-w-0 flex-1 break-words">{toast.message}</span>
           {toast.actionLabel && toast.onAction ? (
             <button
               onClick={() => {

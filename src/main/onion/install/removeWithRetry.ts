@@ -6,17 +6,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const getErrorCode = (error: unknown) =>
   error && typeof error === "object" && "code" in error
-    ? String((error as { code?: unknown }).code ?? "")
+    ? String(error.code ?? "")
     : "";
 
 const verifyRemoved = async (targetPath: string) => {
   try {
     await fs.lstat(targetPath);
-    const error = new Error(`Path still exists after removal: ${targetPath}`) as Error & {
-      code?: string;
-    };
-    error.code = "ENOTEMPTY";
-    throw error;
+    throw Object.assign(new Error(`Path still exists after removal: ${targetPath}`), { code: "ENOTEMPTY" });
   } catch (error) {
     if (getErrorCode(error) === "ENOENT") return;
     throw error;
@@ -35,13 +31,16 @@ export const removeWithRetry = async (
     try {
       await fs.rm(targetPath, { recursive: true, force: true });
       await verifyRemoved(targetPath);
+
       return;
     } catch (error) {
       lastError = error;
       const code = getErrorCode(error);
+
       if (!RETRYABLE_CODES.has(code) || attempt === attempts - 1) {
         throw error;
       }
+
       await sleep(baseDelayMs * (attempt + 1));
     }
   }

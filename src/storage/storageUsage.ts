@@ -34,15 +34,19 @@ export async function estimateStorageUsage(): Promise<StorageUsage> {
   const chatBytes =
     profiles.reduce((sum, record) => sum + byteLengthOfJson(record), 0) +
     conversations.reduce((sum, record) => sum + byteLengthOfJson(record), 0) +
-    messages.reduce((sum, record) => sum + byteLengthOfJson(record), 0) +
+    messages.reduce((sum, record) => sum + (record.enc_b64 instanceof Uint8Array
+      ? record.enc_b64.byteLength + byteLengthOfJson({ ...record, enc_b64: undefined }) : byteLengthOfJson(record)), 0) +
     meta.reduce((sum, record) => sum + byteLengthOfJson(record), 0);
 
   const mediaBytes = mediaChunks.reduce((sum, record) => sum + byteLengthOfJson(record), 0);
 
   const pendingBytes = outbox.reduce((sum, record) => {
+    if (record.payloadFormat === "nkcp-v2") return sum + record.payloadBytes.byteLength;
+
     if (record.ciphertext) {
       return sum + byteLengthUtf8(record.ciphertext);
     }
+
     return sum + byteLengthOfJson(record);
   }, 0);
 

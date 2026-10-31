@@ -3,12 +3,16 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { AvatarRef, Conversation, UserProfile } from "../db/repo";
 import { useAppStore } from "../app/store";
+import { useNetConfigStore } from "../net/netConfigStore";
 import OverflowMenu from "./OverflowMenu";
 import FriendOverflowMenu from "./FriendOverflowMenu";
 import Avatar from "./Avatar";
 import { resolveFriendDisplayName } from "../utils/displayName";
+import { presenceDotClass, type PresenceStatus } from "../profile/presence";
 import {
   AddFriendIcon,
+  CopyIcon,
+  EditIcon,
   GroupIcon,
   MessageIcon,
   MoonIcon,
@@ -29,6 +33,7 @@ type SidebarProps = {
   convs: Conversation[];
   friends: UserProfile[];
   userId: string | null;
+  currentUser: UserProfile | null;
   groupAvatarRefsByConv: Record<string, AvatarRef | undefined>;
   friendAliasesById: Record<string, string | undefined>;
   selectedConvId: string | null;
@@ -55,6 +60,9 @@ type SidebarProps = {
   theme: "dark" | "light";
   onToggleTheme: () => void | Promise<void>;
   onSettings: () => void;
+  onEditProfile: () => void;
+  onSetPresence: (status: PresenceStatus) => void | Promise<void>;
+  onCopyFriendCode: () => void | Promise<void>;
   onHide: (id: string) => void;
   onDelete: (id: string) => void;
   onMute: (id: string) => void;
@@ -66,6 +74,7 @@ export default function Sidebar({
   convs,
   friends,
   userId,
+  currentUser,
   groupAvatarRefsByConv,
   friendAliasesById,
   selectedConvId,
@@ -89,6 +98,9 @@ export default function Sidebar({
   theme,
   onToggleTheme,
   onSettings,
+  onEditProfile,
+  onSetPresence,
+  onCopyFriendCode,
   onHide,
   onDelete,
   onMute,
@@ -98,29 +110,42 @@ export default function Sidebar({
   const language = useAppStore((state) => state.ui.language);
   const t = (ko: string, en: string) => (language === "en" ? en : ko);
   const locale = language === "en" ? "en-US" : "ko-KR";
-  const resolvedNetworkStatus = networkStatus ?? {
+  const unsupportedNetwork = useNetConfigStore(state => state.config.mode === "directP2P");
+
+  const resolvedNetworkStatus = unsupportedNetwork ? {
+    state: "error" as const,
+    label: t("Direct 지원 안 함 · 설정에서 Tor 선택", "Direct unsupported · select Tor in Settings"),
+  } : networkStatus ?? {
     state: "disconnected" as const,
     label: t("연결 안됨", "Disconnected"),
   };
+
   const networkStatusDotClass =
     resolvedNetworkStatus.state === "connected"
-      ? "bg-emerald-500"
+      ? "bg-nkc-success"
       : resolvedNetworkStatus.state === "connecting"
-        ? "bg-amber-500"
+        ? "bg-nkc-warning"
         : resolvedNetworkStatus.state === "error"
-          ? "bg-red-500"
+          ? "bg-nkc-danger"
           : "bg-nkc-muted";
+
   const [favoritesOpen, setFavoritesOpen] = useState(true);
   const [friendsOpen, setFriendsOpen] = useState(true);
   const [pinnedChatsOpen, setPinnedChatsOpen] = useState(true);
   const [chatsOpen, setChatsOpen] = useState(true);
+
   const [tabsVisible, setTabsVisible] = useState(() => {
     if (typeof window === "undefined") return true;
+
     return window.localStorage.getItem("nkc.sidebar.tabsVisible") !== "false";
   });
+
   const [aliasDialogFriendId, setAliasDialogFriendId] = useState<string | null>(null);
   const [aliasDraft, setAliasDraft] = useState("");
+  const [profileCardOpen, setProfileCardOpen] = useState(false);
+  const [presenceMenuOpen, setPresenceMenuOpen] = useState(false);
   const friendClickTimerRef = useRef<number | null>(null);
+  const profileCardRef = useRef<HTMLDivElement | null>(null);
   const searchLower = search.trim().toLowerCase();
   const friendMap = useMemo(() => new Map(friends.map((f) => [f.id, f])), [friends]);
 
@@ -138,18 +163,49 @@ export default function Sidebar({
     };
   }, []);
 
+  useEffect(() => {
+    if (!profileCardOpen) return;
+
+    const closeProfileCard = (event: PointerEvent) => {
+      if (!profileCardRef.current?.contains(event.target as Node)) {
+        setProfileCardOpen(false);
+        setPresenceMenuOpen(false);
+      }
+    };
+
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setProfileCardOpen(false);
+        setPresenceMenuOpen(false);
+      }
+    };
+
+    window.addEventListener("pointerdown", closeProfileCard);
+    window.addEventListener("keydown", closeOnEscape);
+
+    return () => {
+      window.removeEventListener("pointerdown", closeProfileCard);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [profileCardOpen]);
+
   const convLastByFriend = useMemo(() => {
     const map = new Map<string, number>();
+
     if (!userId) return map;
+
     for (const conv of convs) {
       if (conv.type === "group" || conv.participants.length > 2) continue;
       const friendId = conv.participants.find((id) => id !== userId);
+
       if (!friendId) continue;
       const prev = map.get(friendId) ?? 0;
+
       if (conv.lastTs > prev) {
         map.set(friendId, conv.lastTs);
       }
     }
+
     return map;
   }, [convs, userId]);
 
@@ -179,25 +235,35 @@ export default function Sidebar({
       displayName: resolveFriendDisplayName(friend, friendAliasesById),
     }))
     .filter(({ friend, displayName }) => {
-      if (friend.friendStatus === "hidden" || friend.friendStatus === "blocked") return false;
+      if (
+        friend.friendStatus === "hidden" ||
+        friend.friendStatus === "blocked" ||
+        friend.friendStatus === "deleted"
+      ) return false;
+
       if (!searchLower) return true;
+
       return displayName.toLowerCase().includes(searchLower);
     })
     .sort((a, b) => {
       if (a.friend.isFavorite === b.friend.isFavorite) {
         const aSeen = getFriendLastSeen(a.friend.id);
         const bSeen = getFriendLastSeen(b.friend.id);
+
         if (aSeen !== bSeen) {
           return bSeen - aSeen;
         }
+
         return a.displayName.localeCompare(b.displayName);
       }
+
       return a.friend.isFavorite ? -1 : 1;
     });
 
   const favoriteFriends = filteredFriends.filter(({ friend }) => friend.isFavorite);
   const regularFriends = filteredFriends.filter(({ friend }) => !friend.isFavorite);
   const unreadConversationCount = visibleConvs.reduce((total, conv) => total + conv.unread, 0);
+
   const incomingFriendRequestCount = friends.filter(
     (friend) => friend.friendStatus === "request_in"
   ).length;
@@ -213,6 +279,7 @@ export default function Sidebar({
   const resolveConvFriend = (conv: Conversation) => {
     if (conv.type === "group" || conv.participants.length > 2) return undefined;
     const fid = conv.participants.find((id) => id !== userId);
+
     return fid ? friendMap.get(fid) : undefined;
   };
 
@@ -220,6 +287,7 @@ export default function Sidebar({
     if (friendClickTimerRef.current) {
       window.clearTimeout(friendClickTimerRef.current);
     }
+
     friendClickTimerRef.current = window.setTimeout(() => {
       onFriendViewProfile(friendId);
       friendClickTimerRef.current = null;
@@ -231,6 +299,7 @@ export default function Sidebar({
       window.clearTimeout(friendClickTimerRef.current);
       friendClickTimerRef.current = null;
     }
+
     onFriendChat(friendId);
   };
 
@@ -241,13 +310,27 @@ export default function Sidebar({
 
   const getFriendStatusBadge = (friend: UserProfile) => {
     if (friend.friendStatus === "blocked") return t("차단됨", "Blocked");
+
     if (friend.friendStatus === "request_in") return t("요청 받음", "Request received");
+
     if (friend.friendStatus === "request_out") return t("요청 보냄", "Request sent");
+
     return null;
+  };
+
+  const getPresenceLabel = (status: PresenceStatus) => {
+    if (status === "online") return t("온라인", "Online");
+
+    if (status === "idle") return t("자리 비움", "Idle");
+
+    if (status === "dnd") return t("방해 금지", "Do not disturb");
+
+    return t("오프라인", "Offline");
   };
 
   const renderFriendRow = (friend: UserProfile, displayName: string) => {
     const statusBadge = getFriendStatusBadge(friend);
+
     return (
       <div
         key={friend.id}
@@ -255,21 +338,26 @@ export default function Sidebar({
         tabIndex={0}
         onClick={(event) => {
           const target = event.target as HTMLElement | null;
+
           if (target?.closest?.('[data-stop-row-click="true"]')) return;
           handleFriendClick(friend.id);
         }}
         onMouseDown={(event) => {
           const target = event.target as HTMLElement | null;
+
           if (!target?.closest?.('[data-stop-row-click="true"]')) event.preventDefault();
         }}
         onDoubleClick={(event) => {
           const target = event.target as HTMLElement | null;
+
           if (target?.closest?.('[data-stop-row-click="true"]')) return;
           handleFriendDoubleClick(friend.id);
         }}
         onKeyDown={(e) => {
           const target = e.target as HTMLElement | null;
+
           if (target?.closest?.('[data-stop-row-click="true"]')) return;
+
           if (e.key === "Enter" || e.key === " ") {
             e.preventDefault();
             onFriendViewProfile(friend.id);
@@ -292,9 +380,9 @@ export default function Sidebar({
                 </span>
               ) : null}
             </div>
-            <div className="mt-0.5 truncate text-xs text-nkc-muted">
-              {friend.status?.trim() || t("상태 메시지 없음", "No status message")}
-            </div>
+            {friend.status?.trim() ? (
+              <div className="mt-0.5 truncate text-xs text-nkc-muted">{friend.status.trim()}</div>
+            ) : null}
           </div>
         </div>
         <div className="shrink-0 opacity-100 transition-opacity duration-150 sm:opacity-0 sm:group-hover:opacity-100 sm:group-focus-within:opacity-100">
@@ -457,7 +545,7 @@ export default function Sidebar({
         </header>
 
         <div className="px-3 pb-3" data-testid="sidebar-search-region">
-        <div className="flex items-center gap-2 rounded-lg bg-nkc-hover px-3 py-2">
+        <div className="nkc-input-group flex items-center gap-2 rounded-lg bg-nkc-hover px-3 py-2">
           <SearchIcon className="h-4 w-4 shrink-0" />
           <input
             value={search}
@@ -659,10 +747,159 @@ export default function Sidebar({
           </div>
         )}
       </div>
-      <div className="border-t border-nkc-border px-4 py-2">
-        <div className="flex min-w-0 items-center gap-2 text-[11px] font-medium text-nkc-muted">
+      <div ref={profileCardRef} className="relative border-t border-nkc-border px-2">
+        {profileCardOpen && currentUser ? (
+          <div
+            role="dialog"
+            aria-label={t("내 프로필", "My profile")}
+            data-testid="profile-card"
+            className="absolute bottom-full left-2 right-2 z-40 mb-2 rounded-2xl border border-nkc-border bg-nkc-surface p-3 shadow-2xl"
+          >
+            <div className="flex items-center gap-3 px-2 py-2">
+              <span className="relative shrink-0">
+                <Avatar
+                  name={currentUser.displayName}
+                  colorKey={currentUser.id}
+                  avatarRef={currentUser.avatarRef}
+                  size={56}
+                />
+                <span
+                  className={`absolute -bottom-0.5 -right-0.5 h-4 w-4 rounded-full border-[3px] border-nkc-surface ${presenceDotClass(currentUser.presence?.status ?? "online")}`}
+                />
+              </span>
+              <span className="min-w-0">
+                <span className="block truncate text-base font-bold text-nkc-text">
+                  {currentUser.displayName}
+                </span>
+                <span className="mt-0.5 block truncate text-sm text-nkc-muted">
+                  {currentUser.status?.trim() || getPresenceLabel(currentUser.presence?.status ?? "online")}
+                </span>
+              </span>
+            </div>
+
+            <div className="mt-2 overflow-visible rounded-xl bg-nkc-panelMuted p-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setProfileCardOpen(false);
+                  onEditProfile();
+                }}
+                data-testid="open-profile-editor"
+                className="flex w-full items-center gap-3 border-b border-nkc-divider px-3 py-3 text-left text-sm text-nkc-text hover:bg-nkc-hover"
+              >
+                <EditIcon className="h-4 w-4 text-nkc-muted" />
+                <span className="flex-1">{t("프로필 편집", "Edit profile")}</span>
+              </button>
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => setPresenceMenuOpen((open) => !open)}
+                  data-testid="open-presence-menu"
+                  aria-expanded={presenceMenuOpen}
+                  className="flex w-full items-center gap-3 border-b border-nkc-divider px-3 py-3 text-left text-sm text-nkc-text hover:bg-nkc-hover"
+                >
+                  <span className={`h-3 w-3 rounded-full ${presenceDotClass(currentUser.presence?.status ?? "online")}`} />
+                  <span className="flex-1">{t("상태 변경", "Change status")}</span>
+                  <ChevronRight className="h-4 w-4 text-nkc-muted" />
+                </button>
+                {presenceMenuOpen ? (
+                  <div
+                    role="menu"
+                    aria-label={t("상태 변경", "Change status")}
+                    data-testid="presence-menu"
+                    className="absolute bottom-0 left-[calc(100%+8px)] z-50 w-64 rounded-xl border border-nkc-border bg-nkc-surface p-2 shadow-2xl"
+                  >
+                    {([
+                      ["online", t("온라인", "Online"), t("온라인으로 표시", "Appear online")],
+                      ["idle", t("자리 비움", "Idle"), t("자리 비움으로 표시", "Appear idle")],
+                      ["dnd", t("방해 금지", "Do not disturb"), t("방해 금지로 표시", "Appear as do not disturb")],
+                      ["offline", t("오프라인 표시", "Appear offline"), t("오프라인으로 표시", "Appear offline")],
+                    ] as const).map(([status, label, description], index) => (
+                      <button
+                        key={status}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={(currentUser.presence?.status ?? "online") === status}
+                        onClick={() => {
+                          void onSetPresence(status);
+                          setPresenceMenuOpen(false);
+                        }}
+                        data-testid={`presence-${status}`}
+                        className={`flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-nkc-hover ${
+                          index === 0
+                            ? "mb-1 rounded-t-lg border-b border-nkc-divider pb-3"
+                            : "rounded-lg"
+                        }`}
+                      >
+                        {status === "idle" ? (
+                          <MoonIcon className="mt-0.5 h-4 w-4 shrink-0 fill-nkc-warning text-nkc-warning" />
+                        ) : status === "dnd" ? (
+                          <span className="relative mt-1 h-3 w-3 shrink-0 rounded-full bg-nkc-danger after:absolute after:left-0.5 after:right-0.5 after:top-[5px] after:h-0.5 after:bg-nkc-dangerBg" />
+                        ) : status === "offline" ? (
+                          <span className="mt-1 h-3 w-3 shrink-0 rounded-full border-[3px] border-slate-500" />
+                        ) : (
+                          <span className="mt-1 h-3 w-3 shrink-0 rounded-full bg-nkc-success" />
+                        )}
+                        <span className="min-w-0">
+                          <span className="block text-sm font-semibold text-nkc-text">{label}</span>
+                          <span className="block text-xs text-nkc-muted">{description}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+              </div>
+              <button
+                type="button"
+                onClick={() => void onCopyFriendCode()}
+                data-testid="copy-friend-code"
+                className="flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm text-nkc-text hover:bg-nkc-hover"
+              >
+                <CopyIcon className="h-4 w-4 text-nkc-muted" />
+                <span className="flex-1">{t("친구 코드 복사", "Copy friend code")}</span>
+              </button>
+            </div>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => {
+            setProfileCardOpen((open) => !open);
+            setPresenceMenuOpen(false);
+          }}
+          disabled={!currentUser}
+          data-testid="open-profile-card"
+          aria-label={t("내 프로필 열기", "Open my profile")}
+          className="group flex w-full min-w-0 items-center gap-3 rounded-xl border border-transparent bg-transparent px-3 py-2 text-left transition-colors hover:border-nkc-border hover:bg-nkc-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-nkc-focusRing disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <span className="relative shrink-0">
+            <Avatar
+              name={currentUser?.displayName || t("내 프로필", "My profile")}
+              colorKey={currentUser?.id}
+              avatarRef={currentUser?.avatarRef}
+              size={42}
+            />
+            <span
+              className={`absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full border-2 border-nkc-panel ${presenceDotClass(currentUser?.presence?.status ?? "online")}`}
+              title={getPresenceLabel(currentUser?.presence?.status ?? "online")}
+              aria-label={getPresenceLabel(currentUser?.presence?.status ?? "online")}
+            />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-sm font-semibold text-nkc-text">
+              {currentUser?.displayName || t("내 프로필", "My profile")}
+            </span>
+            <span className="mt-0.5 block truncate text-xs text-nkc-muted">
+              {currentUser?.status?.trim() || getPresenceLabel(currentUser?.presence?.status ?? "online")}
+            </span>
+          </span>
+        </button>
+        <div
+          className="-mx-2 flex min-w-0 items-center gap-2 border-t border-nkc-border px-4 py-1 text-[11px] font-medium text-nkc-muted"
+          data-testid="sidebar-network-status"
+        >
           <span className={`h-2 w-2 shrink-0 rounded-full ${networkStatusDotClass}`} />
-          <span className="truncate">{resolvedNetworkStatus.label}</span>
+          <span className="truncate" title={resolvedNetworkStatus.label}>{resolvedNetworkStatus.label}</span>
         </div>
       </div>
       <Dialog.Root
@@ -674,14 +911,12 @@ export default function Sidebar({
         }}
       >
         <Dialog.Portal>
-          <Dialog.Overlay className="fixed inset-0 bg-black/70" />
-          <Dialog.Content className="fixed left-1/2 top-1/2 w-[92vw] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-nkc-border bg-nkc-surface p-5 animate-signal-fade-scale">
+          <Dialog.Overlay className="nkc-modal-overlay fixed inset-0 bg-black/70" />
+          <Dialog.Content className="nkc-modal-content fixed left-1/2 top-1/2 w-[92vw] max-w-sm -translate-x-1/2 -translate-y-1/2 rounded-xl border border-nkc-border bg-nkc-surface p-5 animate-signal-fade-scale">
             <Dialog.Title className="text-sm font-semibold text-nkc-text">
-              별명 바꾸기(나만)
-            </Dialog.Title>
+              {t("별명 바꾸기(나만)", "Change alias (only me)")}</Dialog.Title>
             <Dialog.Description className="mt-1 text-xs text-nkc-muted">
-              별명은 내 기기에서만 보입니다.
-            </Dialog.Description>
+              {t("별명은 내 기기에서만 보입니다.", "Aliases are only visible on this device.")}</Dialog.Description>
             <input
               value={aliasDraft}
               onChange={(event) => setAliasDraft(event.target.value)}
@@ -698,8 +933,7 @@ export default function Sidebar({
                 }}
                 className="rounded-lg px-3 py-1.5 text-xs text-nkc-muted hover:bg-nkc-hover hover:text-nkc-text"
               >
-                취소
-              </button>
+                {t("취소", "Cancel")}</button>
               <button
                 type="button"
                 onClick={() => {
@@ -711,8 +945,7 @@ export default function Sidebar({
                 }}
                 className="rounded-lg bg-nkc-accent px-3 py-1.5 text-xs font-semibold text-white hover:brightness-110"
               >
-                저장
-              </button>
+                {t("저장", "Save")}</button>
             </div>
           </Dialog.Content>
         </Dialog.Portal>
@@ -755,6 +988,7 @@ function ConversationRow({
 }: ConversationRowProps) {
   const handleSelect = (event: MouseEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement | null;
+
     if (target?.closest?.('[data-stop-row-click="true"]')) return;
     onSelect();
   };
@@ -767,11 +1001,14 @@ function ConversationRow({
       onClick={handleSelect}
       onMouseDown={(event) => {
         const target = event.target as HTMLElement | null;
+
         if (!target?.closest?.('[data-stop-row-click="true"]')) event.preventDefault();
       }}
       onKeyDown={(e) => {
         const target = e.target as HTMLElement | null;
+
         if (target?.closest?.('[data-stop-row-click="true"]')) return;
+
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
           onSelect();
@@ -791,6 +1028,7 @@ function ConversationRow({
         const avatarRef = isGroup ? groupAvatarRefsByConv[conv.id] : friend?.avatarRef;
         const directName = resolveFriendDisplayName(friend, friendAliasesById);
         const avatarName = isGroup ? conv.name : directName;
+
         return <Avatar name={avatarName} colorKey={isGroup ? conv.id : friend?.id ?? conv.id} avatarRef={avatarRef} size={44} />;
       })()}
       <div className="min-w-0 flex-1 overflow-hidden">

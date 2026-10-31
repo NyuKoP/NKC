@@ -27,6 +27,7 @@ export type SettingsView =
   | "privacyKeys"
   | "theme"
   | "friends"
+  | "developer"
   | "danger"
   | "network"
   | "help"
@@ -89,7 +90,7 @@ export const SETTINGS_ROUTES: SettingsRoute[] = [
 ];
 
 export const routeIconByView: Record<
-  Exclude<SettingsView, "main" | "privacyKeys" | "danger" | "help">,
+  Exclude<SettingsView, "main" | "privacyKeys" | "developer" | "danger" | "help">,
   LucideIcon
 > = {
   notifications: Bell,

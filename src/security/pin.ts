@@ -1,4 +1,6 @@
-import { getSecretStore, isSecretStoreAvailable } from "./secretStore";
+import { getSecretStore, isSecretStoreAvailable, type SecretStore } from "./secretStore";
+import { getActiveAccountId } from "../accounts/accountRegistry";
+import { getAccountOwnerGeneration } from "../accounts/accountOwnerLifecycle";
 import { getVaultKey } from "../crypto/sessionKeyring";
 import { getSodium } from "./sodium";
 
@@ -37,10 +39,15 @@ export type PinVerifyResult =
     };
 
 const PIN_RECORD_KEY = "nkc_pin_v1";
+
 const PIN_RESET_KEY = "nkc_pin_reset_v1";
+
 const MAX_BACKOFF_MS = 30_000;
+
 const PIN_ENC_DOMAIN = "NKC_PIN_ENC_V1";
+
 const PIN_UNAVAILABLE_MESSAGE = "PIN lock is unavailable on this platform/build.";
+
 const PIN_FORMAT = /^\d{4,8}$/;
 
 export class PinUnavailableError extends Error {
@@ -61,9 +68,11 @@ export const isPinUnavailableError = (error: unknown): error is PinUnavailableEr
 
 export const assertValidPin = (pin: string) => {
   const normalized = pin.trim();
+
   if (!PIN_FORMAT.test(normalized)) {
     throw new Error("PIN must be 4-8 digits.");
   }
+
   return normalized;
 };
 
@@ -73,10 +82,12 @@ const concatBytes = (chunks: Uint8Array[]) => {
   const total = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
   const out = new Uint8Array(total);
   let offset = 0;
+
   for (const chunk of chunks) {
     out.set(chunk, offset);
     offset += chunk.length;
   }
+
   return out;
 };
 
@@ -99,64 +110,104 @@ const requirePinAvailable = async () => {
   }
 };
 
-const getPinStore = () => getSecretStore();
+const getPinStore = () => {
+  const accountId = getActiveAccountId();
+  const generation = getAccountOwnerGeneration();
+  const assertLocal = () => {
+    if (accountId !== getActiveAccountId() || generation !== getAccountOwnerGeneration()) throw new Error("OWNER_SESSION_CHANGED");
+  };
+  let captured: SecretStore | undefined;
 
-const readPinRecord = async () => {
-  const store = getPinStore();
+  try { captured = getSecretStore(); } catch (error) {
+    if (!(error instanceof Error) || error.message !== "SECRET_STORE_UNAVAILABLE") throw error;
+  }
+
+  const operate = async <T,>(operation: (store: SecretStore) => Promise<T>) => {
+    assertLocal();
+    if (!captured) throw new PinUnavailableError();
+    const value = await operation(captured);
+    assertLocal();
+
+    return value;
+  };
+
+  return { assertLocal, get: (key: string) => operate(store => store.get(key)),
+    set: (key: string, value: string) => operate(store => store.set(key, value)),
+    remove: (key: string) => operate(store => store.remove(key)) };
+};
+
+type PinStore = ReturnType<typeof getPinStore>;
+
+const readPinRecord = async (store: PinStore) => {
   const raw = await store.get(PIN_RECORD_KEY);
+
   if (!raw) return null;
+
   try {
     const record = JSON.parse(raw) as PinRecord & { v?: number };
+
     if (record.v === 1) {
       if (!record.salt_b64 || !record.hash_b64 || !record.nonce_b64 || !record.sealedVk_b64) {
         await store.remove(PIN_RECORD_KEY);
+
         return null;
       }
+
       return record;
     }
+
     if (record.v === 2) {
       if (!record.verifier_str || !record.nonce_b64 || !record.sealedVk_b64) {
         await store.remove(PIN_RECORD_KEY);
+
         return null;
       }
+
       return record;
     }
+
     await store.remove(PIN_RECORD_KEY);
+
     return null;
   } catch (error) {
     console.error("Failed to read PIN record", error);
     await store.remove(PIN_RECORD_KEY);
+
     return null;
   }
 };
 
-const writePinRecord = async (record: PinRecord) => {
-  const store = getPinStore();
+const writePinRecord = async (record: PinRecord, store: PinStore) => {
   await store.set(PIN_RECORD_KEY, JSON.stringify(record));
 };
 
-const setPinNeedsReset = async (needsReset: boolean) => {
-  const store = getPinStore();
+const setPinNeedsReset = async (needsReset: boolean, store: PinStore) => {
+
   if (!needsReset) {
     await store.remove(PIN_RESET_KEY);
+
     return;
   }
+
   await store.set(
     PIN_RESET_KEY,
     JSON.stringify({ needsReset: true, updatedAt: Date.now() })
   );
 };
 
-const getPinNeedsReset = async () => {
-  const store = getPinStore();
+const getPinNeedsReset = async (store: PinStore) => {
   const raw = await store.get(PIN_RESET_KEY);
+
   if (!raw) return false;
+
   try {
     const parsed = JSON.parse(raw) as { needsReset?: boolean };
+
     return Boolean(parsed.needsReset);
   } catch (error) {
     console.error("Failed to read PIN reset flag", error);
     await store.remove(PIN_RESET_KEY);
+
     return false;
   }
 };
@@ -172,6 +223,7 @@ const bumpFailures = (record: PinRecord) => {
   const failures = (record.failures || 0) + 1;
   const exp = Math.min(5, failures - 1);
   const backoffMs = Math.min(MAX_BACKOFF_MS, 1000 * 2 ** exp);
+
   return {
     ...record,
     failures,
@@ -180,7 +232,7 @@ const bumpFailures = (record: PinRecord) => {
   };
 };
 
-export const getPinStatus = async () => {
+export const getPinStatus = async (store = getPinStore()) => {
   if (!(await isPinAvailable())) {
     return {
       enabled: false,
@@ -190,8 +242,10 @@ export const getPinStatus = async () => {
       available: false,
     };
   }
-  const record = await readPinRecord();
-  const needsReset = await getPinNeedsReset();
+
+  const record = await readPinRecord(store);
+  const needsReset = await getPinNeedsReset(store);
+
   return {
     enabled: Boolean(record) || needsReset,
     needsReset,
@@ -201,20 +255,25 @@ export const getPinStatus = async () => {
   };
 };
 
-export const setPin = async (pin: string) => {
-  await requirePinAvailable();
-  const normalized = assertValidPin(pin);
+export const setPin = async (pin: string, store = getPinStore()) => {
   const vk = getVaultKey();
+  await requirePinAvailable();
+  store.assertLocal();
+  const normalized = assertValidPin(pin);
+
   if (!vk) {
     throw new Error("Vault key is unavailable.");
   }
+
   const sodium = await getSodium();
+  store.assertLocal();
   const opslimit = sodium.crypto_pwhash_OPSLIMIT_MODERATE;
   const memlimit = sodium.crypto_pwhash_MEMLIMIT_MODERATE;
   const verifier_str = sodium.crypto_pwhash_str(normalized, opslimit, memlimit);
   const encKey = derivePinEncKey(sodium, normalized);
   const nonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
   const sealed = sodium.crypto_secretbox_easy(vk, nonce, encKey);
+
   const record: PinRecordV2 = {
     v: 2,
     verifier_str,
@@ -224,21 +283,26 @@ export const setPin = async (pin: string) => {
     lockedUntil: 0,
     updatedAt: Date.now(),
   };
-  await writePinRecord(record);
-  await setPinNeedsReset(false);
+
+  await writePinRecord(record, store);
+  await setPinNeedsReset(false, store);
 };
 
-export const verifyPin = async (pin: string): Promise<PinVerifyResult> => {
+export const verifyPin = async (pin: string, store = getPinStore()): Promise<PinVerifyResult> => {
   if (!(await isPinAvailable())) {
     return { ok: false, reason: "unavailable", message: PIN_UNAVAILABLE_MESSAGE };
   }
-  const record = await readPinRecord();
+
+  const record = await readPinRecord(store);
+
   if (!record) {
-    if (await getPinNeedsReset()) {
+    if (await getPinNeedsReset(store)) {
       return { ok: false, reason: "not_set" };
     }
+
     return { ok: false, reason: "not_set" };
   }
+
   if (record.lockedUntil && record.lockedUntil > Date.now()) {
     return {
       ok: false,
@@ -246,47 +310,62 @@ export const verifyPin = async (pin: string): Promise<PinVerifyResult> => {
       retryAfterMs: record.lockedUntil - Date.now(),
     };
   }
+
   const normalized = pin.trim();
+
   if (!PIN_FORMAT.test(normalized)) {
     const next = bumpFailures(record);
-    await writePinRecord(next);
+    await writePinRecord(next, store);
+
     return {
       ok: false,
       reason: "mismatch",
       retryAfterMs: next.lockedUntil - Date.now(),
     };
   }
+
   const sodium = await getSodium();
+  store.assertLocal();
+
   if (record.v === 2) {
     const verified = sodium.crypto_pwhash_str_verify(record.verifier_str, normalized);
+
     if (!verified) {
       const next = bumpFailures(record);
-      await writePinRecord(next);
+      await writePinRecord(next, store);
+
       return {
         ok: false,
         reason: "mismatch",
         retryAfterMs: next.lockedUntil - Date.now(),
       };
     }
+
     const encKey = derivePinEncKey(sodium, normalized);
+
     const nonce = sodium.from_base64(
       record.nonce_b64,
       sodium.base64_variants.ORIGINAL
     );
+
     const sealed = sodium.from_base64(
       record.sealedVk_b64,
       sodium.base64_variants.ORIGINAL
     );
+
     const vk = sodium.crypto_secretbox_open_easy(sealed, nonce, encKey);
-    await writePinRecord(resetFailures(record));
+    await writePinRecord(resetFailures(record), store);
+
     return { ok: true, vaultKey: new Uint8Array(vk) };
   }
 
   const salt = sodium.from_base64(record.salt_b64, sodium.base64_variants.ORIGINAL);
+
   const expectedHash = sodium.from_base64(
     record.hash_b64,
     sodium.base64_variants.ORIGINAL
   );
+
   const pinKey = sodium.crypto_pwhash(
     32,
     normalized,
@@ -295,34 +374,43 @@ export const verifyPin = async (pin: string): Promise<PinVerifyResult> => {
     record.memlimit,
     sodium.crypto_pwhash_ALG_ARGON2ID13
   );
+
   const matches = sodium.memcmp(pinKey, expectedHash);
+
   if (!matches) {
     const next = bumpFailures(record);
-    await writePinRecord(next);
+    await writePinRecord(next, store);
+
     return {
       ok: false,
       reason: "mismatch",
       retryAfterMs: next.lockedUntil - Date.now(),
     };
   }
+
   const nonce = sodium.from_base64(
     record.nonce_b64,
     sodium.base64_variants.ORIGINAL
   );
+
   const sealed = sodium.from_base64(
     record.sealedVk_b64,
     sodium.base64_variants.ORIGINAL
   );
+
   const vk = sodium.crypto_secretbox_open_easy(sealed, nonce, pinKey);
+
   try {
     const verifier_str = sodium.crypto_pwhash_str(
       normalized,
       sodium.crypto_pwhash_OPSLIMIT_MODERATE,
       sodium.crypto_pwhash_MEMLIMIT_MODERATE
     );
+
     const encKey = derivePinEncKey(sodium, normalized);
     const nextNonce = sodium.randombytes_buf(sodium.crypto_secretbox_NONCEBYTES);
     const nextSealed = sodium.crypto_secretbox_easy(vk, nextNonce, encKey);
+
     const migrated: PinRecordV2 = {
       v: 2,
       verifier_str,
@@ -332,31 +420,49 @@ export const verifyPin = async (pin: string): Promise<PinVerifyResult> => {
       lockedUntil: 0,
       updatedAt: Date.now(),
     };
-    await writePinRecord(migrated);
+
+    await writePinRecord(migrated, store);
   } catch (error) {
+    store.assertLocal();
     console.error("Failed to migrate PIN record", error);
-    await writePinRecord(resetFailures(record));
+    await writePinRecord(resetFailures(record), store);
   }
+
   return { ok: true, vaultKey: new Uint8Array(vk) };
 };
 
-export const clearPin = async () => {
+export const clearPin = async (store = getPinStore()) => {
   await requirePinAvailable();
-  const store = getPinStore();
   await store.remove(PIN_RECORD_KEY);
-  await setPinNeedsReset(false);
+  await setPinNeedsReset(false, store);
 };
 
-export const clearPinRecord = async () => {
+export const clearPinRecord = async (store = getPinStore()) => {
   await requirePinAvailable();
-  const store = getPinStore();
   await store.remove(PIN_RECORD_KEY);
-  await setPinNeedsReset(true);
+  await setPinNeedsReset(true, store);
 };
 
-export const wipePinState = async () => {
+export const reconcilePinAfterStartKeyRotation = async (store = getPinStore()) => {
+  const previous = await getPinStatus(store);
+
+  if (!previous.available) {
+    return { enabled: false, needsReset: false, available: false };
+  }
+
+  if (previous.enabled) {
+    await clearPinRecord(store);
+
+    return { enabled: true, needsReset: true, available: true };
+  }
+
+  await clearPin(store);
+
+  return { enabled: false, needsReset: false, available: true };
+};
+
+export const wipePinState = async (store = getPinStore()) => {
   if (!(await isPinAvailable())) return;
-  const store = getPinStore();
   await store.remove(PIN_RECORD_KEY);
   await store.remove(PIN_RESET_KEY);
 };

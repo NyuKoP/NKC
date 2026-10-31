@@ -12,29 +12,39 @@ export const useProfileDecorations = ({ convs }: UseProfileDecorationsArgs) => {
   const [groupAvatarOverrides, setGroupAvatarOverrides] = useState<Record<string, string | null>>(
     {}
   );
+
   const [groupAvatarOverrideVersion, setGroupAvatarOverrideVersion] = useState(0);
+
   const [friendAliasesById, setFriendAliasesById] = useState<Record<string, string | undefined>>(
     {}
   );
+
   const [friendAliasVersion, setFriendAliasVersion] = useState(0);
 
   useEffect(() => {
     let active = true;
+
     const load = async () => {
       const groupConvs = convs.filter(
         (conv) => conv.type === "group" || conv.participants.length > 2
       );
+
       if (!groupConvs.length) {
         if (active) setGroupAvatarOverrides({});
+
         return;
       }
+
       const entries = await Promise.all(
         groupConvs.map(async (conv) => [conv.id, await getGroupAvatarOverride(conv.id)] as const)
       );
+
       if (!active) return;
       setGroupAvatarOverrides(Object.fromEntries(entries));
     };
+
     void load();
+
     return () => {
       active = false;
     };
@@ -42,12 +52,16 @@ export const useProfileDecorations = ({ convs }: UseProfileDecorationsArgs) => {
 
   useEffect(() => {
     let active = true;
+
     const load = async () => {
       const map = await listFriendAliases();
+
       if (!active) return;
       setFriendAliasesById(map);
     };
+
     void load();
+
     return () => {
       active = false;
     };
@@ -57,10 +71,12 @@ export const useProfileDecorations = ({ convs }: UseProfileDecorationsArgs) => {
     const map: Record<string, ReturnType<typeof parseAvatarRef>> = {};
     convs.forEach((conv) => {
       const resolved = resolveGroupAvatarRef(conv, groupAvatarOverrides[conv.id]);
+
       if (resolved) {
         map[conv.id] = resolved;
       }
     });
+
     return map;
   }, [convs, groupAvatarOverrides]);
 
@@ -78,8 +94,10 @@ export const useProfileDecorations = ({ convs }: UseProfileDecorationsArgs) => {
       if (!nextAlias) {
         const rest = { ...prev };
         delete rest[friendId];
+
         return rest;
       }
+
       return { ...prev, [friendId]: nextAlias };
     });
   }, []);

@@ -23,8 +23,6 @@ export type FriendRouteAttemptTerminal = {
   details?: string;
 };
 
-type CodedError = Error & { code?: string };
-
 const DEFAULT_DEADLINE_MS = 30_000;
 
 const normalizeCode = (value: string) =>
@@ -34,17 +32,21 @@ const normalizeCode = (value: string) =>
     .replace(/^_+|_+$/g, "");
 
 const inferErrorCode = (error: unknown, fallback = "UNKNOWN_ERROR") => {
-  if (error && typeof error === "object") {
-    const code = (error as CodedError).code;
+  if (error && typeof error === "object" && "code" in error) {
+    const code = error.code;
+
     if (typeof code === "string" && code.trim()) {
       return normalizeCode(code);
     }
   }
+
   const message = error instanceof Error ? error.message : String(error);
   const prefixed = /^([A-Z0-9_:-]{3,})\b/.exec(message.trim());
+
   if (prefixed?.[1]) {
     return normalizeCode(prefixed[1]);
   }
+
   return normalizeCode(fallback);
 };
 
@@ -53,19 +55,23 @@ export const createFinalizeAttemptOnce = (
   now: () => number = () => Date.now()
 ) => {
   let finalizedPromise: Promise<FriendRouteAttemptTerminal> | null = null;
+
   return (
     terminal_status: FriendRouteTerminalStatus,
     terminal_error_code: string | null,
     details?: string
   ) => {
     if (finalizedPromise) return finalizedPromise;
+
     const payload: FriendRouteAttemptTerminal = {
       attempt_ended_at: now(),
       terminal_status,
       terminal_error_code,
       details,
     };
+
     finalizedPromise = Promise.resolve(writeTerminal(payload)).then(() => payload);
+
     return finalizedPromise;
   };
 };
@@ -100,6 +106,7 @@ export const runFriendRouteAttempt = async (
 
   const abortController = new AbortController();
   const finalizeAttemptOnce = createFinalizeAttemptOnce(options.onAttemptTerminal, now);
+
   const terminalFromPayload = (
     terminal: FriendRouteAttemptTerminal,
     via?: FriendRoutePath
@@ -114,6 +121,7 @@ export const runFriendRouteAttempt = async (
 
   if (options.candidates.length === 0) {
     const terminal = await finalizeAttemptOnce("failed", "NO_ROUTE_CANDIDATE", "No route candidates");
+
     return terminalFromPayload(terminal);
   }
 
@@ -129,9 +137,11 @@ export const runFriendRouteAttempt = async (
       via?: FriendRoutePath
     ) => {
       const terminal = await finalizeAttemptOnce(status, code, details);
+
       if (!abortController.signal.aborted) {
         abortController.abort();
       }
+
       resolve(terminalFromPayload(terminal, via));
     };
 
@@ -142,18 +152,23 @@ export const runFriendRouteAttempt = async (
     }, deadlineMs);
 
     let pending = options.candidates.length;
+
     for (const candidate of options.candidates) {
       void candidate
         .run(abortController.signal)
         .then((result) => {
           if (settled) return;
+
           if (result.ok) {
             settled = true;
             void finish("sent", null, result.details, result.via);
+
             return;
           }
+
           failures.push(`${candidate.path}:${result.code}`);
           pending -= 1;
+
           if (pending > 0) return;
           settled = true;
           const errorCode = normalizeCode(result.code || "ROUTE_FAILED");
@@ -163,6 +178,7 @@ export const runFriendRouteAttempt = async (
           if (settled) return;
           failures.push(`${candidate.path}:${inferErrorCode(error, "ROUTE_EXCEPTION")}`);
           pending -= 1;
+
           if (pending > 0) return;
           settled = true;
           const code = inferErrorCode(error, "ROUTE_EXCEPTION");

@@ -62,8 +62,10 @@ jobs:
             NKC_TOR_MANIFEST_FILE="$RUNNER_TEMP/tor-pins/manifest.txt" \
             npm run update:tor-pins
 
-      - name: Test pin lookup
-        run: npm test -- --run src/main/onion/install/__tests__/pinnedHash.test.ts
+      - name: Require private pin verification
+        run: |
+          echo "Tor pin updates require private security qualification."
+          exit 1
 
       - name: Create update pull request
         env:

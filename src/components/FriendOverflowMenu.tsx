@@ -1,3 +1,4 @@
+import { useAppStore } from "../app/store";
 import * as DropdownMenu from "@radix-ui/react-dropdown-menu";
 import { Edit3, MoreHorizontal, Star, StarOff, User } from "lucide-react";
 import { useRef, useState } from "react";
@@ -25,13 +26,16 @@ export default function FriendOverflowMenu({
   onBlock,
   onRenameAlias,
 }: FriendOverflowMenuProps) {
+  const language = useAppStore((state) => state.ui.language);
+  const t = (ko: string, en: string) => language === "ko" ? ko : en;
   const [open, setOpen] = useState(false);
   // Avoid double-toggles when click/select fire for the same item.
   const skipNextSelectRef = useRef(false);
+
   return (
     <DropdownMenu.Root open={open} onOpenChange={setOpen}>
       <DropdownMenu.Trigger asChild>
-        <button className="flex h-8 w-8 items-center justify-center rounded-full text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text" data-stop-row-click="true" data-testid={`friend-menu-${friendId}`} onClick={(event) => { event.stopPropagation(); }}>
+        <button aria-label={t("더 보기", "More options")} className="flex h-8 w-8 items-center justify-center rounded-full text-nkc-muted hover:bg-nkc-panelMuted hover:text-nkc-text" data-stop-row-click="true" data-testid={`friend-menu-${friendId}`} onClick={(event) => { event.stopPropagation(); }}>
           <MoreHorizontal size={16} />
         </button>
       </DropdownMenu.Trigger>
@@ -49,8 +53,7 @@ export default function FriendOverflowMenu({
             data-stop-row-click="true"
             className="cursor-pointer rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
           >
-            채팅
-          </DropdownMenu.Item>
+            {t("채팅", "Chat")}</DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={(event) => {
               event.stopPropagation();
@@ -61,8 +64,7 @@ export default function FriendOverflowMenu({
             className="flex cursor-pointer items-center gap-2 rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
           >
             <User size={14} />
-            프로필 보기
-          </DropdownMenu.Item>
+            {t("프로필 보기", "View profile")}</DropdownMenu.Item>
           <DropdownMenu.Item
             onClick={(event) => {
               event.preventDefault();
@@ -77,8 +79,10 @@ export default function FriendOverflowMenu({
             onSelect={(event) => {
               if (skipNextSelectRef.current) {
                 event.stopPropagation();
+
                 return;
               }
+
               event.stopPropagation();
               onToggleFavorite();
               setOpen(false);
@@ -89,7 +93,7 @@ export default function FriendOverflowMenu({
             className="flex cursor-pointer items-center gap-2 rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
           >
             {isFavorite ? <StarOff size={14} /> : <Star size={14} />}
-            {isFavorite ? "즐겨찾기 해제" : "즐겨찾기"}
+            {isFavorite ? t("즐겨찾기 해제", "Remove favorite") : t("즐겨찾기", "Favorite")}
           </DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={(event) => {
@@ -101,8 +105,7 @@ export default function FriendOverflowMenu({
             className="flex cursor-pointer items-center gap-2 rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
           >
             <Edit3 size={14} />
-            이름 바꾸기(나만)
-          </DropdownMenu.Item>
+            {t("이름 바꾸기(나만)", "Rename (only me)")}</DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={(event) => {
               event.stopPropagation();
@@ -112,8 +115,7 @@ export default function FriendOverflowMenu({
             data-stop-row-click="true"
             className="cursor-pointer rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
           >
-            숨기기
-          </DropdownMenu.Item>
+            {t("숨기기", "Hide")}</DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={(event) => {
               event.stopPropagation();
@@ -123,8 +125,7 @@ export default function FriendOverflowMenu({
             data-stop-row-click="true"
             className="cursor-pointer rounded-nkc px-3 py-2 text-nkc-text outline-none hover:bg-nkc-panelMuted"
           >
-            차단
-          </DropdownMenu.Item>
+            {t("차단", "Block")}</DropdownMenu.Item>
           <DropdownMenu.Item
             onSelect={(event) => {
               event.stopPropagation();
@@ -132,10 +133,9 @@ export default function FriendOverflowMenu({
               setOpen(false);
             }}
             data-stop-row-click="true"
-            className="cursor-pointer rounded-nkc px-3 py-2 text-red-400 outline-none hover:bg-red-500/10"
+            className="cursor-pointer rounded-nkc px-3 py-2 text-nkc-danger outline-none hover:bg-nkc-dangerBg"
           >
-            삭제
-          </DropdownMenu.Item>
+            {t("삭제", "Delete")}</DropdownMenu.Item>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

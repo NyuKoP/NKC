@@ -12,14 +12,20 @@ export class RouteController {
 
   decideTransport(config: NetConfig): "directP2P" | "selfOnion" | "onionRouter" {
     if (config.mode === "directP2P") return "directP2P";
+
     if (config.mode === "onionRouter") return "onionRouter";
+
     if (!config.selfOnionEnabled) return "onionRouter";
     const now = Date.now();
+
     if (this.fallbackUntil > now) return "onionRouter";
+
     if (this.shouldFallback(config, now)) {
       this.fallbackUntil = now + 2 * 60 * 1000;
+
       return "onionRouter";
     }
+
     return "selfOnion";
   }
 
@@ -44,6 +50,7 @@ export class RouteController {
 
   private trackRtt(rttMs: number) {
     this.ackRtts.push(rttMs);
+
     if (this.ackRtts.length > 200) {
       this.ackRtts.shift();
     }
@@ -51,6 +58,7 @@ export class RouteController {
 
   private trackSendEvent(kind: SendEvent) {
     this.sendHistory.push(kind);
+
     if (this.sendHistory.length > 20) {
       this.sendHistory.shift();
     }
@@ -60,19 +68,25 @@ export class RouteController {
     if (!this.ackRtts.length) return null;
     const sorted = [...this.ackRtts].sort((a, b) => a - b);
     const idx = Math.floor(sorted.length * 0.95) - 1;
+
     return sorted[Math.max(idx, 0)];
   }
 
   private shouldFallback(config: NetConfig, now: number): boolean {
     if (this.routeBuildFailStreak >= 3) return true;
+
     if (this.relayPoolSize > 0 && this.relayPoolSize < config.selfOnionMinRelays) {
       return true;
     }
+
     if (this.sendHistory.length >= 20) {
       const failures = this.sendHistory.filter((event) => event === "send_fail").length;
+
       if (failures / this.sendHistory.length > 0.3) return true;
     }
+
     const p95 = this.getP95();
+
     if (p95 !== null && p95 > 10_000) {
       if (this.p95OverSince === null) {
         this.p95OverSince = now;
@@ -82,6 +96,7 @@ export class RouteController {
     } else {
       this.p95OverSince = null;
     }
+
     return false;
   }
 }

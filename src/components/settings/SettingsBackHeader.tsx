@@ -12,18 +12,18 @@ export default function SettingsBackHeader({
   onBack,
 }: SettingsBackHeaderProps) {
   return (
-    <div className="flex items-center justify-between">
+    <div className="settings-back-header">
       <button
         type="button"
+        data-testid="settings-back-button"
         onClick={onBack}
         className="flex items-center gap-2 rounded-nkc border border-nkc-border px-3 py-2 text-xs text-nkc-text hover:bg-nkc-panel"
       >
         <ChevronLeft size={14} />
         {backLabel}
       </button>
-      <span className="text-sm font-semibold text-nkc-text">{title}</span>
-      <div className="w-12" />
+      <h2 className="text-base font-semibold text-nkc-text">{title}</h2>
+
     </div>
   );
 }
-

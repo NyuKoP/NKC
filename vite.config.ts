@@ -6,7 +6,9 @@ import react from "@vitejs/plugin-react";
 import electron from "vite-plugin-electron";
 
 const nativeWorkerName = process.platform === "win32" ? "nkc-worker.exe" : "nkc-worker";
+
 const nativeWorkerPath = path.resolve(__dirname, "native", "bin", nativeWorkerName);
+
 const nativeWorkerSha256 = fs.existsSync(nativeWorkerPath)
   ? crypto.createHash("sha256").update(fs.readFileSync(nativeWorkerPath)).digest("hex")
   : "";
@@ -47,7 +49,9 @@ const electronPreloadBuild = {
 
 const clientManualChunks = (id: string) => {
   if (!id.includes("node_modules")) return undefined;
+
   if (id.includes("libsodium")) return "vendor-crypto";
+
   return "vendor";
 };
 

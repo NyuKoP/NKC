@@ -33,6 +33,7 @@ export const componentRegistry = {
 
 const getComponent = (network: OnionNetwork) => {
   if (network !== "tor") throw new Error("Unsupported onion network");
+
   return componentRegistry.tor;
 };
 
@@ -53,5 +54,6 @@ export const getPinnedSha256 = (network: OnionNetwork, lookup: PinnedHashLookup)
     version: lookup.version,
     filename: lookup.assetName,
   });
+
   return getComponent(network).pinnedSha256[key];
 };

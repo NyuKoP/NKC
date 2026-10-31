@@ -1,7 +1,7 @@
 import { canonicalBytes } from "../crypto/canonicalJson";
 import { decodeBase64Url, encodeBase64Url } from "./base64url";
 import type { FriendCodeV1 } from "./friendCode";
-import { sha256 } from "./sha256";
+import { UUID_PATTERN, extractCodeBody, checksum4Bytes, hasValidCodeChecksum } from "./codeEncoding";
 
 export type InviteCodeV1 = {
   v: 1;
@@ -12,51 +12,6 @@ export type InviteCodeV1 = {
 };
 
 const PREFIX = "NKI1-";
-const ZERO_WIDTH_OR_BOM = /[\u200B-\u200D\uFEFF]/g;
-const BASE64_BODY_ALLOWED = /[^A-Za-z0-9_+\-/=]/g;
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-const sanitizeScannedCode = (value: string) => {
-  let next = value.replace(ZERO_WIDTH_OR_BOM, "").trim();
-  next = next.replace(/^[\s"'`([{<]+/, "");
-  next = next.replace(/[\s"'`)\]}>:;,.!?]+$/, "");
-  return next;
-};
-
-const extractCodeBody = (value: string, prefix: string) => {
-  const compact = sanitizeScannedCode(value).replace(/\s+/g, "");
-  const prefixCompact = prefix.replace("-", "");
-  if (!compact.toUpperCase().startsWith(prefixCompact)) return null;
-  let raw = compact.slice(prefixCompact.length);
-  raw = raw.replace(/^[-:]/, "");
-  raw = raw.replace(BASE64_BODY_ALLOWED, "");
-  return raw;
-};
-
-const hash32Bytes = (bytes: Uint8Array) => {
-  const seeds = [
-    0x811c9dc5, 0x01000193, 0x1234567, 0x9e3779b9, 0x85ebca6b, 0xc2b2ae35,
-    0x27d4eb2f, 0x165667b1,
-  ];
-  const out = new Uint8Array(seeds.length * 4);
-  seeds.forEach((seed, idx) => {
-    let hash = seed >>> 0;
-    for (const byte of bytes) {
-      hash ^= byte;
-      hash = Math.imul(hash, 0x01000193);
-    }
-    const offset = idx * 4;
-    out[offset] = (hash >>> 24) & 0xff;
-    out[offset + 1] = (hash >>> 16) & 0xff;
-    out[offset + 2] = (hash >>> 8) & 0xff;
-    out[offset + 3] = hash & 0xff;
-  });
-  return out;
-};
-
-const checksum4Bytes = (payloadBytes: Uint8Array) => sha256(payloadBytes).slice(0, 4);
-const legacyChecksum4Bytes = (payloadBytes: Uint8Array) => hash32Bytes(payloadBytes).slice(0, 4);
 
 export const encodeInviteCodeV1 = (data: InviteCodeV1) => {
   const payload: InviteCodeV1 = {
@@ -66,11 +21,13 @@ export const encodeInviteCodeV1 = (data: InviteCodeV1) => {
     exp: Number.isFinite(data.exp) ? data.exp : undefined,
     oneTime: data.oneTime ? true : undefined,
   };
+
   const payloadBytes = canonicalBytes(payload);
   const checksum = checksum4Bytes(payloadBytes);
   const combined = new Uint8Array(payloadBytes.length + checksum.length);
   combined.set(payloadBytes, 0);
   combined.set(checksum, payloadBytes.length);
+
   return `${PREFIX}${encodeBase64Url(combined)}`;
 };
 
@@ -78,11 +35,13 @@ export const decodeInviteCodeV1 = (
   code: string
 ): InviteCodeV1 | { error: string } => {
   const raw = extractCodeBody(code, PREFIX);
+
   if (!raw) {
     return { error: "Invalid invite code prefix." };
   }
 
   let decoded: Uint8Array;
+
   try {
     decoded = decodeBase64Url(raw);
   } catch {
@@ -95,51 +54,52 @@ export const decodeInviteCodeV1 = (
 
   const payloadBytes = decoded.slice(0, decoded.length - 4);
   const checksum = decoded.slice(decoded.length - 4);
-  const expected = checksum4Bytes(payloadBytes);
-  const expectedLegacy = legacyChecksum4Bytes(payloadBytes);
-  const matches = (candidate: Uint8Array) => {
-    if (candidate.length !== checksum.length) return false;
-    for (let i = 0; i < checksum.length; i += 1) {
-      if (checksum[i] !== candidate[i]) return false;
-    }
-    return true;
-  };
-  const checksumOk = matches(expected) || matches(expectedLegacy);
-  if (!checksumOk) {
+
+  if (!hasValidCodeChecksum(payloadBytes, checksum)) {
     return { error: "Invite code checksum mismatch." };
   }
 
-  let payload: Partial<InviteCodeV1>;
+  let payload: unknown;
+
   try {
-    payload = JSON.parse(new TextDecoder().decode(payloadBytes)) as Partial<InviteCodeV1>;
+    payload = JSON.parse(new TextDecoder().decode(payloadBytes));
   } catch {
     return { error: "Invalid invite code payload encoding." };
   }
 
-  if (!payload || payload.v !== 1 || !payload.friend || typeof payload.psk !== "string") {
+  if (!payload || typeof payload !== "object" || !("v" in payload) || payload.v !== 1 ||
+      !("friend" in payload) || !payload.friend || !("psk" in payload) || typeof payload.psk !== "string") {
     return { error: "Invalid invite code payload." };
   }
 
-  if (payload.exp !== undefined) {
-    if (!Number.isFinite(payload.exp)) {
+  const exp = "exp" in payload ? payload.exp : undefined;
+  const oneTime = "oneTime" in payload ? payload.oneTime : undefined;
+
+  if (exp !== undefined) {
+    if (typeof exp !== "number" || !Number.isFinite(exp)) {
       return { error: "Invalid invite code expiry." };
     }
-    if (Date.now() > Number(payload.exp)) {
+
+    if (Date.now() > Number(exp)) {
       return { error: "Invite code expired." };
     }
   }
 
-  if (payload.oneTime !== undefined && payload.oneTime !== true) {
+  if (oneTime !== undefined && oneTime !== true) {
     return { error: "Invalid invite code payload." };
   }
 
-  const friend = payload.friend as Partial<FriendCodeV1>;
-  if (friend.v !== 1 || typeof friend.identityPub !== "string" || typeof friend.dhPub !== "string") {
+  const friend = payload.friend;
+
+  if (typeof friend !== "object" || !("v" in friend) || friend.v !== 1 ||
+      !("identityPub" in friend) || typeof friend.identityPub !== "string" ||
+      !("dhPub" in friend) || typeof friend.dhPub !== "string") {
     return { error: "Invalid friend payload in invite code." };
   }
 
   try {
     const pskBytes = decodeBase64Url(payload.psk);
+
     if (pskBytes.length !== 32) {
       return { error: "Invalid PSK length in invite code." };
     }
@@ -150,6 +110,7 @@ export const decodeInviteCodeV1 = (
   try {
     const identityBytes = decodeBase64Url(friend.identityPub);
     const dhBytes = decodeBase64Url(friend.dhPub);
+
     if (identityBytes.length !== 32 || dhBytes.length !== 32) {
       return { error: "Invalid key lengths in invite code." };
     }
@@ -157,7 +118,8 @@ export const decodeInviteCodeV1 = (
     return { error: "Invalid public keys in invite code." };
   }
 
-  const deviceIdCandidate = typeof friend.deviceId === "string" ? friend.deviceId.trim() : "";
+  const deviceIdCandidate = "deviceId" in friend && typeof friend.deviceId === "string" ? friend.deviceId.trim() : "";
+
   const deviceId = deviceIdCandidate && UUID_PATTERN.test(deviceIdCandidate)
     ? deviceIdCandidate
     : undefined;
@@ -169,10 +131,25 @@ export const decodeInviteCodeV1 = (
       identityPub: friend.identityPub,
       dhPub: friend.dhPub,
       deviceId,
-      onionAddr: typeof friend.onionAddr === "string" ? friend.onionAddr : undefined,
+      onionAddr: "onionAddr" in friend && typeof friend.onionAddr === "string" ? friend.onionAddr : undefined,
+      inboxWriteToken: "inboxWriteToken" in friend && typeof friend.inboxWriteToken === "string" &&
+        /^[A-Za-z0-9_-]{43}$/.test(friend.inboxWriteToken) ? friend.inboxWriteToken : undefined,
     },
     psk: payload.psk,
-    exp: payload.exp,
-    oneTime: payload.oneTime ? true : undefined,
+    exp,
+    oneTime: oneTime ? true : undefined,
   };
 };
+
+/** Equal decoded invitations share one local consumption identity, regardless of paste/JSON/base64 spelling. */
+export const canonicalInviteCodeV1 = (invite: InviteCodeV1) => encodeInviteCodeV1({
+  ...invite,
+  friend: {
+    ...invite.friend,
+    identityPub: encodeBase64Url(decodeBase64Url(invite.friend.identityPub)),
+    dhPub: encodeBase64Url(decodeBase64Url(invite.friend.dhPub)),
+    // Preserve historical consumption identities, which did not include the mailbox capability.
+    inboxWriteToken: undefined,
+  },
+  psk: encodeBase64Url(decodeBase64Url(invite.psk)),
+});

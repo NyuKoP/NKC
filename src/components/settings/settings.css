@@ -1,0 +1,143 @@
+/* Settings-only control rhythm; colors continue to follow the NKC theme. */
+.settings-dialog {
+  background-color: var(--nkc-elevated);
+  width: min(760px, calc(100vw - 32px));
+  max-width: 760px;
+  height: min(820px, calc(100dvh - 64px));
+  border-radius: 18px;
+  border-color: var(--nkc-divider);
+  outline: none;
+}
+.settings-dialog > [data-testid="settings-dialog-body"] {
+  scrollbar-width: thin;
+  scrollbar-color: var(--nkc-divider) transparent;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+
+
+.settings-dialog button {
+  min-height: 40px;
+  font-weight: 600;
+  transition: background-color 140ms, border-color 140ms, color 140ms;
+}
+
+.settings-dialog button:disabled { cursor: not-allowed; }
+.settings-dialog button:focus-visible,
+.settings-dialog input:not([type="checkbox"]):focus-visible,
+.settings-dialog select:focus-visible,
+.settings-dialog summary:focus-visible {
+  outline: 2px solid var(--nkc-list-focus);
+  outline-offset: 3px;
+}
+
+.settings-dialog button.border {
+  border-color: var(--nkc-control-border);
+  border-radius: 10px;
+  padding-inline: 14px;
+  font-size: 13px;
+}
+.settings-dialog button.bg-nkc-accent {
+  background: var(--nkc-accent);
+  border-radius: 10px;
+  padding-inline: 20px;
+  font-size: 13px;
+}
+.settings-dialog button.bg-nkc-accent:hover:not(:disabled) {
+  background: var(--nkc-brand-hover);
+}
+.settings-dialog button[aria-pressed="true"] {
+  border-color: var(--nkc-brand-stroke);
+  background: var(--nkc-selected);
+  color: var(--nkc-text);
+}
+.settings-dialog section {
+  border-radius: 14px;
+  background-color: var(--nkc-surface);
+}
+.settings-dialog input:not([type="checkbox"]):not([type="radio"]),
+.settings-dialog select {
+  min-height: 42px;
+  border-radius: 9px;
+  border-color: var(--nkc-control-border);
+}
+.settings-dialog input[type="radio"] {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  accent-color: var(--nkc-accent);
+}
+.settings-back-header { display: flex; align-items: center; gap: 16px; }
+.settings-back-header button { background: var(--nkc-surface); }
+.settings-home > section { border-color: var(--nkc-border); }
+.settings-home button.w-full { min-height: 54px; }
+.settings-home button.w-full > svg:first-child {
+  width: 32px;
+  height: 32px;
+  padding: 7px;
+  border-radius: 9px;
+  background: var(--nkc-selected);
+  color: var(--nkc-text);
+}
+.settings-home button.w-full::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  margin-left: auto;
+  border-top: 1.5px solid var(--nkc-muted);
+  border-right: 1.5px solid var(--nkc-muted);
+  transform: rotate(45deg);
+}
+.settings-network-option { padding: 16px; border-color: var(--nkc-divider); }
+.settings-network-option label[for] { cursor: pointer; }
+.settings-dialog label:has(> input[type="radio"]) {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid var(--nkc-divider);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.settings-dialog label:has(> input[type="radio"]:checked) {
+  border-color: var(--nkc-brand-stroke);
+  background: var(--nkc-selected);
+}
+.settings-network-option:has(input[type="radio"]:checked) {
+  border-color: var(--nkc-brand-stroke);
+  background: var(--nkc-selected);
+  box-shadow: inset 3px 0 var(--nkc-brand-stroke);
+}
+.settings-theme-options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.settings-theme-option {
+  padding: 8px;
+  border: 1px solid var(--nkc-divider);
+  border-radius: 12px;
+  text-align: left;
+}
+.settings-theme-option:hover { background: var(--nkc-hover); }
+.settings-theme-preview {
+  display: flex; height: 92px; overflow: hidden;
+  border: 1px solid var(--nkc-divider); border-radius: 7px;
+  background: #f6f6f6;
+}
+.settings-preview-sidebar { width: 27%; background: #dce5e8; border-right: 1px solid #b4c0d9; }
+.settings-preview-messages { flex: 1; padding: 16px 10px; }
+.settings-preview-messages i { display: block; width: 70%; height: 10px; margin-bottom: 9px; border-radius: 4px; background: #b4c0d9; }
+.settings-preview-messages i:nth-child(2) { margin-left: auto; background: #2f6273; }
+.settings-theme-preview--dark { background: #141414; }
+.settings-theme-preview--dark .settings-preview-sidebar { background: #1c1c1c; border-color: #3c3c3c; }
+.settings-theme-preview--dark i:not(:nth-child(2)) { background: #51565f; }
+.settings-theme-preview--system .settings-preview-sidebar { background: #2d2d2d; }
+.settings-theme-label { display: flex; align-items: center; gap: 8px; padding: 12px 3px 4px; font-size: 13px; }
+.settings-choice-dot { width: 14px; height: 14px; border: 1px solid var(--nkc-muted); border-radius: 50%; }
+[aria-pressed="true"] .settings-choice-dot { border: 4px solid var(--nkc-brand-stroke); }
+@media (max-width: 600px) {
+  .settings-dialog { width: calc(100vw - 16px); height: calc(100dvh - 24px); border-radius: 14px; }
+  .settings-dialog > header { padding: 16px; }
+  .settings-dialog > [data-testid="settings-dialog-body"] { padding: 0 16px 20px; }
+  .settings-dialog section.p-6 { padding: 16px; }
+  .settings-theme-options { gap: 6px; }
+  .settings-theme-preview { height: 72px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-dialog *, .settings-dialog *::after { transition: none !important; }
+}

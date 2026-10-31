@@ -12,35 +12,7 @@ The renderer entry point is `src/main.tsx`, the Electron main process is `src/ma
 
 ## Before Submitting a Change
 
-Run the checks relevant to your work:
-
-```bash
-npm run lint
-npm run lint:encoding
-npm test -- --run
-npm run test:native
-npm run build
-npm audit --omit=dev --audit-level=high
-```
-
-Run `npm run test:ui` for user-flow or visual changes. Run the live Tor commands only when Tor is installed and the change affects its actual runtime path.
-
-For file-transfer, controller body-limit, Go queue, or SOCKS transport changes, run at least:
-
-```bash
-npm run test:native
-npx vitest run src/main/__tests__/torMediaEnvelopeSize.test.ts
-npm run bench:transfer:500mb
-```
-
-Use the staged live commands (`test:tor:large`, `:10`, `:100`, and `:500`) in proportion to the risk. The 500 MiB Tor soak can take more than an hour and must not replace the faster local pipeline benchmark during normal iteration.
-
-Focused tests are encouraged during development:
-
-```bash
-npx vitest run path/to/file.test.ts
-npx eslint path/to/changed-file.ts
-```
+Run `npm run lint`, `npm run lint:encoding`, `npm run build`, and `npm audit --omit=dev --audit-level=high`. The test suite is maintained outside this public source snapshot. These checks alone do not qualify a release.
 
 ## Change Guidelines
 
@@ -71,12 +43,6 @@ The native worker lives in `native/nkc-worker/` and is built into `native/bin/` 
 
 ```bash
 npm run build:native
-```
-
-Test it with:
-
-```bash
-npm run test:native
 ```
 
 Set `GO_BINARY` only when the Go executable is not discoverable through the normal environment.

@@ -1,4 +1,9 @@
 import type { DeviceSyncTransportPolicy } from "../preferences";
+import type { ReceiveContext } from "../accounts/receiveContext";
+import type { IncomingCompletion } from "../sync/receiveCompletion";
+
+export type MessageHandler = (bytes: Uint8Array, context?: ReceiveContext) =>
+  IncomingCompletion | void | Promise<IncomingCompletion | void>;
 
 export type TransportKind = "onion" | "direct";
 
@@ -12,15 +17,18 @@ export type TransportStatus = {
 export type PeerHint = {
   kind?: "friend" | "device";
   onionAddr?: string;
+  peerDeviceId?: string;
+  inboxWriteToken?: string;
   directAddr?: string;
   deviceSyncTransportPolicy?: DeviceSyncTransportPolicy;
+  deviceAuthorizationVersion?: 2;
 };
 
 export interface Transport {
   kind: TransportKind;
   connect(peerHint?: PeerHint): Promise<void>;
   send(bytes: Uint8Array): Promise<void>;
-  onMessage(cb: (bytes: Uint8Array) => void): () => void;
+  onMessage(cb: MessageHandler): () => void;
   close(): Promise<void>;
   getStatus(): TransportStatus;
 }

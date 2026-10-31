@@ -3,10 +3,9 @@
 import { encryptEnvelope, type EnvelopeHeader } from "./box";
 import { getSodium } from "../security/sodium";
 
-type WorkerRequest =
-  | { id: number; type: "prewarm" }
+export type WorkerPayload =
+  | { type: "prewarm" }
   | {
-      id: number;
       type: "encrypt";
       key: Uint8Array;
       header: EnvelopeHeader;
@@ -14,16 +13,23 @@ type WorkerRequest =
       identityPrivateKey: Uint8Array;
     };
 
-const scope = self as unknown as DedicatedWorkerGlobalScope;
+type WorkerRequest = WorkerPayload & { id: number };
+
+declare const self: DedicatedWorkerGlobalScope;
+
+const scope = self;
 
 scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const request = event.data;
+
   try {
     if (request.type === "prewarm") {
       await getSodium();
       scope.postMessage({ id: request.id, ok: true });
+
       return;
     }
+
     try {
       const envelope = await encryptEnvelope(
         request.key,
@@ -31,6 +37,7 @@ scope.onmessage = async (event: MessageEvent<WorkerRequest>) => {
         request.body,
         request.identityPrivateKey
       );
+
       scope.postMessage({ id: request.id, ok: true, envelope });
     } finally {
       request.key.fill(0);

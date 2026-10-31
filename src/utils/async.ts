@@ -13,8 +13,10 @@ export async function mapLimit<T, R>(
     const launch = () => {
       if (nextIndex >= items.length && active === 0) {
         resolve(results);
+
         return;
       }
+
       while (active < concurrency && nextIndex < items.length) {
         const current = nextIndex++;
         active += 1;

@@ -9,6 +9,7 @@ export type Replica = {
 
 export const createReplica = (): Replica => {
   const doc = new Y.Doc();
+
   return {
     doc,
     enabled: false,

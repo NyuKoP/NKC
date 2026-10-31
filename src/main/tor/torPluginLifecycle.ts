@@ -39,14 +39,19 @@ export const evaluateTorConnectionPolicy = (policy: TorConnectionPolicy) => {
   }
 
   let reasonsDisabled = 0;
+
   if (!policy.enabledByUser) reasonsDisabled |= TOR_DISABLED_REASON.USER;
+
   if (!policy.charging && policy.onlyWhenCharging) {
     reasonsDisabled |= TOR_DISABLED_REASON.BATTERY;
   }
+
   if (!policy.useMobileData && !policy.wifi) {
     reasonsDisabled |= TOR_DISABLED_REASON.MOBILE_DATA;
   }
+
   const enableNetwork = reasonsDisabled === 0;
+
   return {
     enableNetwork,
     enableConnectionPadding: enableNetwork && policy.wifi && policy.charging,
@@ -64,6 +69,7 @@ export class TorPollingBackoff {
     if (minIntervalMs <= 0 || maxIntervalMs < minIntervalMs || base <= 1) {
       throw new Error("invalid-tor-backoff-options");
     }
+
     this.minIntervalMs = minIntervalMs;
     this.maxIntervalMs = maxIntervalMs;
     this.base = base;
@@ -71,6 +77,7 @@ export class TorPollingBackoff {
 
   getPollingInterval() {
     const interval = Math.trunc(this.minIntervalMs * Math.pow(this.base, this.count));
+
     return Math.min(interval, this.maxIntervalMs);
   }
 
@@ -108,9 +115,13 @@ export class TorPluginLifecycle {
     ) {
       return "starting_stopping";
     }
+
     if (this.reasonsDisabled !== 0) return "disabled";
+
     if (this.wrapperState === "connecting") return "enabling";
+
     if (this.wrapperState === "connected") return "active";
+
     return "inactive";
   }
 

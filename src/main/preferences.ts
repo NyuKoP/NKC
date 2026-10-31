@@ -12,12 +12,14 @@ import {
 const PREFS_FILENAME = "nkc_app_prefs_v1.json";
 
 let cachedPrefs: AppPreferences | null = null;
+
 let pendingWrite: Promise<void> = Promise.resolve();
 
 const getPrefsPath = () => path.join(app.getPath("userData"), PREFS_FILENAME);
 
 export const readAppPrefs = async (): Promise<AppPreferences> => {
   if (cachedPrefs) return cachedPrefs;
+
   try {
     const raw = await fs.readFile(getPrefsPath(), "utf8");
     const parsed = JSON.parse(raw) as Partial<AppPreferences>;
@@ -25,6 +27,7 @@ export const readAppPrefs = async (): Promise<AppPreferences> => {
   } catch {
     cachedPrefs = defaultAppPrefs;
   }
+
   return cachedPrefs;
 };
 
@@ -33,6 +36,7 @@ const writePrefs = async (prefs: AppPreferences) => {
   const payload = JSON.stringify({ ...prefs, updatedAt: Date.now() });
   const target = getPrefsPath();
   const temporary = `${target}.${process.pid}.tmp`;
+
   const write = pendingWrite
     .catch(() => undefined)
     .then(async () => {
@@ -40,6 +44,7 @@ const writePrefs = async (prefs: AppPreferences) => {
       await fs.rename(temporary, target);
       await fs.chmod(target, 0o600).catch(() => undefined);
     });
+
   pendingWrite = write;
   await write;
 };
@@ -48,5 +53,6 @@ export const setAppPrefs = async (patch: AppPreferencesPatch) => {
   const current = await readAppPrefs();
   const next = applyAppPrefsPatch(current, patch);
   await writePrefs(next);
+
   return next;
 };

@@ -4,13 +4,12 @@ import { decodeBase64Url } from "../security/base64url";
 import { createId } from "../utils/ids";
 import type { PeerHint, Transport, TransportStatus } from "./transport";
 
-const hasOwn = (value: object, key: PropertyKey) =>
-  Object.prototype.hasOwnProperty.call(value, key);
-
 export const normalizePayload = (payload: TransportPacket["payload"]) => {
   if (payload instanceof Uint8Array) return payload;
-  if (payload && typeof payload === "object" && hasOwn(payload, "b64")) {
-    const b64 = (payload as { b64?: unknown }).b64;
+
+  if (payload && typeof payload === "object" && Object.hasOwn(payload, "b64")) {
+    const b64 = payload.b64;
+
     if (typeof b64 === "string") {
       try {
         return decodeBase64Url(b64);
@@ -19,18 +18,24 @@ export const normalizePayload = (payload: TransportPacket["payload"]) => {
       }
     }
   }
+
   if (typeof payload === "string") return new TextEncoder().encode(payload);
+
   return null;
 };
 
 const mapState = (state: AdapterState): TransportStatus["state"] => {
   if (state === "connecting") return "connecting";
+
   if (state === "connected" || state === "degraded") return "connected";
+
   if (state === "failed") return "failed";
+
   return "idle";
 };
 
 const DEFAULT_DIRECT_CONNECT_TIMEOUT_MS = 8_000;
+
 const DEVICE_DIRECT_CONNECT_TIMEOUT_MS = 20_000;
 
 export const createDirectTransport = (): Transport => {
@@ -40,6 +45,7 @@ export const createDirectTransport = (): Transport => {
 
   adapter.onMessage((packet) => {
     const bytes = normalizePayload(packet.payload);
+
     if (!bytes) return;
     messageHandlers.forEach((handler) => handler(bytes));
   });
@@ -52,33 +58,44 @@ export const createDirectTransport = (): Transport => {
     kind: "direct",
     async connect(peerHint?: PeerHint) {
       status = { state: "connecting" };
+
       try {
         await new Promise<void>((resolve, reject) => {
           let done = false;
+
           const finish = (error?: unknown) => {
             if (done) return;
             done = true;
+
             if (timeout) {
               clearTimeout(timeout);
             }
+
             if (error) {
               reject(error);
+
               return;
             }
+
             resolve();
           };
+
           const timeoutMs =
             peerHint?.kind === "device"
               ? DEVICE_DIRECT_CONNECT_TIMEOUT_MS
               : DEFAULT_DIRECT_CONNECT_TIMEOUT_MS;
+
           const timeout = setTimeout(() => {
             finish(new Error("Direct P2P connect timeout"));
           }, timeoutMs);
+
           adapter.onState((next) => {
             if (next === "connected" || next === "degraded") {
               finish();
+
               return;
             }
+
             if (next === "failed") {
               finish(new Error("Direct P2P connect failed"));
             }
@@ -99,10 +116,12 @@ export const createDirectTransport = (): Transport => {
         id: createId(),
         payload: bytes,
       };
+
       await adapter.send(packet);
     },
     onMessage(cb) {
       messageHandlers.add(cb);
+
       return () => {
         messageHandlers.delete(cb);
       };

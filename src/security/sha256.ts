@@ -46,6 +46,7 @@ export const sha256 = (message: Uint8Array) => {
     for (let i = 0; i < 16; i += 1) {
       w[i] = view.getUint32(chunkOffset + i * 4, false);
     }
+
     for (let i = 16; i < 64; i += 1) {
       const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
       const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
@@ -98,5 +99,6 @@ export const sha256 = (message: Uint8Array) => {
   writeUint32Be(out, 20, h5);
   writeUint32Be(out, 24, h6);
   writeUint32Be(out, 28, h7);
+
   return out;
 };

@@ -1,3 +1,4 @@
+import { useAppStore } from "../../app/store";
 import type { ReactNode } from "react";
 
 type AuthShellProps = {
@@ -23,13 +24,16 @@ export function NkcBrand({ compact = false }: { compact?: boolean }) {
 }
 
 export default function AuthShell({ children, testId }: AuthShellProps) {
+  const language = useAppStore((state) => state.ui.language);
+  const t = (ko: string, en: string) => language === "ko" ? ko : en;
+
   return (
     <main className="nkc-auth-shell" data-testid={testId}>
       <div className="nkc-auth-brand">
         <NkcBrand />
       </div>
       <div className="nkc-auth-card animate-signal-fade-scale">{children}</div>
-      <p className="nkc-auth-footer">개인 키는 이 기기에서 암호화되어 보관됩니다.</p>
+      <p className="nkc-auth-footer">{t("개인 키는 이 기기에서 암호화되어 보관됩니다.", "Your private keys are stored encrypted on this device.")}</p>
     </main>
   );
 }

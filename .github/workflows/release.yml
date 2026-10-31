@@ -12,6 +12,10 @@ jobs:
   prepare-release:
     runs-on: ubuntu-latest
     steps:
+      - name: Block unqualified releases
+        run: |
+          echo "Release blocked pending security qualification."
+          exit 1
       - uses: actions/checkout@v4
       - name: Create draft with generated release notes
         env:

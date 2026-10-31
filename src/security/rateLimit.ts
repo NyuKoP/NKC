@@ -7,11 +7,14 @@ const states = new Map<string, RateLimitState>();
 
 const nowMs = () => Date.now();
 
-export const checkAllowed = (key: string): { ok: boolean; waitMs?: number } => {
+export const checkAllowed = (key: string): { ok: true; waitMs?: never } | { ok: false; waitMs: number } => {
   const state = states.get(key);
+
   if (!state) return { ok: true };
   const now = nowMs();
+
   if (now >= state.nextAllowedAt) return { ok: true };
+
   return { ok: false, waitMs: Math.max(0, state.nextAllowedAt - now) };
 };
 

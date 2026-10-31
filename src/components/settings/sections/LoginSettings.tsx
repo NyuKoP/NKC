@@ -174,15 +174,15 @@ export default function LoginSettings({
                 }
                 className="rounded-nkc border border-nkc-border bg-nkc-panel px-2 py-1 text-xs text-nkc-text disabled:opacity-50"
               >
-                <option value={0}>{t("Auto", "Auto")}</option>
-                <option value={1}>1분</option>
-                <option value={3}>3분</option>
-                <option value={5}>5분</option>
-                <option value={10}>10분</option>
-                <option value={15}>15분</option>
-                <option value={20}>20분</option>
-                <option value={25}>25분</option>
-                <option value={30}>30분</option>
+                <option value={0}>{t("자동", "Auto")}</option>
+                <option value={1}>{t("1분", "1 min")}</option>
+                <option value={3}>{t("3분", "3 min")}</option>
+                <option value={5}>{t("5분", "5 min")}</option>
+                <option value={10}>{t("10분", "10 min")}</option>
+                <option value={15}>{t("15분", "15 min")}</option>
+                <option value={20}>{t("20분", "20 min")}</option>
+                <option value={25}>{t("25분", "25 min")}</option>
+                <option value={30}>{t("30분", "30 min")}</option>
               </select>
               {appPrefs.background.syncIntervalMinutes === 0 ? (
                 <div className="mt-2 text-xs text-nkc-muted">

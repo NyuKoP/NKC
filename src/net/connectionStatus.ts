@@ -9,6 +9,7 @@ export type ConnectionStatus = {
 type Listener = (status: ConnectionStatus) => void;
 
 let current: ConnectionStatus = { state: "idle" };
+
 const listeners = new Set<Listener>();
 
 export const getConnectionStatus = () => current;
@@ -16,6 +17,7 @@ export const getConnectionStatus = () => current;
 export const onConnectionStatus = (listener: Listener) => {
   listeners.add(listener);
   listener(current);
+
   return () => listeners.delete(listener);
 };
 

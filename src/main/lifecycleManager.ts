@@ -37,13 +37,16 @@ export class P2PLifecycleManager {
 
   async shutdown(reason: string) {
     if (this.shutdownComplete) return;
+
     if (this.shutdownPromise) return this.shutdownPromise;
 
     this.shutdownPromise = (async () => {
       const orchestrator = this.getOrchestrator();
+
       if (orchestrator) {
         await orchestrator.shutdown();
       }
+
       await this.afterShutdown?.(reason);
       this.shutdownComplete = true;
     })().finally(() => {

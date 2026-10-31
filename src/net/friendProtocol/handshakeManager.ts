@@ -26,6 +26,7 @@ export const buildHandshakeRecord = async (
   const transcriptBytes = canonicalBytes(toTranscript(frame));
   const transcriptHash = encodeBase64Url(sodium.crypto_generichash(32, transcriptBytes));
   const proofSig = encodeBase64Url(sodium.crypto_sign_detached(transcriptBytes, identityPriv));
+
   return {
     v: 1,
     transcriptHash,
@@ -38,16 +39,20 @@ export const verifyHandshakeRecord = async (
   record: FriendHandshakeRecord
 ): Promise<ProtocolVerifyResult> => {
   if (record.v !== 1) return { ok: false, reason: "handshake-version" };
+
   try {
     const sodium = await getSodium();
     const transcriptBytes = canonicalBytes(toTranscript(frame));
     const expectedHash = encodeBase64Url(sodium.crypto_generichash(32, transcriptBytes));
+
     if (record.transcriptHash !== expectedHash) {
       return { ok: false, reason: "handshake-transcript-hash" };
     }
+
     const verifyKey = decodeBase64Url(frame.from.identityPub);
     const proofSig = decodeBase64Url(record.proofSig);
     const ok = sodium.crypto_sign_verify_detached(proofSig, transcriptBytes, verifyKey);
+
     return ok ? { ok: true } : { ok: false, reason: "handshake-proof-sig" };
   } catch {
     return { ok: false, reason: "handshake-verify-error" };

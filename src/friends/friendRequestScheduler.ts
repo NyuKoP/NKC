@@ -11,6 +11,8 @@ type SchedulerDeps = {
 
 const BACKOFF_STEPS_MS = [5_000, 15_000, 60_000, 300_000];
 
+const SUCCESS_RETRY_MS = 300_000;
+
 const nextBackoffMs = (attempts: number) =>
   BACKOFF_STEPS_MS[Math.min(attempts, BACKOFF_STEPS_MS.length - 1)];
 
@@ -23,25 +25,36 @@ export const startFriendRequestScheduler = ({
   let timer: ReturnType<typeof setInterval> | null = null;
   let stopped = false;
   let inFlight = false;
+  let wakePending = false;
   const workerId = `friend-request-worker:${createId()}`;
 
   const tick = async () => {
     if (stopped || inFlight) return;
     inFlight = true;
+    const waking = wakePending;
+    wakePending = false;
+
     try {
       const now = Date.now();
+
       const targets = getTargets().filter(
         (friend) =>
           friend.friendStatus === "request_out" &&
           friend.reachability?.status !== "expired"
       );
+
       const dueTargets = targets.filter((friend) => {
+        if (waking && friend.reachability?.status !== "ok") return true;
         const nextAttemptAt = friend.reachability?.nextAttemptAt ?? 0;
+
         if (nextAttemptAt && now < nextAttemptAt) return false;
         const lastAttemptAt = friend.reachability?.lastAttemptAt ?? 0;
+
         if (now - lastAttemptAt < 5_000) return false;
+
         return true;
       });
+
       emitFlowTraceLog({
         event: "deliveryWorker:tick",
         workerId,
@@ -51,7 +64,9 @@ export const startFriendRequestScheduler = ({
         inflight: inFlight ? 1 : 0,
         memQueueLen: targets.length,
       });
+
       for (const friend of dueTargets) {
+        if (stopped) break;
         const attempts = friend.reachability?.attempts ?? 0;
         const beforeStatus = friend.reachability?.status ?? "unknown";
         const opId = `${friend.id}:${now}`;
@@ -64,9 +79,21 @@ export const startFriendRequestScheduler = ({
           retryAtPrev: friend.reachability?.nextAttemptAt ?? null,
         });
 
-        const ok = await onAttempt(friend);
+        let ok = false;
+
+        try {
+          ok = await onAttempt(friend);
+        } catch (error) {
+          console.warn("[friend] scheduled request failed", error);
+        }
+
+        if (stopped) break;
         const nextAttempts = attempts + 1;
-        const next = ok ? 0 : now + nextBackoffMs(Math.max(0, nextAttempts - 1));
+
+        const next = ok
+          ? now + SUCCESS_RETRY_MS
+          : now + nextBackoffMs(Math.max(0, nextAttempts - 1));
+
         if (!ok) {
           emitFlowTraceLog({
             event: "retry:scheduled",
@@ -78,12 +105,13 @@ export const startFriendRequestScheduler = ({
             capHit: nextAttempts >= BACKOFF_STEPS_MS.length,
           });
         }
+
         await onUpdate(friend.id, {
           reachability: {
             status: ok ? "ok" : friend.reachability?.status ?? "unreachable",
             attempts: ok ? 0 : nextAttempts,
             lastAttemptAt: now,
-            nextAttemptAt: ok ? undefined : next,
+            nextAttemptAt: next,
           },
         });
         emitFlowTraceLog({
@@ -97,14 +125,16 @@ export const startFriendRequestScheduler = ({
       }
     } finally {
       inFlight = false;
+
+      if (wakePending && !stopped) void tick().catch((error) => console.error("Friend retry failed", error));
     }
   };
 
   const start = () => {
     if (timer) return;
-    void tick();
+    void tick().catch((error) => console.error("Friend retry failed", error));
     timer = setInterval(() => {
-      void tick();
+      void tick().catch((error) => console.error("Friend retry failed", error));
     }, intervalMs);
     emitFlowTraceLog({
       event: "deliveryWorker:start",
@@ -115,10 +145,12 @@ export const startFriendRequestScheduler = ({
 
   const stop = () => {
     stopped = true;
+
     if (timer) {
       clearInterval(timer);
       timer = null;
     }
+
     emitFlowTraceLog({
       event: "deliveryWorker:stop",
       workerId,
@@ -127,5 +159,6 @@ export const startFriendRequestScheduler = ({
   };
 
   start();
-  return { stop };
+
+  return { stop, wake() { if (stopped) return; wakePending = true; void tick().catch((error) => console.error("Friend retry failed", error)); } };
 };

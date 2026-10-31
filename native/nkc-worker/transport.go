@@ -8,19 +8,22 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 const (
-	transportBodyLimit        = 2 * 1024 * 1024
-	transportMaxInflight      = 8
-	transportConnectTimeout   = 45 * time.Second
-	transportIdleTimeout      = 65 * time.Second
-	transportMaxRetryAttempts = 3
+	transportRequestBodyLimit  = 3 * 1024 * 1024
+	transportResponseBodyLimit = 2 * 1024 * 1024
+	transportMaxInflight       = 8
+	transportConnectTimeout    = 45 * time.Second
+	transportIdleTimeout       = 65 * time.Second
+	transportMaxRetryAttempts  = 3
 )
 
 type transportRetryParams struct {
@@ -29,20 +32,34 @@ type transportRetryParams struct {
 }
 
 type transportFetchParams struct {
-	URL           string               `json:"url"`
-	Method        string               `json:"method"`
-	Headers       map[string]string    `json:"headers"`
-	BodyBase64    string               `json:"bodyBase64"`
+	context    context.Context
+	URL        string            `json:"url"`
+	Method     string            `json:"method"`
+	Headers    map[string]string `json:"headers"`
+	BodyBase64 string            `json:"bodyBase64"`
+	// Internal forwarding already has JSON bytes; do not encode and decode them.
+	Body          []byte               `json:"-"`
 	TimeoutMS     int                  `json:"timeoutMs"`
 	SocksProxyURL string               `json:"socksProxyUrl"`
 	Retry         transportRetryParams `json:"retry"`
+	Diagnose      bool                 `json:"diagnose,omitempty"`
+}
+
+type probeStageContextKey struct{}
+
+func observeProbeStage(ctx context.Context, stage string) {
+	if observe, ok := ctx.Value(probeStageContextKey{}).(func(string)); ok {
+		observe(stage)
+	}
 }
 
 type transportFetchResult struct {
-	Status     int               `json:"status"`
-	Headers    map[string]string `json:"headers"`
-	BodyBase64 string            `json:"bodyBase64"`
-	Attempts   int               `json:"attempts"`
+	Status           int               `json:"status"`
+	Headers          map[string]string `json:"headers"`
+	BodyBase64       string            `json:"bodyBase64"`
+	Attempts         int               `json:"attempts"`
+	StageDurationsMS map[string]int64  `json:"stageDurationsMs,omitempty"`
+	ConnectionCounts map[string]int    `json:"connectionCounts,omitempty"`
 }
 
 type transportEngine struct {
@@ -69,11 +86,12 @@ func (e *transportEngine) clientFor(proxyURL string) *http.Client {
 	}
 	transport := &http.Transport{
 		MaxIdleConns:        transportMaxInflight,
-		MaxIdleConnsPerHost: 2,
+		MaxIdleConnsPerHost: transportMaxInflight,
 		IdleConnTimeout:     transportIdleTimeout,
 		TLSHandshakeTimeout: transportConnectTimeout,
 		DisableCompression:  true,
 	}
+	isolation := &onionIsolation{}
 	transport.DialContext = func(ctx context.Context, _, address string) (net.Conn, error) {
 		host, portText, err := net.SplitHostPort(address)
 		if err != nil {
@@ -83,10 +101,10 @@ func (e *transportEngine) clientFor(proxyURL string) *http.Client {
 		if err != nil || port < 1 || port > 65535 {
 			return nil, fmt.Errorf("invalid_target_port")
 		}
-		return dialSOCKSContext(ctx, proxyURL, host, port, transportConnectTimeout)
+		return dialSOCKSContext(ctx, isolation.proxyFor(proxyURL, host), host, port, transportConnectTimeout)
 	}
 	client := &http.Client{
-		Transport: transport,
+		Transport: isolationRoundTripper{transport, isolation},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -134,6 +152,15 @@ func validateTransportParams(params transportFetchParams) ([]byte, error) {
 	default:
 		return nil, fmt.Errorf("unsupported_http_method")
 	}
+	if params.Body != nil {
+		if len(params.Body) > transportRequestBodyLimit {
+			return nil, fmt.Errorf("request_body_too_large")
+		}
+		return params.Body, nil
+	}
+	if len(params.BodyBase64) > base64.StdEncoding.EncodedLen(transportRequestBodyLimit) {
+		return nil, fmt.Errorf("request_body_too_large")
+	}
 	if params.BodyBase64 == "" {
 		return nil, nil
 	}
@@ -141,7 +168,7 @@ func validateTransportParams(params transportFetchParams) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid_request_body")
 	}
-	if len(body) > transportBodyLimit {
+	if len(body) > transportRequestBodyLimit {
 		return nil, fmt.Errorf("request_body_too_large")
 	}
 	return body, nil
@@ -186,7 +213,7 @@ func normalizeTransportError(err error) error {
 	return err
 }
 
-func (e *transportEngine) fetch(params transportFetchParams) (transportFetchResult, error) {
+func (e *transportEngine) fetch(params transportFetchParams) (result transportFetchResult, resultErr error) {
 	if e.fetchOverride != nil {
 		return e.fetchOverride(params)
 	}
@@ -210,12 +237,90 @@ func (e *transportEngine) fetch(params transportFetchParams) (transportFetchResu
 		delay = 0
 	}
 
-	e.slots <- struct{}{}
+	// Bound admission and retries by the same IPC-visible request budget.
+	parent := params.context
+	if parent == nil {
+		parent = context.Background()
+	}
+	budget, cancelBudget := context.WithTimeout(parent, timeout*time.Duration(attempts))
+	defer cancelBudget()
+	var stage atomic.Value
+	stage.Store("admission")
+	var stageMu sync.Mutex
+	stageStarted := time.Now()
+	var durations map[string]time.Duration
+	newConnections, reusedConnections := 0, 0
+	finished := false
+	setStage := func(value string) {
+		if !params.Diagnose {
+			return
+		}
+		stageMu.Lock()
+		defer stageMu.Unlock()
+		if finished {
+			return
+		}
+		now := time.Now()
+		durations[stage.Load().(string)] += now.Sub(stageStarted)
+		stageStarted = now
+		stage.Store(value)
+	}
+	if params.Diagnose {
+		durations = make(map[string]time.Duration)
+		defer func() {
+			stageMu.Lock()
+			defer stageMu.Unlock()
+			durations[stage.Load().(string)] += time.Since(stageStarted)
+			finished = true
+			result.StageDurationsMS = make(map[string]int64, len(durations))
+			for name, duration := range durations {
+				result.StageDurationsMS[name] = duration.Milliseconds()
+			}
+			result.ConnectionCounts = map[string]int{"new": newConnections, "reused": reusedConnections}
+		}()
+	}
+	diagnoseError := func(err error) error {
+		err = normalizeTransportError(err)
+		if params.Diagnose && err != nil {
+			return fmt.Errorf("probe_stage_%s:%w", stage.Load().(string), err)
+		}
+		return err
+	}
+	select {
+	case e.slots <- struct{}{}:
+	case <-budget.Done():
+		return transportFetchResult{}, diagnoseError(budget.Err())
+	}
 	defer func() { <-e.slots }()
 	client := e.clientFor(params.SocksProxyURL)
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
+		ctx, cancel := context.WithTimeout(budget, timeout)
+		if params.Diagnose {
+			setStage("connection")
+			ctx = context.WithValue(ctx, probeStageContextKey{}, setStage)
+			ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+				GotConn: func(info httptrace.GotConnInfo) {
+					setStage("http_request")
+					stageMu.Lock()
+					defer stageMu.Unlock()
+					if !finished {
+						if info.Reused {
+							reusedConnections++
+						} else {
+							newConnections++
+						}
+					}
+				},
+				WroteHeaders: func() { setStage("http_request_body") },
+				WroteRequest: func(info httptrace.WroteRequestInfo) {
+					if info.Err == nil {
+						setStage("http_response")
+					}
+				},
+				GotFirstResponseByte: func() { setStage("http_response_headers") },
+			})
+		}
 		request, requestErr := http.NewRequestWithContext(ctx, strings.ToUpper(strings.TrimSpace(params.Method)), params.URL, bytes.NewReader(body))
 		if requestErr != nil {
 			cancel()
@@ -229,10 +334,11 @@ func (e *transportEngine) fetch(params transportFetchParams) (transportFetchResu
 		}
 		response, requestErr := client.Do(request)
 		if requestErr == nil {
-			raw, readErr := io.ReadAll(io.LimitReader(response.Body, transportBodyLimit+1))
+			setStage("http_body")
+			raw, readErr := io.ReadAll(io.LimitReader(response.Body, transportResponseBodyLimit+1))
 			_ = response.Body.Close()
 			cancel()
-			if readErr == nil && len(raw) <= transportBodyLimit {
+			if readErr == nil && len(raw) <= transportResponseBodyLimit {
 				headers := make(map[string]string, len(response.Header))
 				for key, values := range response.Header {
 					headers[strings.ToLower(key)] = strings.Join(values, ", ")
@@ -250,9 +356,14 @@ func (e *transportEngine) fetch(params transportFetchParams) (transportFetchResu
 		} else {
 			cancel()
 		}
-		lastErr = normalizeTransportError(requestErr)
+		lastErr = diagnoseError(requestErr)
 		if attempt < attempts && delay > 0 {
-			time.Sleep(delay)
+			setStage("retry_wait")
+			select {
+			case <-time.After(delay):
+			case <-budget.Done():
+				return transportFetchResult{}, diagnoseError(budget.Err())
+			}
 		}
 	}
 	return transportFetchResult{}, lastErr

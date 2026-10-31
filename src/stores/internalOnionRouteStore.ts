@@ -53,7 +53,9 @@ export const useInternalOnionRouteStore = create<InternalOnionRouteStoreState>((
   setDesiredHops: (desiredHops) =>
     set((current) => {
       const nextDesired = Math.max(1, Math.floor(desiredHops));
+
       if (current.route.desiredHops === nextDesired) return current;
+
       return {
         route: {
           ...current.route,
@@ -61,6 +63,7 @@ export const useInternalOnionRouteStore = create<InternalOnionRouteStoreState>((
           establishedHops: Math.min(current.route.establishedHops, nextDesired),
           hops: Array.from({ length: nextDesired }, (_value, index) => {
             const previous = current.route.hops[index];
+
             return (
               previous ?? {
                 hopIndex: index + 1,
@@ -81,6 +84,7 @@ export const getRouteStatusText = (
 ) => {
   const map = language === "en" ? statusLabelMapEn : statusLabelMapKo;
   const prefix = language === "en" ? "Route" : "경로";
+
   return `${prefix}: ${map[state.status]}`;
 };
 

@@ -24,12 +24,13 @@ export default function ConfirmDialog({
 }: ConfirmDialogProps) {
   const language = useAppStore((state) => state.ui.language);
   const t = (ko: string, en: string) => (language === "en" ? en : ko);
+
   return (
     <Dialog.Root open={open} onOpenChange={(value) => (!value ? onClose() : null)}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+        <Dialog.Overlay className="fixed inset-0 z-[90] bg-black/60" />
         <Dialog.Content
-          className="fixed left-1/2 top-1/2 w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft"
+          className="fixed left-1/2 top-1/2 z-[91] w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-nkc border border-nkc-border bg-nkc-panel p-6 shadow-soft"
           data-testid={dialogTestId}
         >
           <Dialog.Title className="text-base font-semibold text-nkc-text">
@@ -47,7 +48,7 @@ export default function ConfirmDialog({
               {t("취소", "Cancel")}
             </button>
             <button
-              className="rounded-nkc bg-red-500/10 px-4 py-2 text-sm text-red-400 hover:bg-red-500/20"
+              className="rounded-nkc bg-nkc-dangerBg px-4 py-2 text-sm text-nkc-danger hover:bg-nkc-dangerBg"
               onClick={() => {
                 onConfirm();
                 onClose();
@@ -62,5 +63,4 @@ export default function ConfirmDialog({
     </Dialog.Root>
   );
 }
-
 
